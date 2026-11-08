@@ -16,7 +16,7 @@ export PATH="$HOME/.local/bin:$PATH"
 agent
 ```
 
-O updater constrói/testa a release antes de ativar e instala em `~/.local/share/agent`, com o comando `agent` em `~/.local/bin`. Abra `/login` para autenticar sua própria conta. Nenhuma credencial vem no bundle. O PATH do Node também precisa estar configurado para terminais futuros (siga as instruções do Homebrew).
+O updater constrói/testa a release antes de ativar e instala em `~/.local/share/agent`, com o comando `agent` em `~/.local/bin`. O perfil do Agent (settings, auth, sessões, extensões) fica em `~/.agent` (`PI_CODING_AGENT_DIR`, fixado pelo wrapper): rode o updater com `PI_CODING_AGENT_DIR="$HOME/.agent"` para registrar os recursos nesse perfil e não no `~/.pi/agent` de um Pi/Mark já instalado. Abra `/login` para autenticar sua própria conta. Nenhuma credencial vem no bundle. O PATH do Node também precisa estar configurado para terminais futuros (siga as instruções do Homebrew).
 
 `agent overlay-update` roda o updater do bundle instalado e não baixa commits novos do checkout; para isso rode `node scripts/agent-update.mjs` no checkout. Para preparar sem ativar: `node scripts/agent-update.mjs --prepare`; depois promover o ID impresso com `node scripts/agent-update.mjs --promote <ID>`.
 

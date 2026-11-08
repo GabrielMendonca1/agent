@@ -13,6 +13,8 @@ rem este arquivo; AGENT_REPO e AGENT_STORE continuam mandando mais, como no POSI
 rem
 rem `exit /b` sem valor preserva o ERRORLEVEL do ultimo comando: dentro de um bloco entre
 rem parenteses, %ERRORLEVEL% seria expandido na leitura do bloco, isto e, antes de o comando rodar.
+rem Perfil do Agent (settings, auth, sessoes): separado do %USERPROFILE%\.pi\agent do Pi/Mark.
+if not defined PI_CODING_AGENT_DIR set "PI_CODING_AGENT_DIR=%USERPROFILE%\.agent"
 setlocal EnableExtensions DisableDelayedExpansion
 
 if defined AGENT_REPO (set "OVERLAY_REPO=%AGENT_REPO%") else (set "OVERLAY_REPO=__OVERLAY_REPO__")

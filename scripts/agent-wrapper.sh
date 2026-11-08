@@ -3,6 +3,8 @@ set -euo pipefail
 
 OVERLAY_REPO=${AGENT_REPO:-__OVERLAY_REPO__}
 STORE=${AGENT_STORE:-$HOME/.local/share/agent}
+# Perfil do Agent (settings, auth, sessões, extensões): separado do ~/.pi/agent do Pi/Mark.
+export PI_CODING_AGENT_DIR="${PI_CODING_AGENT_DIR:-$HOME/.agent}"
 UPDATER="$OVERLAY_REPO/scripts/agent-update.mjs"
 ACTIVE_PI="$STORE/current/bin/pi"
 AGENT_CONFIG="$STORE/runtime/config.json"
