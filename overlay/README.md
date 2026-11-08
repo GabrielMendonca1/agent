@@ -1,4 +1,4 @@
-# Overlay Mark — Pi oficial v1.5.0 clássico
+# Overlay do Agent — Pi oficial v1.5.0 clássico
 
 O entrypoint é o main oficial do Pi, com patches pequenos na ordem do manifesto:
 
@@ -7,36 +7,21 @@ O entrypoint é o main oficial do Pi, com patches pequenos na ordem do manifesto
 3. `pi-account-env` — conta por projeto e `--arca-capabilities` (`{"accountEnv":1}`).
 4. `transcript-feedback` — observador e widgets após o transcript clássico; até 3 tentativas de aviso por execução, a cada 3 resultados novos e 45 s por padrão.
 5. `stream-markdown` — agrupamento de deltas e PI_TUI_HZ; cache Markdown upstream.
-6. `mark-skill-curation` — curadoria opt-in do anúncio de skills.
+6. `agent-skill-curation` — curadoria opt-in do anúncio de skills.
 7. `codemode-typed-results` — resultados estruturados de read/grep/find em scripts, sem mudar o texto das chamadas diretas.
 8. `codemode-background` — espera padrão de 5 minutos, saída parcial, conclusão e cancelamento de jobs.
 9. `tool-load-append` — tool carregada no meio da sessão não reescreve o system prompt; as instruções dela vão no fim da conversa, pelo mesmo caminho da seção MCP.
 10. `cc-hidden-tool-names` — no OAuth Anthropic, `Bash`/`Read` de uma tool escondida pelo codemode `only` voltam em minúsculas.
 
-Total: 10 patches, além das extensões do Mark.
+Total: 10 patches, além das extensões do Agent.
 
 ## Port 1.5.0
 
-Base `f9a26365568127461c47a07a37dcb42c140a3ac5`; sem promoção. O cache Markdown, o reuso de componentes, thinking oculto sem espaçador e entry graphs POSIX são upstream. Sai `win-entry-graphs`; `stream-markdown` mantém batching e PI_TUI_HZ. Resumo Haiku → Luna → local em terceira pessoa (até 240 caracteres), sem hint. Erro recuperado por retry não é cancelamento; erro terminal/cancelamento ficam locais.
+Base `f9a26365568127461c47a07a37dcb42c140a3ac5`. O cache Markdown, o reuso de componentes, thinking oculto sem espaçador e entry graphs POSIX são upstream. Sai `win-entry-graphs`; `stream-markdown` mantém batching e PI_TUI_HZ. Resumo Haiku → Luna → local em terceira pessoa (até 240 caracteres), sem hint. Erro recuperado por retry não é cancelamento; erro terminal/cancelamento ficam locais.
 
-## Estado histórico da distribuição — 2026-10-21
+Updater e Agent interativo não compilam nem usam broker Rust: artefatos contêm a árvore `agent/` sem broker.
 
-- Release clássica preparada, **não promovida**: `1.4.0-4a080252f0-5e00c2dde6-f40998ceba`.
-- Ativa no Mac do Gabriel: `1.4.0-4a080252f0-b4dfa22644-e5043689a9`, ainda com durable-host.
-- Sócio não compila nada: updater e Mark interativo não compilam nem usam broker Rust. Artefatos novos (v2) contêm `mark/` sem broker; artefatos v1 continuam validando e lançando com as dependências que declaram, para rollback.
-- Também pendem PR upstream de `stream-markdown` e validação em Windows real (launcher, codemode, JSONL, subagentes e contas). Não há mais pendência de ipython ou named pipe do kernel.
-
-Lucid Dream vive somente no repo `/Users/biel/Projects/lucid-dream`; não faz parte do Mark nem do seu setup.
-
-## Histórico: decisões do port 1.4.0 (2026-10-21)
-
-- `durable-host`: saiu; sessões JSONL, `/resume` e `--session` voltam ao comportamento oficial, sem retomada de run pendente.
-- `garime-frame`: ficou; aplica limpo no clássico, sem código de host durável.
-- `transcript-feedback`: ficou; retirados arquivos/testes duráveis, com um conflito pequeno de imports resolvido sem refatorar o host.
-- `stream-markdown`: ficou; retirados código/testes duráveis, com um conflito pequeno de imports; cache e batching clássicos preservados.
-- `garime-loader-after-transcript.patch`: saiu; patch avulso fora do manifesto, já incorporado em `mark/extensions/mark/tui/loader.ts`, não deve ser reaplicado.
-
-Pendência atual: propor o batching/PI_TUI_HZ de `stream-markdown` upstream; não bloqueia esta release. Não há pendência de reescrita visual para este port. Sessões SQLite antigas não são migradas por este overlay.
+Pendências: propor o batching/PI_TUI_HZ de `stream-markdown` upstream e validar em Windows real (launcher, codemode, JSONL, subagentes e contas). Sessões SQLite antigas não são migradas por este overlay.
 
 Camadas opcionais:
 
@@ -47,26 +32,26 @@ A ordem do manifesto é autoritativa. Pi Black mantém a compatibilidade de prov
 ### Selecionar camadas
 
 ```sh
-pi overlay-update --with <camada>     # instala base + camada
-pi overlay-update --without <camada>  # volta para só base
-pi overlay-update                            # repete a última seleção instalada
+agent overlay-update --with <camada>     # instala base + camada
+agent overlay-update --without <camada>  # volta para só base
+agent overlay-update                     # repete a última seleção instalada
 ```
 
 `--with`/`--without` são repetíveis e aceitam lista separada por vírgula. Um nome que não existe, ou um `--with` de patch base, aborta com erro antes de qualquer clone.
 
 A seleção vive em `<store>/layers.json` (`{"optional":["<camada>"]}`) e só é gravada **depois de uma instalação real bem-sucedida** — nunca em `--check`, nunca num gate vermelho. Sem flags e sem arquivo, a seleção é só a base.
 
-A tool nativa `codemode` do Pi é ativada em toda sessão do Mark quando registrada, por `activeToolsFor` em `mark/extensions/brain-live/juice.ts`. Ela executa JavaScript isolado e chama as tools do Pi; substitui ipython, sem kernel adicional para compilar.
+A tool nativa `codemode` do Pi é ativada em toda sessão do Agent quando registrada, por `activeToolsFor` em `agent/extensions/brain-live/juice.ts`. Ela executa JavaScript isolado e chama as tools do Pi; substitui ipython, sem kernel adicional para compilar.
 
-`ipython`, `mark/kernel-core` e os `mark-patches` 04–07 saíram. Restam `02-optional-role-models.patch`, `03-sessions-explicit-gc-only.patch` e `vault-runtime-quiet.patch`. Juice é ledger JSON + aprendizado em TS/JS, sem binário no Mark. O preload registra chamadas e custos no JSON com escrita atômica; o modelo de apoio aprende 0–3 regras após checks verdes. Cada regra recebe `[by: Mark; proven: no]`; o histórico mantém `by` (modelo), `mode` e `proven: no`. Não há prova local automática.
+`agent-patches/` contém `02-optional-role-models.patch`, `03-sessions-explicit-gc-only.patch` e `vault-runtime-quiet.patch`. Juice é ledger JSON + aprendizado em TS/JS, sem binário no Agent. O preload registra chamadas e custos no JSON com escrita atômica; o modelo de apoio aprende 0–3 regras após checks verdes. Cada regra recebe `[by: Agent; proven: no]`; o histórico mantém `by` (modelo), `mode` e `proven: no`. Não há prova local automática.
 
 Subagentes são processos `pi -p`; `parentSession` liga o JSONL do filho ao do pai. Não há execução de subagente em host durável nem retomada automática de run interrompida.
 
-Cache de abertura: depois de ativar uma release (instalação, `--promote`, `--mark-ii-enable`) no store padrão, o updater roda `pi --offline --list-models` pelo launcher instalado para transpilar as extensões e preencher o cache de compilação do Node. Sem isso a primeira sessão da release nova abre em ~1,5 s em vez de ~0,5 s. Melhor esforço; `MARK_WARM_START=0` desliga.
+Cache de abertura: depois de ativar uma release (instalação, `--promote`, `--agent-enable`) no store padrão, o updater roda `agent --offline --list-models` pelo launcher instalado para transpilar as extensões e preencher o cache de compilação do Node. Sem isso a primeira sessão da release nova abre em ~1,5 s em vez de ~0,5 s. Melhor esforço; `AGENT_WARM_START=0` desliga.
 
-Um store instalado antes de `layers.json` existir não registrou seleção nenhuma, e um `pi overlay-update` sem flags tiraria dele a camada que ele tinha. Quando o arquivo falta, a seleção é **semeada** pelo que a release ativa registrou (`active.json:optionalLayers`, ou os nomes em `active.json:patches` que o manifesto declara como opcionais), com um aviso dizendo de onde veio; se aquela camada não aplicar na release nova, a mensagem de erro sugere `--without <nome>`. Um `layers.json` já gravado (inclusive `{"optional":[]}`) é escolha explícita e nunca é semeado por cima.
+Um store instalado antes de `layers.json` existir não registrou seleção nenhuma, e um `agent overlay-update` sem flags tiraria dele a camada que ele tinha. Quando o arquivo falta, a seleção é **semeada** pelo que a release ativa registrou (`active.json:optionalLayers`, ou os nomes em `active.json:patches` que o manifesto declara como opcionais), com um aviso dizendo de onde veio; se aquela camada não aplicar na release nova, a mensagem de erro sugere `--without <nome>`. Um `layers.json` já gravado (inclusive `{"optional":[]}`) é escolha explícita e nunca é semeado por cima.
 
-`pi overlay-rollback` também sincroniza `layers.json` com as camadas opcionais da release de destino: depois de voltar para uma release só-base, o próximo `pi overlay-update` sem flags não reintroduz a camada.
+`agent overlay-rollback` também sincroniza `layers.json` com as camadas opcionais da release de destino: depois de voltar para uma release só-base, o próximo `agent overlay-update` sem flags não reintroduz a camada.
 
 A seleção é identidade: `overlayFingerprint`, os testes executados, os markers exigidos, `patches`/`optionalLayers` na metadata da release e `active.json` cobrem exatamente os patches selecionados. Base e base+camada nunca compartilham diretório de release.
 
@@ -125,15 +110,15 @@ O agrupamento de deltas usa `modes/interactive/streaming-batch.ts`: vários delt
 
 ## Skills padrão
 
-`skills/` deste repositório são as skills que todo Mark leva (contrato em `prometheus/docs/reference/skills-distribution.md`). Elas viajam no bundle; a cada ativação no store padrão o updater copia para `<store>/skills` e acrescenta esse caminho a `skills[]` de `~/.pi/agent/settings.json` (ou `$PI_CODING_AGENT_DIR`). É a única entrada que o Mark escreve. Como o Pi carrega os caminhos do settings antes de `~/.pi/agent/skills` e `~/.agents/skills` e fica com o primeiro nome, uma skill padrão com o mesmo nome de uma do usuário não é copiada (aviso no update). A skill `megamind` mora aqui (vale para ARCA e Omni, como a extensão). As demais skills de empresa (`arca-ops`, `omni-ops`) não moram aqui: o Prometheus as coloca depois da conexão com o Megamind.
+`skills/` deste repositório são as skills que todo Agent leva (contrato em `prometheus/docs/reference/skills-distribution.md`). Elas viajam no bundle; a cada ativação no store padrão o updater copia para `<store>/skills` e acrescenta esse caminho a `skills[]` de `~/.pi/agent/settings.json` (ou `$PI_CODING_AGENT_DIR`). É a única entrada que o Agent escreve. Como o Pi carrega os caminhos do settings antes de `~/.pi/agent/skills` e `~/.agents/skills` e fica com o primeiro nome, uma skill padrão com o mesmo nome de uma do usuário não é copiada (aviso no update). A skill `megamind` mora aqui (vale para ARCA e Omni, como a extensão). As demais skills de empresa (`arca-ops`, `omni-ops`) não moram aqui: o Prometheus as coloca depois da conexão com o Megamind.
 
-As skills padrão são `goal`, `grill`, `megamind`, `peers`, `prometheus`, `repitch`, `review`, `skills` e `ui-ux`. Não duplicam nomes de `mark/skills/**`: `debug` fica apenas em `mark/skills/dev/debug`, sob demanda (assim como `tdd`), não automática.
+As skills padrão são `goal`, `grill`, `megamind`, `peers`, `prometheus`, `repitch`, `review`, `skills` e `ui-ux`. Não duplicam nomes de `agent/skills/**`: `debug` fica apenas em `agent/skills/dev/debug`, sob demanda (assim como `tdd`), não automática.
 
-O sync substitui integralmente a cópia gerenciada em `<store>/skills` pelo conteúdo do bundle: diretórios que saíram do repo desaparecem na próxima ativação. Com Mark II ativo, atualiza essa cópia somente se ela já existir, sem alterar settings (`register: false`). Não apaga skills em `~/.pi/agent/skills`, `~/.agents/skills` ou `~/.claude/skills`.
+O sync substitui integralmente a cópia gerenciada em `<store>/skills` pelo conteúdo do bundle: diretórios que saíram do repo desaparecem na próxima ativação. Com o Agent ativo (`--agent-enable`), atualiza essa cópia somente se ela já existir, sem alterar settings (`register: false`). Não apaga skills em `~/.pi/agent/skills`, `~/.agents/skills` ou `~/.claude/skills`.
 
 ## Extensão Megamind
 
-`extensions/megamind/` é a extensão Megamind que todo Mark leva (antes vivia em `~/ARCA/arca/extensions/arca-megamind`; identificadores internos, blocos `[arca-megamind …]` e variáveis como `ARCA_MEGAMIND_CONFIG` seguem iguais). Ela viaja no bundle; a cada ativação no store padrão o updater copia para `<store>/extensions/megamind` (cópia atômica) e garante esse caminho em `extensions[]` de `~/.pi/agent/settings.json` (ou `$PI_CODING_AGENT_DIR`), removendo entradas que carregariam um segundo Megamind (`…/arca-megamind` ou `extensions/megamind` de outro store). As demais entradas de `extensions[]` não são tocadas. Para desligar, ponha `"-megamind"` em `extensions[]`: o updater então não copia nem registra nada.
+`extensions/megamind/` é a extensão Megamind que todo Agent leva (antes vivia em `~/ARCA/arca/extensions/arca-megamind`; identificadores internos, blocos `[arca-megamind …]` e variáveis como `ARCA_MEGAMIND_CONFIG` seguem iguais). Ela viaja no bundle; a cada ativação no store padrão o updater copia para `<store>/extensions/megamind` (cópia atômica) e garante esse caminho em `extensions[]` de `~/.pi/agent/settings.json` (ou `$PI_CODING_AGENT_DIR`), removendo entradas que carregariam um segundo Megamind (`…/arca-megamind` ou `extensions/megamind` de outro store). As demais entradas de `extensions[]` não são tocadas. Para desligar, ponha `"-megamind"` em `extensions[]`: o updater então não copia nem registra nada.
 
 Sem `ARCA_MEGAMIND_CONFIG`, o perfil da sessão é o enrollment que a máquina tem: ARCA (`~/.config/arca-projects/config.json`) na frente, Omni (`~/.config/omni-megamind/config.json`, movida por `OMNI_MEGAMIND_CONFIG`) quando só ela existe, e a ARCA como padrão inerte quando não há nenhum — numa máquina só Omni a sessão de terminal falava com a ARCA. `ARCA_MEGAMIND_CONFIG=none` e caminho explícito seguem iguais. Testes: `node scripts/test-extensions.mjs`, `node scripts/test-megamind-profile.mjs`.
 
@@ -162,13 +147,13 @@ Depois de `npm ci --ignore-scripts`, quando existe entrada para a versão oficia
 Para renovar o snapshot, use `--vendor-model-data` (só válido com `--check --hydrate`): depois de o gate passar, o updater copia o dataset recém-hidratado — os mesmos arquivos, inclusive o dotfile `.manifest.json` — para `overlay/model-data/<version>/` e cria ou substitui a entrada em `modelData` com o `manifestSha256` correto.
 
 ```sh
-node scripts/pi-overlay-update.mjs --check --hydrate --ref v1.5.0 --vendor-model-data
-node scripts/pi-overlay-update.mjs --check --ref v1.5.0   # agora offline, contra o snapshot
+node scripts/agent-update.mjs --check --hydrate --ref v1.5.0 --vendor-model-data
+node scripts/agent-update.mjs --check --ref v1.5.0   # agora offline, contra o snapshot
 ```
 
 Como o passo grava `overlay/manifest.json`, o fingerprint impresso naquele check é o de antes da gravação; o check offline seguinte é quem valida o snapshot já declarado. O caminho manual equivalente (copiar `…/releases/<releaseId>/lib/node_modules/@earendil-works/pi-coding-agent/node_modules/@earendil-works/pi-ai/dist/providers/data/` e recalcular o sha à mão) continua possível, mas não é mais necessário.
 
-Identidade: `overlayFingerprint` cobre os bytes do manifesto e dos patches; o snapshot entra nessa identidade pelo `manifestSha256` declarado no manifesto, não por um segundo hash de árvore. Editar qualquer json do snapshot sem atualizar o manifesto não muda o fingerprint, mas aborta o update na verificação de checksums. O snapshot também viaja no bundle instalado, para que um `pi overlay-update` a partir do store não dependa do catálogo remoto.
+Identidade: `overlayFingerprint` cobre os bytes do manifesto e dos patches; o snapshot entra nessa identidade pelo `manifestSha256` declarado no manifesto, não por um segundo hash de árvore. Editar qualquer json do snapshot sem atualizar o manifesto não muda o fingerprint, mas aborta o update na verificação de checksums. O snapshot também viaja no bundle instalado, para que um `agent overlay-update` a partir do store não dependa do catálogo remoto.
 
 ## Garantias e gates
 
@@ -178,7 +163,7 @@ Identidade: `overlayFingerprint` cobre os bytes do manifesto e dos patches; o sn
 - Pi Black executa `anthropic-claude-code.test.ts` e `anthropic-auth-token.test.ts`.
 - Garime frame executa `garime-frame.test.ts` e `interactive-tui.test.ts`.
 - Conta por sessão executa `account-selection.test.ts` e `auth-storage.test.ts`.
-- Transcript feedback e stream markdown executam as suítes clássicas declaradas no manifesto; nenhum teste durável é selecionado. `PI_TUI_FEEDBACK_MAX_NOTICES` limita tentativas de aviso por execução (default 3, faixa 0..10; 0 desliga só avisos). `PI_TUI_FEEDBACK_TOOL_RESULTS` (default 3) exige resultados novos desde a última observação e `PI_TUI_FEEDBACK_MIN_MS` (default 45000) o intervalo desde ela e desde o início. Sem avisos concorrentes; summary diferente substitui o visível, summary visto continua deduplicado, e 1/2/0 avalia só o visível. Recap inalterado. Detalhes em `docs/transcript-feedback.md`.
+- Transcript feedback e stream markdown executam as suítes clássicas declaradas no manifesto; nenhum teste durável é selecionado. `PI_TUI_FEEDBACK_MAX_NOTICES` limita tentativas de aviso por execução (default 3, faixa 0..10; 0 desliga só avisos). `PI_TUI_FEEDBACK_TOOL_RESULTS` (default 3) exige resultados novos desde a última observação e `PI_TUI_FEEDBACK_MIN_MS` (default 45000) o intervalo desde ela e desde o início. Sem avisos concorrentes; summary diferente substitui o visível, summary visto continua deduplicado, e 1/2/0 avalia só o visível. Recap inalterado.
 - A ativação ocorre somente após dependency install, model data (snapshot verificado ou hidratação), repository checks, build, focused tests, package inspection, installation e CLI smoke.
 - Conflito, checksum incorreto, gate falho ou pacote inválido deixa a instalação ativa intacta.
 - Releases são diretórios imutáveis; a ativação troca `current` atomicamente e preserva `previous` para rollback.
@@ -189,7 +174,7 @@ Identidade: `overlayFingerprint` cobre os bytes do manifesto e dos patches; o sn
 
 O algoritmo 3 ignora `.DS_Store` e normaliza apenas `generatedAt` em `dist/providers/data/.manifest.json`; todo o resto é hashed. Releases antigas são verificadas com o algoritmo que registraram quando ele ainda é suportado. Uma cópia existente só é reutilizada quando metadata, fingerprint, checksums, digest, markers e `bin/pi --version` conferem. Uma cópia divergente permanece no lugar para inspeção, e o build novo recebe um diretório irmão `+2`, `+3`, etc.
 
-Cada release grava a metadata em `pi-overlay.json`; `active.json` é derivado desse arquivo para não divergir. `active.json` também registra `updaterGeneration: 4`. Este updater opera somente no store novo e não tem como alvo stores de gerações anteriores, inclusive o antigo store cujo nome correspondia à identidade histórica acima.
+Cada release grava a metadata em `agent-release.json`; `active.json` é derivado desse arquivo para não divergir. `active.json` também registra `updaterGeneration: 4`. Este updater opera somente no store `~/.local/share/agent` (ou no indicado por `--store`) e não tem como alvo stores de gerações anteriores.
 
 ### Falha durante a ativação
 
@@ -197,26 +182,26 @@ A ativação tem três trechos, e cada um relata o que de fato aconteceu:
 
 1. **Antes de qualquer mutação** a metadata da release (`officialVersion`, `overlayFingerprint`, `treeDigest`) e o tipo de `active.json` são validados. Falha aqui não move ponteiro nenhum: `active pi was not changed` é verdade.
 2. **Ponteiros e wrapper** (`previous`, `current`, wrapper do store, launcher): se falharem, `current`/`previous` voltam ao valor anterior e `active.json` não é tocado. O wrapper, o launcher de `~/.local/bin` e o bundle instalado **não** voltam — eles podem já referenciar o bundle novo, e a mensagem de erro diz isso.
-3. **Sync de recursos** (skills, Megamind, setup do Mark) e gravação de `active.json`: se o sync falhar, o runtime **já está ativo**. Não existe transação de settings/temas/pasta de papéis, então `active.json` é gravado apontando para a release nova com `partialActivation: true` e `partialActivationReason`, e o erro diz **partial activation**, nunca "unchanged". `current` e a metadata registrada nunca divergem em silêncio. Se a própria gravação de `active.json` falhar, os ponteiros voltam para manter ponteiro e metadata de acordo (recursos já sincronizados permanecem).
+3. **Sync de recursos** (skills, Megamind, setup do Agent) e gravação de `active.json`: se o sync falhar, o runtime **já está ativo**. Não existe transação de settings/temas/pasta de papéis, então `active.json` é gravado apontando para a release nova com `partialActivation: true` e `partialActivationReason`, e o erro diz **partial activation**, nunca "unchanged". `current` e a metadata registrada nunca divergem em silêncio. Se a própria gravação de `active.json` falhar, os ponteiros voltam para manter ponteiro e metadata de acordo (recursos já sincronizados permanecem).
 
-`active.json` é gravado em temporário e renomeado, então um leitor vê o registro antigo ou o novo, nunca metade. Limites que permanecem: **crash abrupto** (queda de energia, `SIGKILL`) entre a troca de `current` e a gravação de `active.json` ainda deixa os dois divergentes — nada é reconstruído no próximo arranque; rode o updater de novo ou `pi overlay-rollback`. E **recursos parcialmente sincronizados** (um tema copiado, uma entrada de `extensions[]` ainda não escrita) não são revertidos em nenhum caso; a correção é repetir a ativação depois de resolver a causa.
+`active.json` é gravado em temporário e renomeado, então um leitor vê o registro antigo ou o novo, nunca metade. Limites que permanecem: **crash abrupto** (queda de energia, `SIGKILL`) entre a troca de `current` e a gravação de `active.json` ainda deixa os dois divergentes — nada é reconstruído no próximo arranque; rode o updater de novo ou `agent overlay-rollback`. E **recursos parcialmente sincronizados** (um tema copiado, uma entrada de `extensions[]` ainda não escrita) não são revertidos em nenhum caso; a correção é repetir a ativação depois de resolver a causa.
 
 O staging dentro do store (`releases/.staging-<pid>`) é removido quando a tentativa falha — somente o caminho que aquele processo criou, sob o lock do store, nunca varrendo `.staging-*` por prefixo (o staging vivo de outro updater fica onde está). Já o `stageRoot` em `$TMPDIR` continua preservado para diagnóstico.
 
 ### Preparar, testar e promover sem rebuild
 
 ```sh
-node scripts/pi-overlay-update.mjs --prepare --store /caminho/store-isolado
+node scripts/agent-update.mjs --prepare --store /caminho/store-isolado
 # Use o ID e o caminho FINAL impressos pelo preparo:
 /caminho/store-isolado/releases/<releaseId>/bin/pi --version
-node scripts/pi-overlay-update.mjs --promote <releaseId> --store /caminho/store-isolado
+node scripts/agent-update.mjs --promote <releaseId> --store /caminho/store-isolado
 ```
 
 No Windows, o binário de smoke é `releases\<releaseId>\pi.cmd`. Execute o smoke com configurações e credenciais de teste, sem escrever na árvore preparada.
 
 `--prepare` executa o pipeline completo de update: clone, patches selecionados, model data, check, build, testes dos patches, pack, install, `applyReleaseOverlays`, digest, markers e smoke. A release recebe seu caminho final antes da verificação e não é movida depois. Um novo preparo usa um diretório novo (sufixo `+2`, etc. se necessário), sem reutilizar metadata de um build anterior; nomes reservados por recibos antigos também são pulados. Não altera `current`, `previous`, `active.json`, `layers.json`, wrapper ou launcher; não coleta órfãos. `--ref`, `--hydrate`, `--with` e `--without` continuam disponíveis no preparo.
 
-O recibo separado `prepared/<releaseId>.json` tem schema 1, geração 4, store canônico, plataforma, arquitetura, versão **exata** do Node, instante do preparo, `currentAtPrepare`, proveniência do build (repositório/ref solicitado/layout/entrypoint), metadata completa, seleção opcional, hash do manifesto e da metadata e hash adicional dos bytes/modos da árvore. Este último não normaliza `generatedAt`, mas mantém a exceção de `.DS_Store` já adotada pelo store, para que abrir a pasta no Finder não invalide o payload; `pi-overlay.json` é coberto pelo hash separado. A validade exige esses mesmos dados/ambiente, sem expiração por tempo. Mudança de manifesto, Node ou árvore exige novo preparo. Recibo é registro local de integridade, **não assinatura criptográfica contra o dono que pode editar todos os arquivos**. Imutabilidade é contrato do updater, não proteção por permissões do sistema operacional.
+O recibo separado `prepared/<releaseId>.json` tem schema 1, geração 4, store canônico, plataforma, arquitetura, versão **exata** do Node, instante do preparo, `currentAtPrepare`, proveniência do build (repositório/ref solicitado/layout/entrypoint), metadata completa, seleção opcional, hash do manifesto e da metadata e hash adicional dos bytes/modos da árvore. Este último não normaliza `generatedAt`, mas mantém a exceção de `.DS_Store` já adotada pelo store, para que abrir a pasta no Finder não invalide o payload; `agent-release.json` é coberto pelo hash separado. A validade exige esses mesmos dados/ambiente, sem expiração por tempo. Mudança de manifesto, Node ou árvore exige novo preparo. Recibo é registro local de integridade, **não assinatura criptográfica contra o dono que pode editar todos os arquivos**. Imutabilidade é contrato do updater, não proteção por permissões do sistema operacional.
 
 `--promote` aceita somente um ID no mesmo store, nunca caminho ou separadores. Recibos/releases redirecionados por symlink/junction e links internos que escapem da release são recusados. Valida novamente metadata integral, proveniência, seleção, patches/fingerprint, hashes, markers e identidade/entrypoint instalado antes do smoke. Não executa git/npm, clone, hidratação, build, pack ou install. Ativa a mesma pasta, preserva `previous`/rollback e só depois sincroniza `layers.json` pela seleção do recibo, ignorando a seleção atual do store.
 
@@ -230,33 +215,34 @@ Teste rápido isolado: `node scripts/test-prepare-promote.mjs` (fixtures, stubs 
 
 ### Rollback e retenção
 
-`pi overlay-rollback` verifica o target de `previous` pelo mesmo contrato: patches, markers, digest e execução do binário. `--force` permite um target degradado e registra `degraded`, `degradedReasons` e o algoritmo no `active.json`.
+`agent overlay-rollback` verifica o target de `previous` pelo mesmo contrato: patches, markers, digest e execução do binário. `--force` permite um target degradado e registra `degraded`, `degradedReasons` e o algoritmo no `active.json`.
 
 Depois da ativação, somente releases não referenciadas são coletadas; `current`, `previous`, releases com recibo de preparo e a órfã mais recente permanecem. Bundles superseded também são removidos para impedir que lifecycle antigo reassuma o store. `--no-prune` desativa essa coleta.
 
 ### Estado e limpeza do store — `overlay-status`, `overlay-gc`
 
-`pi overlay-status` (ou `node scripts/pi-overlay-update.mjs --status`) é somente leitura: Pi instalado, `current`/`previous`, Mark II on/off com o artefato, o checkout de origem e quantos commits ele está à frente da instalação (git local), e o tamanho do store. A ativação grava `sourceRepo`/`sourceCommit` em `active.json` quando o updater roda de um checkout git; instalação anterior a isso aparece como `source unknown`.
+`agent overlay-status` (ou `node scripts/agent-update.mjs --status`) é somente leitura: Pi instalado, `current`/`previous`, Agent ligado/desligado com o artefato, o checkout de origem e quantos commits ele está à frente da instalação (git local), e o tamanho do store. A ativação grava `sourceRepo`/`sourceCommit` em `active.json` quando o updater roda de um checkout git; instalação anterior a isso aparece como `source unknown`.
 
-`pi overlay-gc [--dry-run] [--keep N]` libera espaço; `--keep` padrão 1 (um item sem uso de cada tipo). `--dry-run` lista caminho, tamanho e total, sem lock e sem apagar. Apaga releases órfãs, artefatos Mark II sem uso, recibos `prepared` sem release, backups além dos 5 mais recentes e `mark-ii/build-cache` (cache nativo obsoleto de releases antigas). Nunca apaga `current`, `previous`, o artefato Mark II ativo e o de rollback, nem releases preparadas ainda promovíveis. `candidates/` e `mark-ii/resource-snapshots/` só são reportados.
+`agent overlay-gc [--dry-run] [--keep N]` libera espaço; `--keep` padrão 1 (um item sem uso de cada tipo). `--dry-run` lista caminho, tamanho e total, sem lock e sem apagar. Apaga releases órfãs, artefatos do Agent sem uso, recibos `prepared` sem release, backups além dos 5 mais recentes e `runtime/build-cache`. Nunca apaga `current`, `previous`, o artefato do Agent ativo e o de rollback, nem releases preparadas ainda promovíveis. `candidates/` e `runtime/resource-snapshots/` só são reportados.
 
-Aviso de defasagem: ao abrir o Pi interativo com Mark II ligado, se o checkout de origem estiver N commits à frente da instalação, sai uma linha em stderr com o comando do updater do checkout (`pi overlay-update` roda o updater do bundle, que não traz commits novos). Só git local, cache de 1h em `stale-notice.json`, limite de 300 ms, nunca bloqueia; não aparece em `-p`/`--mode` nem fora de TTY. Desligue com `PI_OVERLAY_STALE_NOTICE=0`.
+Aviso de defasagem: ao abrir o Agent interativo ligado, se o checkout de origem estiver N commits à frente da instalação, sai uma linha em stderr com o comando do updater do checkout (`agent overlay-update` roda o updater do bundle, que não traz commits novos). Só git local, cache de 1h em `stale-notice.json`, limite de 300 ms, nunca bloqueia; não aparece em `-p`/`--mode` nem fora de TTY. Desligue com `PI_OVERLAY_STALE_NOTICE=0`.
 
 Camada removida: `context-windows` saiu em 2026-10. `--with context-windows` falha; registrada em `layers.json`, o updater avisa e ignora.
 
 ## Store hermético e launcher
 
-O store padrão é `~/.local/share/pi-overlay`:
+O store padrão é `~/.local/share/agent`:
 
 - `releases/<releaseId>/` — instalação npm imutável;
 - `overlay-bundles/<fingerprints>/` — updater, wrappers (`.sh` e `.cmd`), manifesto, documentação e patches autocontidos; o id do bundle deriva de **todos** os patches do manifesto, porque o bundle carrega todos (instalar base ou base+camada usa o mesmo bundle);
 - `current` e `previous` — symlinks de ativação e rollback (junctions no Windows);
 - `bin/pi-wrapper` (POSIX) ou `bin/pi-wrapper.cmd` (Windows) — launcher estável;
+- `runtime/` — configuração (`config.json`) e artefatos (`releases/<id>/agent`) do Agent ligado por `--agent-enable`;
 - `backups/<timestamp>/<launcher>` — launcher anterior, acompanhado de `restore.txt` com o comando exato de restauração.
 
-`~/.local/bin/pi` só é adotado pelo store padrão. Antes de substituí-lo, o updater move o launcher existente, preservando inclusive seu tipo, para o backup datado e escreve `restore.txt`. `--store <path>` mantém o launcher real intocado; `--adopt-launcher` habilita explicitamente sua adoção. `PI_OVERLAY_STORE` seleciona o store e `PI_OVERLAY_REPO` seleciona o bundle usado pelo wrapper.
+`~/.local/bin/agent` só é adotado pelo store padrão. Antes de substituí-lo, o updater move o launcher existente, preservando inclusive seu tipo, para o backup datado e escreve `restore.txt`. `--store <path>` mantém o launcher real intocado; `--adopt-launcher` habilita explicitamente sua adoção. `AGENT_STORE` seleciona o store e `AGENT_REPO` seleciona o bundle usado pelo wrapper.
 
-Autoridade do overlay: `github.com/GabrielMendonca1/mark-pi` (espelho interno: `garime:/mnt/garime/repos/pi-overlay-bundle.git`). O bundle instalado é autocontido, de modo que updates futuros não dependem do checkout de autoria.
+Autoridade do overlay: `github.com/GabrielMendonca1/agent`. O bundle instalado é autocontido, de modo que updates futuros não dependem do checkout de autoria.
 
 ## Windows nativo
 
@@ -266,16 +252,14 @@ Os sócios rodam Windows com PowerShell, sem WSL, e o updater é nativo lá: nen
 - **Binário instalado.** `npm install --global --prefix X` grava `X\pi.cmd` no Windows (sem `bin\`). O smoke pós-instalação, `verifyRelease` e o launcher procuram `pi.cmd`, `pi.ps1`, `pi` e, por último, `bin/pi`.
 - **`current`/`previous` são junctions.** Symlink de diretório no Windows exige administrador ou Developer Mode; junction não exige nada. Como `rename` no Windows não substitui um destino existente, o ponteiro antigo é removido (`rmdir` da junction, nunca do alvo) logo antes da troca.
 - **Fim de linha.** O clone oficial é configurado com `core.autocrlf=false`/`core.eol=lf` antes do checkout: com o padrão do Git for Windows a árvore viria em CRLF, os patches não aplicariam e o `treeDigest` seria outro em cada plataforma. `scripts/port.mjs` faz o mesmo no clone em cache.
-- **Launcher.** `~/.local/bin/pi.cmd` e `~/.local/bin/pi.ps1` encaminham para `<store>/bin/pi-wrapper.cmd`, que tem a mesma semântica do `pi-overlay-wrapper.sh`: `overlay-update`/`overlay-rollback` vão para o updater do bundle, `update` decide entre updater, delegação ao Pi ou os dois (`--all`), e qualquer outra coisa executa o CLI da release `current`. Um `pi.cmd`/`pi.ps1` que já existia é movido para `backups/<timestamp>/` com `restore.txt` (`move /y ...`). Se `~/.local/bin` não estiver no PATH, o updater imprime o `setx` correspondente.
+- **Launcher.** `~/.local/bin/agent.cmd` e `~/.local/bin/agent.ps1` encaminham para `<store>/bin/pi-wrapper.cmd`, que tem a mesma semântica do `agent-wrapper.sh`: `overlay-update`/`overlay-rollback` vão para o updater do bundle, `update` decide entre updater, delegação ao Pi ou os dois (`--all`), e qualquer outra coisa executa o CLI da release `current`. Um `agent.cmd`/`agent.ps1` que já existia é movido para `backups/<timestamp>/` com `restore.txt` (`move /y ...`). Se `~/.local/bin` não estiver no PATH, o updater imprime o `setx` correspondente.
 
 ```powershell
-node scripts\pi-overlay-update.mjs --check
-node scripts\pi-overlay-update.mjs
-pi overlay-update --with <camada>
-pi overlay-rollback
+node scripts\agent-update.mjs --check
+node scripts\agent-update.mjs
+agent overlay-update --with <camada>
+agent overlay-rollback
 ```
-
-O job `check-windows` do `.github/workflows/upstream-watch.yml` roda em `windows-latest` os `scripts/test-*.mjs` e o gate `--check` da release testada do manifesto, no agendamento diário e em cada pull request.
 
 ## Comandos
 
@@ -283,21 +267,21 @@ No checkout:
 
 ```sh
 # Validar uma release sem instalar ou promover
-node scripts/pi-overlay-update.mjs --check
-node scripts/pi-overlay-update.mjs --check --ref v0.85.1
+node scripts/agent-update.mjs --check
+node scripts/agent-update.mjs --check --ref v0.85.1
 
 # Ignorar o snapshot versionado e hidratar o catálogo ao vivo
-node scripts/pi-overlay-update.mjs --check --ref v0.85.1 --hydrate
+node scripts/agent-update.mjs --check --ref v0.85.1 --hydrate
 
 # Hidratar e vendorar o snapshot novo no checkout
-node scripts/pi-overlay-update.mjs --check --hydrate --ref v1.5.0 --vendor-model-data
+node scripts/agent-update.mjs --check --hydrate --ref v1.5.0 --vendor-model-data
 
 # Camadas opcionais
-node scripts/pi-overlay-update.mjs --check --ref v1.5.0 --with <camada>
+node scripts/agent-update.mjs --check --ref v1.5.0 --with <camada>
 
 # Construir, instalar e ativar
-node scripts/pi-overlay-update.mjs
-node scripts/pi-overlay-update.mjs --no-prune
+node scripts/agent-update.mjs
+node scripts/agent-update.mjs --no-prune
 
 # Testes rápidos dos scripts (segundos, sem construir release)
 node scripts/test-layers.mjs
@@ -316,23 +300,23 @@ node scripts/port.mjs export
 Depois da instalação:
 
 ```sh
-pi update
-pi update self
-pi overlay-update
-pi overlay-update --ref v0.85.1
-pi overlay-update --with <camada>
-pi overlay-update --without <camada>
-pi overlay-rollback
-pi overlay-rollback --force
+agent update
+agent update self
+agent overlay-update
+agent overlay-update --ref v0.85.1
+agent overlay-update --with <camada>
+agent overlay-update --without <camada>
+agent overlay-rollback
+agent overlay-rollback --force
 ```
 
-`pi update --all` ativa primeiro o overlay verificado e depois delega o update de extensões ao Pi. Updates apenas de packages/modelos continuam upstream (`pi update --extensions`, `pi update --models`).
+`agent update --all` ativa primeiro o overlay verificado e depois delega o update de extensões ao Pi. Updates apenas de packages/modelos continuam upstream (`agent update --extensions`, `agent update --models`).
 
-Sem `--ref`, o updater instala `manifest.overlayRef`: a release oficial que a casa portou e testou (o `port.mjs export` atualiza esse campo). Nesse caminho o commit da tag precisa ser exatamente `manifest.overlayBase`; uma tag movida no upstream aborta o update com a diferença impressa, em vez de instalar código que ninguém portou. `--ref <tag>` explícito constrói a tag como ela está hoje. `--ref latest` pega a última do npm, que pode ainda não aceitar os patches; o CI diário é quem testa a última.
+Sem `--ref`, o updater instala `manifest.overlayRef`: a release oficial que a casa portou e testou (o `port.mjs export` atualiza esse campo). Nesse caminho o commit da tag precisa ser exatamente `manifest.overlayBase`; uma tag movida no upstream aborta o update com a diferença impressa, em vez de instalar código que ninguém portou. `--ref <tag>` explícito constrói a tag como ela está hoje. `--ref latest` pega a última do npm, que pode ainda não aceitar os patches; teste-a com `--check` antes.
 
 `--check` constrói em um diretório temporário, não toma lock, não promove release e não instala no store. `--store <path>` altera o store de instalações reais; `--no-prune` conserva releases e bundles existentes.
 
-Para abandonar o overlay por completo, execute o comando em `restore.txt` do backup desejado sob `~/.local/share/pi-overlay/backups/`. Backups de symlinks permanecem symlinks.
+Para abandonar o overlay por completo, execute o comando em `restore.txt` do backup desejado sob `~/.local/share/agent/backups/`. Backups de symlinks permanecem symlinks.
 
 ## Portar para uma release nova
 
@@ -348,13 +332,13 @@ O estado do port mora no git dir do worktree (`arca-pi-port.json`), fora da árv
 
 ### Fluxo recomendado de update
 
-1. A CI avisa (`.github/workflows/upstream-watch.yml`, diária + `workflow_dispatch` + `pull_request`): o job `check` roda em `ubuntu-latest` os `scripts/test-*.mjs` e o `--check` contra a **última** release oficial só com as camadas base, e escreve no `$GITHUB_STEP_SUMMARY` a versão testada e a camada que não aplicou; o job `check-windows` roda em `windows-latest` os mesmos testes e o `--check` da release **testada** (`manifest.overlayRef`, sem flags).
+1. Rodar os `scripts/test-*.mjs` e `node scripts/agent-update.mjs --check --ref latest` contra a **última** release oficial, só com as camadas base.
 11. `node scripts/port.mjs start --ref vX.Y.Z` — os patches que aplicam limpo já viram commit.
 3. Resolver o que conflitar e `node scripts/port.mjs continue`.
 12. `node scripts/port.mjs export`.
-13. `node scripts/pi-overlay-update.mjs --check --hydrate --ref vX.Y.Z --vendor-model-data`, e depois o `--check` offline contra o snapshot recém-vendorado.
-6. Com o manifesto e snapshot fixados, execute `node scripts/pi-overlay-update.mjs --prepare` no store de destino. Teste o binário final impresso, inclusive o E2E externo desejado, sem editar a árvore da release.
-7. Registre commit/tag e publique conforme a aprovação humana. Depois use `node scripts/pi-overlay-update.mjs --promote <ID>` **no mesmo store/ambiente**, promovendo exatamente o pacote testado. Não rode o update legado depois do preparo: ele reconstruiria o pacote e pode invalidar o CAS.
+13. `node scripts/agent-update.mjs --check --hydrate --ref vX.Y.Z --vendor-model-data`, e depois o `--check` offline contra o snapshot recém-vendorado.
+6. Com o manifesto e snapshot fixados, execute `node scripts/agent-update.mjs --prepare` no store de destino. Teste o binário final impresso, inclusive o E2E externo desejado, sem editar a árvore da release.
+7. Registre commit/tag e publique conforme a aprovação humana. Depois use `node scripts/agent-update.mjs --promote <ID>` **no mesmo store/ambiente**, promovendo exatamente o pacote testado. Não rode o update legado depois do preparo: ele reconstruiria o pacote e pode invalidar o CAS.
 
 O fluxo legado sem flags permanece disponível por compatibilidade. O novo fluxo é explícito: não alteramos automaticamente automações dos sócios nem afirmamos que um E2E externo foi executado pelo preparo.
 
@@ -367,4 +351,4 @@ O fluxo legado sem flags permanece disponível por compatibilidade. O novo fluxo
 - `codemode-typed-results`: scripts always receive structured text-file `read` records (`path`, `text`, `offset`, `limit?`, `totalLines`, `truncated`), `grep` match records and `find` paths. Direct display text and image results do not change. Existing scripts that expect strings must use the new fields.
 - `tool-load-append`: adding tools to a session with messages keeps the system prompt byte-identical; the new tools' snippets and guidelines are appended through the system-update path. Removal, mode/model changes and fresh sessions rebuild as before; resume/reload does not duplicate them.
 - `codemode-background`: `@options` accepts `background` and `wait_ms` (default 300000). Detached scripts keep their worker, expose partial output and emit `codemode:job` completion events. `codemode:job:cancel` stops a job; session shutdown cancels outstanding runs.
-- Mark's auto-discovered `brain-live/jobs` extension provides `jobs` actions `start`, `status`, `wait`, `output`, `cancel`, logs bash output under `<sessionDir>/jobs/`, and delivers one completion follow-up when the originating session is idle. `timeout_s` defaults to 300 and can also shorten the initial start wait. Jobs are process-local, not restartable; logs survive process exit. Background codemode jobs still share the default two-worker limit.
+- Agent's auto-discovered `brain-live/jobs` extension provides `jobs` actions `start`, `status`, `wait`, `output`, `cancel`, logs bash output under `<sessionDir>/jobs/`, and delivers one completion follow-up when the originating session is idle. `timeout_s` defaults to 300 and can also shorten the initial start wait. Jobs are process-local, not restartable; logs survive process exit. Background codemode jobs still share the default two-worker limit.
