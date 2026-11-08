@@ -1,11 +1,11 @@
 #!/usr/bin/env node
 /**
- * Abre o Pi numa HOME temporária com o setup do Mark instalado e confere que ele sobe limpo:
+ * Abre o Pi numa HOME temporária com o setup do Agent instalado e confere que ele sobe limpo:
  * nenhuma extensão falha ao carregar e as tools das extensões aparecem no system prompt.
  *
  * Usa o Pi já instalado no store (`<store>/current`), porque é esse o binário que o sócio vai
  * abrir; sem store instalado o teste pula. Nada é escrito fora do diretório temporário: HOME,
- * `PI_CODING_AGENT_DIR` e o store do Mark são todos dentro dele.
+ * `PI_CODING_AGENT_DIR` e o store do Agent são todos dentro dele.
  *
  * O endpoint é loopback fechado, com chave fictícia; não há chamada real ao provider. O que
  * importa é a mensagem de sistema, que o Pi emite antes de falar com o provider.
@@ -16,12 +16,12 @@ import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, write
 import { homedir, tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { syncMarkSetup } from "./lib/mark-setup.mjs";
-import { syncMarkExtensions } from "./lib/extensions.mjs";
-import { syncMarkSkills } from "./lib/skills.mjs";
+import { syncAgentSetup } from "./lib/agent-setup.mjs";
+import { syncAgentExtensions } from "./lib/extensions.mjs";
+import { syncAgentSkills } from "./lib/skills.mjs";
 
 const repo = resolve(dirname(fileURLToPath(import.meta.url)), "..");
-const store = process.env.PI_OVERLAY_STORE || join(homedir(), ".local", "share", "pi-overlay");
+const store = process.env.AGENT_STORE || join(homedir(), ".local", "share", "agent");
 const current = join(store, "current");
 const pi = join(current, "bin", "pi");
 const agentPackage = join(current, "lib", "node_modules", "@earendil-works", "pi-coding-agent");
@@ -30,24 +30,24 @@ if (!existsSync(pi)) {
 	process.exit(0);
 }
 
-const root = mkdtempSync(join(tmpdir(), "mark-startup-test-"));
+const root = mkdtempSync(join(tmpdir(), "agent-startup-test-"));
 const home = join(root, "home");
 const agentDir = join(home, ".pi", "agent");
-const markStore = join(root, "store");
+const agentStore = join(root, "store");
 mkdirSync(agentDir, { recursive: true });
-mkdirSync(markStore, { recursive: true });
+mkdirSync(agentStore, { recursive: true });
 let checks = 0;
 function test(name, fn) { fn(); checks++; console.log(`ok ${name}`); }
 
 try {
-	syncMarkSkills({ sourceRoot: repo, store: markStore, agentDir, homeDir: home, log: () => {}, warn: () => {} });
-	syncMarkExtensions({ sourceRoot: repo, store: markStore, agentDir, log: () => {}, warn: () => {} });
-	const setup = syncMarkSetup({ sourceRoot: repo, store: markStore, agentDir, homeDir: home, log: () => {}, warn: () => {} });
+	syncAgentSkills({ sourceRoot: repo, store: agentStore, agentDir, homeDir: home, log: () => {}, warn: () => {} });
+	syncAgentExtensions({ sourceRoot: repo, store: agentStore, agentDir, log: () => {}, warn: () => {} });
+	const setup = syncAgentSetup({ sourceRoot: repo, store: agentStore, agentDir, homeDir: home, log: () => {}, warn: () => {} });
 	assert.equal(setup.installed, true);
 
 	// Test-only endpoint: no real credentials or provider traffic.
 	writeFileSync(join(agentDir, "models.json"), JSON.stringify({ providers: { anthropic: {
-		baseUrl: "http://127.0.0.1:1", apiKey: "mark-startup-test-not-a-key",
+		baseUrl: "http://127.0.0.1:1", apiKey: "agent-startup-test-not-a-key",
 	} } }));
 	const env = {
 		PATH: process.env.PATH,

@@ -1,9 +1,9 @@
 #!/usr/bin/env node
 /**
- * Fotografa a TUI real (perfil MARK II de teste, provider falso, offline) para
+ * Fotografa a TUI real (perfil Agent de teste, provider falso, offline) para
  * comparar com o protótipo: tmux → captura ANSI → HTML → PNG (Chrome headless).
  *
- *   node scripts/mark-tui-shot.mjs --out /tmp/shots [--cols 180] [--rows 50]
+ *   node scripts/agent-tui-shot.mjs --out /tmp/shots [--cols 180] [--rows 50]
  *     [--light] [--complex] [--chat]
  *
  * `--chat` manda uma mensagem (o provider falso publica um plano e responde)
@@ -18,7 +18,7 @@ import { startFakeAnthropic } from './lib/fake-anthropic.mjs';
 const repo = new URL('..', import.meta.url).pathname.replace(/\/$/, '');
 const arg = (name, fallback) => { const i = process.argv.indexOf(name); return i > 0 ? process.argv[i + 1] : fallback; };
 const flag = (name) => process.argv.includes(name);
-const out = resolve(arg('--out', join(tmpdir(), 'mark-tui-shot')));
+const out = resolve(arg('--out', join(tmpdir(), 'agent-tui-shot')));
 const cols = Number(arg('--cols', '180'));
 const rows = Number(arg('--rows', '50'));
 const light = flag('--light');
@@ -28,9 +28,9 @@ const name = [chat ? 'chat' : 'inicial', light ? 'claro' : 'escuro', complex ? '
 mkdirSync(out, { recursive: true });
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-const sock = `markshot${process.pid}`;
+const sock = `agentshot${process.pid}`;
 const tmux = (...a) => spawnSync('tmux', ['-L', sock, ...a], { encoding: 'utf8' });
-const parent = mkdtempSync(join(tmpdir(), 'mark-shot-'));
+const parent = mkdtempSync(join(tmpdir(), 'agent-shot-'));
 const fake = await startFakeAnthropic([
   { tool: { name: 'plan', input: { steps: [
     { text: 'Levantar cache, plano, Megamind e subagentes', status: 'done' },
@@ -46,7 +46,7 @@ try {
   const info = JSON.parse(prep.stdout);
   rmSync(join(info.agentDir, 'auth.json'), { force: true });
   writeFileSync(join(info.agentDir, 'models.json'), JSON.stringify({ providers: { anthropic: { baseUrl: fake.baseUrl, apiKey: 'fake-key', compat: { supportsMidConvoSystemMessages: true, supportsMidConvoToolChanges: true } } } }));
-  writeFileSync(join(info.agentDir, 'extensions/mark-shot-coordination.ts'), `export default function (pi) {
+  writeFileSync(join(info.agentDir, 'extensions/agent-shot-coordination.ts'), `export default function (pi) {
   pi.on('session_start', async (_event, ctx) => {
     if (!ctx.hasUI) return;
     const publish = () => { ctx.ui.setStatus('megamind', '◈ megamind · ARCA'); ctx.ui.setStatus('peers', '\\u{F06A9} ▮▮▮▮'); };
@@ -58,12 +58,12 @@ try {
   if (light) {
     const settingsPath = join(info.agentDir, 'settings.json');
     const settings = existsSync(settingsPath) ? JSON.parse(readFileSync(settingsPath, 'utf8')) : {};
-    settings.theme = 'grayscale-baimin-claude-cc-mark-light';
+    settings.theme = 'grayscale-baimin-claude-cc-agent-light';
     writeFileSync(settingsPath, JSON.stringify(settings, null, 2));
   }
   const env = JSON.parse(readFileSync(join(info.root, 'environment.json'), 'utf8'));
-  const exports = Object.entries({ ...env, MARK_LEARN: '0', MARK_DISPATCHER: '0', MARK_CACHE_KEEPER: '0' }).map(([k, v]) => `${k}=${JSON.stringify(v)}`).join(' ');
-  const work = join(parent, 'mark-pi');
+  const exports = Object.entries({ ...env, AGENT_LEARN: '0', AGENT_DISPATCHER: '0', AGENT_CACHE_KEEPER: '0' }).map(([k, v]) => `${k}=${JSON.stringify(v)}`).join(' ');
+  const work = join(parent, 'agent');
   mkdirSync(work);
   spawnSync('git', ['init', '-q', '-b', 'main'], { cwd: work });
   spawnSync('git', ['-c', 'user.email=t@t', '-c', 'user.name=t', 'commit', '-q', '--allow-empty', '-m', 'init'], { cwd: work });

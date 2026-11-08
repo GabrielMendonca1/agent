@@ -12,16 +12,16 @@ import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
 const repo = resolve(dirname(fileURLToPath(import.meta.url)), '..');
-const root = process.env.MARK_JUICE_PI_ROOT || join(homedir(), '.local/share/pi-overlay/current/lib/node_modules/@earendil-works/pi-coding-agent');
+const root = process.env.AGENT_JUICE_PI_ROOT || join(homedir(), '.local/share/agent/current/lib/node_modules/@earendil-works/pi-coding-agent');
 const load = async p => import(pathToFileURL(p).href);
 const { loadExtensions, createExtensionRuntime } = await load(join(root, 'dist/core/extensions/loader.js'));
 const { createEventBus } = await load(join(root, 'dist/core/event-bus.js'));
 const { initTheme } = await load(join(root, 'dist/modes/interactive/theme/theme.js'));
 initTheme('dark', false);
 
-const dir = mkdtempSync(join(tmpdir(), 'mark-model-roles-'));
+const dir = mkdtempSync(join(tmpdir(), 'agent-model-roles-'));
 const savedEnv = { ...process.env };
-const modelsPath = join(repo, 'mark/extensions/brain-live/models.ts');
+const modelsPath = join(repo, 'agent/extensions/brain-live/models.ts');
 const vault = join(dir, 'Sistema/Pi');
 const file = join(vault, 'models.json');
 const tier = (label, model, thinking) => ({ label, description: 'd', model, thinking });
@@ -105,12 +105,12 @@ try {
   mkdirSync(vault, { recursive: true });
   writeFixture();
   process.env.PI_SYSTEM_DIR = join(dir, 'Sistema');
-  process.env.MARK_JUICE_ENABLED = '1';
-  process.env.MARK_JUICE_BIN = join(dir, 'broker');
-  process.env.MARK_JUICE_HOME = join(dir, 'juice');
-  process.env.MARK_JUICE_STATE = join(dir, 'juice/state.json');
-  mkdirSync(process.env.MARK_JUICE_HOME, { recursive: true });
-  writeFileSync(join(process.env.MARK_JUICE_HOME, 'preferences.json'), JSON.stringify({ mode: 'complex', supportModel: 'test/haiku' }));
+  process.env.AGENT_JUICE_ENABLED = '1';
+  process.env.AGENT_JUICE_BIN = join(dir, 'broker');
+  process.env.AGENT_JUICE_HOME = join(dir, 'juice');
+  process.env.AGENT_JUICE_STATE = join(dir, 'juice/state.json');
+  mkdirSync(process.env.AGENT_JUICE_HOME, { recursive: true });
+  writeFileSync(join(process.env.AGENT_JUICE_HOME, 'preferences.json'), JSON.stringify({ mode: 'complex', supportModel: 'test/haiku' }));
 
   const loaded = await loadExtensions([modelsPath], dir, createEventBus(), runtime);
   assert.deepEqual(loaded.errors, []);
@@ -228,7 +228,7 @@ try {
   checks++; console.log('ok config inválida: erro explícito no painel, Enter recusa, arquivo intocado');
 
   // 7. Legado (sem piloto): Default + tiers seguem funcionando, com os papéis visíveis.
-  delete process.env.MARK_JUICE_ENABLED;
+  delete process.env.AGENT_JUICE_ENABLED;
   writeFixture();
   const legacy = await loadExtensions([modelsPath], dir, createEventBus(), runtime);
   assert.deepEqual(legacy.errors, []);
@@ -259,7 +259,7 @@ try {
   // 8. Negativo direto no helper: fora da allowlist é recusado, sem gravar.
   const req = createRequire(join(root, 'package.json'));
   const { createJiti } = req('jiti');
-  const tiers = await createJiti(import.meta.url, { fsCache: false, moduleCache: false }).import(join(repo, 'mark/extensions/brain-live/lib/tiers.ts'));
+  const tiers = await createJiti(import.meta.url, { fsCache: false, moduleCache: false }).import(join(repo, 'agent/extensions/brain-live/lib/tiers.ts'));
   const snapshot = bytes();
   assert.throws(() => tiers.setRolePreference('scout', 'test/opus'), /não está autorizado/);
   assert.throws(() => tiers.setRolePreference('inexistente', 'test/opus'), /não tem modelos autorizados/);

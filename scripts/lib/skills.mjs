@@ -1,10 +1,10 @@
 /**
- * Skills padrão do Mark.
+ * Skills padrão do Agent.
  *
- * O Mark leva as skills de `skills/` deste repositório (contrato:
+ * O Agent leva as skills de `skills/` deste repositório (contrato:
  * prometheus/docs/reference/skills-distribution.md). A cada ativação o updater copia essas skills
  * para `<store>/skills` e garante que esse caminho esteja em `skills[]` do `settings.json` do Pi.
- * É a única entrada que o Mark escreve ali; ele nunca mexe em `~/.pi/agent/skills`,
+ * É a única entrada que o Agent escreve ali; ele nunca mexe em `~/.pi/agent/skills`,
  * `~/.agents/skills` nem `~/.claude/skills`.
  *
  * O Pi carrega os caminhos de `settings.json` antes das pastas descobertas sozinhas e, em colisão
@@ -51,7 +51,7 @@ export function skillFiles(repoRoot) {
  * Copia as skills padrão para `<store>/skills` e registra o caminho no settings do Pi.
  * Devolve `{ installed, skipped, settingsUpdated }`.
  */
-export function syncMarkSkills({
+export function syncAgentSkills({
 	sourceRoot,
 	store,
 	agentDir,
@@ -63,10 +63,10 @@ export function syncMarkSkills({
 	const source = join(sourceRoot, SKILLS_DIR);
 	const names = skillNames(source);
 	const target = join(store, SKILLS_DIR);
-	// `register: false` (Mark II): só atualiza uma cópia que já existe; o registro é do recibo de recursos.
+	// `register: false` (Agent): só atualiza uma cópia que já existe; o registro é do recibo de recursos.
 	if (!register && !existsSync(target)) return { installed: [], skipped: [], settingsUpdated: false };
 	// O Prometheus liga as skills padrão em ~/.agents/skills para o Claude/Codex apontando para
-	// <store>/skills: esses links são do próprio Mark, não skills do usuário.
+	// <store>/skills: esses links são do próprio Agent, não skills do usuário.
 	const ownRoot = `${resolve(target)}${sep}`;
 	const isOwn = (path) => {
 		try {
@@ -83,7 +83,7 @@ export function syncMarkSkills({
 	const skipped = names.filter((name) => userNames.has(name));
 	const installed = names.filter((name) => !userNames.has(name));
 	if (skipped.length) {
-		warn(`Skills padrão do Mark não instaladas porque você já tem uma com o mesmo nome: ${skipped.join(", ")}`);
+		warn(`Skills padrão do Agent não instaladas porque você já tem uma com o mesmo nome: ${skipped.join(", ")}`);
 	}
 
 	const temporary = `${target}.tmp-${process.pid}`;
@@ -99,7 +99,7 @@ export function syncMarkSkills({
 	renameSync(temporary, target);
 
 	const settingsUpdated = register ? ensureSettingsEntry(join(agentDir, "settings.json"), resolve(target), warn) : false;
-	log(`Skills padrão do Mark: ${installed.length ? installed.join(", ") : "nenhuma"} (${target})`);
+	log(`Skills padrão do Agent: ${installed.length ? installed.join(", ") : "nenhuma"} (${target})`);
 	return { installed, skipped, settingsUpdated };
 }
 

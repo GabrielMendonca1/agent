@@ -1,8 +1,8 @@
 #!/usr/bin/env node
 /**
- * Perfil Mark headless (scripts/lib/mark-headless.mjs): `pi -p --mode json` com provider falso numa HOME
+ * Perfil Agent headless (scripts/lib/agent-headless.mjs): `pi -p --mode json` com provider falso numa HOME
  * temporária. Prova que o perfil carrega Juice + subagent e respeita simple/complex vindos de
- * $MARK_JUICE_HOME/preferences.v3.json, que nada de TUI/peers/megamind/brain-live entra, e
+ * $AGENT_JUICE_HOME/preferences.v3.json, que nada de TUI/peers/megamind/brain-live entra, e
  * que o prompt de sistema é menor que o do perfil completo (bytes impressos).
  *
  * Usa o Pi do store (`<store>/current`); sem ele o teste pula. Nenhuma chamada de rede real.
@@ -14,37 +14,37 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { homedir, tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
-import { syncMarkSetup } from './lib/mark-setup.mjs';
-import { syncMarkExtensions } from './lib/extensions.mjs';
-import { syncMarkSkills } from './lib/skills.mjs';
-import { headlessSettings } from './lib/mark-headless.mjs';
+import { syncAgentSetup } from './lib/agent-setup.mjs';
+import { syncAgentExtensions } from './lib/extensions.mjs';
+import { syncAgentSkills } from './lib/skills.mjs';
+import { headlessSettings } from './lib/agent-headless.mjs';
 import { startFakeAnthropic } from './lib/fake-anthropic.mjs';
 
 const repo = resolve(dirname(fileURLToPath(import.meta.url)), '..');
-const store = process.env.PI_OVERLAY_STORE || join(homedir(), '.local', 'share', 'pi-overlay');
+const store = process.env.AGENT_STORE || join(homedir(), '.local', 'share', 'agent');
 const pi = join(store, 'current', 'bin', 'pi');
 const piRoot = join(store, 'current', 'lib', 'node_modules', '@earendil-works', 'pi-coding-agent');
 if (!existsSync(pi)) { console.log(`sem Pi instalado em ${store}/current; teste pulado`); process.exit(0); }
 
-const root = mkdtempSync(join(tmpdir(), 'mark-headless-test-'));
+const root = mkdtempSync(join(tmpdir(), 'agent-headless-test-'));
 const home = join(root, 'home');
-const markStore = join(root, 'store');
+const agentStore = join(root, 'store');
 const fake = await startFakeAnthropic([{ text: 'pong', usage: { output: 5 } }]);
 let checks = 0;
 const ok = (name) => { checks++; console.log(`ok ${name}`); };
 
-/** Um agent dir completo (setup do Mark) e um headless derivado dele; ambos com o mesmo modelo falso. */
+/** Um agent dir completo (setup do Agent) e um headless derivado dele; ambos com o mesmo modelo falso. */
 function agentDirFor(name, transform) {
 	const agentDir = join(home, name, '.pi', 'agent');
 	mkdirSync(agentDir, { recursive: true });
 	const quiet = { log: () => {}, warn: () => {} };
-	syncMarkSkills({ sourceRoot: repo, store: markStore, agentDir, homeDir: join(home, name), ...quiet });
-	syncMarkExtensions({ sourceRoot: repo, store: markStore, agentDir, ...quiet });
-	syncMarkSetup({ sourceRoot: repo, store: markStore, agentDir, homeDir: join(home, name), ...quiet });
+	syncAgentSkills({ sourceRoot: repo, store: agentStore, agentDir, homeDir: join(home, name), ...quiet });
+	syncAgentExtensions({ sourceRoot: repo, store: agentStore, agentDir, ...quiet });
+	syncAgentSetup({ sourceRoot: repo, store: agentStore, agentDir, homeDir: join(home, name), ...quiet });
 	const file = join(agentDir, 'settings.json');
 	const full = JSON.parse(readFileSync(file, 'utf8'));
 	if (transform) writeFileSync(file, `${JSON.stringify(transform(full), null, 2)}\n`);
-	writeFileSync(join(agentDir, 'models.json'), JSON.stringify({ providers: { anthropic: { baseUrl: fake.baseUrl, apiKey: 'mark-headless-test-not-a-key' } } }));
+	writeFileSync(join(agentDir, 'models.json'), JSON.stringify({ providers: { anthropic: { baseUrl: fake.baseUrl, apiKey: 'agent-headless-test-not-a-key' } } }));
 	return { agentDir, settings: JSON.parse(readFileSync(file, 'utf8')) };
 }
 
@@ -60,7 +60,7 @@ function spawnAsync(cmd, args, options) {
 	});
 }
 
-const preload = pathToFileURL(join(repo, 'mark/juice/runtime.mjs')).href;
+const preload = pathToFileURL(join(repo, 'agent/juice/runtime.mjs')).href;
 
 /** `pi -p --mode json` com Juice ligado; devolve o payload enviado ao provider. */
 async function run(agent, mode, label) {
@@ -74,8 +74,8 @@ async function run(agent, mode, label) {
 		env: {
 			PATH: process.env.PATH, HOME: h, USERPROFILE: h, TMPDIR: root, XDG_CONFIG_HOME: join(h, '.config'),
 			PI_CODING_AGENT_DIR: agent.agentDir, PI_ACCOUNTS_MIRROR: '0', ORCA_BACKGROUND_LAUNCH: '1',
-			MARK_JUICE_ENABLED: '1', MARK_JUICE_HOME: juiceHome,
-			MARK_JUICE_STATE: join(juiceHome, 'run.v3.json'), MARK_JUICE_PI_ROOT: piRoot,
+			AGENT_JUICE_ENABLED: '1', AGENT_JUICE_HOME: juiceHome,
+			AGENT_JUICE_STATE: join(juiceHome, 'run.v3.json'), AGENT_JUICE_PI_ROOT: piRoot,
 			NODE_OPTIONS: `--import=${preload}`,
 		},
 	});
@@ -93,18 +93,18 @@ async function run(agent, mode, label) {
 try {
 	const full = agentDirFor('full');
 	const headless = agentDirFor('headless', (settings) => headlessSettings(settings));
-	// settings do Mark II: cópia legada excluída por `-…/index.ts` + cópia da release → só a da release
+	// settings do Agent: cópia legada excluída por `-…/index.ts` + cópia da release → só a da release
 	{
-		const { headlessSettings } = await import('./lib/mark-headless.mjs');
-		const L = '/o/mark/extensions/brain-live'; const R = '/o/mark-ii/releases/abc/mark/extensions/brain-live';
-		const h = headlessSettings({ extensions: [`${L}/juice.ts`, `${L}/subagent`, `-${L}/subagent/index.ts`, `${R}/juice.ts`, `${R}/subagent`, '/o/mark/extensions/mark/tui'] }, { exists: () => false });
+		const { headlessSettings } = await import('./lib/agent-headless.mjs');
+		const L = '/o/agent/extensions/brain-live'; const R = '/o/runtime/releases/abc/agent/extensions/brain-live';
+		const h = headlessSettings({ extensions: [`${L}/juice.ts`, `${L}/subagent`, `-${L}/subagent/index.ts`, `${R}/juice.ts`, `${R}/subagent`, '/o/agent/extensions/agent/tui'] }, { exists: () => false });
 		assert.deepEqual(h.extensions, [`${R}/juice.ts`, `${R}/subagent`], 'uma cópia por extensão, a da release');
-		console.log('ok sem extensão duplicada no settings do Mark II');
+		console.log('ok sem extensão duplicada no settings do Agent');
 	}
 	const names = (s) => s.extensions.map((e) => e.split('/').slice(-2).join('/').replace(/\.ts$/, ''));
 
 	assert.deepEqual(names(headless.settings).sort(), ['brain-live/juice', 'brain-live/subagent']);
-	for (const entry of ['mark/tui', 'mark/peers', 'extensions/megamind']) {
+	for (const entry of ['agent/tui', 'agent/peers', 'extensions/megamind']) {
 		assert.ok(full.settings.extensions.some((e) => e.endsWith(entry)), `perfil completo sem ${entry}`);
 		assert.ok(!headless.settings.extensions.some((e) => e.includes(entry)), `headless carrega ${entry}`);
 	}

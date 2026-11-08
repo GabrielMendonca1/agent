@@ -1,12 +1,12 @@
 #!/usr/bin/env node
-// Cache do Mark II no caminho real, sem rede: `pi -p` de verdade, provider anthropic-messages
+// Cache do Agent no caminho real, sem rede: `pi -p` de verdade, provider anthropic-messages
 // do pi-ai apontado para um servidor HTTP falso em loopback, runtime Juice (preload) + broker
 // Rust + cache-keeper.ts. Prova, no mesmo processo do Pi:
 //  - corpo FINAL: uma extensão carregada depois do keeper muda as tools; o ping reenvia o corpo
 //    que de fato saiu (e acerta o cache do servidor falso);
 //  - J: ping entra no ledger com kind cache-warm;
 //  - D: compactação por limiar com o cache quente é cancelada e registrada (compaction:deferred:warm);
-//  - F: troca de modelo emite `mark:cache-estimate` com custo de reconstrução.
+//  - F: troca de modelo emite `agent:cache-estimate` com custo de reconstrução.
 // O servidor falso acerta o cache quando o corpo (sem max_tokens/stream) se repete. Não prova a API real.
 import assert from 'node:assert/strict';
 import { spawn, spawnSync } from 'node:child_process';
@@ -15,10 +15,10 @@ import { createServer } from 'node:http';
 import { homedir, tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
-import { juiceOperation, getJuiceReport } from '../mark/juice/client.mjs';
+import { juiceOperation, getJuiceReport } from '../agent/juice/client.mjs';
 
 const repo = resolve(dirname(fileURLToPath(import.meta.url)), '..');
-const piRoot = process.env.MARK_JUICE_PI_ROOT || join(homedir(), '.local/share/pi-overlay/current/lib/node_modules/@earendil-works/pi-coding-agent');
+const piRoot = process.env.AGENT_JUICE_PI_ROOT || join(homedir(), '.local/share/agent/current/lib/node_modules/@earendil-works/pi-coding-agent');
 const host = 'classic';
 const cli = join(piRoot, 'dist/cli.js');
 assert.ok(existsSync(cli), 'pi instalado');
@@ -72,7 +72,7 @@ mkdirSync(agent, { recursive: true }); mkdirSync(juiceHome, { recursive: true })
 writeFileSync(join(root, 'x.txt'), 'conteúdo\n'.repeat(200));
 writeFileSync(join(agent, 'settings.json'), JSON.stringify({ compaction: { enabled: true, reserveTokens: 550_000, keepRecentTokens: 10 }, retry: { enabled: false }, cacheWarming: 'off' }));
 const ledger = join(juiceHome, 'run.v3.json');
-Object.assign(process.env, { MARK_JUICE_ENABLED: '1', MARK_JUICE_HOME: root, MARK_JUICE_STATE: ledger }); juiceOperation({ op: 'init', runId: 'e2e', mode: 'simple' });
+Object.assign(process.env, { AGENT_JUICE_ENABLED: '1', AGENT_JUICE_HOME: root, AGENT_JUICE_STATE: ledger }); juiceOperation({ op: 'init', runId: 'e2e', mode: 'simple' });
 
 const model = (id) => ({ id, name: id, reasoning: false, input: ['text'], cost: { input: 5, output: 25, cacheRead: 0.5, cacheWrite: 6.25 }, contextWindow: 1_000_000, maxTokens: 32_000 });
 const events = join(root, 'events.jsonl');
@@ -86,10 +86,10 @@ writeFileSync(join(agent, 'models.json'), JSON.stringify({ providers: {
 const ext = join(root, 'e2e-ext.ts');
 writeFileSync(ext, `
 import { appendFileSync } from "node:fs";
-import { sessionCachePolicy } from ${JSON.stringify(join(repo, 'mark/juice/cache-policy.mjs'))};
+import { sessionCachePolicy } from ${JSON.stringify(join(repo, 'agent/juice/cache-policy.mjs'))};
 export default function (pi: any) {
   pi.on("before_provider_request", (e: any) => Array.isArray(e.payload?.tools) && e.payload.tools.length ? { ...e.payload, tools: e.payload.tools.map((t: any) => ({ ...t, description: (t.description ?? "") + " [léxico]" })) } : undefined);
-  pi.events.on("mark:cache-estimate", (d: any) => appendFileSync(${JSON.stringify(events)}, JSON.stringify(d) + "\\n"));
+  pi.events.on("agent:cache-estimate", (d: any) => appendFileSync(${JSON.stringify(events)}, JSON.stringify(d) + "\\n"));
   let switched = false;
   // Depois do ping (o keeper roda antes no agent_settled): a troca esquece o payload, sem 2º ping.
   pi.on("agent_settled", async (_e: any, ctx: any) => { if (switched) return; switched = true;
@@ -106,14 +106,14 @@ export default function (pi: any) {
 const env = {
   ...process.env, HOME: home, USERPROFILE: home, PI_CODING_AGENT_DIR: agent, PI_OFFLINE: '1',
   PI_DURABLE_HOST: '0',
-  PI_CACHE_RETENTION: 'long', MARK_CACHE_KEEPER_TEST: '1',
-  MARK_JUICE_ENABLED: '1', MARK_JUICE_HOME: juiceHome, MARK_JUICE_STATE: ledger, MARK_JUICE_PI_ROOT: piRoot,
-  NODE_OPTIONS: `--import=${pathToFileURL(join(repo, 'mark/juice/runtime.mjs')).href}`,
+  PI_CACHE_RETENTION: 'long', AGENT_CACHE_KEEPER_TEST: '1',
+  AGENT_JUICE_ENABLED: '1', AGENT_JUICE_HOME: juiceHome, AGENT_JUICE_STATE: ledger, AGENT_JUICE_PI_ROOT: piRoot,
+  NODE_OPTIONS: `--import=${pathToFileURL(join(repo, 'agent/juice/runtime.mjs')).href}`,
 };
-delete env.MARK_JUICE_CHILD; delete env.MARK_CACHE_KEEPER;
-delete env.MARK_JUICE_PI_ENTRY;
+delete env.AGENT_JUICE_CHILD; delete env.AGENT_CACHE_KEEPER;
+delete env.AGENT_JUICE_PI_ENTRY;
 const runPi = (prompt, extra = {}, m = 'fake-anth/claude-a') => new Promise((done) => {
-  const child = spawn(process.execPath, [cli, '-p', '--no-session', '--no-extensions', '-e', join(repo, 'mark/extensions/brain-live/cache-keeper.ts'), '-e', ext, '--model', m, '--tools', 'read', prompt], { cwd: root, env: { ...env, ...extra }, stdio: ['ignore', 'pipe', 'pipe'] });
+  const child = spawn(process.execPath, [cli, '-p', '--no-session', '--no-extensions', '-e', join(repo, 'agent/extensions/brain-live/cache-keeper.ts'), '-e', ext, '--model', m, '--tools', 'read', prompt], { cwd: root, env: { ...env, ...extra }, stdio: ['ignore', 'pipe', 'pipe'] });
   let text = ''; child.stdout.on('data', d => text += d); child.stderr.on('data', d => text += d);
   const kill = setTimeout(() => child.kill('SIGKILL'), 90_000);
   child.on('close', (code) => { clearTimeout(kill); done({ code, text }); });
@@ -144,7 +144,7 @@ console.log('ok D: limiar com cache quente → compactação adiada, sem request
 const observed = existsSync(events) ? readFileSync(events, 'utf8').trim().split('\n').map(l => JSON.parse(l)) : [];
 assert.ok(observed.some(e => e.kind === 'session-policy' && e.isolated), 'Pi real usa conexão explícita, sem vazamento entre managers');
 const est = observed.filter(e => e.kind === 'model-switch');
-if (!est.length) fail('troca de modelo não emitiu mark:cache-estimate');
+if (!est.length) fail('troca de modelo não emitiu agent:cache-estimate');
 assert.equal(est[0].from, 'fake-anth/claude-a'); assert.equal(est[0].to, 'fake-anth/claude-b');
 assert.ok(est[0].tokens >= 460_000 && est[0].rebuildUsd > 0, JSON.stringify(est[0]));
 console.log('ok F: troca de modelo no Pi real emite a estimativa de reconstrução');
@@ -153,7 +153,7 @@ console.log('ok F: troca de modelo no Pi real emite a estimativa de reconstruç�
 // aos do filho normal), sai com 0 antes de o Pi tratar o `length` como recuperável.
 {
   const before = bodies.length;
-  const pre = await runPi('.', { MARK_JUICE_CHILD: '1', MARK_CACHE_PREFETCH: '1', MARK_CACHE_KEEPER_TEST: '0' });
+  const pre = await runPi('.', { AGENT_JUICE_CHILD: '1', AGENT_CACHE_PREFETCH: '1', AGENT_CACHE_KEEPER_TEST: '0' });
   const sent = bodies.slice(before);
   if (pre.code !== 0 || sent.length !== 1) { console.error(pre.text.slice(-2000)); assert.fail(`prefetch: exit ${pre.code}, ${sent.length} requests`); }
   assert.equal(sent[0].max_tokens, 1); assert.equal(sent[0].thinking, undefined);
@@ -170,13 +170,13 @@ console.log('ok F: troca de modelo no Pi real emite a estimativa de reconstruç�
 // subagentes do mesmo papel (mesmo model+instructions+tools) recebem a mesma chave do prefixo.
 {
   const before = bodies.length;
-  const main = await runPi('tarefa um', { MARK_CACHE_KEEPER_TEST: '0' }, 'fake-oai/gpt-x');
-  const kids = [await runPi('tarefa dois', { MARK_JUICE_CHILD: '1', MARK_CACHE_KEEPER_TEST: '0' }, 'fake-oai/gpt-x'),
-    await runPi('tarefa três', { MARK_JUICE_CHILD: '1', MARK_CACHE_KEEPER_TEST: '0' }, 'fake-oai/gpt-x')];
+  const main = await runPi('tarefa um', { AGENT_CACHE_KEEPER_TEST: '0' }, 'fake-oai/gpt-x');
+  const kids = [await runPi('tarefa dois', { AGENT_JUICE_CHILD: '1', AGENT_CACHE_KEEPER_TEST: '0' }, 'fake-oai/gpt-x'),
+    await runPi('tarefa três', { AGENT_JUICE_CHILD: '1', AGENT_CACHE_KEEPER_TEST: '0' }, 'fake-oai/gpt-x')];
   const sent = bodies.slice(before).filter(b => Array.isArray(b.input));
   if (sent.length !== 3) { console.error([main, ...kids].map(r => r.text.slice(-800)).join('\n---\n')); assert.fail(`H: ${sent.length} requests Responses`); }
-  assert.ok(!String(sent[0].prompt_cache_key ?? '').startsWith('mark-'), `principal mantém a chave do Pi: ${sent[0].prompt_cache_key}`);
-  assert.match(sent[1].prompt_cache_key, /^mark-[0-9a-f]{16}$/);
+  assert.ok(!String(sent[0].prompt_cache_key ?? '').startsWith('agent-'), `principal mantém a chave do Pi: ${sent[0].prompt_cache_key}`);
+  assert.match(sent[1].prompt_cache_key, /^agent-[0-9a-f]{16}$/);
   assert.equal(sent[2].prompt_cache_key, sent[1].prompt_cache_key, 'filhos do mesmo papel: mesma chave');
   console.log('ok H: Responses no Pi real: principal com a chave do Pi, filhos com a chave do prefixo');
 }

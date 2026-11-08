@@ -27,7 +27,7 @@ function options(args) {
   return c;
 }
 async function fixture(task, parent = tmpdir(), allocated = () => {}) {
-  const dir = await mkdtemp(join(parent, 'mark-bench-'));
+  const dir = await mkdtemp(join(parent, 'agent-bench-'));
   try {
     await allocated(dir);
     await task.fixture(dir);
@@ -122,8 +122,8 @@ async function real(config) {
       let traceError;
       const traceDone = finished(trace).catch(error => { traceError = error; kill?.(); });
       let buffer = '', stderr = '', timedOut = false, launchError = null;
-      const child = spawn('/Users/biel/.local/bin/pi', ['-p', '--mode', 'json', '--no-session', '--model', model, task.prompt], {
-        cwd: dir, env: { ...process.env, MARK_CODEMODE_MODE: mode }, detached: true, stdio: ['ignore', 'pipe', 'pipe'],
+      const child = spawn('/Users/biel/.local/bin/agent', ['-p', '--mode', 'json', '--no-session', '--model', model, task.prompt], {
+        cwd: dir, env: { ...process.env, AGENT_CODEMODE_MODE: mode }, detached: true, stdio: ['ignore', 'pipe', 'pipe'],
       });
       let killed = false;
       kill = () => {

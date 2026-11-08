@@ -7,7 +7,7 @@ import { join } from "node:path";
 
 const temp = mkdtempSync(join(tmpdir(), "checks-runner-test-"));
 process.env.PI_CHECKS_CACHE_DIR = join(temp, "cache");
-const { baseline, gate, runChecks, compare, resultOk } = await import("../mark/extensions/brain-live/checks/runner.ts");
+const { baseline, gate, runChecks, compare, resultOk } = await import("../agent/extensions/brain-live/checks/runner.ts");
 const root = join(temp, "repo");
 mkdirSync(root);
 const git = (...args) => execFileSync("git", ["-C", root, ...args], { encoding: "utf8" }).trim();

@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import './lib/hermetic-test-env.mjs';
-// Dispatch real do Mark com provider falso: assíncrono, modelos por papel,
+// Dispatch real do Agent com provider falso: assíncrono, modelos por papel,
 // concorrência e receita restrita aos filhos. Sem rede.
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
@@ -9,10 +9,10 @@ import { homedir, tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { createRequire } from 'node:module';
 import { fileURLToPath } from 'node:url';
-import { juiceOperation, setJuiceMode } from '../mark/juice/client.mjs';
+import { juiceOperation, setJuiceMode } from '../agent/juice/client.mjs';
 
 const repo = resolve(dirname(fileURLToPath(import.meta.url)), '..');
-const piRoot = process.env.MARK_JUICE_PI_ROOT || join(homedir(), '.local/share/pi-overlay/current/lib/node_modules/@earendil-works/pi-coding-agent');
+const piRoot = process.env.AGENT_JUICE_PI_ROOT || join(homedir(), '.local/share/agent/current/lib/node_modules/@earendil-works/pi-coding-agent');
 const cli = join(piRoot, 'dist/cli.js');
 assert.ok(existsSync(cli), 'pi instalado');
 
@@ -28,7 +28,7 @@ writeFileSync(join(agent, 'agents/mutator.md'), '---\nname: mutator\ndescription
 writeFileSync(join(agent, 'settings.json'), JSON.stringify({ packages: [], extensions: [], skills: [], enableSkillCommands: false, retry: { enabled: false }, quietStartup: true }));
 writeFileSync(join(agent, 'auth.json'), '{}');
 const ledger = join(root, 'run.v3.json');
-Object.assign(process.env, { MARK_JUICE_ENABLED: '1', MARK_JUICE_HOME: root, MARK_JUICE_STATE: ledger }); juiceOperation({ op: 'init', runId: 'ep', mode: 'complex' });
+Object.assign(process.env, { AGENT_JUICE_ENABLED: '1', AGENT_JUICE_HOME: root, AGENT_JUICE_STATE: ledger }); juiceOperation({ op: 'init', runId: 'ep', mode: 'complex' });
 
 // Provider falso: pai chama `subagent` uma vez, depois encerra com texto; filho só responde texto.
 const provider = join(root, 'provider.mjs');
@@ -36,18 +36,18 @@ writeFileSync(provider, `
 import { AssistantMessageEventStream } from '${join(piRoot, 'node_modules/@earendil-works/pi-ai/dist/index.js').replace(/\\\\/g, '/')}';
 export default function (pi) {
   pi.on('session_start', () => {
-    if (process.env.FG_SESSION_MODE) pi.appendEntry('mark-mode', { version: 1, mode: process.env.FG_SESSION_MODE });
+    if (process.env.FG_SESSION_MODE) pi.appendEntry('agent-mode', { version: 1, mode: process.env.FG_SESSION_MODE });
   });
   const stream = (model, context) => {
     const s = new AssistantMessageEventStream();
     queueMicrotask(async () => {
       const n = context.messages.filter(m => m.role === 'assistant').length;
-      const child = !!process.env.MARK_JUICE_CHILD;
-      if (!process.env.MARK_JUICE_CHILD && process.env.FG_TOOLS) {
+      const child = !!process.env.AGENT_JUICE_CHILD;
+      if (!process.env.AGENT_JUICE_CHILD && process.env.FG_TOOLS) {
         const { writeFileSync } = await import('node:fs');
         try { writeFileSync(process.env.FG_TOOLS, JSON.stringify(context)); } catch {}
       }
-      if (process.env.MARK_JUICE_CHILD && process.env.FG_CHILD_CTX) {
+      if (process.env.AGENT_JUICE_CHILD && process.env.FG_CHILD_CTX) {
         const { writeFileSync } = await import('node:fs');
         try { writeFileSync(process.env.FG_CHILD_CTX, JSON.stringify(context)); } catch {}
       }
@@ -122,32 +122,32 @@ export default function (pi) {
 
 let runIndex = 0;
 function runPi(extraEnv) {
-  if (extraEnv.MARK_JUICE_PILOT_MODE) {
-    Object.assign(process.env, { MARK_JUICE_ENABLED: '1', MARK_JUICE_HOME: root, MARK_JUICE_STATE: ledger }); setJuiceMode(extraEnv.MARK_JUICE_PILOT_MODE);
-    delete extraEnv.MARK_JUICE_PILOT_MODE;
+  if (extraEnv.AGENT_JUICE_PILOT_MODE) {
+    Object.assign(process.env, { AGENT_JUICE_ENABLED: '1', AGENT_JUICE_HOME: root, AGENT_JUICE_STATE: ledger }); setJuiceMode(extraEnv.AGENT_JUICE_PILOT_MODE);
+    delete extraEnv.AGENT_JUICE_PILOT_MODE;
   }
   const env = { ...process.env, HOME: home, USERPROFILE: home, PI_CODING_AGENT_DIR: agent, PI_OFFLINE: '1', PI_DURABLE_HOST: '0',
-    MARK_JUICE_ENABLED: '1', MARK_JUICE_STATE: ledger, MARK_JUICE_HOME: root, MARK_JUICE_PI_ROOT: piRoot,
-    NODE_OPTIONS: '', MARK_SUBAGENT_CHILD_EXTENSIONS: provider, ...extraEnv };
-  const r = spawnSync(process.execPath, [cli, '-p', '--mode', 'json', '--session', join(root, `parent-${++runIndex}.jsonl`), '--no-extensions', '-e', provider, '-e', join(repo, 'mark/extensions/brain-live/subagent/index.ts'), '--model', 'fg-fake/fake', 'tarefa'],
+    AGENT_JUICE_ENABLED: '1', AGENT_JUICE_STATE: ledger, AGENT_JUICE_HOME: root, AGENT_JUICE_PI_ROOT: piRoot,
+    NODE_OPTIONS: '', AGENT_SUBAGENT_CHILD_EXTENSIONS: provider, ...extraEnv };
+  const r = spawnSync(process.execPath, [cli, '-p', '--mode', 'json', '--session', join(root, `parent-${++runIndex}.jsonl`), '--no-extensions', '-e', provider, '-e', join(repo, 'agent/extensions/brain-live/subagent/index.ts'), '--model', 'fg-fake/fake', 'tarefa'],
     { cwd: root, env, encoding: 'utf8', timeout: 60000, maxBuffer: 16 * 1024 * 1024 });
   assert.equal(r.status, 0, r.stderr);
   return r.stdout.trim().split('\n').map(l => { try { return JSON.parse(l); } catch { return null; } }).filter(Boolean);
 }
 
 // Fora do piloto: assíncrono (comportamento legado intacto)
-const bg = runPi({ MARK_JUICE_ENABLED: '0' });
+const bg = runPi({ AGENT_JUICE_ENABLED: '0' });
 const end3 = bg.find(e => e.type === 'tool_execution_end' && e.toolName === 'subagent');
 assert.match(end3.result.content[0].text, /Launched subagent job .* status running/, 'fora do piloto continua assíncrono');
 console.log('ok legado: subagent assíncrono (jobId + follow-up)');
 // Receita usada pelos slots de modelo, não pelo prompt do principal.
-mkdirSync(join(root, '.mark'), { recursive: true });
-writeFileSync(join(root, '.mark/workflow.md'), ['# Receita', '', 'versão: v1', '', '## Etapas (complex)',
+mkdirSync(join(root, '.agent'), { recursive: true });
+writeFileSync(join(root, '.agent/workflow.md'), ['# Receita', '', 'versão: v1', '', '## Etapas (complex)',
   ...['worker', 'mutator', 'todoer', 'alltools', 'emptytools'].map((r, i) => `${i + 1}. ${r} · apoio · contrato`), ''].join('\n'));
 
 // Piloto em complex: assíncrono como o Pi normal — a chamada volta
 //    com jobId na hora e o pai segue trabalhando.
-const pilot = runPi({ MARK_JUICE_PILOT_MODE: 'complex' });
+const pilot = runPi({ AGENT_JUICE_PILOT_MODE: 'complex' });
 const end9 = pilot.find(e => e.type === 'tool_execution_end' && e.toolName === 'subagent');
 const t9 = end9.result.content[0].text;
 assert.match(t9, /Launched subagent job .* status running/, `complex é assíncrono: ${t9.slice(0, 200)}`);
@@ -157,7 +157,7 @@ console.log('ok piloto em complex: dispatch assíncrono (jobId na hora)');
 
 // Both gates must ignore conflicting global defaults and accounting modes.
 for (const [savedMode, defaultMode, allowed] of [['complex', 'simple', true], ['simple', 'complex', false], ['invalid', 'complex', false]]) {
-  const events = runPi({ MARK_JUICE_PILOT_MODE: defaultMode, FG_SESSION_MODE: savedMode });
+  const events = runPi({ AGENT_JUICE_PILOT_MODE: defaultMode, FG_SESSION_MODE: savedMode });
   const result = events.find(e => e.type === 'tool_execution_end' && e.toolName === 'subagent').result;
   if (allowed) assert.match(result.content[0].text, /Launched subagent job/);
   else {
@@ -169,16 +169,16 @@ console.log('ok dispatch usa o branch: default/ledger divergentes e registro inv
 
 // Slot do apoio continua valendo no assíncrono (despachante escolhe apoio).
 writeFileSync(join(root, 'preferences.v3.json'), JSON.stringify({ mode: 'complex', supportModel: 'fg-fake/cheap' }));
-const t10 = runPi({ MARK_JUICE_PILOT_MODE: 'complex' }).find(e => e.type === 'tool_execution_end' && e.toolName === 'subagent').result.content[0].text;
+const t10 = runPi({ AGENT_JUICE_PILOT_MODE: 'complex' }).find(e => e.type === 'tool_execution_end' && e.toolName === 'subagent').result.content[0].text;
 assert.match(t10, /Models: worker=fg-fake\/cheap/, `slot apoio no assíncrono: ${t10.slice(0, 250)}`);
 console.log('ok assíncrono: slot/despachante ainda manda o papel para o apoio');
 rmSync(join(root, 'preferences.v3.json'));
-delete process.env.MARK_JUICE_SUPPORT_MODEL;
+delete process.env.AGENT_JUICE_SUPPORT_MODEL;
 
 // tasks[] independentes correm em paralelo de verdade: três papéis distintos,
 //     todos nascidos antes do 1º token de qualquer um deles.
 const plog = join(root, 'async-parallel.log'); rmSync(plog, { force: true });
-const par = runPi({ MARK_JUICE_PILOT_MODE: 'complex', FG_PARALLEL: 'worker,mutator,alltools', FG_LOG: plog, FG_DELAY: '2500', FG_KEEPALIVE: '8' });
+const par = runPi({ AGENT_JUICE_PILOT_MODE: 'complex', FG_PARALLEL: 'worker,mutator,alltools', FG_LOG: plog, FG_DELAY: '2500', FG_KEEPALIVE: '8' });
 const t11 = par.find(e => e.type === 'tool_execution_end' && e.toolName === 'subagent').result.content[0].text;
 assert.match(t11, /Launched subagent job .* \(parallel: worker, mutator, alltools\), status running/, t11.slice(0, 250));
 const ev11 = readFileSync(plog, 'utf8').trim().split('\n').map(l => JSON.parse(l));
@@ -190,10 +190,10 @@ console.log('ok assíncrono: tasks[] de papéis distintos correm concorrentes');
 
 // Descrição e guidelines do piloto não prometem foreground nem citam o limite.
 // A receita do projeto ganha uma regra aprendida: o principal não pode vê-la.
-const wfFile = join(root, '.mark/workflow.md');
+const wfFile = join(root, '.agent/workflow.md');
 writeFileSync(wfFile, `${readFileSync(wfFile, 'utf8')}\n## Regras aprendidas\n- regra aprendida neste projeto fixture\n`);
 const dump = join(root, 'context.json'); rmSync(dump, { force: true });
-runPi({ MARK_JUICE_PILOT_MODE: 'complex', FG_TOOLS: dump });
+runPi({ AGENT_JUICE_PILOT_MODE: 'complex', FG_TOOLS: dump });
 const prompt = readFileSync(dump, 'utf8');
 assert.match(prompt, /ASYNC: the call returns a jobId immediately/, 'o dump contém a descrição da tool');
 assert.match(prompt, /Independent tasks go in one call as/, 'a descrição da tool explica chamadas paralelas');
@@ -208,11 +208,11 @@ console.log('ok descrição/guidelines sem foreground, sem "one at a time" e sem
 
 // A receita é interna: nada dela (regras, caminho, menções) chega ao principal;
 //     o filho a recebe como orientação do projeto, junto do brief.
-for (const banned of [/regra aprendida neste projeto fixture/, /Project notes/, /workflow\.md/, /mark_workflow/, /\brecipe\b/i, /\breceita\b/i, /Regras aprendidas/]) {
+for (const banned of [/regra aprendida neste projeto fixture/, /Project notes/, /workflow\.md/, /agent_workflow/, /\brecipe\b/i, /\breceita\b/i, /Regras aprendidas/]) {
   assert.doesNotMatch(prompt, banned, `o principal não vê a receita (${banned})`);
 }
 const childDump = join(root, 'child-context.json'); rmSync(childDump, { force: true });
-const withRules = runPi({ MARK_JUICE_PILOT_MODE: 'complex', FG_CHILD_CTX: childDump, FG_KEEPALIVE: '3' });
+const withRules = runPi({ AGENT_JUICE_PILOT_MODE: 'complex', FG_CHILD_CTX: childDump, FG_KEEPALIVE: '3' });
 assert.match(withRules.find(e => e.type === 'tool_execution_end' && e.toolName === 'subagent').result.content[0].text, /status running/);
 const childCtx = readFileSync(childDump, 'utf8');
 assert.match(childCtx, /## Project notes/, 'o filho recebe a orientação do projeto');
@@ -237,10 +237,10 @@ try {
   writeFileSync(join(sandboxCwd, 'dirty.txt'), 'antes');
   const { createJiti } = createRequire(join(piRoot, 'package.json'))('jiti');
   const jiti = createJiti(import.meta.url, { fsCache: false, alias: { '@earendil-works/pi-coding-agent': join(piRoot, 'dist/index.js') } });
-  const runner = await jiti.import(join(repo, 'mark/extensions/brain-live/subagent/runner.ts'));
+  const runner = await jiti.import(join(repo, 'agent/extensions/brain-live/subagent/runner.ts'));
   runner.runnerHooks.getPiInvocation = args => ({ command: process.execPath, args: [cli, ...args] });
   runner.runnerHooks.hostFreePercent = () => 100;
-  Object.assign(process.env, { HOME: home, USERPROFILE: home, PI_CODING_AGENT_DIR: agent, PI_OFFLINE: '1', MARK_SUBAGENT_CHILD_EXTENSIONS: provider });
+  Object.assign(process.env, { HOME: home, USERPROFILE: home, PI_CODING_AGENT_DIR: agent, PI_OFFLINE: '1', AGENT_SUBAGENT_CHILD_EXTENSIONS: provider });
   const role = { name: 'readonly', source: 'user', tools: ['read', 'bash'], systemPrompt: 'fixture' };
   const run = () => runner.runSingleAgent({ defaultCwd: sandboxCwd, agents: [role], agentName: role.name, task: 'fixture', dispatchDefaults: { model: 'fg-fake/fake', juice: { statePath: ledger } }, makeDetails: results => ({ mode: 'single', agentScope: 'user', projectAgentsDir: null, results }) });
   assert.equal(runner.sandboxForTools(['read', 'bash', 'write']), undefined, 'worker não recebe sandbox');
@@ -254,7 +254,7 @@ try {
     assert.ok(!existsSync(join(sandboxCwd, 'novo.txt')));
     console.log('ok sandbox=seatbelt: bash do filho não altera arquivo sujo nem cria arquivo');
   }
-  process.env.MARK_TEST_SANDBOX_NONE = '1';
+  process.env.AGENT_TEST_SANDBOX_NONE = '1';
   process.env.FG_SANDBOX_COMMAND = 'printf depois > dirty.txt';
   const detected = await run();
   assert.equal(detected.sandbox, 'none');
@@ -283,7 +283,7 @@ writeFileSync(join(root, 'linked', 'fixture'), 'linked');
 writeFileSync(join(root, '.pi/checks.json'), JSON.stringify({ link: ['linked'], checks: [{ name: 'fixture', cmd: 'node -e "require(\\\"node:fs\\\").readFileSync(\\\"linked/fixture\\\")"' }] }));
 git('add', '.gitignore'); git('add', '-f', '.pi/checks.json'); git('commit', '-m', 'base');
 const writerLog = join(root, 'writers.log');
-const isolatedEvents = runPi({ MARK_JUICE_PILOT_MODE: 'complex', FG_PARALLEL: 'worker', FG_WRITE: writerLog, FG_KEEPALIVE: '8' });
+const isolatedEvents = runPi({ AGENT_JUICE_PILOT_MODE: 'complex', FG_PARALLEL: 'worker', FG_WRITE: writerLog, FG_KEEPALIVE: '8' });
 const isolatedJob = isolatedEvents.find(e => e.type === 'tool_execution_end' && e.toolName === 'subagent').result.details.job;
 const rows = readFileSync(writerLog, 'utf8').trim().split('\n').map(JSON.parse);
 assert.equal(rows.length, 3);
@@ -298,7 +298,7 @@ assert.equal(isolatedRecord.status, 'completed', isolatedRecord.error);
 assert.match(isolatedRecord.result, /status --porcelain:/);
 assert.match(isolatedRecord.result, /tarefa-a/);
 // A chamada seguinte usa a própria tool, na mesma sessão do pai.
-const integrated = runPi({ MARK_JUICE_PILOT_MODE: 'complex', FG_PARALLEL: 'worker', FG_WRITE: join(root, 'integrated.log'), FG_KEEPALIVE: '8', FG_INTEGRATE: '1' });
+const integrated = runPi({ AGENT_JUICE_PILOT_MODE: 'complex', FG_PARALLEL: 'worker', FG_WRITE: join(root, 'integrated.log'), FG_KEEPALIVE: '8', FG_INTEGRATE: '1' });
 const integration = integrated.filter(e => e.type === 'tool_execution_end' && e.toolName === 'subagent').at(-1).result;
 assert.ok(!integration.isError, JSON.stringify(integration));
 assert.match(integration.content[0].text, /integrate complete/);
@@ -307,7 +307,7 @@ for (const x of ['a', 'b', 'c']) assert.equal(readFileSync(join(root, 'file-' + 
 // Integra também o primeiro job pelo manager, carregado sem dependências do Pi.
 const { createJiti } = await import(join(piRoot, 'node_modules/jiti/lib/jiti.mjs'));
 const jiti = createJiti(import.meta.url, { interopDefault: true, alias: { '@earendil-works/pi-coding-agent': join(piRoot, 'dist/index.js') } });
-const { SubagentJobManager } = await jiti.import(join(repo, 'mark/extensions/brain-live/subagent/jobs.ts'));
+const { SubagentJobManager } = await jiti.import(join(repo, 'agent/extensions/brain-live/subagent/jobs.ts'));
 const manager = new SubagentJobManager({ baseDir: recordsDir, onComplete() {} });
 assert.ok(isolatedRecord.tasks.every(t => t.sourceBranch === 'main'), 'destino registrado no isolamento');
 const beforeSwitch = git('rev-parse', 'HEAD');
@@ -337,12 +337,12 @@ assert.ok(existsSync(task1.worktree));
 await manager.manage(isolatedRecord.sessionId, isolatedRecord.jobId, 'discard', 1);
 await manager.manage(isolatedRecord.sessionId, isolatedRecord.jobId, 'integrate');
 assert.equal(git('worktree', 'list', '--porcelain').split('worktree ').length - 1, 1, 'zero worktrees adicionais após integrar');
-assert.equal(git('branch', '--list', 'mark/*'), '', 'branches removidas');
+assert.equal(git('branch', '--list', 'agent/*'), '', 'branches removidas');
 // GC não apaga recurso recente ou sujo, mesmo quando o branch já está integrado.
-const { gcWorktrees, manageWorktrees } = await jiti.import(join(repo, 'mark/extensions/brain-live/subagent/worktrees.ts'));
+const { gcWorktrees, manageWorktrees } = await jiti.import(join(repo, 'agent/extensions/brain-live/subagent/worktrees.ts'));
 const gcPath = join(root, 'gc-worktree');
-git('worktree', 'add', '-b', 'mark/gc', gcPath, 'HEAD');
-const gcRecord = { ...isolatedRecord, tasks: [{ worktree: gcPath, branch: 'mark/gc', sourceCwd: root, sourceBranch: 'main' }], finishedAt: Date.now() };
+git('worktree', 'add', '-b', 'agent/gc', gcPath, 'HEAD');
+const gcRecord = { ...isolatedRecord, tasks: [{ worktree: gcPath, branch: 'agent/gc', sourceCwd: root, sourceBranch: 'main' }], finishedAt: Date.now() };
 assert.equal(gcWorktrees(gcRecord, Date.now()), false, 'GC preserva jobs recentes');
 gcRecord.finishedAt -= 31 * 86400000;
 writeFileSync(join(gcPath, 'file-gc'), 'dirty');
@@ -351,12 +351,12 @@ assert.ok(existsSync(gcPath));
 rmSync(join(gcPath, 'file-gc'));
 assert.equal(gcWorktrees(gcRecord, Date.now()), true, 'GC remove apenas limpo, antigo e integrado');
 assert.ok(!existsSync(gcPath));
-assert.equal(git('branch', '--list', 'mark/*'), '');
+assert.equal(git('branch', '--list', 'agent/*'), '');
 
 // Retoma remoção interrompida sem consultar status de um diretório inexistente.
 function cleanupFixture(name) {
   const worktree = join(root, name);
-  const branch = `mark/${name}`;
+  const branch = `agent/${name}`;
   git('worktree', 'add', '-b', branch, worktree, 'HEAD');
   return { ...isolatedRecord, tasks: [{ worktree, branch, sourceCwd: root, sourceBranch: 'main' }], finishedAt: Date.now() - 31 * 86400000 };
 }
@@ -404,7 +404,7 @@ for (const sourceBranch of [undefined, null]) {
 }
 
 const singleLog = join(root, 'single.log');
-runPi({ MARK_JUICE_PILOT_MODE: 'complex', FG_WRITE: singleLog, FG_KEEPALIVE: '4' });
+runPi({ AGENT_JUICE_PILOT_MODE: 'complex', FG_WRITE: singleLog, FG_KEEPALIVE: '4' });
 assert.equal(resolve(JSON.parse(readFileSync(singleLog, 'utf8').trim()).cwd).replace(/^\/private/, ''), root.replace(/^\/private/, ''), 'single mantém cwd');
 console.log('ok worktrees: isolamento paralelo, origem limpa, integração explícita e single intacto');
 rmSync(root, { recursive: true, force: true });

@@ -1,6 +1,6 @@
 /**
- * MARK II: artefato imutável, configuração declarativa e lançamento da release física.
- * v2 empacota somente mark/ (sem runtime nativo).
+ * Agent: artefato imutável, configuração declarativa e lançamento da release física.
+ * v2 empacota somente agent/ (sem runtime nativo).
  * v1 continua validando seu broker e lançando o preload/entrada que declara para rollback.
  * O digest vincula conteúdo, plataforma e par Pi; nunca segue current durante a sessão.
  */
@@ -23,16 +23,16 @@ import { homedir } from "node:os";
 import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 
-export const MARK_II_DIR = "mark-ii";
+export const AGENT_RUNTIME_DIR = "runtime";
 export const RELEASES_SUBDIR = "releases";
 export const BUILD_CACHE_SUBDIR = "build-cache";
 export const CONFIG_FILE = "config.json";
 export const MANIFEST_FILE = "manifest.json";
-/** Árvore vendorizada dentro do artefato: `markRoot = artifactRoot/mark`. */
-export const MARK_SUBDIR = "mark";
+/** Árvore vendorizada dentro do artefato: `agentRoot = artifactRoot/agent`. */
+export const AGENT_SUBDIR = "agent";
 const LEGACY_NATIVE_DIR = "broker";
 const LEGACY_NATIVE_NAME = process.platform === "win32" ? "mark-juice.exe" : "mark-juice";
-/** Preload do gate de contabilização, relativo a `markRoot`. */
+/** Preload do gate de contabilização, relativo a `agentRoot`. */
 export const RUNTIME_PRELOAD = "juice/runtime.mjs";
 /** Classic CLI and its shared ModelRuntime module. */
 export const PI_ENTRY = "dist/cli.js";
@@ -43,16 +43,16 @@ export const PI_RUNTIME_MODULE = "dist/core/model-runtime.js";
 export const LEDGER_FILE = "run.v3.json";
 export const CONFIG_VERSION = 1;
 export const ARTIFACT_VERSION = 2;
-export const DISABLE_ENV = "MARK_II_DISABLED";
+export const DISABLE_ENV = "AGENT_DISABLED";
 /** Chaves que o launcher escreve. Qualquer outra do ambiente real passa intacta. */
 export const MANAGED_ENV_KEYS = [
-	"MARK_JUICE_ENABLED",
-	"MARK_JUICE_BIN",
-	"MARK_JUICE_HOME",
-	"MARK_JUICE_STATE",
-	"MARK_JUICE_PI_ROOT",
-	"MARK_JUICE_PI_ENTRY",
-	"MARK_II_ARTIFACT",
+	"AGENT_JUICE_ENABLED",
+	"AGENT_JUICE_BIN",
+	"AGENT_JUICE_HOME",
+	"AGENT_JUICE_STATE",
+	"AGENT_JUICE_PI_ROOT",
+	"AGENT_JUICE_PI_ENTRY",
+	"AGENT_ARTIFACT",
 	"NODE_OPTIONS",
 ];
 const CONFIG_KEYS = new Set(["version", "enabled", "artifactId", "piRoot", "juiceHome", "resourceReceipt"]);
@@ -61,7 +61,7 @@ const ignoredTreeEntries = new Set([".DS_Store", "node_modules", "__pycache__", 
 const isWindows = process.platform === "win32";
 
 function fail(message) {
-	throw new Error(`MARK II: ${message}`);
+	throw new Error(`Agent: ${message}`);
 }
 
 /** Caminho absoluto, sem `..`, sem `~`: o que pode entrar num manifesto ou numa config. */
@@ -110,23 +110,23 @@ function requireRegularFile(path, label) {
 }
 
 export function defaultStore() {
-	return process.env.PI_OVERLAY_STORE ? resolve(process.env.PI_OVERLAY_STORE) : join(homedir(), ".local", "share", "pi-overlay");
+	return process.env.AGENT_STORE ? resolve(process.env.AGENT_STORE) : join(homedir(), ".local", "share", "agent");
 }
 
 function storeRoot(store) {
 	return requirePlainAbsolute(typeof store === "string" ? resolve(store) : store, "store");
 }
 
-export function markIIRoot(store) {
-	return join(storeRoot(store), MARK_II_DIR);
+export function agentRuntimeRoot(store) {
+	return join(storeRoot(store), AGENT_RUNTIME_DIR);
 }
 
-export function markIIConfigPath(store) {
-	return join(markIIRoot(store), CONFIG_FILE);
+export function agentConfigPath(store) {
+	return join(agentRuntimeRoot(store), CONFIG_FILE);
 }
 
-export function markIIReleasesDir(store) {
-	return join(markIIRoot(store), RELEASES_SUBDIR);
+export function agentReleasesDir(store) {
+	return join(agentRuntimeRoot(store), RELEASES_SUBDIR);
 }
 
 // ---------------------------------------------------------------------------- broker
@@ -190,7 +190,7 @@ function sha256File(path) {
 	return createHash("sha256").update(readFileSync(path)).digest("hex");
 }
 
-/** Arquivos da árvore `mark/` do artefato: `{ "juice/runtime.mjs": "x<sha>" | "-<sha>" }`. */
+/** Arquivos da árvore `agent/` do artefato: `{ "juice/runtime.mjs": "x<sha>" | "-<sha>" }`. */
 function hashTree(root) {
 	const files = {};
 	const walk = (relative) => {
@@ -206,13 +206,13 @@ function hashTree(root) {
 		}
 	};
 	walk("");
-	if (Object.keys(files).length === 0) fail(`a árvore mark/ do artefato está vazia: ${root}`);
+	if (Object.keys(files).length === 0) fail(`a árvore agent/ do artefato está vazia: ${root}`);
 	return files;
 }
 
 function artifactDigest({ files, broker, piRoot, piEntry, version = ARTIFACT_VERSION }) {
 	const hash = createHash("sha256");
-	hash.update(`mark-ii-artifact v${version}\0${process.platform}\0${process.arch}\0${piRoot}\0${piEntry}\0`);
+	hash.update(`agent-artifact v${version}\0${process.platform}\0${process.arch}\0${piRoot}\0${piEntry}\0`);
 	if (version === 1) hash.update(`broker\0${broker}\0`);
 	for (const [relative, value] of Object.entries(files).sort((a, b) => (a[0] < b[0] ? -1 : 1))) {
 		hash.update(`F ${relative}\0${value}\0`);
@@ -233,7 +233,7 @@ function requirePiRoot(piRoot, piEntry = PI_ENTRY) {
 	const root = requirePhysical(typeof piRoot === "string" ? resolve(piRoot) : piRoot, "piRoot");
 	for (const relative of piEntry === PI_ENTRY ? [piEntry, PI_RUNTIME_MODULE] : [piEntry]) {
 		if (!existsSync(join(root, relative))) {
-			fail(`piRoot ${root} não tem ${relative}: o MARK II exige o CLI clássico e ModelRuntime`);
+			fail(`piRoot ${root} não tem ${relative}: o Agent exige o CLI clássico e ModelRuntime`);
 		}
 		const file = join(root, relative);
 		requireRegularFile(file, "entrada do Pi");
@@ -245,37 +245,37 @@ function requirePiRoot(piRoot, piEntry = PI_ENTRY) {
 // ---------------------------------------------------------------------------- artefato
 
 /**
- * Prepara (ou reaproveita) o artefato do par Pi+MARK II. Não toca em configuração, ledger,
- * settings nem no launcher ativo: só escreve sob `<store>/mark-ii/releases`.
+ * Prepara (ou reaproveita) o artefato do par Pi+Agent. Não toca em configuração, ledger,
+ * settings nem no launcher ativo: só escreve sob `<store>/runtime/releases`.
  */
-export function prepareMarkIIArtifact({ sourceRoot, store, piRoot, log = console.log } = {}) {
+export function prepareAgentArtifact({ sourceRoot, store, piRoot, log = console.log } = {}) {
 	const source = requireDirectory(typeof sourceRoot === "string" ? resolve(sourceRoot) : sourceRoot, "sourceRoot");
-	const markSource = requireDirectory(join(source, MARK_SUBDIR), "árvore mark/ de origem");
-	if (!existsSync(join(markSource, RUNTIME_PRELOAD))) {
-		fail(`a árvore de origem não tem ${MARK_SUBDIR}/${RUNTIME_PRELOAD}; sem o preload não há contabilização`);
+	const agentSource = requireDirectory(join(source, AGENT_SUBDIR), "árvore agent/ de origem");
+	if (!existsSync(join(agentSource, RUNTIME_PRELOAD))) {
+		fail(`a árvore de origem não tem ${AGENT_SUBDIR}/${RUNTIME_PRELOAD}; sem o preload não há contabilização`);
 	}
 	const root = storeRoot(store);
 	const pi = requirePiRoot(piRoot);
-	const releasesDir = join(markIIRoot(root), RELEASES_SUBDIR);
+	const releasesDir = join(agentRuntimeRoot(root), RELEASES_SUBDIR);
 	mkdirSync(releasesDir, { recursive: true });
 
 	const stage = join(releasesDir, `.stage-${process.pid}-${Date.now().toString(36)}`);
 	rmSync(stage, { recursive: true, force: true });
 	try {
 		mkdirSync(stage, { recursive: true });
-		cpSync(markSource, join(stage, MARK_SUBDIR), {
+		cpSync(agentSource, join(stage, AGENT_SUBDIR), {
 			recursive: true,
 			dereference: true,
 			filter: (path) => !ignoredTreeEntries.has(basename(path)),
 		});
-		const files = hashTree(join(stage, MARK_SUBDIR));
+		const files = hashTree(join(stage, AGENT_SUBDIR));
 		const artifactId = artifactDigest({ files, piRoot: pi, piEntry: PI_ENTRY });
 		const artifactRoot = join(releasesDir, artifactId);
 
 		if (existsSync(artifactRoot)) {
 			try {
-				const reused = validateMarkIIArtifact({ store: root, artifactId, piRoot: pi });
-				log(`MARK II: artefato ${artifactId.slice(0, 12)} já instalado e válido (${artifactRoot})`);
+				const reused = validateAgentArtifact({ store: root, artifactId, piRoot: pi });
+				log(`Agent: artefato ${artifactId.slice(0, 12)} já instalado e válido (${artifactRoot})`);
 				return reused;
 			} catch (error) {
 				fail(`artefato ${artifactId.slice(0, 12)} existente inválido (${error.message}); preservado para não remover arquivos de sessões abertas. Repare explicitamente ou prepare conteúdo novo.`);
@@ -290,16 +290,16 @@ export function prepareMarkIIArtifact({ sourceRoot, store, piRoot, log = console
 			arch: process.arch,
 			piRoot: pi,
 			piEntry: PI_ENTRY,
-			markSubdir: MARK_SUBDIR,
-			runtimePreload: `${MARK_SUBDIR}/${RUNTIME_PRELOAD}`,
+			agentSubdir: AGENT_SUBDIR,
+			runtimePreload: `${AGENT_SUBDIR}/${RUNTIME_PRELOAD}`,
 			files,
 		};
 		writeFileSync(join(stage, MANIFEST_FILE), `${JSON.stringify(manifest, null, 2)}\n`);
 		chmodSync(join(stage, MANIFEST_FILE), 0o444);
-		freezeTree(join(stage, MARK_SUBDIR));
+		freezeTree(join(stage, AGENT_SUBDIR));
 		renameSync(stage, artifactRoot);
-		log(`MARK II: artefato ${artifactId.slice(0, 12)} preparado em ${artifactRoot}`);
-		return validateMarkIIArtifact({ store: root, artifactId, piRoot: pi });
+		log(`Agent: artefato ${artifactId.slice(0, 12)} preparado em ${artifactRoot}`);
+		return validateAgentArtifact({ store: root, artifactId, piRoot: pi });
 	} finally {
 		rmSync(stage, { recursive: true, force: true });
 	}
@@ -309,12 +309,12 @@ export function prepareMarkIIArtifact({ sourceRoot, store, piRoot, log = console
  * Valida um artefato instalado e devolve os caminhos físicos dele. O nome do diretório é o digest
  * do conteúdo: qualquer alteração em arquivo, broker ou manifesto quebra a conferência.
  */
-export function validateMarkIIArtifact({ store, artifactId, piRoot } = {}) {
+export function validateAgentArtifact({ store, artifactId, piRoot } = {}) {
 	if (typeof artifactId !== "string" || !ARTIFACT_ID.test(artifactId)) {
 		fail(`artifactId inválido: ${JSON.stringify(artifactId)} (esperado digest sha256 em hex)`);
 	}
-	const releasesDir = join(markIIRoot(store), RELEASES_SUBDIR);
-	const releasesReal = requireDirectory(releasesDir, "diretório de releases do MARK II");
+	const releasesDir = join(agentRuntimeRoot(store), RELEASES_SUBDIR);
+	const releasesReal = requireDirectory(releasesDir, "diretório de releases do Agent");
 	const artifactRoot = join(releasesDir, artifactId);
 	let info;
 	try {
@@ -346,11 +346,11 @@ export function validateMarkIIArtifact({ store, artifactId, piRoot } = {}) {
 	// Entradas conhecidas são relativas e confinadas ao piRoot físico. A entrada declarada
 	// já participa do digest v1: aceitar o host histórico não muda a identidade do artefato.
 	if (![PI_ENTRY, DURABLE_PI_ENTRY].includes(manifest.piEntry)) fail(`entrada do Pi não suportada: ${manifest.piEntry}`);
-	if (manifest.runtimePreload !== `${MARK_SUBDIR}/${RUNTIME_PRELOAD}`) fail(`runtimePreload inesperado: ${manifest.runtimePreload}`);
+	if (manifest.runtimePreload !== `${AGENT_SUBDIR}/${RUNTIME_PRELOAD}`) fail(`runtimePreload inesperado: ${manifest.runtimePreload}`);
 
-	const markRoot = join(artifactReal, manifest.markSubdir === MARK_SUBDIR ? MARK_SUBDIR : fail(`markSubdir inesperado: ${manifest.markSubdir}`));
-	requireDirectory(markRoot, "árvore mark/ do artefato");
-	if (!existsSync(join(markRoot, RUNTIME_PRELOAD))) fail(`artefato sem ${MARK_SUBDIR}/${RUNTIME_PRELOAD}: ${markRoot}`);
+	const agentRoot = join(artifactReal, manifest.agentSubdir === AGENT_SUBDIR ? AGENT_SUBDIR : fail(`agentSubdir inesperado: ${manifest.agentSubdir}`));
+	requireDirectory(agentRoot, "árvore agent/ do artefato");
+	if (!existsSync(join(agentRoot, RUNTIME_PRELOAD))) fail(`artefato sem ${AGENT_SUBDIR}/${RUNTIME_PRELOAD}: ${agentRoot}`);
 	let brokerPath, brokerSha;
 	if (manifest.version === 1) {
 		brokerPath = join(artifactReal, LEGACY_NATIVE_DIR, LEGACY_NATIVE_NAME);
@@ -367,15 +367,15 @@ export function validateMarkIIArtifact({ store, artifactId, piRoot } = {}) {
 
 	} else if (manifest.broker !== undefined) fail("new artifacts cannot declare a native runtime");
 
-	const files = hashTree(markRoot);
+	const files = hashTree(agentRoot);
 	const declared = manifest.files;
 	if (!declared || typeof declared !== "object" || Array.isArray(declared)) fail(`manifesto sem mapa de arquivos: ${manifestPath}`);
 	for (const [relative, value] of Object.entries(files)) {
-		if (!(relative in declared)) fail(`arquivo não declarado no manifesto do artefato: ${MARK_SUBDIR}/${relative}`);
-		if (declared[relative] !== value) fail(`arquivo alterado no artefato: ${MARK_SUBDIR}/${relative}`);
+		if (!(relative in declared)) fail(`arquivo não declarado no manifesto do artefato: ${AGENT_SUBDIR}/${relative}`);
+		if (declared[relative] !== value) fail(`arquivo alterado no artefato: ${AGENT_SUBDIR}/${relative}`);
 	}
 	for (const relative of Object.keys(declared)) {
-		if (!(relative in files)) fail(`arquivo declarado no manifesto e ausente do artefato: ${MARK_SUBDIR}/${relative}`);
+		if (!(relative in files)) fail(`arquivo declarado no manifesto e ausente do artefato: ${AGENT_SUBDIR}/${relative}`);
 	}
 
 	const pi = requirePiRoot(manifest.piRoot, manifest.piEntry);
@@ -390,7 +390,7 @@ export function validateMarkIIArtifact({ store, artifactId, piRoot } = {}) {
 	return {
 		artifactId,
 		artifactRoot: artifactReal,
-		markRoot,
+		agentRoot,
 		brokerPath,
 		piRoot: pi,
 		piEntry: join(pi, manifest.piEntry),
@@ -427,8 +427,8 @@ function validateConfig(config, where) {
 }
 
 /** `null` quando não há opt-in nenhum; a config validada quando há; erro quando há e está ruim. */
-export function readMarkIIConfig(store) {
-	const path = markIIConfigPath(store);
+export function readAgentConfig(store) {
+	const path = agentConfigPath(store);
 	let info;
 	try {
 		info = lstatSync(path);
@@ -446,10 +446,10 @@ export function readMarkIIConfig(store) {
 }
 
 /** Escrita atômica da configuração validada. `resourceReceipt` do B é preservado como veio. */
-export function writeMarkIIConfig({ store, config } = {}) {
-	const path = markIIConfigPath(store);
+export function writeAgentConfig({ store, config } = {}) {
+	const path = agentConfigPath(store);
 	const normalized = validateConfig(config, path);
-	mkdirSync(markIIRoot(store), { recursive: true });
+	mkdirSync(agentRuntimeRoot(store), { recursive: true });
 	const temporary = `${path}.tmp-${process.pid}`;
 	rmSync(temporary, { force: true });
 	writeFileSync(temporary, `${JSON.stringify(normalized, null, 2)}\n`, { mode: 0o600 });
@@ -503,7 +503,7 @@ function mergeNodeOptions(value, preload, warnings) {
 			continue;
 		}
 		if (/^--(?:import|require|experimental-loader|loader)=.*juice[\\/]runtime\.mjs/.test(token)) {
-			warnings.push(`NODE_OPTIONS: preload de outro MARK II removido para não instalar dois gates (${token})`);
+			warnings.push(`NODE_OPTIONS: preload de outro Agent removido para não instalar dois gates (${token})`);
 			continue;
 		}
 		kept.push(token);
@@ -516,38 +516,38 @@ function mergeNodeOptions(value, preload, warnings) {
  * O que executar para esta sessão. `env` é o ambiente REAL do usuário e sai preservado: HOME,
  * USERPROFILE, XDG_*, PI_CODING_AGENT_DIR, PI_SYSTEM_DIR, modelos e thinking não são tocados.
  *
- * - opt-out (`MARK_II_DISABLED=1`) ou `enabled:false` → `mode:"legacy"`, sem nenhuma `MARK_JUICE_*`
+ * - opt-out (`AGENT_DISABLED=1`) ou `enabled:false` → `mode:"legacy"`, sem nenhuma `AGENT_JUICE_*`
  *   (ambiente herdado é limpo dessas chaves: sem contabilização fantasma).
- * - habilitado → `mode:"mark-ii"` com o par Pi+artefato validado, caminhos físicos e fixos.
+ * - habilitado → `mode:"agent"` com o par Pi+artefato validado, caminhos físicos e fixos.
  * - habilitado e algo quebrado → erro. Nunca lançar anunciando contabilização sem tê-la.
  */
-export function buildMarkIILaunch({ store, env = process.env, args = [] } = {}) {
+export function buildAgentLaunch({ store, env = process.env, args = [] } = {}) {
 	const root = storeRoot(store);
 	if (!Array.isArray(args) || args.some((arg) => typeof arg !== "string")) fail("args tem de ser um array de strings");
 	if (!env || typeof env !== "object") fail("env tem de ser um objeto");
-	const configPath = markIIConfigPath(root);
+	const configPath = agentConfigPath(root);
 	const passthrough = Object.fromEntries(Object.entries(env).filter(([, value]) => typeof value === "string"));
 	const legacy = (reason) => {
 		const cleaned = { ...passthrough };
 		const warnings = [];
 		// O preload lembra o valor nativo antes da curadoria. O caminho legado não
-		// carrega o preload, portanto restaura aqui antes de limpar as chaves Mark. Este caminho é o
+		// carrega o preload, portanto restaura aqui antes de limpar as chaves Agent. Este caminho é o
 		// escape do launcher: um snapshot ilegível vira aviso, nunca erro.
-		if (Object.hasOwn(cleaned, "MARK_JUICE_SKILLS_BEFORE")) {
+		if (Object.hasOwn(cleaned, "AGENT_JUICE_SKILLS_BEFORE")) {
 			let previous;
 			try {
-				previous = JSON.parse(cleaned.MARK_JUICE_SKILLS_BEFORE);
+				previous = JSON.parse(cleaned.AGENT_JUICE_SKILLS_BEFORE);
 				if (previous !== null && typeof previous !== "string") throw new Error("não é string nem null");
 			} catch (error) {
 				previous = undefined;
-				warnings.push(`MARK_JUICE_SKILLS_BEFORE ilegível (${error.message}): PI_AUTOMATIC_SKILLS mantido como veio`);
+				warnings.push(`AGENT_JUICE_SKILLS_BEFORE ilegível (${error.message}): PI_AUTOMATIC_SKILLS mantido como veio`);
 			}
 			if (previous === null) delete cleaned.PI_AUTOMATIC_SKILLS;
 			else if (previous !== undefined) cleaned.PI_AUTOMATIC_SKILLS = previous;
 		}
-		// Nenhuma MARK_JUICE_* herdada sobrevive ao caminho legado: um `pi` sem gate não pode
+		// Nenhuma AGENT_JUICE_* herdada sobrevive ao caminho legado: um `pi` sem gate não pode
 		// aparentar estar contabilizando.
-		for (const key of Object.keys(cleaned)) if (key.startsWith("MARK_JUICE_") || key === "MARK_II_ARTIFACT") delete cleaned[key];
+		for (const key of Object.keys(cleaned)) if (key.startsWith("AGENT_JUICE_") || key === "AGENT_ARTIFACT") delete cleaned[key];
 		cleaned.NODE_OPTIONS = mergeNodeOptionsLegacy(cleaned.NODE_OPTIONS, warnings);
 		if (cleaned.NODE_OPTIONS === "") delete cleaned.NODE_OPTIONS;
 		const pi = legacyPiCommand(root);
@@ -563,11 +563,11 @@ export function buildMarkIILaunch({ store, env = process.env, args = [] } = {}) 
 		};
 	};
 	if (env[DISABLE_ENV] === "1") return legacy(`${DISABLE_ENV}=1`);
-	const config = readMarkIIConfig(root);
-	if (!config) return legacy("sem configuração MARK II instalada");
+	const config = readAgentConfig(root);
+	if (!config) return legacy("sem configuração Agent instalada");
 	if (!config.enabled) return legacy(`${configPath} tem enabled:false`);
 
-	const artifact = validateMarkIIArtifact({ store: root, artifactId: config.artifactId, piRoot: config.piRoot });
+	const artifact = validateAgentArtifact({ store: root, artifactId: config.artifactId, piRoot: config.piRoot });
 	requirePhysical(config.piRoot, `"piRoot" de ${configPath}`);
 	const juiceHome = requireDirectory(config.juiceHome, `"juiceHome" de ${configPath}`);
 	const ledgerPath = join(juiceHome, artifact.brokerPath ? "run.json" : LEDGER_FILE);
@@ -576,26 +576,26 @@ export function buildMarkIILaunch({ store, env = process.env, args = [] } = {}) 
 	const nextEnv = { ...passthrough };
 	// Filho herdado de outra sessão criaria um run novo (ou exigiria um pai que não existe): este
 	// processo é o pai do run.
-	delete nextEnv.MARK_JUICE_CHILD;
-	nextEnv.MARK_JUICE_ENABLED = "1";
-	if (artifact.brokerPath) nextEnv.MARK_JUICE_BIN = artifact.brokerPath; // v1 rollback only
-	else delete nextEnv.MARK_JUICE_BIN;
-	nextEnv.MARK_JUICE_HOME = juiceHome;
-	nextEnv.MARK_JUICE_STATE = ledgerPath;
-	nextEnv.MARK_JUICE_PI_ROOT = artifact.piRoot;
+	delete nextEnv.AGENT_JUICE_CHILD;
+	nextEnv.AGENT_JUICE_ENABLED = "1";
+	if (artifact.brokerPath) nextEnv.AGENT_JUICE_BIN = artifact.brokerPath; // v1 rollback only
+	else delete nextEnv.AGENT_JUICE_BIN;
+	nextEnv.AGENT_JUICE_HOME = juiceHome;
+	nextEnv.AGENT_JUICE_STATE = ledgerPath;
+	nextEnv.AGENT_JUICE_PI_ROOT = artifact.piRoot;
 	if (artifact.manifest.piEntry === DURABLE_PI_ENTRY) {
-		nextEnv.MARK_JUICE_PI_ENTRY = "bundle";
+		nextEnv.AGENT_JUICE_PI_ENTRY = "bundle";
 	} else {
-		delete nextEnv.MARK_JUICE_PI_ENTRY;
+		delete nextEnv.AGENT_JUICE_PI_ENTRY;
 		nextEnv.PI_DURABLE_HOST = "0";
 	}
-	nextEnv.MARK_II_ARTIFACT = artifact.artifactId;
+	nextEnv.AGENT_ARTIFACT = artifact.artifactId;
 	// Cache Anthropic de 1 h: com o cache-keeper (ping a 90% do TTL) custa ~45% menos que 5 min
 	// nas pausas reais do Gabriel. Valor já definido pelo usuário (inclusive `none`) prevalece.
 	if (!nextEnv.PI_CACHE_RETENTION) nextEnv.PI_CACHE_RETENTION = "long";
 	nextEnv.NODE_OPTIONS = mergeNodeOptions(passthrough.NODE_OPTIONS, preload, warnings);
 	return {
-		mode: "mark-ii",
+		mode: "agent",
 		reason: `${configPath} habilitado`,
 		store: root,
 		configPath,
@@ -604,7 +604,7 @@ export function buildMarkIILaunch({ store, env = process.env, args = [] } = {}) 
 		env: nextEnv,
 		artifactId: artifact.artifactId,
 		artifactRoot: artifact.artifactRoot,
-		markRoot: artifact.markRoot,
+		agentRoot: artifact.agentRoot,
 		brokerPath: artifact.brokerPath,
 		piRoot: artifact.piRoot,
 		piEntry: artifact.piEntry,
@@ -617,13 +617,13 @@ export function buildMarkIILaunch({ store, env = process.env, args = [] } = {}) 
 	};
 }
 
-/** No caminho legado o preload de um MARK II herdado também sai: ele importaria o gate sem env. */
+/** No caminho legado o preload de um Agent herdado também sai: ele importaria o gate sem env. */
 function mergeNodeOptionsLegacy(value, warnings) {
 	const tokens = typeof value === "string" ? value.split(/\s+/).filter(Boolean) : [];
 	const kept = [];
 	for (const token of tokens) {
 		if (/^--(?:import|require|experimental-loader|loader)=.*juice[\\/]runtime\.mjs/.test(token)) {
-			warnings.push(`NODE_OPTIONS: preload do MARK II removido no caminho legado (${token})`);
+			warnings.push(`NODE_OPTIONS: preload do Agent removido no caminho legado (${token})`);
 			continue;
 		}
 		kept.push(token);
@@ -632,9 +632,9 @@ function mergeNodeOptionsLegacy(value, warnings) {
 }
 
 /** Caminhos que o store usa, para o updater e os testes falarem a mesma língua. */
-export const markIIPaths = (store) => ({
-	root: markIIRoot(store),
-	config: markIIConfigPath(store),
-	releases: markIIReleasesDir(store),
-	buildCache: join(markIIRoot(store), BUILD_CACHE_SUBDIR),
+export const agentPaths = (store) => ({
+	root: agentRuntimeRoot(store),
+	config: agentConfigPath(store),
+	releases: agentReleasesDir(store),
+	buildCache: join(agentRuntimeRoot(store), BUILD_CACHE_SUBDIR),
 });

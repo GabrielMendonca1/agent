@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-OVERLAY_REPO=${PI_OVERLAY_REPO:-__OVERLAY_REPO__}
-STORE=${PI_OVERLAY_STORE:-$HOME/.local/share/pi-overlay}
-UPDATER="$OVERLAY_REPO/scripts/pi-overlay-update.mjs"
+OVERLAY_REPO=${AGENT_REPO:-__OVERLAY_REPO__}
+STORE=${AGENT_STORE:-$HOME/.local/share/agent}
+UPDATER="$OVERLAY_REPO/scripts/agent-update.mjs"
 ACTIVE_PI="$STORE/current/bin/pi"
-MARK_II_CONFIG="$STORE/mark-ii/config.json"
-MARK_II_LAUNCHER="$OVERLAY_REPO/scripts/mark-ii-launch.mjs"
+AGENT_CONFIG="$STORE/runtime/config.json"
+AGENT_LAUNCHER="$OVERLAY_REPO/scripts/agent-launch.mjs"
 
 case "${1:-}" in
   overlay-update)
@@ -59,17 +59,17 @@ case "${1:-}" in
     ;;
 esac
 
-# Caminho normal (as rotas de manutenção acima já saíram por exec): o MARK II entra aqui, e só
+# Caminho normal (as rotas de manutenção acima já saíram por exec): o Agent entra aqui, e só
 # quando houve opt-in explícito. Sem config, nada muda em relação ao comportamento anterior.
-# MARK_II_DISABLED=1 é o escape documentado; o launcher é quem valida artefato/broker/config e
+# AGENT_DISABLED=1 é o escape documentado; o launcher é quem valida artefato/broker/config e
 # falha fechado — um `pi` que anuncia contabilização sem tê-la seria pior do que um que não abre.
-if [ "${MARK_II_DISABLED:-}" != "1" ] && [ -f "$MARK_II_CONFIG" ]; then
-  if [ ! -f "$MARK_II_LAUNCHER" ]; then
-    echo "MARK II está habilitado em $MARK_II_CONFIG, mas $MARK_II_LAUNCHER não existe neste bundle." >&2
-    echo "Reinstale o overlay (node $UPDATER) ou rode sem MARK II: MARK_II_DISABLED=1 pi" >&2
+if [ "${AGENT_DISABLED:-}" != "1" ] && [ -f "$AGENT_CONFIG" ]; then
+  if [ ! -f "$AGENT_LAUNCHER" ]; then
+    echo "Agent está habilitado em $AGENT_CONFIG, mas $AGENT_LAUNCHER não existe neste bundle." >&2
+    echo "Reinstale o overlay (node $UPDATER) ou rode sem Agent: AGENT_DISABLED=1 agent" >&2
     exit 1
   fi
-  exec node "$MARK_II_LAUNCHER" --store "$STORE" -- "$@"
+  exec node "$AGENT_LAUNCHER" --store "$STORE" -- "$@"
 fi
 
 if [ ! -x "$ACTIVE_PI" ]; then

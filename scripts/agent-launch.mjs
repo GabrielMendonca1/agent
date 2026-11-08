@@ -1,10 +1,10 @@
 #!/usr/bin/env node
 /**
- * Launcher gerenciado do MARK II. O wrapper do overlay chama este script no caminho normal (nunca
+ * Launcher gerenciado do Agent. O wrapper do overlay chama este script no caminho normal (nunca
  * nas rotas de manutenção) e ele decide, uma única vez por processo, o que executar:
  *
- *   pi <args>  ->  node <release física>/dist/bundle/cli.js <args>  com MARK_JUICE_* do artefato
- *   opt-out    ->  <store>/current/bin/pi <args>                    sem nenhuma MARK_JUICE_*
+ *   pi <args>  ->  node <release física>/dist/bundle/cli.js <args>  com AGENT_JUICE_* do artefato
+ *   opt-out    ->  <store>/current/bin/pi <args>                    sem nenhuma AGENT_JUICE_*
  *
  * Não existe fallback silencioso: configuração inválida, artefato alterado, broker de outra
  * arquitetura ou `piRoot` mutável abortam com diagnóstico e código 70. Um `pi` que anuncia
@@ -13,13 +13,13 @@
  * O filho recebe o ambiente REAL (HOME, agent dir, modelos, thinking, NODE_OPTIONS do usuário
  * preservados), herda stdio e os sinais do terminal; o código de saída é propagado tal e qual.
  *
- *   node scripts/mark-ii-launch.mjs [--store <abs>] [--print-spec] [--] [args do pi...]
+ *   node scripts/agent-launch.mjs [--store <abs>] [--print-spec] [--] [args do pi...]
  */
 import { spawn } from "node:child_process";
-import { buildMarkIILaunch, defaultStore, DISABLE_ENV, MANAGED_ENV_KEYS } from "./lib/mark-ii-runtime.mjs";
+import { buildAgentLaunch, defaultStore, DISABLE_ENV, MANAGED_ENV_KEYS } from "./lib/agent-runtime.mjs";
 
 const FORWARDED_SIGNALS = ["SIGINT", "SIGTERM", "SIGHUP", "SIGQUIT", "SIGUSR1", "SIGUSR2"];
-const USAGE = `usage: mark-ii-launch [--store <abs>] [--print-spec] [--] [pi args...]\n  ${DISABLE_ENV}=1 lança o Pi legado, sem MARK II.`;
+const USAGE = `usage: agent-launch [--store <abs>] [--print-spec] [--] [pi args...]\n  ${DISABLE_ENV}=1 lança o Pi legado, sem Agent.`;
 
 function parseArgs(argv) {
 	const parsed = { store: undefined, printSpec: false, args: [] };
@@ -61,30 +61,30 @@ try {
 	const parsed = parseArgs(process.argv.slice(2));
 	launchStore = parsed.store ?? defaultStore();
 	launchArgs = parsed.args;
-	spec = buildMarkIILaunch({
+	spec = buildAgentLaunch({
 		store: launchStore,
 		env: process.env,
 		args: parsed.args,
 	});
 	if (parsed.printSpec) {
 		// Diagnóstico não pode despejar tokens/credenciais herdados no ambiente.
-		const visible = new Set([...MANAGED_ENV_KEYS, "MARK_II_ARTIFACT", "HOME", "USERPROFILE", "PI_CODING_AGENT_DIR", "PI_SYSTEM_DIR", "XDG_CONFIG_HOME", "XDG_DATA_HOME", "XDG_CACHE_HOME", "PATH", "TMPDIR", "PI_ACCOUNTS_MIRROR", "PI_OFFLINE", "ORCA_BACKGROUND_LAUNCH", "MARK_LEARN", "MARK_DISPATCHER"]);
+		const visible = new Set([...MANAGED_ENV_KEYS, "AGENT_ARTIFACT", "HOME", "USERPROFILE", "PI_CODING_AGENT_DIR", "PI_SYSTEM_DIR", "XDG_CONFIG_HOME", "XDG_DATA_HOME", "XDG_CACHE_HOME", "PATH", "TMPDIR", "PI_ACCOUNTS_MIRROR", "PI_OFFLINE", "ORCA_BACKGROUND_LAUNCH", "AGENT_LEARN", "AGENT_DISPATCHER"]);
 		const env = Object.fromEntries(Object.entries(spec.env).filter(([key]) => visible.has(key)));
 		process.stdout.write(`${JSON.stringify({ ...spec, env }, null, 2)}\n`);
 		process.exit(0);
 	}
 } catch (error) {
 	process.stderr.write(`${error.message}\n`);
-	process.stderr.write(`O Pi não foi iniciado. Para abrir o Pi sem MARK II: ${DISABLE_ENV}=1 pi\n`);
+	process.stderr.write(`O Pi não foi iniciado. Para abrir o Pi sem Agent: ${DISABLE_ENV}=1 agent\n`);
 	// 70 (EX_SOFTWARE): falha deste launcher, nunca confundível com um exit do Pi.
 	process.exit(70);
 }
 
-for (const warning of spec.warnings) process.stderr.write(`MARK II: ${warning}\n`);
+for (const warning of spec.warnings) process.stderr.write(`Agent: ${warning}\n`);
 
 // Aviso de checkout à frente da instalação: uma linha em stderr, só em sessão interativa, só git
-// local com cache de 1h. Só neste launcher (Mark II) de propósito: o caminho legado não paga um
-// node extra na abertura; quem o usa consulta `pi overlay-status`. Qualquer falha (inclusive o helper ausente num bundle antigo) é silêncio.
+// local com cache de 1h. Só neste launcher (Agent) de propósito: o caminho legado não paga um
+// node extra na abertura; quem o usa consulta `agent overlay-status`. Qualquer falha (inclusive o helper ausente num bundle antigo) é silêncio.
 try {
 	const { maybeStaleNotice } = await import("./lib/overlay-stale.mjs");
 	maybeStaleNotice({ store: launchStore, env: process.env, args: launchArgs });
@@ -114,7 +114,7 @@ for (const [signal, handler] of handlers) {
 }
 
 child.on("error", (error) => {
-	process.stderr.write(`MARK II: não deu para executar ${spec.command}: ${error.message}\n`);
+	process.stderr.write(`Agent: não deu para executar ${spec.command}: ${error.message}\n`);
 	process.exit(70);
 });
 child.on("exit", (code, signal) => {

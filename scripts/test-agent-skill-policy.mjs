@@ -5,9 +5,9 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'nod
 import { homedir, tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
-import * as policy from '../mark/juice/skill-policy.mjs';
-const root = process.env.MARK_JUICE_PI_ROOT || join(homedir(), '.local/share/pi-overlay/current/lib/node_modules/@earendil-works/pi-coding-agent');
-const dir = mkdtempSync(join(tmpdir(), 'mark-skill-policy-'));
+import * as policy from '../agent/juice/skill-policy.mjs';
+const root = process.env.AGENT_JUICE_PI_ROOT || join(homedir(), '.local/share/agent/current/lib/node_modules/@earendil-works/pi-coding-agent');
+const dir = mkdtempSync(join(tmpdir(), 'agent-skill-policy-'));
 const savedEnv = { ...process.env };
 const names = ['peers', 'megamind', 'prometheus', 'tasks', 'diagram', 'arca-ops', 'omni-ops', 'goal', 'grill', 'cua', 'debug', 'tdd', 'pr', 'handoff', 'sources', 'html-plan', 'ui-review', 'pessoal'];
 try {

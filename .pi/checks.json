@@ -15,14 +15,7 @@
       ]
     },
     {
-      "name": "extensions-patch",
-      "cmd": "node scripts/test-regen-extensions-patch.mjs",
-      "tags": [
-        "fast"
-      ]
-    },
-    {
-      "name": "mark-skills",
+      "name": "agent-skills",
       "cmd": "node scripts/test-skills.mjs",
       "tags": [
         "fast"
@@ -55,19 +48,19 @@
       ]
     },
     {
-      "name": "mark-web",
-      "cmd": "node scripts/test-mark-web.mjs",
+      "name": "agent-web",
+      "cmd": "node scripts/test-agent-web.mjs",
       "tags": ["fast"]
     },
     {
-      "name": "mark-setup",
-      "cmd": "node scripts/test-mark-setup.mjs",
+      "name": "agent-setup",
+      "cmd": "node scripts/test-agent-setup.mjs",
       "tags": [
         "fast"
       ]
     },
     {
-      "name": "mark-extensions",
+      "name": "agent-extensions",
       "cmd": "node scripts/test-extensions.mjs",
       "tags": [
         "fast"
@@ -81,8 +74,8 @@
       ]
     },
     {
-      "name": "mark-startup",
-      "cmd": "node scripts/test-mark-startup.mjs",
+      "name": "agent-startup",
+      "cmd": "node scripts/test-agent-startup.mjs",
       "tags": ["integration", "slow"]
     },
     {
@@ -110,8 +103,8 @@
       ]
     },
     {
-      "name": "mark-sessions",
-      "cmd": "node scripts/test-mark-sessions.mjs",
+      "name": "agent-sessions",
+      "cmd": "node scripts/test-agent-sessions.mjs",
       "tags": [
         "integration"
       ]
@@ -131,8 +124,8 @@
       ]
     },
     {
-      "name": "mark-mine",
-      "cmd": "node scripts/test-mark-mine.mjs",
+      "name": "agent-mine",
+      "cmd": "node scripts/test-agent-mine.mjs",
       "tags": [
         "fast"
       ]
@@ -143,8 +136,8 @@
       "tags": ["integration", "slow"]
     },
     {
-      "name": "mark-learn",
-      "cmd": "node scripts/test-mark-learn.mjs",
+      "name": "agent-learn",
+      "cmd": "node scripts/test-agent-learn.mjs",
       "tags": [
         "fast"
       ]
@@ -162,69 +155,69 @@
       "tags": ["slow"]
     },
     {
-      "name": "mark-child-env",
-      "cmd": "node scripts/test-mark-child-env.mjs",
+      "name": "agent-child-env",
+      "cmd": "node scripts/test-agent-child-env.mjs",
       "tags": [
         "fast"
       ]
     },
     {
-      "name": "mark-tui",
-      "cmd": "node scripts/test-mark-tui.mjs",
+      "name": "agent-tui",
+      "cmd": "node scripts/test-agent-tui.mjs",
       "tags": ["integration", "slow"]
     },
     {
-      "name": "mark-theme-mode",
-      "cmd": "node scripts/test-mark-theme-mode.mjs",
+      "name": "agent-theme-mode",
+      "cmd": "node scripts/test-agent-theme-mode.mjs",
       "tags": ["integration", "tui"]
     },
     {
-      "name": "mark-host",
-      "cmd": "node scripts/test-mark-host.mjs",
+      "name": "agent-host",
+      "cmd": "node scripts/test-agent-host.mjs",
       "tags": [
         "fast"
       ]
     },
     {
-      "name": "mark-ii-runtime",
-      "cmd": "node scripts/test-mark-ii-runtime.mjs",
-      "tags": ["integration", "mark-ii"],
+      "name": "agent-runtime",
+      "cmd": "node scripts/test-agent-runtime.mjs",
+      "tags": ["integration", "agent"],
       "timeoutMs": 180000
     },
     {
-      "name": "mark-ii-resources",
-      "cmd": "node scripts/test-mark-ii-resources.mjs",
-      "tags": ["integration", "mark-ii", "slow"]
+      "name": "agent-resources",
+      "cmd": "node scripts/test-agent-resources.mjs",
+      "tags": ["integration", "runtime", "slow"]
     },
     {
-      "name": "mark-ii-installed",
-      "cmd": "node scripts/test-mark-ii-installed.mjs",
-      "tags": ["integration", "mark-ii"],
+      "name": "agent-installed",
+      "cmd": "node scripts/test-agent-installed.mjs",
+      "tags": ["integration", "agent"],
       "timeoutMs": 240000
     },
     {
-      "name": "mark-notes",
-      "cmd": "node scripts/test-mark-notes.mjs",
-      "tags": ["fast", "mark-ii"]
+      "name": "agent-notes",
+      "cmd": "node scripts/test-agent-notes.mjs",
+      "tags": ["fast", "agent"]
     },
     {
-      "name": "mark-skill-policy",
-      "cmd": "node scripts/test-mark-skill-policy.mjs",
-      "tags": ["fast", "mark-ii"]
+      "name": "agent-skill-policy",
+      "cmd": "node scripts/test-agent-skill-policy.mjs",
+      "tags": ["fast", "agent"]
     },
     {
-      "name": "mark-skill-picker",
-      "cmd": "node scripts/test-mark-skill-picker.mjs",
-      "tags": ["fast", "mark-ii"]
+      "name": "agent-skill-picker",
+      "cmd": "node scripts/test-agent-skill-picker.mjs",
+      "tags": ["fast", "agent"]
     },
     {
-      "name": "mark-editor-chrome",
-      "cmd": "node scripts/test-mark-editor-chrome.mjs",
+      "name": "agent-editor-chrome",
+      "cmd": "node scripts/test-agent-editor-chrome.mjs",
       "tags": ["fast"]
     },
     {
-      "name": "mark-header-hints",
-      "cmd": "node scripts/test-mark-header-hints.mjs",
+      "name": "agent-header-hints",
+      "cmd": "node scripts/test-agent-header-hints.mjs",
       "tags": ["fast"]
     },
     {
@@ -233,24 +226,24 @@
       "tags": ["fast"]
     },
     {
-      "name": "mark-model-roles",
-      "cmd": "node scripts/test-mark-model-roles.mjs",
-      "tags": ["fast", "mark-ii"]
+      "name": "agent-model-roles",
+      "cmd": "node scripts/test-agent-model-roles.mjs",
+      "tags": ["fast", "agent"]
     },
     {
-      "name": "mark-compaction",
-      "cmd": "node scripts/test-mark-compaction.mjs",
-      "tags": ["fast", "mark-ii"]
+      "name": "agent-compaction",
+      "cmd": "node scripts/test-agent-compaction.mjs",
+      "tags": ["fast", "agent"]
     },
     {
-      "name": "mark-media",
-      "cmd": "node scripts/test-mark-media.mjs",
-      "tags": ["integration", "mark-ii"],
+      "name": "agent-media",
+      "cmd": "node scripts/test-agent-media.mjs",
+      "tags": ["integration", "agent"],
       "timeoutMs": 240000
     },
     {
-      "name": "mark-headless",
-      "cmd": "node scripts/test-mark-headless.mjs",
+      "name": "agent-headless",
+      "cmd": "node scripts/test-agent-headless.mjs",
       "tags": ["fast"]
     },
     {

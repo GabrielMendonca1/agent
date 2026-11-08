@@ -10,7 +10,7 @@ import { spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
-export const STALE_NOTICE_ENV = "PI_OVERLAY_STALE_NOTICE";
+export const STALE_NOTICE_ENV = "AGENT_STALE_NOTICE";
 export const STALE_CACHE_FILE = "stale-notice.json";
 export const STALE_CACHE_TTL_MS = 60 * 60 * 1000;
 export const STALE_GIT_TIMEOUT_MS = 300;
@@ -57,10 +57,10 @@ export function commitsAhead(sourceRepo, sourceCommit, timeoutMs = 2000) {
 	return count !== undefined && /^\d+$/.test(count) ? Number(count) : undefined;
 }
 
-/** O `pi overlay-update` instalado roda o updater do bundle; quem atualiza é o updater do checkout. */
+/** O `agent overlay-update` instalado roda o updater do bundle; quem atualiza é o updater do checkout. */
 export function staleNoticeText(ahead, sourceRepo) {
-	const updater = sourceRepo ? `node ${join(sourceRepo, "scripts", "pi-overlay-update.mjs")}` : "pi overlay-status";
-	return `↑ mark-pi: checkout ${ahead} commit${ahead === 1 ? "" : "s"} ahead of the install · ${updater}`;
+	const updater = sourceRepo ? `node ${join(sourceRepo, "scripts", "agent-update.mjs")}` : "agent overlay-status";
+	return `↑ agent: checkout ${ahead} commit${ahead === 1 ? "" : "s"} ahead of the install · ${updater}`;
 }
 
 function readCache(file) {

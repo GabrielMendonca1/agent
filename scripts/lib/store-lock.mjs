@@ -112,7 +112,7 @@ function reclaimStale(store, file) {
  * Toma o lock do store. Devolve `{ release() }`.
  * Lança com mensagem acionável se outro processo vivo estiver com ele.
  */
-export function acquireStoreLock(store, { holder = "pi-overlay-update", now = Date.now } = {}) {
+export function acquireStoreLock(store, { holder = "agent-update", now = Date.now } = {}) {
 	mkdirSync(store, { recursive: true });
 	const file = lockPath(store);
 	// O nonce identifica ESTA aquisição: pid sozinho não distingue duas aquisições no mesmo processo

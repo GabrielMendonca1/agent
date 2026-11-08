@@ -8,7 +8,7 @@ import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const repo = resolve(dirname(fileURLToPath(import.meta.url)), '..');
-const store = process.env.PI_OVERLAY_STORE ? resolve(process.env.PI_OVERLAY_STORE) : join(homedir(), '.local/share/pi-overlay');
+const store = process.env.AGENT_STORE ? resolve(process.env.AGENT_STORE) : join(homedir(), '.local/share/agent');
 function findPiRoot() {
   const rel = 'lib/node_modules/@earendil-works/pi-coding-agent';
   const cur = join(store, 'current', rel);
@@ -29,7 +29,7 @@ const jiti = createJiti(import.meta.url, { fsCache: false, moduleCache: true, al
   '@earendil-works/pi-tui': dep('@earendil-works/pi-tui'),
   typebox: join(piRoot, 'node_modules/typebox/build/index.mjs'),
 } });
-const { MarkEditor } = await jiti.import(join(repo, 'mark/extensions/mark/tui/editor.ts'));
+const { AgentEditor } = await jiti.import(join(repo, 'agent/extensions/agent/tui/editor.ts'));
 const { CustomEditor } = await jiti.import(join(piRoot, 'dist/index.js'));
 const { visibleWidth } = await jiti.import(dep('@earendil-works/pi-tui'));
 const theme = { fg: (_c, t) => t, borderColor: t => t, selectList: { selectedBg: t => t } };
@@ -37,7 +37,7 @@ const tui = { terminal: { rows: 45 }, requestRender() {} };
 const keys = { matches: (data, action) => (action === 'tui.editor.cursorDown' && data === '\x1b[B') || (action === 'app.interrupt' && data === '\x1b') };
 const native = new CustomEditor(tui, theme, keys);
 let focus = 0;
-const editor = new MarkEditor(tui, theme, keys, r => { focus++; r.handled = true; });
+const editor = new AgentEditor(tui, theme, keys, r => { focus++; r.handled = true; });
 const text = 'Texto longo com imagem colada, 日本語, emoji 🦊 e palavras inteiras para conferir resize e cursor sem redesenhar o editor.';
 for (const padding of [0, 1, 2]) for (const width of [12, 40, 85, 120, 200]) for (const value of ['', text, 'linha 1\nlinha 2']) {
   native.setPaddingX(padding);
@@ -52,7 +52,7 @@ editor.setText('rascunho'); editor.handleInput('\x1b[B'); assert.equal(focus, 0)
 editor.setText(''); editor.handleInput('\x1b[B'); assert.equal(focus, 1);
 editor.setText('apagar'); editor.handleInput('\x1b'); editor.handleInput('\x1b'); assert.equal(editor.getText(), '');
 console.log('ok ↓ só foca plano com input vazio; Esc duplo limpa rascunho');
-const skillEditor = new MarkEditor(tui, theme, keys, undefined, undefined, {
+const skillEditor = new AgentEditor(tui, theme, keys, undefined, undefined, {
  commands: () => [{ name: 'skill:fixture', source: 'skill', description: 'Uma skill real' }],
  categories: () => [{ name: 'dev', skills: ['fixture'] }],
 });
@@ -65,7 +65,7 @@ assert.equal(skillEditor.skillPickerState(), undefined);
 console.log('ok paste e seletor preservados sobre editor nativo');
 
 // Jobs own role data; formatting must not parse statuses or animate on its own.
-const { subagentMascots, modeStatus } = await jiti.import(join(repo, 'mark/extensions/mark/tui/status-line.ts'));
+const { subagentMascots, modeStatus } = await jiti.import(join(repo, 'agent/extensions/agent/tui/status-line.ts'));
 assert.equal(subagentMascots([]), undefined);
 const roles = ['worker-sol', 'scout', 'planner', 'reviewer', 'visual', 'unknown'];
 const faces = subagentMascots(roles);
@@ -81,7 +81,7 @@ console.log('ok mascotes estáticos por papel, limite, fallback e modo sem custo
 // Plano no TUI nativo: o host monta/remove widgets; o SDK controla o foco real.
 {
   const { TuiMainScreen } = await jiti.import(dep('@earendil-works/pi-tui'));
-  const { default: installPlan, PLAN_FOCUS_EVENT } = await jiti.import(join(repo, 'mark/extensions/brain-live/plan.ts'));
+  const { default: installPlan, PLAN_FOCUS_EVENT } = await jiti.import(join(repo, 'agent/extensions/brain-live/plan.ts'));
   const screen = new TuiMainScreen({ rows: 45, columns: 120, write() {} });
   screen.requestRender = () => {};
   const events = new Map();
@@ -89,7 +89,7 @@ console.log('ok mascotes estáticos por papel, limite, fallback e modo sem custo
   const entries = [];
   let tool, widget, branch = [];
   const planTheme = { ...theme, bold: t => t };
-  const input = new MarkEditor(screen, theme, keys, request => events.get(PLAN_FOCUS_EVENT)(request));
+  const input = new AgentEditor(screen, theme, keys, request => events.get(PLAN_FOCUS_EVENT)(request));
   screen.addChild(input);
   screen.setFocus(input);
   installPlan({

@@ -10,9 +10,9 @@ import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const repo = resolve(dirname(fileURLToPath(import.meta.url)), '..');
-const store = process.env.PI_OVERLAY_STORE ? resolve(process.env.PI_OVERLAY_STORE) : join(homedir(), '.local/share/pi-overlay');
+const store = process.env.AGENT_STORE ? resolve(process.env.AGENT_STORE) : join(homedir(), '.local/share/agent');
 function findPiRoot() {
-  if (process.env.MARK_JUICE_PI_ROOT) return realpathSync(process.env.MARK_JUICE_PI_ROOT);
+  if (process.env.AGENT_JUICE_PI_ROOT) return realpathSync(process.env.AGENT_JUICE_PI_ROOT);
   const relative = 'lib/node_modules/@earendil-works/pi-coding-agent';
   const current = join(store, 'current', relative);
   if (existsSync(join(current, 'dist/index.js'))) return realpathSync(current);
@@ -23,7 +23,7 @@ function findPiRoot() {
 const piRoot = findPiRoot();
 if (!piRoot) { console.log('skip: Pi não encontrado no store do overlay'); process.exit(0); }
 
-const dir = mkdtempSync(join(tmpdir(), 'mark-peers-status-'));
+const dir = mkdtempSync(join(tmpdir(), 'agent-peers-status-'));
 const sessions = [];
 try {
   const req = createRequire(join(piRoot, 'package.json'));
@@ -35,7 +35,7 @@ try {
     '@earendil-works/pi-tui': dep('@earendil-works/pi-tui'),
     typebox: join(piRoot, 'node_modules/typebox/build/index.mjs'),
   } });
-  const peers = (await jiti.import(join(repo, 'mark/extensions/mark/peers/index.ts'))).default;
+  const peers = (await jiti.import(join(repo, 'agent/extensions/agent/peers/index.ts'))).default;
 
   let n = 0;
   async function session() {
@@ -53,7 +53,7 @@ try {
     const ctx = {
       mode: 'tui', hasUI: true, cwd: dir, isIdle: () => true,
       sessionManager: { getSessionId: () => id, getBranch: () => [] },
-      ui: { theme: { fg: (c, t) => `<${c}>${t}</>` }, setStatus: (k, v) => { if (k === 'mark-meta-peers') writes.push(v); if (k === 'peers') legacy.push(v); }, notify() {}, setWidget() {} },
+      ui: { theme: { fg: (c, t) => `<${c}>${t}</>` }, setStatus: (k, v) => { if (k === 'agent-meta-peers') writes.push(v); if (k === 'peers') legacy.push(v); }, notify() {}, setWidget() {} },
     };
     for (const h of handlers.get('session_start') ?? []) await h({ reason: 'startup' }, ctx);
     const stop = async () => { for (const h of handlers.get('session_shutdown') ?? []) await h({ reason: 'quit' }, ctx); };

@@ -1,24 +1,24 @@
 #!/usr/bin/env node
 /**
- * Prova offline do MARK II **INSTALADO**: artefato imutável no store + Pi real do overlay +
+ * Prova offline do Agent **INSTALADO**: artefato imutável no store + Pi real do overlay +
  * provider Anthropic falso em loopback. Nada do checkout entra no processo do Pi.
  *
  * O que este teste prova (e o que ele NÃO prova):
- *  - o artefato é preparado por `prepareMarkIIArtifact` e o Pi é lançado pelo launcher **copiado
+ *  - o artefato é preparado por `prepareAgentArtifact` e o Pi é lançado pelo launcher **copiado
  *    para um bundle instalado fictício** (`<root>/bundle/scripts/...`), nunca por
- *    `scripts/mark-ii-launch.mjs` do checkout: se o updater esquecer de empacotar um helper, a
+ *    `scripts/agent-launch.mjs` do checkout: se o updater esquecer de empacotar um helper, a
  *    cópia quebra aqui;
  *  - o ambiente pessoal atravessa intacto: HOME/USERPROFILE/XDG/PI_CODING_AGENT_DIR/PI_SYSTEM_DIR
  *    fictícios, `NODE_OPTIONS` do usuário preservado com um único preload, e os arquivos pessoais
  *    (SYSTEM.md, models.json com modelo/thinking, keybindings, papel pessoal, Vault fake e a
  *    extensão pessoal homônima) continuam byte a byte onde estavam;
- *  - os recursos do MARK II entram **uma única vez** (`planMarkIIResources`/`applyMarkIIResources`
- *    idempotentes) e as políticas chegam ao modelo EFETIVO: `mark_autonomy` sempre, `mark_complex`
+ *  - os recursos do Agent entram **uma única vez** (`planAgentResources`/`applyAgentResources`
+ *    idempotentes) e as políticas chegam ao modelo EFETIVO: `agent_autonomy` sempre, `agent_complex`
  *    só no modo complex — lido no corpo que foi pela rede ao provider falso;
  *  - o ledger real (JSON) conta exatamente uma reserva fechada por requisição, e um
  *    relançamento preserva preferências e o acumulado;
- *  - `rollbackMarkIIResources` + opt-out devolvem o settings pessoal e o launcher ao modo legado,
- *    sem nenhuma `MARK_JUICE_*`.
+ *  - `rollbackAgentResources` + opt-out devolvem o settings pessoal e o launcher ao modo legado,
+ *    sem nenhuma `AGENT_JUICE_*`.
  *
  * Caminhos reais usados somente para LEITURA: a release do Pi em `<store real>/releases/...`
  * (piRoot, não é copiada). Tudo o que é escrito fica no diretório temporário do teste.
@@ -26,20 +26,20 @@
  * `--source-root <abs>` troca a árvore de origem do artefato (uma cópia com correção candidata),
  * para separar "o artefato está incompleto" de "o lançamento instalado está quebrado".
  *
- *   node scripts/test-mark-ii-installed.mjs [--pi-root <abs>] [--source-root <abs>]
+ *   node scripts/test-agent-installed.mjs [--pi-root <abs>] [--source-root <abs>]
  */
 import assert from "node:assert/strict";
 
-process.env.MARK_RUST_AUTO_INSTALL = "0"; // nenhum teste instala Rust de verdade
-process.env.MARK_WARM_START = "0"; // nem aquece o cache abrindo o pi instalado
+process.env.AGENT_RUST_AUTO_INSTALL = "0"; // nenhum teste instala Rust de verdade
+process.env.AGENT_WARM_START = "0"; // nem aquece o cache abrindo o pi instalado
 
 import { spawn, spawnSync } from "node:child_process";
 import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import { planMarkIIResources, applyMarkIIResources, rollbackMarkIIResources } from "./lib/mark-ii-resources.mjs";
-import { prepareMarkIIArtifact, readMarkIIConfig, writeMarkIIConfig } from "./lib/mark-ii-runtime.mjs";
+import { planAgentResources, applyAgentResources, rollbackAgentResources } from "./lib/agent-resources.mjs";
+import { prepareAgentArtifact, readAgentConfig, writeAgentConfig } from "./lib/agent-runtime.mjs";
 import { startFakeAnthropic } from "./lib/fake-anthropic.mjs";
 
 const repo = resolve(dirname(fileURLToPath(import.meta.url)), "..");
@@ -48,11 +48,11 @@ const option = (name, fallback) => {
 	const index = argv.indexOf(name);
 	return index < 0 ? fallback : argv[index + 1];
 };
-const realStore = process.env.PI_OVERLAY_STORE ? resolve(process.env.PI_OVERLAY_STORE) : join(homedir(), ".local", "share", "pi-overlay");
+const realStore = process.env.AGENT_STORE ? resolve(process.env.AGENT_STORE) : join(homedir(), ".local", "share", "agent");
 
 /** Release FÍSICA do Pi instalado (o helper recusa o ponteiro `current`, que troca de versão). */
 function findPiRoot() {
-	const explicit = option("--pi-root", process.env.MARK_II_TEST_PI_ROOT);
+	const explicit = option("--pi-root", process.env.AGENT_TEST_PI_ROOT);
 	if (explicit) return resolve(explicit);
 	const relative = join("lib", "node_modules", "@earendil-works", "pi-coding-agent");
 	const current = join(realStore, "current", relative);
@@ -66,22 +66,22 @@ function findPiRoot() {
 
 const piRoot = findPiRoot();
 if (!piRoot) {
-	console.log(`sem release do Pi com CLI clássico em ${realStore}; teste do MARK II instalado pulado`);
+	console.log(`sem release do Pi com CLI clássico em ${realStore}; teste do Agent instalado pulado`);
 	process.exit(0);
 }
 
 const PERSONAL = {
-	system: "SENTINELA PESSOAL MARK II: este SYSTEM.md é do usuário.\n",
+	system: "SENTINELA PESSOAL Agent: este SYSTEM.md é do usuário.\n",
 	vault: "SENTINELA VAULT FAKE (nunca o ~/Sistema real).\n",
 	role: "---\nname: pessoal\ndescription: papel pessoal do usuário\n---\nFaça do jeito do usuário.\n",
 	keybindings: `${JSON.stringify({ "app.thinking.cycle": [], "app.session.tree": "ctrl+shift+alt+k" }, null, 2)}\n`,
-	cost: "// extensão pessoal homônima do MARK II: SENTINELA-COST-PESSOAL\nexport default function (_pi: any) {}\n",
+	cost: "// extensão pessoal homônima do Agent: SENTINELA-COST-PESSOAL\nexport default function (_pi: any) {}\n",
 	sentinel: "export default function (_pi: any) {}\n",
 };
 
 // realpath: no macOS `/var/folders/...` é link para `/private/var/...` e os helpers devolvem
 // caminhos físicos; sem isso as comparações de prefixo do store ficariam falsas.
-const root = realpathSync(mkdtempSync(join(tmpdir(), "mark-ii-installed-")));
+const root = realpathSync(mkdtempSync(join(tmpdir(), "agent-installed-")));
 let checks = 0;
 const test = (name, value) => {
 	assert.ok(value !== false, name);
@@ -100,13 +100,13 @@ try {
 	for (const dir of [join(agentDir, "extensions", "personal-sentinel"), join(agentDir, "agents"), join(home, "Sistema", "Pi"), store, cwd, juiceHome, join(bundle, "scripts", "lib")]) {
 		mkdirSync(dir, { recursive: true });
 	}
-	// Preferências pessoais que o MARK II não tem permissão de tocar: modelo e thinking vivem aqui.
+	// Preferências pessoais que o Agent não tem permissão de tocar: modelo e thinking vivem aqui.
 	const fake = await startFakeAnthropic([{ text: "feito" }]);
 	const personalModels = {
 		providers: {
 			anthropic: {
 				baseUrl: fake.baseUrl,
-				apiKey: "mark-ii-installed-test-not-a-key",
+				apiKey: "agent-installed-test-not-a-key",
 				compat: { supportsMidConvoSystemMessages: true, supportsMidConvoToolChanges: true },
 			},
 		},
@@ -127,15 +127,15 @@ try {
 	writeFileSync(join(agentDir, "extensions", "personal-sentinel", "index.ts"), PERSONAL.sentinel);
 	// Homônima de uma extensão do artefato: o plano tem de excluir a descoberta, não apagar o arquivo.
 	writeFileSync(join(agentDir, "extensions", "cost.ts"), PERSONAL.cost);
-	// Observação do system EFETIVO (mesma técnica do test-mark-host): no host durável as trocas de
+	// Observação do system EFETIVO (mesma técnica do test-agent-host): no host durável as trocas de
 	// política vão como delta de meio de conversa e NÃO aparecem em `payload.system`, então o único
 	// jeito de ler o que o modelo recebe é `ctx.getSystemPrompt()` antes de cada requisição. A
 	// extensão só anexa a um arquivo: não altera prompt, mensagens nem tools.
-	writeFileSync(join(agentDir, "extensions", "mark-observe-system.ts"), [
+	writeFileSync(join(agentDir, "extensions", "agent-observe-system.ts"), [
 		"import { appendFileSync } from 'node:fs';",
 		"export default function (pi: any) {",
 		"  pi.on('before_provider_request', async (_event: any, ctx: any) => {",
-		"    const file = process.env.MARK_OBSERVE_SYSTEM;",
+		"    const file = process.env.AGENT_OBSERVE_SYSTEM;",
 		"    if (!file) return;",
 		"    appendFileSync(file, JSON.stringify({ system: ctx.getSystemPrompt() }) + '\\n');",
 		"  });",
@@ -145,18 +145,18 @@ try {
 
 	// ---------------------------------------------------------------- artefato + recursos + config
 	const sourceRoot = resolve(option("--source-root", repo));
-	const artifact = prepareMarkIIArtifact({ sourceRoot, store, piRoot, log: () => {} });
-	test("artefato preparado dentro do store fictício, com markRoot próprio", artifact.markRoot.startsWith(store) && artifact.piRoot === piRoot);
+	const artifact = prepareAgentArtifact({ sourceRoot, store, piRoot, log: () => {} });
+	test("artefato preparado dentro do store fictício, com agentRoot próprio", artifact.agentRoot.startsWith(store) && artifact.piRoot === piRoot);
 
-	const plan = planMarkIIResources({ markRoot: artifact.markRoot, agentDir, homeDir: home });
+	const plan = planAgentResources({ agentRoot: artifact.agentRoot, agentDir, homeDir: home });
 	assert.deepEqual(plan.report.blocking, [], `plano com impossibilidades: ${JSON.stringify(plan.report.blocking)}`);
-	const applied = applyMarkIIResources({ plan, backupDir: join(store, "mark-ii", "backups") });
-	test("recursos do MARK II aplicados com recibo absoluto", applied.changed && applied.receiptPath.startsWith(store));
+	const applied = applyAgentResources({ plan, backupDir: join(store, "runtime", "backups") });
+	test("recursos do Agent aplicados com recibo absoluto", applied.changed && applied.receiptPath.startsWith(store));
 
 	const settingsAfterApply = JSON.parse(readFileSync(join(agentDir, "settings.json"), "utf8"));
-	const markEntries = (settings) => settings.extensions.filter((entry) => typeof entry === "string" && entry.includes(artifact.markRoot));
+	const agentEntries = (settings) => settings.extensions.filter((entry) => typeof entry === "string" && entry.includes(artifact.agentRoot));
 	test("entradas do artefato sem duplicata e preferências pessoais intactas no settings", (() => {
-		const entries = markEntries(settingsAfterApply);
+		const entries = agentEntries(settingsAfterApply);
 		assert.equal(new Set(entries).size, entries.length, `entradas duplicadas: ${JSON.stringify(entries)}`);
 		assert.ok(entries.length > 0, "nenhuma extensão do artefato registrada");
 		assert.equal(settingsAfterApply.defaultModel, personalSettings.defaultModel);
@@ -166,8 +166,8 @@ try {
 	})());
 
 	// Reaplicar o plano não pode crescer a lista (ativação repetida é o caso real do updater).
-	const replan = planMarkIIResources({ markRoot: artifact.markRoot, agentDir, homeDir: home });
-	applyMarkIIResources({ plan: replan, backupDir: join(store, "mark-ii", "backups") });
+	const replan = planAgentResources({ agentRoot: artifact.agentRoot, agentDir, homeDir: home });
+	applyAgentResources({ plan: replan, backupDir: join(store, "runtime", "backups") });
 	const settingsReapplied = JSON.parse(readFileSync(join(agentDir, "settings.json"), "utf8"));
 	test("segunda aplicação é idempotente: nenhuma entrada nova", JSON.stringify(settingsReapplied.extensions) === JSON.stringify(settingsAfterApply.extensions));
 
@@ -175,18 +175,18 @@ try {
 	const writePreferences = (mode) => writeFileSync(preferencesPath, `${JSON.stringify({ mode, supportModel: "anthropic/claude-haiku-5-5" })}\n`);
 	writePreferences("simple");
 	const preferencesBefore = readFileSync(preferencesPath, "utf8");
-	writeMarkIIConfig({
+	writeAgentConfig({
 		store,
 		config: { version: 1, enabled: true, artifactId: artifact.artifactId, piRoot, juiceHome, resourceReceipt: applied.receiptPath },
 	});
 
 	// ---------------------------------------------------------------- bundle instalado fictício
 	// O updater (C) empacota launcher + helpers; aqui o lançamento usa SÓ essa cópia.
-	cpSync(join(repo, "scripts", "mark-ii-launch.mjs"), join(bundle, "scripts", "mark-ii-launch.mjs"));
-	for (const name of ["mark-ii-runtime.mjs", "mark-ii-resources.mjs"]) {
+	cpSync(join(repo, "scripts", "agent-launch.mjs"), join(bundle, "scripts", "agent-launch.mjs"));
+	for (const name of ["agent-runtime.mjs", "agent-resources.mjs"]) {
 		cpSync(join(repo, "scripts", "lib", name), join(bundle, "scripts", "lib", name));
 	}
-	const launcher = join(bundle, "scripts", "mark-ii-launch.mjs");
+	const launcher = join(bundle, "scripts", "agent-launch.mjs");
 
 	const userNodeOptions = "--no-warnings";
 	const piEnv = {
@@ -202,8 +202,8 @@ try {
 		PI_ACCOUNTS_MIRROR: "0",
 		PI_OFFLINE: "1",
 		ORCA_BACKGROUND_LAUNCH: "1",
-		MARK_LEARN: "0",
-		MARK_DISPATCHER: "0",
+		AGENT_LEARN: "0",
+		AGENT_DISPATCHER: "0",
 		NODE_OPTIONS: userNodeOptions,
 	};
 	const spec = (extraEnv = {}) => {
@@ -214,18 +214,18 @@ try {
 		return JSON.parse(result.stdout);
 	};
 
-	const enabled = spec({ MARK_JUICE_PI_ENTRY: "bundle" });
+	const enabled = spec({ AGENT_JUICE_PI_ENTRY: "bundle" });
 	test("launcher do bundle instalado resolve o artefato do store, sem nada do checkout", (() => {
-		assert.equal(enabled.mode, "mark-ii");
+		assert.equal(enabled.mode, "agent");
 		assert.equal(enabled.piRoot, piRoot);
 		assert.equal(enabled.args[0], join(piRoot, "dist/cli.js"));
-		assert.equal(enabled.env.MARK_JUICE_PI_ENTRY, undefined, "artefato clássico remove seleção durável herdada");
+		assert.equal(enabled.env.AGENT_JUICE_PI_ENTRY, undefined, "artefato clássico remove seleção durável herdada");
 		const manifest = JSON.parse(readFileSync(artifact.manifestPath, "utf8"));
 		assert.equal(manifest.piEntry, "dist/cli.js", "prepare só produz artefatos clássicos");
 		assert.equal(enabled.preload, `--import=${pathToFileURL(join(artifact.artifactRoot, manifest.runtimePreload)).href}`);
-		assert.ok(enabled.markRoot.startsWith(store), `artefato fora do store: ${enabled.markRoot}`);
+		assert.ok(enabled.agentRoot.startsWith(store), `artefato fora do store: ${enabled.agentRoot}`);
 		for (const [key, value] of Object.entries({ command: enabled.command, preload: enabled.preload, NODE_OPTIONS: enabled.env.NODE_OPTIONS })) {
-			assert.ok(!value.includes(`${repo}/mark/`) && !value.includes(`${repo}/scripts/`), `${key} aponta para o checkout: ${value}`);
+			assert.ok(!value.includes(`${repo}/agent/`) && !value.includes(`${repo}/scripts/`), `${key} aponta para o checkout: ${value}`);
 		}
 		return true;
 	})());
@@ -237,8 +237,8 @@ try {
 		const tokens = enabled.env.NODE_OPTIONS.split(/\s+/).filter(Boolean);
 		assert.ok(tokens.includes(userNodeOptions), `NODE_OPTIONS do usuário perdido: ${enabled.env.NODE_OPTIONS}`);
 		assert.equal(tokens.filter((token) => token.includes("juice/runtime.mjs")).length, 1, `preload repetido: ${enabled.env.NODE_OPTIONS}`);
-		assert.equal(enabled.env.MARK_JUICE_HOME, juiceHome);
-		assert.equal(enabled.env.MARK_JUICE_STATE, join(juiceHome, "run.v3.json"));
+		assert.equal(enabled.env.AGENT_JUICE_HOME, juiceHome);
+		assert.equal(enabled.env.AGENT_JUICE_STATE, join(juiceHome, "run.v3.json"));
 		return true;
 	})());
 
@@ -247,7 +247,7 @@ try {
 	const runPi = (prompt, label) => new Promise((done) => {
 		const observeFile = join(root, `system-${label}.jsonl`);
 		const child = spawn(process.execPath, [launcher, "--store", store, "--", "--session", session, "-p", "--mode", "json", prompt], {
-			cwd, stdio: ["ignore", "pipe", "pipe"], timeout: 180_000, env: { ...piEnv, MARK_OBSERVE_SYSTEM: observeFile },
+			cwd, stdio: ["ignore", "pipe", "pipe"], timeout: 180_000, env: { ...piEnv, AGENT_OBSERVE_SYSTEM: observeFile },
 		});
 		let out = "";
 		let err = "";
@@ -283,8 +283,8 @@ try {
 		assert.equal(first.observed.length, fake.messages().length, "uma observação por requisição");
 		assert.equal(first.observed[0], systemText(0), "ctx.getSystemPrompt() != system da 1ª requisição (observação não finge)");
 		for (const [index, text] of first.observed.entries()) {
-			assert.equal(count(text, /<mark_autonomy>/g), 1, `requisição ${index} sem autonomia única`);
-			assert.equal(count(text, /<mark_complex>/g), 0, `requisição ${index} com complex em simple`);
+			assert.equal(count(text, /<agent_autonomy>/g), 1, `requisição ${index} sem autonomia única`);
+			assert.equal(count(text, /<agent_complex>/g), 0, `requisição ${index} com complex em simple`);
 		}
 		return true;
 	})());
@@ -318,16 +318,16 @@ try {
 	await setMode("complex");
 	const afterSimple = fake.messages().length;
 	const complex = await runPi("agora com a equipe", "run3-complex");
-	test("modo complex adiciona mark_complex no system efetivo, sem trocar o modelo do usuário", (() => {
+	test("modo complex adiciona agent_complex no system efetivo, sem trocar o modelo do usuário", (() => {
 		assert.equal(complex.code, 0, `complex saiu com ${complex.code}\n${complex.err.slice(0, 2000)}`);
 		const texts = complex.observed;
 		assert.ok(texts.length > 0, "complex não chamou o provider");
 		for (const [index, text] of texts.entries()) {
-			assert.equal(count(text, /<mark_autonomy>/g), 1, `complex: requisição ${index} sem autonomia única`);
-			assert.equal(count(text, /<mark_complex>/g), 1, `complex: requisição ${index} sem política complex`);
+			assert.equal(count(text, /<agent_autonomy>/g), 1, `complex: requisição ${index} sem autonomia única`);
+			assert.equal(count(text, /<agent_complex>/g), 1, `complex: requisição ${index} sem política complex`);
 		}
 		for (const payload of fake.messages().slice(afterSimple)) {
-			assert.ok(String(payload.model).includes("haiku"), `modelo efetivo trocado pelo MARK II: ${payload.model}`);
+			assert.ok(String(payload.model).includes("haiku"), `modelo efetivo trocado pelo Agent: ${payload.model}`);
 		}
 		return true;
 	})());
@@ -337,8 +337,8 @@ try {
 		assert.equal(back.code, 0, back.err);
 		assert.ok(back.observed.length > 0, "volta a simple não chamou o provider");
 		for (const text of back.observed) {
-			assert.equal(count(text, /<mark_autonomy>/g), 1);
-			assert.equal(count(text, /<mark_complex>/g), 0);
+			assert.equal(count(text, /<agent_autonomy>/g), 1);
+			assert.equal(count(text, /<agent_complex>/g), 0);
 		}
 		assert.equal(readFileSync(preferencesPath, "utf8"), preferencesBefore);
 		assert.equal(ledger().calls.used, fake.messages().length);
@@ -348,7 +348,7 @@ try {
 
 	test("arquivos pessoais intactos depois das trocas de modo e relançamentos instalados", (() => {
 		assert.equal(readFileSync(join(agentDir, "SYSTEM.md"), "utf8"), PERSONAL.system);
-		// keybindings.json: só o delta GERENCIADO (a ação reservada que bloqueava o atalho do MARK II)
+		// keybindings.json: só o delta GERENCIADO (a ação reservada que bloqueava o atalho do Agent)
 		// aparece; o atalho sentinela e o valor pessoal de app.thinking.cycle seguem exatos.
 		const keybindingsNow = JSON.parse(readFileSync(join(agentDir, "keybindings.json"), "utf8"));
 		const keybindingsBefore = JSON.parse(PERSONAL.keybindings);
@@ -363,7 +363,7 @@ try {
 	})());
 
 	// ---------------------------------------------------------------- rollback + opt-out
-	const rolledBack = rollbackMarkIIResources({ receiptPath: applied.receiptPath });
+	const rolledBack = rollbackAgentResources({ receiptPath: applied.receiptPath });
 	test("rollback devolve o settings pessoal sem conflito", (() => {
 		assert.deepEqual(rolledBack.conflicts, [], `conflitos no rollback: ${JSON.stringify(rolledBack.conflicts)}`);
 		const settings = JSON.parse(readFileSync(join(agentDir, "settings.json"), "utf8"));
@@ -375,24 +375,24 @@ try {
 		assert.equal(readFileSync(join(agentDir, "keybindings.json"), "utf8"), PERSONAL.keybindings);
 		return true;
 	})());
-	test("rollback é idempotente", rollbackMarkIIResources({ receiptPath: applied.receiptPath }).conflicts.length === 0);
+	test("rollback é idempotente", rollbackAgentResources({ receiptPath: applied.receiptPath }).conflicts.length === 0);
 
-	const current = readMarkIIConfig(store);
-	writeMarkIIConfig({ store, config: { ...current, enabled: false } });
+	const current = readAgentConfig(store);
+	writeAgentConfig({ store, config: { ...current, enabled: false } });
 	const optedOut = spec();
-	test("opt-out volta ao caminho legado sem nenhuma MARK_JUICE_*", (() => {
+	test("opt-out volta ao caminho legado sem nenhuma AGENT_JUICE_*", (() => {
 		assert.equal(optedOut.mode, "legacy");
-		for (const key of Object.keys(optedOut.env)) assert.ok(!key.startsWith("MARK_JUICE_") && key !== "MARK_II_ARTIFACT", `env fantasma no legado: ${key}`);
+		for (const key of Object.keys(optedOut.env)) assert.ok(!key.startsWith("AGENT_JUICE_") && key !== "AGENT_ARTIFACT", `env fantasma no legado: ${key}`);
 		assert.equal(optedOut.env.HOME, home);
 		assert.equal(optedOut.env.PI_CODING_AGENT_DIR, agentDir);
 		return true;
 	})());
-	const disabledByEnv = spec({ MARK_II_DISABLED: "1" });
-	test("MARK_II_DISABLED=1 também é legado e preserva o ambiente pessoal", disabledByEnv.mode === "legacy" && disabledByEnv.env.HOME === home);
+	const disabledByEnv = spec({ AGENT_DISABLED: "1" });
+	test("AGENT_DISABLED=1 também é legado e preserva o ambiente pessoal", disabledByEnv.mode === "legacy" && disabledByEnv.env.HOME === home);
 
 	await fake.close();
 	console.log(`${checks} checks passed`);
-	console.log(`PASS mark-ii instalado (artefato ${artifact.artifactId.slice(0, 12)}, piRoot ${piRoot}, provider falso em loopback)`);
+	console.log(`PASS agent instalado (artefato ${artifact.artifactId.slice(0, 12)}, piRoot ${piRoot}, provider falso em loopback)`);
 } finally {
 	rmSync(root, { recursive: true, force: true });
 }

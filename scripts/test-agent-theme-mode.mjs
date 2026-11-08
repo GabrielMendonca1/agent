@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * Prova offline FOCAL de dark/light na TUI MARK II (nada de produção é tocado).
+ * Prova offline FOCAL de dark/light na TUI Agent (nada de produção é tocado).
  *
  * O que prova, na TUI real (Pi de verdade, tmux próprio com `-L`, provider
  * Anthropic falso em loopback, zero rede):
@@ -11,7 +11,7 @@
  *     ninguém responde a consulta de cores, então vale o fallback documentado
  *     (notificação → `COLORFGBG` → dark). `COLORFGBG=0;15` (fundo claro) tem de
  *     levar ao tema claro; `15;0`, ao escuro.
- *  3) Editor e rodapé nativos; a borda reflete thinking, não modo do Mark.
+ *  3) Editor e rodapé nativos; a borda reflete thinking, não modo do Agent.
  *  4) Cores e contraste dos cards Claude Code preservados em claro/escuro.
  *  5) Hot-swap de tema no MESMO PID por `ctx.ui.setTheme()` (extensão fixture),
  *     conferindo quais cores acompanham a troca e quais ficam presas.
@@ -44,14 +44,14 @@ if (spawnSync('tmux', ['-V']).status !== 0) { console.log('skip: tmux ausente');
 const sleep = (ms) => new Promise(r => setTimeout(r, ms));
 const KEEP = process.env.KEEP === '1';
 /**
- * Qual cópia da Mark TUI medir. Vazio = a árvore de trabalho (o perfil aponta para
- * `mark/extensions/mark/tui`). Com um diretório, mede ESSA cópia — serve para
+ * Qual cópia da Agent TUI medir. Vazio = a árvore de trabalho (o perfil aponta para
+ * `agent/extensions/agent/tui`). Com um diretório, mede ESSA cópia — serve para
  * reproduzir o estado de um commit sem mexer na árvore de ninguém, por exemplo:
- *   mkdir -p /tmp/head && git archive HEAD mark | tar -x -C /tmp/head   # `mark/` inteiro: o
- *   # a Mark TUI importa `../../../juice/client.mjs`, então a cópia precisa da mesma vizinhança
- *   MARK_THEME_TUI_SRC=/tmp/head/mark/extensions/mark/tui node scripts/test-mark-theme-mode.mjs
+ *   mkdir -p /tmp/head && git archive HEAD agent | tar -x -C /tmp/head   # `agent/` inteiro: o
+ *   # a Agent TUI importa `../../../juice/client.mjs`, então a cópia precisa da mesma vizinhança
+ *   AGENT_THEME_TUI_SRC=/tmp/head/agent/extensions/agent/tui node scripts/test-agent-theme-mode.mjs
  */
-const TUI_SRC = process.env.MARK_THEME_TUI_SRC ? join(process.env.MARK_THEME_TUI_SRC) : '';
+const TUI_SRC = process.env.AGENT_THEME_TUI_SRC ? join(process.env.AGENT_THEME_TUI_SRC) : '';
 
 // ---- par de temas: o MESMO do settings global, lido sem escrever nada --------
 const GLOBAL_SETTINGS = join(homedir(), '.pi/agent/settings.json');
@@ -59,11 +59,11 @@ let globalPair = '';
 try { globalPair = JSON.parse(readFileSync(GLOBAL_SETTINGS, 'utf8')).theme ?? ''; } catch { /* sem settings global */ }
 // Fixture determinística: é o par global confirmado nesta entrega, não um contrato
 // dependente de futuras escolhas pessoais em ~/.pi/agent/settings.json.
-const PAIR = 'grayscale-baimin-claude-cc-mark-light/grayscale-baimin-claude-cc-mark';
+const PAIR = 'grayscale-baimin-claude-cc-agent-light/grayscale-baimin-claude-cc-agent';
 const [LIGHT_THEME, DARK_THEME] = PAIR.split('/');
 
 // Temas do REPO são a fonte do teste; diferenças com os pessoais ficam registadas.
-const REPO_THEMES = join(repo, 'mark/themes');
+const REPO_THEMES = join(repo, 'agent/themes');
 const sha = (file) => createHash('sha256').update(readFileSync(file)).digest('hex').slice(0, 12);
 const themeDiffs = [];
 for (const name of [LIGHT_THEME, DARK_THEME]) {
@@ -165,8 +165,8 @@ const PROBE = [
   'export default function (pi: any) {',
   "  pi.on('session_start', async (_event: any, ctx: any) => {",
   "    if (ctx.mode !== 'tui') return;",
-  '    const log = process.env.MARK_THEME_PROBE;',
-  '    const ctl = process.env.MARK_THEME_CTL;',
+  '    const log = process.env.AGENT_THEME_PROBE;',
+  '    const ctl = process.env.AGENT_THEME_CTL;',
   '    if (!log) return;',
   "    const TOKENS = ['text', 'muted', 'dim', 'border', 'borderMuted', 'accent', 'success', 'error', 'warning'];",
   '    const snap = (tag: string, extra: any = {}) => {',
@@ -200,8 +200,8 @@ const PROBE = [
  * `colorfgbg` é o único sinal de claro/escuro disponível (nada de OS/macOS).
  */
 async function run({ label, colorfgbg, expectTheme, bg, swapTo }) {
-  const parent = mkdtempSync(join(tmpdir(), `mark-theme-${label}-`));
-  const sock = `markthm${process.pid}${label}`;
+  const parent = mkdtempSync(join(tmpdir(), `agent-theme-${label}-`));
+  const sock = `agentthm${process.pid}${label}`;
   const term = terminal(sock);
   const fake = await startFakeAnthropic([
     { tool: { name: 'plan', input: { steps: [{ text: 'medir cores', status: 'in_progress' }] } } },
@@ -224,30 +224,30 @@ async function run({ label, colorfgbg, expectTheme, bg, swapTo }) {
       cpSync(join(REPO_THEMES, file), join(info.agentDir, 'themes', file));
     }
     if (TUI_SRC) {
-      // O perfil carrega a Mark TUI pelo CAMINHO em settings.extensions (o prepare aponta
+      // O perfil carrega a Agent TUI pelo CAMINHO em settings.extensions (o prepare aponta
       // para a árvore do repo). Trocar esse caminho — no settings do PERFIL temporário, nunca
       // no global — é o que faz a medição cair sobre a cópia pedida.
       const file = join(info.agentDir, 'settings.json');
       const settings = JSON.parse(readFileSync(file, 'utf8'));
-      const repoTui = join(repo, 'mark/extensions/mark/tui');
+      const repoTui = join(repo, 'agent/extensions/agent/tui');
       let swapped = 0;
       settings.extensions = (settings.extensions ?? []).map((entry) => {
         if (typeof entry !== 'string' || entry.replace(/^[!+-]/, '') !== repoTui) return entry;
         swapped++;
         return entry.replace(repoTui, TUI_SRC);
       });
-      if (!swapped) throw new Error(`MARK_THEME_TUI_SRC: nenhuma entrada da Mark TUI para trocar em ${file}`);
+      if (!swapped) throw new Error(`AGENT_THEME_TUI_SRC: nenhuma entrada da Agent TUI para trocar em ${file}`);
       writeFileSync(file, JSON.stringify(settings, null, 2) + '\n', { mode: 0o600 });
     }
     const probeLog = join(parent, 'theme.jsonl');
     const ctlFile = join(parent, 'theme.ctl');
     writeFileSync(ctlFile, '');
-    writeFileSync(join(info.agentDir, 'extensions/mark-theme-probe.ts'), PROBE);
+    writeFileSync(join(info.agentDir, 'extensions/agent-theme-probe.ts'), PROBE);
 
     const env = JSON.parse(readFileSync(join(info.root, 'environment.json'), 'utf8'));
     const exports = Object.entries({
-      ...env, MARK_LEARN: '0', MARK_DISPATCHER: '0', MARK_CACHE_KEEPER: '0',
-      MARK_THEME_PROBE: probeLog, MARK_THEME_CTL: ctlFile, COLORFGBG: colorfgbg,
+      ...env, AGENT_LEARN: '0', AGENT_DISPATCHER: '0', AGENT_CACHE_KEEPER: '0',
+      AGENT_THEME_PROBE: probeLog, AGENT_THEME_CTL: ctlFile, COLORFGBG: colorfgbg,
       GARIME_CLAUDE_APPEARANCE: '', GARIME_CLAUDE_ACCENT: '',
     }).map(([k, v]) => `${k}=${JSON.stringify(v)}`).join(' ');
     const work = join(parent, 'work'); mkdirSync(work);
@@ -278,12 +278,12 @@ async function run({ label, colorfgbg, expectTheme, bg, swapTo }) {
     const cardLine = () => pickLine(/⏺/);
     const statLine = () => pickLine(/%.*(?:auto|\/1\.0M)/, true);
     const checkNative = (name, id) => {
-      check(!/┌─|└─|Dicas/.test(term.screen()), `${id}/native-layout`, 'sem moldura, palco ou painel Mark');
+      check(!/┌─|└─|Dicas/.test(term.screen()), `${id}/native-layout`, 'sem moldura, palco ou painel Agent');
       check(eq(borderOf(), tokenColor(name, 'thinkingMedium')), `${id}/native-border`, `borda nativa: ${borderOf()}`);
       check(/simple|complex/.test(term.screen()), `${id}/native-mode`, 'modo publicado no rodapé');
     };
     checkNative(first.name, label);
-    // The native editor border represents thinking, not Mark authorization mode.
+    // The native editor border represents thinking, not Agent authorization mode.
     const beforeMode = borderOf();
     term.keys('BTab');
     await term.waitScreen(new RegExp(`${ICON.complex} complex`), `${label}: complex`);
@@ -319,7 +319,7 @@ async function run({ label, colorfgbg, expectTheme, bg, swapTo }) {
     check(Boolean(afterBullet) && ratio(afterBullet, swapTo === LIGHT_THEME ? '#ffffff' : '#000000') >= 3, `${label}/chat-hot-contrast`, 'bullet após troca >= 3:1');
 
     // Captura (sem segredos: só a tela da TUI) para inspeção manual.
-    const shot = join(tmpdir(), `mark-theme-${label}.ansi`);
+    const shot = join(tmpdir(), `agent-theme-${label}.ansi`);
     writeFileSync(shot, term.screenAnsi());
     notes.push(`captura ${label}: ${shot}`);
   } finally {
@@ -332,12 +332,12 @@ async function run({ label, colorfgbg, expectTheme, bg, swapTo }) {
 
 // ---- estado dos pontos suspeitos na ÁRVORE que o perfil carrega -------------
 // Informativo (o veredito vem da tela, não do grep): diz CONTRA QUAL código as
-// medições foram feitas, porque o perfil aponta para `mark/extensions/mark/tui`
+// medições foram feitas, porque o perfil aponta para `agent/extensions/agent/tui`
 // do repo — incluindo alterações não commitadas.
 
-const dirty = spawnSync('git', ['status', '--short', '--', 'mark/extensions/mark/tui'], { cwd: repo, encoding: 'utf8' }).stdout.trim();
+const dirty = spawnSync('git', ['status', '--short', '--', 'agent/extensions/agent/tui'], { cwd: repo, encoding: 'utf8' }).stdout.trim();
 console.log(`árvore medida: ${spawnSync('git', ['rev-parse', '--short', 'HEAD'], { cwd: repo, encoding: 'utf8' }).stdout.trim()}${dirty ? ` + não commitado:\n${dirty}` : ' (limpa)'}`);
-if (TUI_SRC) console.log(`Mark TUI medido: ${TUI_SRC} (override MARK_THEME_TUI_SRC)`);
+if (TUI_SRC) console.log(`Agent TUI medido: ${TUI_SRC} (override AGENT_THEME_TUI_SRC)`);
 console.log(`par testado: ${PAIR} (light=${LIGHT_THEME}, dark=${DARK_THEME}); global coincide: ${globalPair === PAIR}`);
 console.log(themeDiffs.length ? `temas repo != pessoais: ${themeDiffs.join('; ')}` : 'temas do repo idênticos aos pessoais (sha256/12)');
 

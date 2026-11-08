@@ -16,10 +16,10 @@ import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const repo = resolve(dirname(fileURLToPath(import.meta.url)), '..');
-const store = process.env.PI_OVERLAY_STORE ? resolve(process.env.PI_OVERLAY_STORE) : join(homedir(), '.local/share/pi-overlay');
+const store = process.env.AGENT_STORE ? resolve(process.env.AGENT_STORE) : join(homedir(), '.local/share/agent');
 
 function findPiRoot() {
-  if (process.env.MARK_JUICE_PI_ROOT) return realpathSync(process.env.MARK_JUICE_PI_ROOT);
+  if (process.env.AGENT_JUICE_PI_ROOT) return realpathSync(process.env.AGENT_JUICE_PI_ROOT);
   const relative = 'lib/node_modules/@earendil-works/pi-coding-agent';
   const current = join(store, 'current', relative);
   if (existsSync(join(current, 'dist/index.js'))) return realpathSync(current);
@@ -36,7 +36,7 @@ if (!piRoot) {
   process.exit(0);
 }
 
-const root = mkdtempSync(join(tmpdir(), 'mark-megamind-status-'));
+const root = mkdtempSync(join(tmpdir(), 'agent-megamind-status-'));
 const saved = { ...process.env };
 const realFetch = globalThis.fetch;
 try {

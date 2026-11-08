@@ -1,25 +1,25 @@
 @echo off
-rem Launcher do overlay no Windows: a mesma semantica de scripts/pi-overlay-wrapper.sh.
+rem Launcher do overlay no Windows: a mesma semantica de scripts/agent-wrapper.sh.
 rem
-rem   pi overlay-update [args]   -> node <bundle>\scripts\pi-overlay-update.mjs [args]
-rem   pi overlay-rollback [args] -> node <bundle>\scripts\pi-overlay-update.mjs --rollback [args]
-rem   pi overlay-status [args]   -> node <bundle>\scripts\pi-overlay-update.mjs --status [args]
-rem   pi overlay-gc [args]       -> node <bundle>\scripts\pi-overlay-update.mjs --gc [args]
-rem   pi update [...]            -> updater (self), delegacao ao Pi, ou os dois (--all)
-rem   qualquer outra coisa       -> launcher do MARK II quando houve opt-in, senao a CLI de `current`
+rem   agent overlay-update [args]   -> node <bundle>\scripts\agent-update.mjs [args]
+rem   agent overlay-rollback [args] -> node <bundle>\scripts\agent-update.mjs --rollback [args]
+rem   agent overlay-status [args]   -> node <bundle>\scripts\agent-update.mjs --status [args]
+rem   agent overlay-gc [args]       -> node <bundle>\scripts\agent-update.mjs --gc [args]
+rem   agent update [...]            -> updater (self), delegacao ao Pi, ou os dois (--all)
+rem   qualquer outra coisa       -> launcher do Agent quando houve opt-in, senao a CLI de `current`
 rem
 rem __OVERLAY_REPO__ e substituido pelo caminho do bundle instalado quando o updater renderiza
-rem este arquivo; PI_OVERLAY_REPO e PI_OVERLAY_STORE continuam mandando mais, como no POSIX.
+rem este arquivo; AGENT_REPO e AGENT_STORE continuam mandando mais, como no POSIX.
 rem
 rem `exit /b` sem valor preserva o ERRORLEVEL do ultimo comando: dentro de um bloco entre
 rem parenteses, %ERRORLEVEL% seria expandido na leitura do bloco, isto e, antes de o comando rodar.
 setlocal EnableExtensions DisableDelayedExpansion
 
-if defined PI_OVERLAY_REPO (set "OVERLAY_REPO=%PI_OVERLAY_REPO%") else (set "OVERLAY_REPO=__OVERLAY_REPO__")
-if defined PI_OVERLAY_STORE (set "STORE=%PI_OVERLAY_STORE%") else (set "STORE=%USERPROFILE%\.local\share\pi-overlay")
-set "UPDATER=%OVERLAY_REPO%\scripts\pi-overlay-update.mjs"
-set "MARK_II_CONFIG=%STORE%\mark-ii\config.json"
-set "MARK_II_LAUNCHER=%OVERLAY_REPO%\scripts\mark-ii-launch.mjs"
+if defined AGENT_REPO (set "OVERLAY_REPO=%AGENT_REPO%") else (set "OVERLAY_REPO=__OVERLAY_REPO__")
+if defined AGENT_STORE (set "STORE=%AGENT_STORE%") else (set "STORE=%USERPROFILE%\.local\share\agent")
+set "UPDATER=%OVERLAY_REPO%\scripts\agent-update.mjs"
+set "AGENT_CONFIG=%STORE%\runtime\config.json"
+set "AGENT_LAUNCHER=%OVERLAY_REPO%\scripts\agent-launch.mjs"
 
 rem `npm install --global --prefix X` grava X\pi.cmd no Windows (sem bin\).
 set "ACTIVE_PI=%STORE%\current\pi.cmd"
@@ -36,19 +36,19 @@ if /i "%~1"=="overlay-gc" goto :overlay_gc
 if /i "%~1"=="update" goto :update
 goto :normal
 
-rem Caminho normal, depois do dispatch de manutencao: o MARK II entra aqui e somente com opt-in
-rem explicito (o arquivo de configuracao do store). MARK_II_DISABLED=1 e o escape documentado;
+rem Caminho normal, depois do dispatch de manutencao: o Agent entra aqui e somente com opt-in
+rem explicito (o arquivo de configuracao do store). AGENT_DISABLED=1 e o escape documentado;
 rem quem valida artefato/broker/config e falha fechado e o launcher, nunca este .cmd.
 :normal
-if defined MARK_II_DISABLED (if /i "%MARK_II_DISABLED%"=="1" goto :delegate)
-if not exist "%MARK_II_CONFIG%" goto :delegate
-if not exist "%MARK_II_LAUNCHER%" goto :markii_missing
-node "%MARK_II_LAUNCHER%" --store "%STORE%" -- %*
+if defined AGENT_DISABLED (if /i "%AGENT_DISABLED%"=="1" goto :delegate)
+if not exist "%AGENT_CONFIG%" goto :delegate
+if not exist "%AGENT_LAUNCHER%" goto :agent_missing
+node "%AGENT_LAUNCHER%" --store "%STORE%" -- %*
 exit /b
 
-:markii_missing
-echo MARK II esta habilitado em "%MARK_II_CONFIG%", mas "%MARK_II_LAUNCHER%" nao existe neste bundle. 1>&2
-echo Reinstale o overlay (node "%UPDATER%") ou rode sem MARK II: set MARK_II_DISABLED=1 1>&2
+:agent_missing
+echo Agent esta habilitado em "%AGENT_CONFIG%", mas "%AGENT_LAUNCHER%" nao existe neste bundle. 1>&2
+echo Reinstale o overlay (node "%UPDATER%") ou rode sem Agent: set AGENT_DISABLED=1 1>&2
 exit /b 1
 
 :overlay_update

@@ -1,4 +1,4 @@
-// tools+system a 1h; cauda (último bloco) a 5m; com MARK_CKPT=1, checkpoint 1h no fim da penúltima mensagem do assistente.
+// tools+system a 1h; cauda (último bloco) a 5m; com AGENT_CKPT=1, checkpoint 1h no fim da penúltima mensagem do assistente.
 import { appendFileSync } from 'node:fs';
 export default function (pi) {
   pi.on('before_provider_request', (event) => {
@@ -8,7 +8,7 @@ export default function (pi) {
     (p.tools ?? []).forEach(one);
     const msgs = p.messages ?? [];
     for (const m of msgs) if (Array.isArray(m.content)) for (const b of m.content) if (b.cache_control) b.cache_control = { type: 'ephemeral', ttl: '5m' };
-    if (process.env.MARK_CKPT === '1') {
+    if (process.env.AGENT_CKPT === '1') {
       const idx = msgs.map((m, i) => [m, i]).filter(([m]) => m.role === 'assistant').map(([, i]) => i).at(-1);
       if (idx !== undefined) {
         const m = msgs[idx]; if (typeof m.content === 'string') m.content = [{ type: 'text', text: m.content }];
@@ -19,6 +19,6 @@ export default function (pi) {
     return p;
   });
   pi.on('provider_stream_event', (event) => {
-    const d = event.data; if (d?.type === 'message_start' && process.env.MARK_TTL_LOG) appendFileSync(process.env.MARK_TTL_LOG, JSON.stringify(d.message.usage) + '\n');
+    const d = event.data; if (d?.type === 'message_start' && process.env.AGENT_TTL_LOG) appendFileSync(process.env.AGENT_TTL_LOG, JSON.stringify(d.message.usage) + '\n');
   });
 }

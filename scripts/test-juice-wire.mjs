@@ -5,7 +5,7 @@ import assert from 'node:assert/strict';
 import { join } from 'node:path';
 import { homedir } from 'node:os';
 import { pathToFileURL } from 'node:url';
-const root = process.env.MARK_JUICE_PI_ROOT || join(homedir(), '.local/share/pi-overlay/current/lib/node_modules/@earendil-works/pi-coding-agent');
+const root = process.env.AGENT_JUICE_PI_ROOT || join(homedir(), '.local/share/agent/current/lib/node_modules/@earendil-works/pi-coding-agent');
 const api = join(root, 'node_modules/@earendil-works/pi-ai/dist/api');
 const codex = await import(pathToFileURL(join(api, 'openai-codex-responses.js')).href);
 const responses = await import(pathToFileURL(join(api, 'openai-responses.js')).href);
