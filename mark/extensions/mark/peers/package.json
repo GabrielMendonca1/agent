@@ -1,0 +1,15 @@
+{
+  "name": "@arca/peers-pi",
+  "version": "1.0.0",
+  "private": true,
+  "description": "peers: coordenação entre sessões do Pi na mesma máquina (IPC local)",
+  "keywords": ["pi-package"],
+  "type": "module",
+  "pi": {
+    "extensions": ["./index.ts"]
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "*",
+    "typebox": "*"
+  }
+}

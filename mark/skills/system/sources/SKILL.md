@@ -1,0 +1,12 @@
+---
+name: sources
+description: "Research — answer a question from primary sources and save the findings as a Markdown file in the repo. Use when a topic, docs or API facts need gathering."
+---
+
+Hand the research to a **subagent** (complex mode only; in simple mode do it yourself), so the reading does not block the rest of the work.
+
+Its job:
+
+1. Investigate the question against **primary sources** (official docs, source code, specs, first-party APIs), not a secondary write-up of them. Follow every claim back to the source that owns it.
+2. Write the findings to a single Markdown file, citing each claim's source.
+3. Save it where the repo already keeps such notes; match the existing convention, and if there is none, put it somewhere sensible and say where.

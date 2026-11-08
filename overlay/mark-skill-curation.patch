@@ -1,0 +1,144 @@
+diff --git a/packages/coding-agent/src/core/skills.ts b/packages/coding-agent/src/core/skills.ts
+index 48df4536b9a62642855fdeed2ab44a6202968a96..be1d61329f14966e8791772bf80f46a9ccdf43a4 100644
+--- a/packages/coding-agent/src/core/skills.ts
++++ b/packages/coding-agent/src/core/skills.ts
+@@ -344,6 +344,28 @@ function loadSkillFromFile(
+ 	};
+ }
+ 
++/**
++ * mark-skill-curation: curadoria opt-in do que é anunciado ao modelo.
++ *
++ * Quando `PI_AUTOMATIC_SKILLS` está **definida** (mesmo vazia), ela é a lista autoritativa dos
++ * nomes de skill anunciados no prompt: nomes separados por vírgula, espaços em volta ignorados,
++ * lista vazia = nenhuma skill anunciada. Um nome que não existe no catálogo é simplesmente
++ * ignorado. A variável não existir preserva o comportamento nativo (`disable-model-invocation`).
++ *
++ * O catálogo não muda: skills não anunciadas continuam carregáveis por nome/arquivo (comandos,
++ * picker, leitura explícita). Nada aqui escreve em disco nem muta os objetos `Skill`.
++ */
++function automaticSkillNames(): Set<string> | undefined {
++	const raw = process.env.PI_AUTOMATIC_SKILLS;
++	if (raw === undefined) return undefined;
++	return new Set(
++		raw
++			.split(",")
++			.map((name) => name.trim())
++			.filter((name) => name.length > 0),
++	);
++}
++
+ /**
+  * Format skills for inclusion in a system prompt.
+  * Uses XML format per Agent Skills standard.
+@@ -356,7 +378,10 @@ function loadSkillFromFile(
+  * is reachable only through another tool.
+  */
+ export function formatSkillsForPrompt(skills: Skill[], fileReadTool: "read" | "bash" | "indirect" = "read"): string {
+-	const visibleSkills = skills.filter((s) => !s.disableModelInvocation);
++	const automatic = automaticSkillNames();
++	const visibleSkills = automatic
++		? skills.filter((s) => automatic.has(s.name))
++		: skills.filter((s) => !s.disableModelInvocation);
+ 
+ 	if (visibleSkills.length === 0) {
+ 		return "";
+diff --git a/packages/coding-agent/test/skill-curation.test.ts b/packages/coding-agent/test/skill-curation.test.ts
+new file mode 100644
+index 0000000000000000000000000000000000000000..97e3a94b7bf3c484dac6ee153bbac19f9abad85e
+--- /dev/null
++++ b/packages/coding-agent/test/skill-curation.test.ts
+@@ -0,0 +1,93 @@
++import { afterEach, describe, expect, it } from "vitest";
++import { formatSkillsForPrompt, type Skill } from "../src/core/skills.ts";
++import { createSyntheticSourceInfo } from "../src/core/source-info.ts";
++
++/**
++ * mark-skill-curation: a curadoria do que é anunciado ao modelo vive no formatter, e não num
++ * wrapper de loader, para cobrir todos os consumidores de skills.
++ * Estes testes fixam o contrato: sem a variável,
++ * comportamento nativo; com a variável, a lista é autoritativa e uma lista vazia não anuncia nada.
++ */
++
++function skill(name: string, options: { disableModelInvocation?: boolean } = {}): Skill {
++	const filePath = `/skills/${name}/SKILL.md`;
++	return {
++		name,
++		description: `${name} description.`,
++		filePath,
++		baseDir: `/skills/${name}`,
++		sourceInfo: createSyntheticSourceInfo(filePath, { source: "test" }),
++		disableModelInvocation: options.disableModelInvocation ?? false,
++	};
++}
++
++function announced(result: string): string[] {
++	return [...result.matchAll(/<name>([^<]*)<\/name>/g)].map((match) => match[1]);
++}
++
++const previous = process.env.PI_AUTOMATIC_SKILLS;
++
++afterEach(() => {
++	if (previous === undefined) delete process.env.PI_AUTOMATIC_SKILLS;
++	else process.env.PI_AUTOMATIC_SKILLS = previous;
++});
++
++describe("skill curation (PI_AUTOMATIC_SKILLS)", () => {
++	it("without the env var, keeps native disable-model-invocation behaviour", () => {
++		delete process.env.PI_AUTOMATIC_SKILLS;
++		const skills = [skill("peers"), skill("secret", { disableModelInvocation: true })];
++
++		expect(announced(formatSkillsForPrompt(skills))).toEqual(["peers"]);
++	});
++
++	it("announces only the listed skills, in catalog order", () => {
++		process.env.PI_AUTOMATIC_SKILLS = "tasks,peers";
++		const skills = [skill("peers"), skill("megamind"), skill("tasks")];
++
++		expect(announced(formatSkillsForPrompt(skills))).toEqual(["peers", "tasks"]);
++	});
++
++	it("an empty list announces no skill at all", () => {
++		process.env.PI_AUTOMATIC_SKILLS = "";
++		const skills = [skill("peers"), skill("tasks")];
++
++		expect(formatSkillsForPrompt(skills)).toBe("");
++	});
++
++	it("a list of only separators and spaces announces no skill", () => {
++		process.env.PI_AUTOMATIC_SKILLS = " , ,, ";
++
++		expect(formatSkillsForPrompt([skill("peers")])).toBe("");
++	});
++
++	it("trims spaces around each name", () => {
++		process.env.PI_AUTOMATIC_SKILLS = " peers , tasks ";
++		const skills = [skill("peers"), skill("megamind"), skill("tasks")];
++
++		expect(announced(formatSkillsForPrompt(skills))).toEqual(["peers", "tasks"]);
++	});
++
++	it("an unknown name in the list is ignored instead of failing", () => {
++		process.env.PI_AUTOMATIC_SKILLS = "peers,nao-instalada";
++
++		expect(announced(formatSkillsForPrompt([skill("peers")]))).toEqual(["peers"]);
++	});
++
++	it("the env list is authoritative over disable-model-invocation", () => {
++		process.env.PI_AUTOMATIC_SKILLS = "hidden";
++		const skills = [skill("visible"), skill("hidden", { disableModelInvocation: true })];
++
++		expect(announced(formatSkillsForPrompt(skills))).toEqual(["hidden"]);
++	});
++
++	it("does not mutate the skills it was given", () => {
++		process.env.PI_AUTOMATIC_SKILLS = "peers";
++		const skills = [skill("peers"), skill("tasks")];
++		const before = structuredClone(skills);
++
++		formatSkillsForPrompt(skills);
++
++		expect(skills).toEqual(before);
++		expect(skills).toHaveLength(2);
++	});
++});

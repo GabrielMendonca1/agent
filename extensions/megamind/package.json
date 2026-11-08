@@ -1,0 +1,15 @@
+{
+  "name": "@mark/megamind-pi",
+  "version": "2.0.0",
+  "private": true,
+  "description": "ARCA Megamind: presença e cooperação entre os Pis dos sócios",
+  "keywords": ["pi-package"],
+  "type": "module",
+  "pi": {
+    "extensions": ["./index.ts"]
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "*",
+    "typebox": "*"
+  }
+}

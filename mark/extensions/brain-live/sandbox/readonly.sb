@@ -1,0 +1,15 @@
+(version 1)
+(allow default)
+(deny file-write*)
+(allow file-write*
+    (subpath "/private/tmp")
+    (subpath "/private/var/folders")
+    (subpath "/dev")
+    (subpath (string-append (param "HOME") "/Library/Caches"))
+    (subpath (string-append (param "HOME") "/.npm/_cacache"))
+    (subpath (string-append (param "HOME") "/.npm/_logs"))
+    (subpath (string-append (param "HOME") "/.cache"))
+    (subpath (string-append (param "CWD") "/node_modules/.cache"))
+    (subpath (string-append (param "CWD") "/.pi")))
+; Metadados git nunca são uma área de cache gravável.
+(deny file-write* (subpath (string-append (param "CWD") "/.git")))

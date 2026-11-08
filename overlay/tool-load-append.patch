@@ -1,0 +1,355 @@
+diff --git a/packages/coding-agent/src/core/agent-session.ts b/packages/coding-agent/src/core/agent-session.ts
+index dbe36c3658a316d1156be664d5c192a3e7478432..09b854c1bf7996b58953184baabec621282e0d92 100644
+--- a/packages/coding-agent/src/core/agent-session.ts
++++ b/packages/coding-agent/src/core/agent-session.ts
+@@ -1548,7 +1548,7 @@ export class AgentSession {
+ 	/**
+ 	 * Set active tools by name.
+ 	 * Only tools in the registry can be enabled. Unknown and hidden tool names are ignored.
+-	 * Also rebuilds the system prompt to reflect the new tool set.
++	 * Mid-session additions keep the initial prompt; the next request appends a system update.
+ 	 * Changes take effect on the next agent turn.
+ 	 */
+ 	setActiveToolsByName(toolNames: string[]): void {
+@@ -1560,10 +1560,28 @@ export class AgentSession {
+ 		if (previous.some((name) => !active.has(name))) this._pendingToolNames.clear();
+ 	}
+ 
+-	private _setActiveTools(toolNames: string[]): void {
++	private _setActiveTools(toolNames: string[], rebuildPrompt = false): void {
++		const previous = this.getActiveToolNames();
++		const previousHidden = this._hiddenDeclarations;
+ 		const tools = this._applyToolLoadout(toolNames);
+ 		for (const tool of tools) this._pendingToolNames.delete(tool.name);
+-		this._rebuildSystemPrompt(tools.map((tool) => tool.name));
++		const active = new Set(tools.map((tool) => tool.name));
++		if (
++			!rebuildPrompt &&
++			this._baseSystemPromptOptions &&
++			this.messages.length > 0 &&
++			previous.every((name) => active.has(name)) &&
++			previousHidden.size === this._hiddenDeclarations.size &&
++			[...previousHidden].every((name) => this._hiddenDeclarations.has(name))
++		) {
++			// Keep the initial prompt loadout separate from executable tools. The next request
++			// builds sections with the live loadout and appends their diff to the transcript.
++			// Newly registered tools may not have been present when the prompt was built.
++			this._baseSystemPromptOptions.toolSnippets = Object.fromEntries(this._toolPromptSnippets);
++			this._baseSystemPromptOptions.toolGuidelines = Object.fromEntries(this._toolPromptGuidelines);
++			return;
++		}
++		this._rebuildSystemPrompt([...active]);
+ 	}
+ 
+ 	/**
+@@ -1790,16 +1808,6 @@ export class AgentSession {
+ 		return sections ? { role: "system", content: "", sections, timestamp: Date.now() } : undefined;
+ 	}
+ 
+-	/**
+-	 * Send a forced prompt as the provider's leading system prompt without recording it.
+-	 *
+-	 * A `before_agent_start` handler that returns `systemPrompt` needs that exact text at the
+-	 * head of the request; a mid-conversation system message would leave the original prompt
+-	 * in place. The forced text is a rendering of the current prompt, so the transcript keeps
+-	 * its structured sections and the request is projected instead: the system messages
+-	 * collapse into one head holding the forced text and the current tools. Runs after the
+-	 * `context` extension handlers.
+-	 */
+ 	/**
+ 	 * Remove the declarations that `prepareLoadout` hooks hide from every request. The whole
+ 	 * transcript is filtered with the current set, so the projected declarations stay consistent
+@@ -1825,20 +1833,31 @@ export class AgentSession {
+ 		};
+ 	}
+ 
++	/**
++	 * Send a forced prompt as the provider's leading system prompt without recording it.
++	 *
++	 * A `before_agent_start` handler that returns `systemPrompt` needs that exact text at the
++	 * head of the request; a mid-conversation system message would leave the original prompt
++	 * in place. The forced text is a rendering of the current prompt, so the transcript keeps
++	 * its structured sections and the request is projected instead: the head holds the forced text
++	 * and the initial declarations. Later system updates stay in place, preserving both
++	 * their prompt sections and tool deltas without changing the cached request prefix. Runs after the
++	 * `context` extension handlers.
++	 */
+ 	private _installAgentForcedPromptProjection(): void {
+ 		const previousTransformContext = this.agent.transformContext;
+ 		this.agent.transformContext = async (messages, signal) => {
+ 			const transformed = previousTransformContext ? await previousTransformContext(messages, signal) : messages;
+ 			const forced = this._runSystemPromptOptions?.forceSystemPrompt;
+ 			if (forced === undefined) return transformed;
+-			const current = getCurrentSystemMessage(transformed);
++			const initial = transformed.find((message) => message.role === "system");
+ 			const head: SystemMessage = {
+ 				role: "system",
+ 				content: forced,
+-				...(current?.toolsAdded ? { toolsAdded: current.toolsAdded } : {}),
+-				timestamp: current?.timestamp ?? Date.now(),
++				...(initial?.toolsAdded ? { toolsAdded: initial.toolsAdded } : {}),
++				timestamp: initial?.timestamp ?? Date.now(),
+ 			};
+-			return [head, ...transformed.filter((message) => message.role !== "system")];
++			return [head, ...transformed.filter((message) => message !== initial)];
+ 		};
+ 	}
+ 
+@@ -1878,7 +1897,7 @@ export class AgentSession {
+ 		// activated when they register. Excluded tools never register, so they are not kept pending.
+ 		this._pendingToolNames = new Set(names.filter((name) => this._isAllowedTool(name)));
+ 		// Ignores names that are not registered.
+-		this._setActiveTools(names);
++		this._setActiveTools(names, true);
+ 	}
+ 
+ 	// =========================================================================
+@@ -3670,7 +3689,7 @@ export class AgentSession {
+ 		// Pending tools that are registered now become active.
+ 		nextActiveToolNames.push(...this._pendingToolNames);
+ 
+-		this._setActiveTools([...new Set(nextActiveToolNames)]);
++		this._setActiveTools([...new Set(nextActiveToolNames)], options?.activeToolNames !== undefined);
+ 	}
+ 
+ 	/** Whether activating the tool declares it to the model. */
+diff --git a/packages/coding-agent/src/modes/interactive/run-feedback.ts b/packages/coding-agent/src/modes/interactive/run-feedback.ts
+index 868812919f5a598d674e8eaaed3d452cf1df8e14..887e4f156fae6abab60d97fd5e621256901a7982 100644
+--- a/packages/coding-agent/src/modes/interactive/run-feedback.ts
++++ b/packages/coding-agent/src/modes/interactive/run-feedback.ts
+@@ -595,7 +595,8 @@ export class RunFeedback {
+ 			const max = rawMax?.trim() ? Number(rawMax) : 3;
+ 			const maxNotices = Number.isSafeInteger(max) && max >= 0 ? Math.min(max, 10) : 3;
+ 			if (
+-				this.modelNotices && this.noticeAttempts < maxNotices &&
++				this.modelNotices &&
++				this.noticeAttempts < maxNotices &&
+ 				!this.pending &&
+ 				!this.interrupted &&
+ 				this.results.size - this.resultsAtObservation >= numberEnv("PI_TUI_FEEDBACK_TOOL_RESULTS", 3) &&
+@@ -744,7 +745,6 @@ export class RunFeedback {
+ 				if (this.pending === controller) this.pending = undefined;
+ 			}
+ 		}
+-
+ 	}
+ 	action(action: string): string {
+ 		if (action === "off") {
+diff --git a/packages/coding-agent/test/garime-frame.test.ts b/packages/coding-agent/test/garime-frame.test.ts
+index b8ea046374583f4e43e04b72a7ccc3adb05787f8..5e3dc348613ec6b41a094ccae3b011a04bb833ae 100644
+--- a/packages/coding-agent/test/garime-frame.test.ts
++++ b/packages/coding-agent/test/garime-frame.test.ts
+@@ -181,7 +181,7 @@ describe("garime frame inline code colors", () => {
+ 			"utf8",
+ 		);
+ 		for (const token of ["mdCodeCommand", "mdCodeSymbol", "mdCodePath", "mdCodeUrl"]) {
+-			expect(theme).toMatch(new RegExp(`${token}: \{[^}]*fallback: "mdCode"`));
++			expect(theme).toMatch(new RegExp(`${token}: {[^}]*fallback: "mdCode"`));
+ 		}
+ 	});
+ });
+diff --git a/packages/coding-agent/test/system-prompt-updates.test.ts b/packages/coding-agent/test/system-prompt-updates.test.ts
+index bbe5fb9f0b12cc1cf38c4f1a3a51fce6aef3b8d5..52c2497f1c0ce8c66e79f2bf53db1d9c28e56c48 100644
+--- a/packages/coding-agent/test/system-prompt-updates.test.ts
++++ b/packages/coding-agent/test/system-prompt-updates.test.ts
+@@ -147,9 +147,8 @@ describe("system prompt updates", () => {
+ 			const systemMessages = requests.map((request) =>
+ 				request.messages.filter((message) => message.role === "system"),
+ 			);
+-			// Forced turns collapse to one leading message; the unforced fourth turn passes the
+-			// recorded head and both plan_mode patches through.
+-			expect(systemMessages.map((messages) => messages.length)).toEqual([1, 1, 1, 3]);
++			// Forced turns replace only the leading prompt; later section patches stay in place.
++			expect(systemMessages.map((messages) => messages.length)).toEqual([1, 1, 2, 3]);
+ 
+ 			const forced = systemMessages[1]?.at(-1);
+ 			expect(forced).toEqual({
+@@ -158,14 +157,15 @@ describe("system prompt updates", () => {
+ 				toolsAdded: systemMessages[0]?.[0]?.toolsAdded,
+ 				timestamp: systemMessages[0]?.[0]?.timestamp,
+ 			});
+-			expect(systemMessages[2]?.at(-1)).toEqual(forced);
+-			expect(getCurrentSystemPrompt(requests[2]!.messages)).toBe("Exact prompt.");
++			expect(systemMessages[2]?.[0]).toEqual(forced);
++			expect(getCurrentSystemPrompt(requests[2]!.messages)).toContain("Plan only.");
+ 			expect(requests[2]!.messages.map((message) => message.role)).toEqual([
+ 				"system",
+ 				"user",
+ 				"assistant",
+ 				"user",
+ 				"assistant",
++				"system",
+ 				"user",
+ 			]);
+ 
+diff --git a/packages/coding-agent/test/tool-load-append.test.ts b/packages/coding-agent/test/tool-load-append.test.ts
+new file mode 100644
+index 0000000000000000000000000000000000000000..3ccdbbe579f358809be586a88fb24e961d9f8802
+--- /dev/null
++++ b/packages/coding-agent/test/tool-load-append.test.ts
+@@ -0,0 +1,165 @@
++import { fauxAssistantMessage, fauxToolCall, getCurrentTools, type TranscriptContext } from "@earendil-works/pi-ai";
++import { Type } from "typebox";
++import { afterEach, describe, expect, it } from "vitest";
++import type { ExtensionAPI } from "../src/core/extensions/types.ts";
++import { createToolSearchExtension } from "../src/extensions/tool-search/index.ts";
++import { createHarness, type Harness } from "./suite/harness.ts";
++
++const guideline = "Check the launch window before launching a satellite.";
++const snippet = "Launch a satellite.";
++const satelliteTools = (pi: ExtensionAPI) => {
++	pi.registerTool({
++		name: "launch_satellite",
++		label: "Launch satellite",
++		description: snippet,
++		promptSnippet: snippet,
++		promptGuidelines: [guideline],
++		exposure: "deferred",
++		parameters: Type.Object({}),
++		execute: async () => ({ content: [], details: {} }),
++	});
++};
++
++const harnesses: Harness[] = [];
++afterEach(() => {
++	while (harnesses.length > 0) harnesses.pop()?.cleanup();
++});
++
++async function setup(sessionManager?: Harness["sessionManager"], forced = false, hidden = false) {
++	const harness = await createHarness({
++		sessionManager,
++		extensionFactories: [
++			satelliteTools,
++			createToolSearchExtension(),
++			...(forced
++				? [
++						(pi: ExtensionAPI) => {
++							pi.on("before_agent_start", () => ({ systemPrompt: "Exact Mark prompt." }));
++							if (hidden)
++								pi.registerTool({
++									name: "bridge",
++									label: "Bridge",
++									description: "Calls hidden tools.",
++									parameters: Type.Object({}),
++									prepareLoadout: () => ({ hiddenDeclarations: ["bash"] }),
++									execute: async () => ({ content: [], details: {} }),
++								});
++						},
++					]
++				: []),
++		],
++	});
++	harnesses.push(harness);
++	return harness;
++}
++
++async function prompt(harness: Harness) {
++	harness.setResponses([fauxAssistantMessage("done")]);
++	await harness.session.prompt("continue");
++}
++
++function guidelineUpdates(harness: Harness) {
++	return harness.session.messages.filter(
++		(message) => message.role === "system" && JSON.stringify(message.sections).includes(guideline),
++	);
++}
++
++describe("tool-load-append", () => {
++	it.each([false, true])("preserves the forced head and appended tool_search updates (hidden: %s)", async (hidden) => {
++		const harness = await setup(undefined, true, hidden);
++		harness.session.setActiveToolsByName([...harness.session.getActiveToolNames(), "tool_search"]);
++		const requests: TranscriptContext[] = [];
++		const capture = (context: TranscriptContext) => {
++			requests.push(context);
++			return fauxAssistantMessage("done");
++		};
++		harness.setResponses([capture]);
++		await harness.session.prompt("start");
++		const head = JSON.stringify(requests[0]!.messages[0]);
++		harness.setResponses([
++			fauxAssistantMessage([fauxToolCall("tool_search", { query: "launch satellite", limit: 1 })], {
++				stopReason: "toolUse",
++			}),
++			capture,
++		]);
++		await harness.session.prompt("load the launch tool");
++		expect(JSON.stringify(requests[1]!.messages[0])).toBe(head);
++		expect(requests[1]!.messages.slice(0, requests[0]!.messages.length)).toEqual(requests[0]!.messages);
++		if (hidden) expect(getCurrentTools(requests[1]!.messages).map((tool) => tool.name)).not.toContain("bash");
++		expect(requests[1]!.messages[0]).toMatchObject({ role: "system", content: "Exact Mark prompt." });
++		const updates = requests[1]!.messages.slice(1).filter((message) => message.role === "system");
++		expect(updates.some((message) => message.toolsAdded?.some((tool) => tool.name === "launch_satellite"))).toBe(
++			true,
++		);
++		expect(JSON.stringify(updates)).toContain(guideline);
++		expect(JSON.stringify(updates)).toContain(snippet);
++		harness.session.setActiveToolsByName(["read"]);
++		harness.setResponses([capture]);
++		await harness.session.prompt("remove the launch tool");
++		expect(getCurrentTools(requests[2]!.messages).map((tool) => tool.name)).toEqual(["read"]);
++	});
++
++	it("keeps the initial prompt and request prefix while appending tool_search guidelines and declarations", async () => {
++		const harness = await setup();
++		harness.session.setActiveToolsByName([...harness.session.getActiveToolNames(), "tool_search"]);
++		await prompt(harness);
++		const initialPrompt = harness.session.systemPrompt;
++		const prefix = JSON.parse(JSON.stringify(harness.session.messages));
++		let request: TranscriptContext | undefined;
++		harness.setResponses([
++			fauxAssistantMessage([fauxToolCall("tool_search", { query: "launch satellite", limit: 1 })], {
++				stopReason: "toolUse",
++			}),
++			(context) => {
++				request = context;
++				return fauxAssistantMessage("loaded");
++			},
++		]);
++		// The activation happens during the tool call, before prepareNextTurn appends its diff.
++		harness.session.subscribe((event) => {
++			if (event.type === "tool_execution_end" && event.toolName === "tool_search") {
++				expect(harness.session.systemPrompt).toBe(initialPrompt);
++			}
++		});
++		await harness.session.prompt("find the launch tool");
++		expect(harness.session.systemPrompt).toBe(initialPrompt);
++		expect(request).toBeDefined();
++		expect(request?.messages.slice(0, prefix.length)).toEqual(prefix);
++		expect(getCurrentTools(request?.messages ?? []).map((tool) => tool.name)).toContain("launch_satellite");
++		expect(guidelineUpdates(harness)).toHaveLength(1);
++		expect(JSON.stringify(guidelineUpdates(harness)[0])).toContain(snippet);
++		await prompt(harness);
++		expect(guidelineUpdates(harness)).toHaveLength(1);
++	});
++
++	it("keeps the prompt on a superset activation but rebuilds for removal and fresh sessions", async () => {
++		const harness = await setup();
++		const initial = harness.session.systemPrompt;
++		const tools = harness.session.getActiveToolNames();
++		harness.session.setActiveToolsByName([...tools, "launch_satellite"]);
++		expect(harness.session.systemPrompt).toContain(guideline);
++		harness.session.setActiveToolsByName(tools);
++		expect(harness.session.systemPrompt).toBe(initial);
++		await prompt(harness);
++		harness.session.setActiveToolsByName([...tools, "launch_satellite"]);
++		expect(harness.session.systemPrompt).toBe(initial);
++		await prompt(harness);
++		harness.session.setActiveToolsByName(["launch_satellite"]);
++		expect(harness.session.systemPrompt).toContain(guideline);
++		expect(harness.session.systemPrompt).not.toBe(initial);
++	});
++
++	it.each(["resume", "reload"] as const)("does not repeat the persisted guideline update after %s", async (action) => {
++		let harness = await setup();
++		await prompt(harness);
++		harness.session.setActiveToolsByName([...harness.session.getActiveToolNames(), "launch_satellite"]);
++		await prompt(harness);
++		expect(guidelineUpdates(harness)).toHaveLength(1);
++		if (action === "resume") harness = await setup(harness.sessionManager);
++		else await harness.session.reload();
++		expect(harness.session.getActiveToolNames()).toContain("launch_satellite");
++		expect(harness.session.systemPrompt).toContain(guideline);
++		await prompt(harness);
++		expect(guidelineUpdates(harness)).toHaveLength(1);
++	});
++});

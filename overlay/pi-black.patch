@@ -1,0 +1,570 @@
+diff --git a/packages/ai/src/api/anthropic-claude-code.ts b/packages/ai/src/api/anthropic-claude-code.ts
+new file mode 100644
+index 0000000000000000000000000000000000000000..7220d3bdb6932ca690a5a88a1e5c609160bc8b97
+--- /dev/null
++++ b/packages/ai/src/api/anthropic-claude-code.ts
+@@ -0,0 +1,253 @@
++import type { FetchFunction, Message } from "../types.ts";
++
++export const CLAUDE_CODE_VERSION = "2.1.280";
++export const CLAUDE_CODE_ENTRYPOINT = "sdk-cli";
++
++const CCH_PLACEHOLDER = "cch=00000";
++const CCH_SEED = 0x4d659218e32a3268n;
++const MASK_64 = 0xffffffffffffffffn;
++const PRIME64_1 = 0x9e3779b185ebca87n;
++const PRIME64_2 = 0xc2b2ae3d27d4eb4fn;
++const PRIME64_3 = 0x165667b19e3779f9n;
++const PRIME64_4 = 0x85ebca77c2b2ae63n;
++const PRIME64_5 = 0x27d4eb2f165667c5n;
++
++function rotateLeft(value: bigint, bits: bigint): bigint {
++	const normalized = value & MASK_64;
++	return ((normalized << bits) | (normalized >> (64n - bits))) & MASK_64;
++}
++
++function readUint32LE(bytes: Uint8Array, offset: number): bigint {
++	return BigInt(
++		(bytes[offset] | (bytes[offset + 1] << 8) | (bytes[offset + 2] << 16) | (bytes[offset + 3] << 24)) >>> 0,
++	);
++}
++
++function readUint64LE(bytes: Uint8Array, offset: number): bigint {
++	return readUint32LE(bytes, offset) | (readUint32LE(bytes, offset + 4) << 32n);
++}
++
++function round(accumulator: bigint, input: bigint): bigint {
++	const mixed = (accumulator + input * PRIME64_2) & MASK_64;
++	return (rotateLeft(mixed, 31n) * PRIME64_1) & MASK_64;
++}
++
++function mergeRound(accumulator: bigint, value: bigint): bigint {
++	return ((accumulator ^ round(0n, value)) * PRIME64_1 + PRIME64_4) & MASK_64;
++}
++
++/** Portable XXH64 used by Claude Code's native request serializer. */
++export function xxHash64(bytes: Uint8Array, seed = 0n): bigint {
++	let offset = 0;
++	let hash: bigint;
++
++	if (bytes.length >= 32) {
++		let v1 = (seed + PRIME64_1 + PRIME64_2) & MASK_64;
++		let v2 = (seed + PRIME64_2) & MASK_64;
++		let v3 = seed & MASK_64;
++		let v4 = (seed - PRIME64_1) & MASK_64;
++		while (offset <= bytes.length - 32) {
++			v1 = round(v1, readUint64LE(bytes, offset));
++			v2 = round(v2, readUint64LE(bytes, offset + 8));
++			v3 = round(v3, readUint64LE(bytes, offset + 16));
++			v4 = round(v4, readUint64LE(bytes, offset + 24));
++			offset += 32;
++		}
++		hash = (rotateLeft(v1, 1n) + rotateLeft(v2, 7n) + rotateLeft(v3, 12n) + rotateLeft(v4, 18n)) & MASK_64;
++		hash = mergeRound(hash, v1);
++		hash = mergeRound(hash, v2);
++		hash = mergeRound(hash, v3);
++		hash = mergeRound(hash, v4);
++	} else {
++		hash = (seed + PRIME64_5) & MASK_64;
++	}
++
++	hash = (hash + BigInt(bytes.length)) & MASK_64;
++	while (offset <= bytes.length - 8) {
++		const lane = round(0n, readUint64LE(bytes, offset));
++		hash = (rotateLeft(hash ^ lane, 27n) * PRIME64_1 + PRIME64_4) & MASK_64;
++		offset += 8;
++	}
++	if (offset <= bytes.length - 4) {
++		hash ^= readUint32LE(bytes, offset) * PRIME64_1;
++		hash = (rotateLeft(hash, 23n) * PRIME64_2 + PRIME64_3) & MASK_64;
++		offset += 4;
++	}
++	while (offset < bytes.length) {
++		hash ^= BigInt(bytes[offset]) * PRIME64_5;
++		hash = (rotateLeft(hash, 11n) * PRIME64_1) & MASK_64;
++		offset++;
++	}
++
++	hash ^= hash >> 33n;
++	hash = (hash * PRIME64_2) & MASK_64;
++	hash ^= hash >> 29n;
++	hash = (hash * PRIME64_3) & MASK_64;
++	hash ^= hash >> 32n;
++	return hash & MASK_64;
++}
++
++function firstUserPrompt(messages: Message[]): string {
++	for (const message of messages) {
++		if (message.role !== "user") continue;
++		if (typeof message.content === "string") return message.content;
++		return message.content
++			.filter((block) => block.type === "text")
++			.map((block) => block.text)
++			.join("");
++	}
++	return "";
++}
++
++function bytesToHex(bytes: Uint8Array): string {
++	return Array.from(bytes, (byte) => byte.toString(16).padStart(2, "0")).join("");
++}
++
++export async function claudeCodeVersionFingerprint(messages: Message[]): Promise<string> {
++	const prompt = firstUserPrompt(messages);
++	const selected = [4, 7, 20].map((index) => prompt[index] || "0").join("");
++	const input = new TextEncoder().encode(`59cf53e54c78${selected}${CLAUDE_CODE_VERSION}`);
++	const digest = await crypto.subtle.digest("SHA-256", input);
++	return bytesToHex(new Uint8Array(digest)).slice(0, 3);
++}
++
++export async function buildClaudeCodeBillingHeader(messages: Message[]): Promise<string> {
++	const fingerprint = await claudeCodeVersionFingerprint(messages);
++	return `x-anthropic-billing-header: cc_version=${CLAUDE_CODE_VERSION}.${fingerprint}; cc_entrypoint=${CLAUDE_CODE_ENTRYPOINT}; ${CCH_PLACEHOLDER};`;
++}
++
++export function patchClaudeCodeCch(serializedBody: string): string {
++	let body: Record<string, unknown>;
++	try {
++		const parsed = JSON.parse(serializedBody);
++		if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) throw new Error("not an object");
++		body = parsed as Record<string, unknown>;
++	} catch {
++		throw new Error("Claude Code OAuth request body is not a JSON object");
++	}
++	const system = body.system;
++	if (!Array.isArray(system) || typeof system[0] !== "object" || system[0] === null || Array.isArray(system[0])) {
++		throw new Error("Claude Code OAuth request is missing the billing system block");
++	}
++	const billingBlock = system[0] as Record<string, unknown>;
++	if (typeof billingBlock.text !== "string" || !billingBlock.text.startsWith("x-anthropic-billing-header: ")) {
++		throw new Error("Claude Code OAuth request has an invalid billing system block");
++	}
++	if (!billingBlock.text.includes(CCH_PLACEHOLDER)) {
++		if (/; cch=[0-9a-f]{5};$/u.test(billingBlock.text)) return serializedBody;
++		throw new Error("Claude Code OAuth request has an invalid cch billing value");
++	}
++	if (typeof body.model !== "string" || !("max_tokens" in body)) {
++		throw new Error("Claude Code OAuth request is missing model or max_tokens");
++	}
++
++	const normalized = structuredClone(body);
++	normalized.model = "";
++	delete normalized.max_tokens;
++	const hash = xxHash64(new TextEncoder().encode(JSON.stringify(normalized)), CCH_SEED);
++	const cch = (hash & 0xfffffn).toString(16).padStart(5, "0");
++	billingBlock.text = billingBlock.text.replace(CCH_PLACEHOLDER, `cch=${cch}`);
++	return JSON.stringify(body);
++}
++
++function requestHeaders(input: Parameters<FetchFunction>[0], init?: RequestInit): Headers {
++	const headers = new Headers(input instanceof Request ? input.headers : undefined);
++	if (init?.headers) {
++		for (const [name, value] of new Headers(init.headers)) headers.set(name, value);
++	}
++	return headers;
++}
++
++/**
++ * Request bodies at or above this size go out gzip-compressed. The Messages API accepts
++ * `Content-Encoding: gzip` and rejects zstd (`request_body_encoding_unsupported`), so gzip is the
++ * only option. Level 1: conversation JSON carries base64 thinking signatures that barely compress,
++ * and higher levels cost more CPU for ~5% fewer bytes.
++ */
++export const CLAUDE_CODE_GZIP_MIN_BYTES = 32 * 1024;
++const CLAUDE_CODE_GZIP_LEVEL = 1;
++
++type NodeZlib = typeof import("node:zlib");
++
++let gzipRejected = false;
++
++function loadNodeZlib(): NodeZlib | null {
++	if (typeof process === "undefined" || !process.versions?.node) return null;
++	return (process as { getBuiltinModule?: (id: string) => unknown }).getBuiltinModule?.(
++		"node:zlib",
++	) as NodeZlib | null;
++}
++
++function gzipDisabledByEnv(): boolean {
++	const value = typeof process !== "undefined" ? process.env?.PI_ANTHROPIC_GZIP : undefined;
++	return value === "0" || value === "false";
++}
++
++/** Test hook: forget a previous server rejection of gzip bodies. */
++export function resetClaudeCodeGzipState(): void {
++	gzipRejected = false;
++}
++
++async function gzipBody(body: string): Promise<Uint8Array<ArrayBuffer> | null> {
++	if (gzipRejected || gzipDisabledByEnv() || body.length < CLAUDE_CODE_GZIP_MIN_BYTES) return null;
++	const zlib = loadNodeZlib();
++	if (!zlib || typeof zlib.gzip !== "function") return null;
++	try {
++		const compressed = await new Promise<Buffer>((resolve, reject) =>
++			zlib.gzip(body, { level: CLAUDE_CODE_GZIP_LEVEL }, (error, result) =>
++				error ? reject(error) : resolve(result),
++			),
++		);
++		return new Uint8Array(compressed);
++	} catch {
++		return null;
++	}
++}
++
++async function isEncodingRejection(response: Response): Promise<boolean> {
++	if (response.status === 415) return true;
++	if (response.status !== 400) return false;
++	try {
++		const text = await response.clone().text();
++		return text.includes("request_body_encoding_unsupported") || /content-encoding/i.test(text);
++	} catch {
++		return false;
++	}
++}
++
++/** Send a patched JSON body, gzip-compressed when large; resend it plain if the server refuses gzip. */
++async function sendBody(
++	fetchImplementation: FetchFunction,
++	input: Parameters<FetchFunction>[0],
++	init: RequestInit,
++	headers: Headers,
++	body: string,
++): Promise<Response> {
++	const compressed = await gzipBody(body);
++	if (!compressed) return fetchImplementation(input, { ...init, headers, body });
++	const gzipHeaders = new Headers(headers);
++	gzipHeaders.set("content-encoding", "gzip");
++	gzipHeaders.delete("content-length");
++	const response = await fetchImplementation(input, { ...init, headers: gzipHeaders, body: compressed });
++	if (!(await isEncodingRejection(response))) return response;
++	gzipRejected = true;
++	return fetchImplementation(input, { ...init, headers, body });
++}
++
++/** Patch the SDK's final compact JSON and add identifiers generated per HTTP request. */
++export function createClaudeCodeFetch(fetchImplementation: FetchFunction): FetchFunction {
++	return async (input, init) => {
++		const headers = requestHeaders(input, init);
++		if (!headers.has("x-client-request-id")) headers.set("x-client-request-id", crypto.randomUUID());
++
++		if (typeof init?.body === "string") {
++			return sendBody(fetchImplementation, input, init, headers, patchClaudeCodeCch(init.body));
++		}
++		if (input instanceof Request) {
++			const body = await input.clone().text();
++			const request = new Request(input, { headers, body: patchClaudeCodeCch(body) });
++			return fetchImplementation(request);
++		}
++		throw new Error("Claude Code OAuth request body is not available for cch patching");
++	};
++}
+diff --git a/packages/ai/src/api/anthropic-messages.ts b/packages/ai/src/api/anthropic-messages.ts
+index 9d6a8bdb7c2063254c9d8b40a1ca1550356dba2f..e9315709b1f4bb85a54eb586535636d672dc0529 100644
+--- a/packages/ai/src/api/anthropic-messages.ts
++++ b/packages/ai/src/api/anthropic-messages.ts
+@@ -57,6 +57,7 @@ import {
+ 	type TranscriptContext,
+ } from "../utils/transcript.ts";
+ 
++import { buildClaudeCodeBillingHeader, CLAUDE_CODE_VERSION, createClaudeCodeFetch } from "./anthropic-claude-code.ts";
+ import {
+ 	getJsonSchemaToolParameters,
+ 	isStrictToolLimitErrorMessage,
+@@ -98,9 +99,6 @@ function getCacheControl(
+ 	};
+ }
+ 
+-// Stealth mode: Mimic Claude Code's tool naming exactly
+-const claudeCodeVersion = "2.1.280";
+-
+ // Claude Code 2.x tool names (canonical casing)
+ // Source: https://cchistory.mariozechner.at/data/prompts-2.1.11.md
+ // To update: https://github.com/badlogic/cchistory
+@@ -641,6 +639,7 @@ export const stream: StreamFunction<"anthropic-messages", AnthropicOptions> = (
+ 				client = created.client;
+ 				isOAuth = created.isOAuthToken;
+ 			}
++			const billingHeader = isOAuth ? await buildClaudeCodeBillingHeader(normalizedContext.messages) : undefined;
+ 			const requestOptions = {
+ 				...(options?.signal ? { signal: options.signal } : {}),
+ 				...(options?.timeoutMs !== undefined ? { timeout: options.timeoutMs } : {}),
+@@ -650,7 +649,7 @@ export const stream: StreamFunction<"anthropic-messages", AnthropicOptions> = (
+ 			let response: Response;
+ 			for (;;) {
+ 				options?.signal?.throwIfAborted();
+-				const built = buildParams(model, normalizedContext, isOAuth, options, disablePreferredStrictTools);
++				const built = buildParams(model, normalizedContext, isOAuth, options, disablePreferredStrictTools, billingHeader);
+ 				if (built.providerThinkingLevel) output.providerThinkingLevel = built.providerThinkingLevel;
+ 				let params = built.params;
+ 				const nextParams = await options?.onPayload?.(params, model);
+@@ -1045,13 +1044,14 @@ function createClient(
+ 			authToken: apiKey,
+ 			baseURL: model.baseUrl,
+ 			dangerouslyAllowBrowser: true,
+-			fetch,
++			fetch: createClaudeCodeFetch(fetch ?? globalThis.fetch),
+ 			defaultHeaders: mergeHeaders(
+ 				{
+ 					accept: "application/json",
+ 					"anthropic-dangerous-direct-browser-access": "true",
+-					"user-agent": `claude-cli/${claudeCodeVersion}`,
++					"user-agent": `claude-cli/${CLAUDE_CODE_VERSION} (external, sdk-cli)`,
+ 					"x-app": "cli",
++					...(sessionId ? { "x-claude-code-session-id": sessionId } : {}),
+ 				},
+ 				model.headers,
+ 				optionsHeaders,
+@@ -1156,6 +1156,7 @@ function buildParams(
+ 	isOAuthToken: boolean,
+ 	options?: AnthropicOptions,
+ 	disablePreferredStrictTools = false,
++	billingHeader?: string,
+ ): {
+ 	params: MessageCreateParamsStreaming;
+ 	hasPreferredStrictTools: boolean;
+@@ -1219,10 +1220,10 @@ function buildParams(
+ 	// For OAuth tokens, we MUST include Claude Code identity
+ 	if (isOAuthToken) {
+ 		params.system = [
++			...(billingHeader ? [{ type: "text" as const, text: billingHeader }] : []),
+ 			{
+ 				type: "text",
+-				text: "You are Claude Code, Anthropic's official CLI for Claude.",
+-				...(cacheControl ? { cache_control: cacheControl } : {}),
++				text: "You are a Claude agent, built on Anthropic's Claude Agent SDK.",
+ 			},
+ 		];
+ 		if (initialSystemText) {
+@@ -1303,7 +1304,19 @@ function buildParams(
+ 		}
+ 	}
+ 
+-	if (options?.metadata) {
++	const claudeCodeAccountUuid = isOAuthToken
++		? getProviderEnvValue("CLAUDE_CODE_ACCOUNT_UUID", options?.env)
++		: undefined;
++	const claudeCodeDeviceId = isOAuthToken ? getProviderEnvValue("CLAUDE_CODE_DEVICE_ID", options?.env) : undefined;
++	if (claudeCodeAccountUuid && claudeCodeDeviceId && options?.sessionId) {
++		params.metadata = {
++			user_id: JSON.stringify({
++				device_id: claudeCodeDeviceId,
++				account_uuid: claudeCodeAccountUuid,
++				session_id: options.sessionId,
++			}),
++		};
++	} else if (options?.metadata) {
+ 		const userId = options.metadata.user_id;
+ 		if (typeof userId === "string") {
+ 			params.metadata = { user_id: userId };
+diff --git a/packages/ai/test/anthropic-auth-token.test.ts b/packages/ai/test/anthropic-auth-token.test.ts
+index a49108638ee1ed184024d126bb687169753ad986..913187af552106d7044fcf0e98a318735b40044b 100644
+--- a/packages/ai/test/anthropic-auth-token.test.ts
++++ b/packages/ai/test/anthropic-auth-token.test.ts
+@@ -178,6 +178,39 @@ describe("Anthropic auth token env", () => {
+ 		expect(mockState.constructorOpts?.apiKey).toBeNull();
+ 		expect(mockState.constructorOpts?.authToken).toBe("sk-ant-oat-test");
+ 		expect(mockState.createParams?.betas).toContain("oauth-2025-04-20");
++		const headers = mockState.constructorOpts?.defaultHeaders as Record<string, string>;
++		expect(headers["user-agent"]).toBe("claude-cli/2.1.280 (external, sdk-cli)");
++		const system = mockState.createParams?.system as Array<{ text: string; cache_control?: unknown }>;
++		expect(system[0].text).toMatch(
++			/^x-anthropic-billing-header: cc_version=2\.1\.280\.[0-9a-f]{3}; cc_entrypoint=sdk-cli; cch=00000;$/,
++		);
++		expect(system[0].cache_control).toBeUndefined();
++		expect(system[1]).toEqual({
++			type: "text",
++			text: "You are a Claude agent, built on Anthropic's Claude Agent SDK.",
++		});
++	});
++
++	it("adds Claude Code account, device, and session identity for OAuth requests", async () => {
++		const stream = streamAnthropic(anthropicModel, context, {
++			apiKey: "sk-ant-oat-test",
++			sessionId: "11111111-2222-4333-8444-555555555555",
++			env: {
++				CLAUDE_CODE_ACCOUNT_UUID: "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee",
++				CLAUDE_CODE_DEVICE_ID: "f".repeat(64),
++			},
++		});
++		await stream.result();
++
++		expect(mockState.createParams?.metadata).toEqual({
++			user_id: JSON.stringify({
++				device_id: "f".repeat(64),
++				account_uuid: "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee",
++				session_id: "11111111-2222-4333-8444-555555555555",
++			}),
++		});
++		const headers = mockState.constructorOpts?.defaultHeaders as Record<string, string>;
++		expect(headers["x-claude-code-session-id"]).toBe("11111111-2222-4333-8444-555555555555");
+ 	});
+ 
+ 	it("lets explicit request headers override ANTHROPIC_AUTH_TOKEN", async () => {
+diff --git a/packages/ai/test/anthropic-claude-code.test.ts b/packages/ai/test/anthropic-claude-code.test.ts
+new file mode 100644
+index 0000000000000000000000000000000000000000..feb0074ec33fe4c71345aabe921c6c6fc6a46f8f
+--- /dev/null
++++ b/packages/ai/test/anthropic-claude-code.test.ts
+@@ -0,0 +1,163 @@
++import { gunzipSync } from "node:zlib";
++import { describe, expect, it, vi } from "vitest";
++import {
++	buildClaudeCodeBillingHeader,
++	CLAUDE_CODE_GZIP_MIN_BYTES,
++	claudeCodeVersionFingerprint,
++	createClaudeCodeFetch,
++	patchClaudeCodeCch,
++	resetClaudeCodeGzipState,
++	xxHash64,
++} from "../src/api/anthropic-claude-code.ts";
++import type { Message } from "../src/types.ts";
++
++const encoder = new TextEncoder();
++const promptMessages = (prompt: string): Message[] => [{ role: "user", content: prompt, timestamp: 1 }];
++
++describe("Claude Code Anthropic request compatibility", () => {
++	it("implements standard XXH64 vectors", () => {
++		expect(xxHash64(encoder.encode("")).toString(16)).toBe("ef46db3751d8e999");
++		expect(xxHash64(encoder.encode("hello")).toString(16)).toBe("26c7827d889f6da3");
++	});
++
++	it("reproduces the recovered cc_version prompt fingerprint", async () => {
++		expect(await claudeCodeVersionFingerprint(promptMessages("Reply with exactly: PROBE_OK"))).toBe("022");
++		expect(await buildClaudeCodeBillingHeader(promptMessages("Reply with exactly: PROBE_OK"))).toBe(
++			"x-anthropic-billing-header: cc_version=2.1.280.022; cc_entrypoint=sdk-cli; cch=00000;",
++		);
++	});
++
++	it("omits the model value and complete max_tokens member before seeded XXH64", () => {
++		const body =
++			'{"model":"claude-opus-5","messages":[{"role":"user","content":"A"}],"max_tokens":64000,"stream":true,"system":[{"type":"text","text":"x-anthropic-billing-header: cc_version=2.1.280.000; cc_entrypoint=sdk-cli; cch=00000;"}]}';
++		expect(patchClaudeCodeCch(body)).toContain("cch=5efff");
++	});
++
++	it("patches only the billing block when user and nested fields collide", () => {
++		const body = {
++			model: "claude-opus-5",
++			messages: [{ role: "user", content: "cch=00000", model: "nested", max_tokens: 7 }],
++			max_tokens: 64000,
++			stream: true,
++			system: [
++				{
++					type: "text",
++					text: "x-anthropic-billing-header: cc_version=2.1.280.000; cc_entrypoint=sdk-cli; cch=00000;",
++				},
++				{ type: "text", text: "fake cch=00000" },
++			],
++			tools: [{ name: "probe", description: "model max_tokens cch=00000" }],
++		};
++		const patched = JSON.parse(patchClaudeCodeCch(JSON.stringify(body))) as typeof body;
++		expect(patched.system[0].text).toMatch(/cch=[0-9a-f]{5};$/);
++		expect(patched.messages).toEqual(body.messages);
++		expect(patched.system[1]).toEqual(body.system[1]);
++		expect(patched.tools).toEqual(body.tools);
++	});
++
++	it("patches the final SDK body and generates a request UUID", async () => {
++		const body =
++			'{"model":"claude-opus-5","messages":[],"max_tokens":1,"stream":true,"system":[{"type":"text","text":"x-anthropic-billing-header: cc_version=2.1.280.000; cc_entrypoint=sdk-cli; cch=00000;"}]}';
++		const transport = vi.fn<typeof fetch>(async () => new Response(null, { status: 200 }));
++		const wrapped = createClaudeCodeFetch(transport);
++
++		await wrapped("https://api.anthropic.com/v1/messages", {
++			method: "POST",
++			headers: { authorization: "Bearer secret" },
++			body,
++		});
++
++		expect(transport).toHaveBeenCalledOnce();
++		const [, init] = transport.mock.calls[0];
++		expect(String(init?.body)).toMatch(/cch=[0-9a-f]{5}/);
++		expect(String(init?.body)).not.toContain("cch=00000");
++		const headers = new Headers(init?.headers);
++		expect(headers.get("x-client-request-id")).toMatch(/^[0-9a-f-]{36}$/);
++		expect(headers.get("authorization")).toBe("Bearer secret");
++	});
++
++	describe("gzip request bodies", () => {
++		const billing = {
++			type: "text",
++			text: "x-anthropic-billing-header: cc_version=2.1.280.000; cc_entrypoint=sdk-cli; cch=00000;",
++		};
++		const smallBody = () =>
++			JSON.stringify({ model: "claude-opus-5", max_tokens: 1, system: [billing], messages: [] });
++		const bigBody = () =>
++			JSON.stringify({
++				model: "claude-opus-5",
++				max_tokens: 1,
++				stream: true,
++				system: [billing],
++				messages: [{ role: "user", content: "x".repeat(CLAUDE_CODE_GZIP_MIN_BYTES) }],
++			});
++		const send = (transport: typeof fetch, body: string) =>
++			createClaudeCodeFetch(transport)("https://api.anthropic.com/v1/messages", {
++				method: "POST",
++				headers: { "content-length": String(body.length) },
++				body,
++			});
++
++		it("compresses large bodies after the cch patch", async () => {
++			resetClaudeCodeGzipState();
++			const transport = vi.fn<typeof fetch>(async () => new Response(null, { status: 200 }));
++			await send(transport, bigBody());
++			const [, init] = transport.mock.calls[0];
++			const headers = new Headers(init?.headers);
++			expect(headers.get("content-encoding")).toBe("gzip");
++			expect(headers.has("content-length")).toBe(false);
++			const plain = gunzipSync(init?.body as Uint8Array).toString("utf8");
++			expect(plain).toMatch(/cch=[0-9a-f]{5}/);
++			expect(plain).not.toContain("cch=00000");
++		});
++
++		it("keeps small bodies plain", async () => {
++			resetClaudeCodeGzipState();
++			const transport = vi.fn<typeof fetch>(async () => new Response(null, { status: 200 }));
++			await send(transport, smallBody());
++			const [, init] = transport.mock.calls[0];
++			expect(typeof init?.body).toBe("string");
++			expect(new Headers(init?.headers).has("content-encoding")).toBe(false);
++		});
++
++		it("resends plain and stops compressing when the server refuses gzip", async () => {
++			resetClaudeCodeGzipState();
++			const refusal = '{"type":"error","error":{"details":{"error_code":"request_body_encoding_unsupported"}}}';
++			const transport = vi.fn<typeof fetch>(async (_input, init) =>
++				new Headers(init?.headers).has("content-encoding")
++					? new Response(refusal, { status: 400 })
++					: new Response(null, { status: 200 }),
++			);
++			const first = await send(transport, bigBody());
++			expect(first.status).toBe(200);
++			expect(transport).toHaveBeenCalledTimes(2);
++			expect(typeof transport.mock.calls[1][1]?.body).toBe("string");
++			await send(transport, bigBody());
++			expect(transport).toHaveBeenCalledTimes(3);
++			expect(typeof transport.mock.calls[2][1]?.body).toBe("string");
++			resetClaudeCodeGzipState();
++		});
++
++		it("passes ordinary 400 errors through without resending", async () => {
++			resetClaudeCodeGzipState();
++			const transport = vi.fn<typeof fetch>(
++				async () => new Response('{"type":"error","error":{"type":"invalid_request_error"}}', { status: 400 }),
++			);
++			const response = await send(transport, bigBody());
++			expect(response.status).toBe(400);
++			expect(transport).toHaveBeenCalledOnce();
++		});
++
++		it("honours PI_ANTHROPIC_GZIP=0", async () => {
++			resetClaudeCodeGzipState();
++			vi.stubEnv("PI_ANTHROPIC_GZIP", "0");
++			try {
++				const transport = vi.fn<typeof fetch>(async () => new Response(null, { status: 200 }));
++				await send(transport, bigBody());
++				expect(typeof transport.mock.calls[0][1]?.body).toBe("string");
++			} finally {
++				vi.unstubAllEnvs();
++			}
++		});
++	});
++});

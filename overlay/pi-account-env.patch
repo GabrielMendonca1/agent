@@ -1,0 +1,1057 @@
+diff --git a/packages/coding-agent/src/cli/args.ts b/packages/coding-agent/src/cli/args.ts
+index 4bcd28dc2369e4ba591ee40ed934996472ae2bc7..d88afd65f3d319d3e507192d9ccffb8ce2b1ceda 100644
+--- a/packages/coding-agent/src/cli/args.ts
++++ b/packages/coding-agent/src/cli/args.ts
+@@ -21,6 +21,8 @@ export interface Args {
+ 	resume?: boolean;
+ 	help?: boolean;
+ 	version?: boolean;
++	/** ARCA overlay: print overlay capabilities as JSON and exit. */
++	arcaCapabilities?: boolean;
+ 	mode?: Mode;
+ 	name?: string;
+ 	noSession?: boolean;
+@@ -93,6 +95,8 @@ export function parseArgs(args: string[]): Args {
+ 			result.help = true;
+ 		} else if (arg === "--version" || arg === "-v") {
+ 			result.version = true;
++		} else if (arg === "--arca-capabilities") {
++			result.arcaCapabilities = true;
+ 		} else if (arg === "--mode") {
+ 			const mode = args[i + 1];
+ 			if (mode === undefined || mode.startsWith("-")) {
+diff --git a/packages/coding-agent/src/core/account-selection.ts b/packages/coding-agent/src/core/account-selection.ts
+new file mode 100644
+index 0000000000000000000000000000000000000000..36298a08815cfdaabd281bffe2623b2a0a00aef0
+--- /dev/null
++++ b/packages/coding-agent/src/core/account-selection.ts
+@@ -0,0 +1,457 @@
++/**
++ * ARCA overlay (pi-account-env): per-session account selection.
++ *
++ * `PI_ACCOUNT_<PROVIDER>=<name>` makes this process resolve that provider's credential from
++ * `accounts.json` (the `/accounts` bucket next to auth.json) instead of auth.json. Strict: a
++ * missing account or a failed refresh is an error, never a fallback to auth.json.
++ *
++ * Every refresh that touches the bucket runs under the proper-lockfile lock of accounts.json and,
++ * when auth.json is involved, of auth.json too (order: accounts.json -> auth.json). A rotation is
++ * first written to a journal (`accounts.rotations/`), then to accounts.json, then to auth.json, and
++ * the journal is removed last. A kill or a compromised lock at any point leaves the journal, and the
++ * next locked operation replays it: every copy still holding the consumed refresh token (bucket
++ * entries and the auth.json slot) receives the rotated credential. A refreshed token is never lost.
++ */
++
++import type { AuthOperationOptions, Credential, CredentialInfo } from "@earendil-works/pi-ai";
++import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "fs";
++import { dirname, join } from "path";
++import lockfile from "proper-lockfile";
++import { setTimeout as sleep } from "timers/promises";
++import { stripBom } from "../utils/text.ts";
++
++/** Printed by `pi --arca-capabilities`; the app enables per-project accounts only when present. */
++export const ARCA_CAPABILITIES = { accountEnv: 1 } as const;
++
++const KNOWN_PROVIDERS = ["anthropic", "openai-codex"];
++const LOCK_STALE_MS = 30_000;
++
++interface Bucket {
++	version?: number;
++	active?: Record<string, string>;
++	accounts?: Record<string, Record<string, Credential>>;
++}
++
++export function accountEnvName(providerId: string): string {
++	return `PI_ACCOUNT_${providerId.toUpperCase().replace(/[^A-Z0-9]/g, "_")}`;
++}
++
++export function selectedAccount(providerId: string, env: NodeJS.ProcessEnv = process.env): string | undefined {
++	return env[accountEnvName(providerId)]?.trim() || undefined;
++}
++
++export class AccountSelectionError extends Error {}
++
++/**
++ * Lockstep with the `/accounts` extension (P1): the extension that writes accounts.json must use the
++ * same lock protocol and per-entry merge, or it reverts rotations made here. A compatible extension
++ * sets this global to >= ACCOUNTS_LOCK_PROTOCOL when it loads. If an extension registers
++ * `/accounts` without it, PI_ACCOUNT_* is refused in this process.
++ */
++export const ACCOUNTS_LOCK_PROTOCOL = 2;
++const LOCK_PROTOCOL_KEY = Symbol.for("arca.accounts.lockProtocol");
++let legacyAccountsWriter: string | undefined;
++
++export function noteAccountsWriters(
++	extensions: readonly { path: string; commands: ReadonlyMap<string, unknown> }[],
++): void {
++	const declared = Number((globalThis as Record<symbol, unknown>)[LOCK_PROTOCOL_KEY] ?? 0);
++	const writer = extensions.find((extension) => extension.commands.has("accounts"));
++	legacyAccountsWriter = writer && !(declared >= ACCOUNTS_LOCK_PROTOCOL) ? writer.path : undefined;
++}
++
++function assertCompatibleWriters(providerId: string, name: string): void {
++	if (!legacyAccountsWriter) return;
++	throw new AccountSelectionError(
++		`${accountEnvName(providerId)}=${name} refused: the /accounts extension loaded from ${legacyAccountsWriter} ` +
++			`uses the old accounts.json lock and would revert token rotations. Update it (ARCA/arca >= 3baf05e) ` +
++			`or open this Pi without ${accountEnvName(providerId)}.`,
++	);
++}
++
++/**
++ * Providers with a `/login` in flight in this process (set by ModelRuntime.login). A login is not
++ * a rotation of the active account, so it must never be chained into accounts.json.
++ */
++export const loginsInProgress = new Set<string>();
++
++function refreshOf(credential: Credential | undefined): unknown {
++	return credential?.type === "oauth" ? credential.refresh : undefined;
++}
++
++type SlotWriter = (
++	providerId: string,
++	fn: (slot: Credential | undefined) => Promise<Credential | undefined>,
++	options?: AuthOperationOptions,
++) => Promise<unknown>;
++
++interface Rotation {
++	provider: string;
++	from: string;
++	to: Credential;
++}
++
++interface Locked {
++	/** True once the lock was lost: skip writes; the journal keeps the rotation. */
++	compromised: () => boolean;
++}
++
++function rotated(before: Credential | undefined, after: Credential | undefined): before is Credential {
++	return (
++		before?.type === "oauth" &&
++		after?.type === "oauth" &&
++		typeof before.refresh === "string" &&
++		before.refresh !== after.refresh
++	);
++}
++
++export class AccountCredentials {
++	readonly bucketPath: string;
++	readonly journalDir: string;
++	private readonly writeSlot: SlotWriter | undefined;
++
++	constructor(authPath: string, writeSlot?: SlotWriter) {
++		this.bucketPath = join(dirname(authPath), "accounts.json");
++		this.journalDir = join(dirname(authPath), "accounts.rotations");
++		this.writeSlot = writeSlot;
++	}
++
++	private label(providerId: string, name: string): string {
++		return `account ${providerId}/${name} (${accountEnvName(providerId)})`;
++	}
++
++	private readBucket(): Bucket {
++		if (!existsSync(this.bucketPath)) return {};
++		try {
++			const parsed = JSON.parse(stripBom(readFileSync(this.bucketPath, "utf-8")));
++			return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed : {};
++		} catch (error) {
++			throw new AccountSelectionError(
++				`Cannot read ${this.bucketPath}: ${error instanceof Error ? error.message : String(error)}`,
++			);
++		}
++	}
++
++	private entry(bucket: Bucket, providerId: string, name: string): Credential {
++		const credential = bucket.accounts?.[providerId]?.[name];
++		if (!credential || typeof credential !== "object") {
++			throw new AccountSelectionError(
++				`${this.label(providerId, name)} does not exist in ${this.bucketPath}; check /accounts list or pick another account`,
++			);
++		}
++		if (credential.type === "oauth" && typeof credential.refresh !== "string") {
++			throw new AccountSelectionError(`${this.label(providerId, name)} has no refresh token; log in to it again`);
++		}
++		return credential;
++	}
++
++	read(providerId: string, name: string): Credential {
++		assertCompatibleWriters(providerId, name);
++		return structuredClone(this.entry(this.readBucket(), providerId, name));
++	}
++
++	/** Providers selected by env, with the stored credential type (oauth when the entry is missing). */
++	selected(knownIds: Iterable<string>, env: NodeJS.ProcessEnv = process.env): CredentialInfo[] {
++		let bucket: Bucket = {};
++		try {
++			bucket = this.readBucket();
++		} catch {
++			// read() reports the unreadable bucket; listing stays best-effort.
++		}
++		const ids = new Set([...KNOWN_PROVIDERS, ...Object.keys(bucket.accounts ?? {}), ...knownIds]);
++		const result: CredentialInfo[] = [];
++		for (const providerId of ids) {
++			const name = selectedAccount(providerId, env);
++			if (!name) continue;
++			result.push({ providerId, type: bucket.accounts?.[providerId]?.[name]?.type ?? "oauth" });
++		}
++		return result;
++	}
++
++	// ---------- rotation journal ----------
++
++	/** Best-effort: a journal that cannot be written must not cost the rotated token (it is in memory). */
++	private journal(rotation: Rotation): string | undefined {
++		try {
++			mkdirSync(this.journalDir, { recursive: true, mode: 0o700 });
++			const file = join(this.journalDir, `${Date.now()}-${process.pid}-${Math.random().toString(36).slice(2)}.json`);
++			this.atomicWrite(file, JSON.stringify(rotation));
++			return file;
++		} catch {
++			return undefined;
++		}
++	}
++
++	private journals(): { file: string; rotation: Rotation }[] {
++		if (!existsSync(this.journalDir)) return [];
++		const result: { file: string; rotation: Rotation }[] = [];
++		for (const name of readdirSync(this.journalDir)
++			.filter((entry) => entry.endsWith(".json"))
++			.sort()) {
++			const file = join(this.journalDir, name);
++			try {
++				const rotation = JSON.parse(readFileSync(file, "utf-8")) as Rotation;
++				if (typeof rotation?.provider === "string" && typeof rotation.from === "string" && rotation.to) {
++					result.push({ file, rotation });
++				}
++			} catch {
++				// Half-written by a killed process before the rename: never valid, ignore.
++			}
++		}
++		return result;
++	}
++
++	/** Chains rotations over one credential: R0 -> R1 -> R2 yields R2's credential. */
++	private static follow(credential: Credential | undefined, rotations: Rotation[]): Credential | undefined {
++		let current = credential;
++		let changed = false;
++		for (let moved = true, hops = 0; moved && hops <= rotations.length; hops++) {
++			moved = false;
++			for (const rotation of rotations) {
++				if (current?.type === "oauth" && current.refresh === rotation.from) {
++					current = rotation.to;
++					changed = moved = true;
++				}
++			}
++		}
++		return changed ? current : undefined;
++	}
++
++	/** Bucket part of a replay; the caller holds the accounts.json lock. */
++	private applyToBucket(rotations: Rotation[]): void {
++		if (rotations.length === 0) return;
++		const bucket = this.readBucket();
++		let changed = false;
++		for (const [provider, entries] of Object.entries(bucket.accounts ?? {})) {
++			const own = rotations.filter((rotation) => rotation.provider === provider);
++			for (const [name, credential] of Object.entries(entries)) {
++				const next = AccountCredentials.follow(credential, own);
++				if (next) {
++					entries[name] = next;
++					changed = true;
++				}
++			}
++		}
++		if (changed) this.atomicWrite(this.bucketPath, JSON.stringify(bucket, null, 2));
++	}
++
++	/** Full replay (bucket, then auth.json slots); the caller holds the accounts.json lock only. */
++	private async replay(locked: Locked, options?: AuthOperationOptions): Promise<void> {
++		const pending = this.journals();
++		if (pending.length === 0 || locked.compromised()) return;
++		const rotations = pending.map((entry) => entry.rotation);
++		let bucketApplied = true;
++		try {
++			this.applyToBucket(rotations);
++		} catch (error) {
++			// Unreadable accounts.json must not block the auth.json slots; keep the journal for later.
++			if (!(error instanceof AccountSelectionError)) throw error;
++			bucketApplied = false;
++		}
++		if (this.writeSlot) {
++			for (const provider of new Set(rotations.map((rotation) => rotation.provider))) {
++				const own = rotations.filter((rotation) => rotation.provider === provider);
++				await this.writeSlot(provider, async (slot) => AccountCredentials.follow(slot, own), options);
++			}
++		}
++		if (locked.compromised() || !bucketApplied) return;
++		for (const { file } of pending) rmSync(file, { force: true });
++	}
++
++	/** Pending journal after a failure: reacquire the lock and replay; true when it was applied. */
++	private async recover(file: string, options?: AuthOperationOptions): Promise<boolean> {
++		try {
++			await this.withLock(options?.signal, (locked) => this.replay(locked, options));
++		} catch {
++			// The journal stays on disk; the next locked operation of any process replays it.
++		}
++		return !existsSync(file);
++	}
++
++	// ---------- operations ----------
++
++	/**
++	 * Refresh/modify of the selected entry. When the account is the provider's global active one,
++	 * the refresh runs inside the auth.json lock too and the slot receives the rotation.
++	 */
++	async modify(
++		providerId: string,
++		name: string,
++		fn: (current: Credential | undefined) => Promise<Credential | undefined>,
++		options?: AuthOperationOptions,
++	): Promise<Credential> {
++		assertCompatibleWriters(providerId, name);
++		if (!existsSync(this.bucketPath)) this.entry({}, providerId, name);
++		let pending: { file: string | undefined; to: Credential } | undefined;
++		let recovered = false;
++		const recoverOnce = async (): Promise<boolean> => {
++			if (recovered || !pending?.file) return false;
++			recovered = true;
++			return this.recover(pending.file, options);
++		};
++		try {
++			return await this.withLock(options?.signal, async (locked) => {
++				await this.replay(locked, options);
++				if (locked.compromised()) throw new AccountSelectionError(`${this.bucketPath} lock was lost; retry`);
++				const bucket = this.readBucket();
++				const current = this.entry(bucket, providerId, name);
++				const apply = async (base: Credential): Promise<Credential> => {
++					let result: Credential;
++					try {
++						result = (await fn(structuredClone(base))) ?? base;
++					} catch (error) {
++						if (error instanceof Error) error.message = `${error.message} [${this.label(providerId, name)}]`;
++						throw error;
++					}
++					if (result.type !== base.type) {
++						throw new AccountSelectionError(
++							`${this.label(providerId, name)}: credential type cannot change here; use /accounts`,
++						);
++					}
++					if (rotated(base, result)) {
++						const rotation = { provider: providerId, from: (base as { refresh: string }).refresh, to: result };
++						pending = { file: this.journal(rotation), to: result };
++						// accounts.json first; auth.json (if any) is written after this returns.
++						if (!locked.compromised()) this.applyToBucket([rotation]);
++					} else if (JSON.stringify(result) !== JSON.stringify(base) && !locked.compromised()) {
++						// Same refresh token, new fields (e.g. access only): plain entry update.
++						const fresh = this.readBucket();
++						if (fresh.accounts?.[providerId]?.[name]) {
++							fresh.accounts[providerId][name] = result;
++							this.atomicWrite(this.bucketPath, JSON.stringify(fresh, null, 2));
++						}
++					}
++					return result;
++				};
++
++				let result: Credential = current;
++				if (bucket.active?.[providerId] === name && this.writeSlot) {
++					await this.writeSlot(
++						providerId,
++						async (slot) => {
++							result = await apply(current);
++							// Only a slot holding this account's refresh token is its copy. A diverged slot
++							// (a /login without /accounts save) is never adopted nor overwritten.
++							const chained = slot?.type === "oauth" && refreshOf(slot) === refreshOf(current);
++							return chained && JSON.stringify(slot) !== JSON.stringify(result) ? result : undefined;
++						},
++						options,
++					);
++				} else {
++					result = await apply(current);
++				}
++				if (pending && !locked.compromised()) {
++					if (pending.file) rmSync(pending.file, { force: true });
++					pending = undefined;
++				}
++				return structuredClone(result);
++			});
++		} catch (error) {
++			if (pending && (await recoverOnce())) return structuredClone(pending.to);
++			throw error;
++		} finally {
++			if (pending?.file && existsSync(pending.file)) await recoverOnce();
++		}
++	}
++
++	/**
++	 * Global path (no PI_ACCOUNT_*): the slot refresh runs under accounts.json -> auth.json, and a
++	 * rotation reaches every bucket entry holding the consumed token BEFORE auth.json is written.
++	 * `run` receives a hook to call inside the auth.json callback with (before, after).
++	 */
++	async chainGlobal<T>(
++		providerId: string,
++		run: (beforeWrite: (before: Credential | undefined, after: Credential | undefined) => void) => Promise<T>,
++		options?: AuthOperationOptions,
++	): Promise<T> {
++		if (!existsSync(this.bucketPath) && !existsSync(this.journalDir)) return run(() => {});
++		let keepJournal = false;
++		let pending: { file: string | undefined; to: Credential } | undefined;
++		let recovered = false;
++		const recoverOnce = async (): Promise<boolean> => {
++			if (recovered || !pending?.file) return false;
++			recovered = true;
++			return this.recover(pending.file, options);
++		};
++		try {
++			return await this.withLock(options?.signal, async (locked) => {
++				await this.replay(locked, options);
++				if (locked.compromised()) throw new AccountSelectionError(`${this.bucketPath} lock was lost; retry`);
++				const value = await run((before, after) => {
++					if (!rotated(before, after) || loginsInProgress.has(providerId)) return;
++					const rotation = { provider: providerId, from: (before as { refresh: string }).refresh, to: after! };
++					pending = { file: this.journal(rotation), to: after! };
++					if (locked.compromised()) return;
++					try {
++						this.applyToBucket([rotation]);
++					} catch (error) {
++						// Global session: an unreadable bucket must not cost the slot refresh. Keep the journal.
++						if (!(error instanceof AccountSelectionError)) throw error;
++						keepJournal = true;
++					}
++				});
++				if (pending && !locked.compromised() && !keepJournal) {
++					if (pending.file) rmSync(pending.file, { force: true });
++					pending = undefined;
++				}
++				return value;
++			});
++		} catch (error) {
++			if (pending && (await recoverOnce())) return pending.to as T;
++			throw error;
++		} finally {
++			if (pending?.file && existsSync(pending.file) && !keepJournal) await recoverOnce();
++		}
++	}
++
++	private atomicWrite(path: string, content: string): void {
++		const tmp = `${path}.tmp-${process.pid}-${Date.now()}`;
++		writeFileSync(tmp, content, { encoding: "utf-8", mode: 0o600 });
++		try {
++			for (let attempt = 0; ; attempt++) {
++				try {
++					renameSync(tmp, path);
++					return;
++				} catch (error) {
++					const code = (error as NodeJS.ErrnoException).code;
++					if (attempt >= 4 || (code !== "EPERM" && code !== "EBUSY")) throw error;
++					Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 25 * (attempt + 1));
++				}
++			}
++		} finally {
++			rmSync(tmp, { force: true });
++		}
++	}
++
++	/** Same protocol as FileAuthStorageBackend: `<file>.lock` directory, 30 s stale, backoff. */
++	private async withLock<T>(signal: AbortSignal | undefined, run: (locked: Locked) => Promise<T>): Promise<T> {
++		let compromised: Error | undefined;
++		const deadline = Date.now() + LOCK_STALE_MS;
++		let release: (() => Promise<void>) | undefined;
++		for (let retry = 0; !release; retry++) {
++			signal?.throwIfAborted();
++			try {
++				release = await lockfile.lock(this.bucketPath, {
++					realpath: false,
++					retries: 0,
++					stale: LOCK_STALE_MS,
++					onCompromised: (error) => {
++						compromised = error;
++					},
++				});
++			} catch (error) {
++				const remaining = deadline - Date.now();
++				if ((error as NodeJS.ErrnoException).code !== "ELOCKED" || remaining <= 0) throw error;
++				const delay = Math.min(Math.round(Math.min(10 * 2 ** retry, 1_000) * (1 + Math.random())), remaining);
++				await sleep(delay, undefined, signal ? { signal } : undefined);
++			}
++		}
++		try {
++			const result = await run({ compromised: () => compromised !== undefined });
++			if (compromised) throw compromised;
++			return result;
++		} finally {
++			await release().catch(() => {});
++		}
++	}
++}
+diff --git a/packages/coding-agent/src/core/auth-storage.ts b/packages/coding-agent/src/core/auth-storage.ts
+index 5a8fa417add67691beb7072d7b50967ca06bf872..1655e03e3226a097f272d5f355413ca076a91e49 100644
+--- a/packages/coding-agent/src/core/auth-storage.ts
++++ b/packages/coding-agent/src/core/auth-storage.ts
+@@ -12,6 +12,7 @@ import { getAgentDir } from "../config.ts";
+ import { raceWithAbortSignal } from "../utils/abort.ts";
+ import { getFileRevision, normalizePath } from "../utils/paths.ts";
+ import { stripBom } from "../utils/text.ts";
++import { AccountCredentials, AccountSelectionError, accountEnvName, selectedAccount } from "./account-selection.ts";
+ import { isCommandConfigValue, resolveConfigValue } from "./resolve-config-value.ts";
+ 
+ type AuthStorageData = Record<string, Credential>;
+@@ -204,9 +205,11 @@ export class FileAuthStorageBackend implements AuthStorageBackend {
+ export class ReadOnlyAuthStorage implements CredentialStore {
+ 	private readonly authPath: string;
+ 	private data: AuthStorageData | undefined;
++	private readonly accounts: AccountCredentials;
+ 
+ 	constructor(authPath: string = join(getAgentDir(), "auth.json")) {
+ 		this.authPath = normalizePath(authPath);
++		this.accounts = new AccountCredentials(this.authPath);
+ 	}
+ 
+ 	private load(): AuthStorageData {
+@@ -258,6 +261,8 @@ export class ReadOnlyAuthStorage implements CredentialStore {
+ 
+ 	async read(providerId: string, options?: AuthOperationOptions): Promise<Credential | undefined> {
+ 		options?.signal?.throwIfAborted();
++		const account = selectedAccount(providerId);
++		if (account) return this.accounts.read(providerId, account);
+ 		const credential = this.load()[providerId];
+ 		options?.signal?.throwIfAborted();
+ 		if (!credential) return undefined;
+@@ -269,12 +274,15 @@ export class ReadOnlyAuthStorage implements CredentialStore {
+ 
+ 	async list(options?: AuthOperationOptions): Promise<readonly CredentialInfo[]> {
+ 		options?.signal?.throwIfAborted();
+-		const credentials = Object.entries(this.load()).map(([providerId, credential]) => ({
+-			providerId,
+-			type: credential.type,
+-		}));
++		const listed = new Map(
++			Object.entries(this.load()).map(([providerId, credential]) => [
++				providerId,
++				{ providerId, type: credential.type },
++			]),
++		);
++		for (const entry of this.accounts.selected(listed.keys())) listed.set(entry.providerId, entry);
+ 		options?.signal?.throwIfAborted();
+-		return credentials;
++		return [...listed.values()];
+ 	}
+ 
+ 	async modify(
+@@ -329,10 +337,14 @@ export class AuthStorage implements CredentialStore {
+ 	private storage: AuthStorageBackend;
+ 	private authPath: string | undefined;
+ 	private readState: AuthFileReadState;
++	private readonly accounts: AccountCredentials | undefined;
+ 
+ 	private constructor(storage: AuthStorageBackend, authPath?: string) {
+ 		this.storage = storage;
+ 		this.authPath = authPath;
++		this.accounts = authPath
++			? new AccountCredentials(authPath, (provider, fn, options) => this.modifyFile(provider, fn, options))
++			: undefined;
+ 		this.readState =
+ 			authPath && sharedAuthFileReadState?.authPath === authPath ? sharedAuthFileReadState.readState : { data: {} };
+ 		if (authPath && !sharedAuthFileReadState) {
+@@ -439,7 +451,16 @@ export class AuthStorage implements CredentialStore {
+ 		}
+ 	}
+ 
++	private selected(provider: string): string | undefined {
++		return this.accounts ? selectedAccount(provider) : undefined;
++	}
++
+ 	async read(provider: string, options?: AuthOperationOptions): Promise<Credential | undefined> {
++		const account = this.selected(provider);
++		if (account && this.accounts) {
++			options?.signal?.throwIfAborted();
++			return this.accounts.read(provider, account);
++		}
+ 		const credential = (await this.readLatestData(options))[provider];
+ 		options?.signal?.throwIfAborted();
+ 		if (credential?.type !== "api_key") return credential;
+@@ -451,6 +472,30 @@ export class AuthStorage implements CredentialStore {
+ 		provider: string,
+ 		fn: (current: Credential | undefined) => Promise<Credential | undefined>,
+ 		options?: AuthOperationOptions,
++	): Promise<Credential | undefined> {
++		const account = this.selected(provider);
++		if (account && this.accounts) return this.accounts.modify(provider, account, fn, options);
++		if (!this.accounts) return this.modifyFile(provider, fn, options);
++		return this.accounts.chainGlobal(
++			provider,
++			(beforeWrite) =>
++				this.modifyFile(
++					provider,
++					async (current) => {
++						const next = await fn(current);
++						beforeWrite(current, next);
++						return next;
++					},
++					options,
++				),
++			options,
++		);
++	}
++
++	private async modifyFile(
++		provider: string,
++		fn: (current: Credential | undefined) => Promise<Credential | undefined>,
++		options?: AuthOperationOptions,
+ 	): Promise<Credential | undefined> {
+ 		let latestData = this.readState.data;
+ 		let revision: string | undefined;
+@@ -472,6 +517,12 @@ export class AuthStorage implements CredentialStore {
+ 	}
+ 
+ 	async delete(provider: string, options?: AuthOperationOptions): Promise<void> {
++		const account = this.selected(provider);
++		if (account) {
++			throw new AccountSelectionError(
++				`${provider} uses account ${account} from ${accountEnvName(provider)}; manage it with /accounts, not /logout`,
++			);
++		}
+ 		let latestData = this.readState.data;
+ 		await this.storage.withLockAsync(async (content) => {
+ 			const currentData = this.parseStorageData(content);
+@@ -486,7 +537,13 @@ export class AuthStorage implements CredentialStore {
+ 	async list(options?: AuthOperationOptions): Promise<readonly CredentialInfo[]> {
+ 		const entries = Object.entries(await this.readLatestData(options));
+ 		options?.signal?.throwIfAborted();
+-		return entries.map(([providerId, credential]) => ({ providerId, type: credential.type }));
++		const listed = new Map(
++			entries.map(([providerId, credential]) => [providerId, { providerId, type: credential.type }]),
++		);
++		for (const entry of this.accounts?.selected(listed.keys()) ?? []) {
++			listed.set(entry.providerId, entry);
++		}
++		return [...listed.values()];
+ 	}
+ }
+ 
+diff --git a/packages/coding-agent/src/core/model-runtime.ts b/packages/coding-agent/src/core/model-runtime.ts
+index 8e03f4d1f4d5166db8a10265f34602f4b542ff4e..d50ca1eb464097fc3b4c0b4163e42832b2693ccb 100644
+--- a/packages/coding-agent/src/core/model-runtime.ts
++++ b/packages/coding-agent/src/core/model-runtime.ts
+@@ -69,6 +69,7 @@ import {
+ } from "@earendil-works/pi-ai/utils/model-operations";
+ import { getAgentDir } from "../config.ts";
+ import { operationSignal, raceWithAbortSignal } from "../utils/abort.ts";
++import { AccountSelectionError, accountEnvName, loginsInProgress, selectedAccount } from "./account-selection.ts";
+ import { AuthStorage as DefaultAuthStorage } from "./auth-storage.ts";
+ import { ModelConfig } from "./model-config.ts";
+ import { FileModelsStore, InMemoryCodingAgentModelsStore } from "./models-store.ts";
+@@ -838,10 +839,23 @@ export class ModelRuntime implements Models {
+ 		options?: LoginOptions,
+ 	): Promise<Credential> {
+ 		const signal = operationSignal(interaction.signal);
++		const account = selectedAccount(providerId);
++		if (account) {
++			return Promise.reject(
++				new AccountSelectionError(
++					`${providerId} uses account ${account} from ${accountEnvName(providerId)}; log in to accounts with /accounts, not /login`,
++				),
++			);
++		}
+ 		return this.enqueueCredentialOperation(providerId, signal, async () => {
+-			const credential = await this.models.login(providerId, type, { ...interaction, signal }, options);
+-			await this.synchronizeCredentialState(providerId, "login", credential, signal);
+-			return credential;
++			loginsInProgress.add(providerId);
++			try {
++				const credential = await this.models.login(providerId, type, { ...interaction, signal }, options);
++				await this.synchronizeCredentialState(providerId, "login", credential, signal);
++				return credential;
++			} finally {
++				loginsInProgress.delete(providerId);
++			}
+ 		});
+ 	}
+ 
+diff --git a/packages/coding-agent/src/core/resource-loader.ts b/packages/coding-agent/src/core/resource-loader.ts
+index bb0740e49675be6a28a537fc1d8ae92d06fbb924..b8a528c7a063bb2d43c995fd9cd872fbf7861209 100644
+--- a/packages/coding-agent/src/core/resource-loader.ts
++++ b/packages/coding-agent/src/core/resource-loader.ts
+@@ -4,6 +4,7 @@ import { detectCapabilities, getTerminalColorMode, type TerminalColorMode } from
+ import chalk from "chalk";
+ import { APP_NAME, CONFIG_DIR_NAME } from "../config.ts";
+ import { loadThemeFromPath, type Theme } from "../modes/interactive/theme/theme.ts";
++import { noteAccountsWriters } from "./account-selection.ts";
+ import type { ResourceDiagnostic } from "./diagnostics.ts";
+ 
+ export type { ResourceCollision, ResourceDiagnostic } from "./diagnostics.ts";
+@@ -626,6 +627,7 @@ export class DefaultResourceLoader implements ResourceLoader {
+ 			}
+ 		}
+ 		this.extensionsResult = this.extensionsOverride ? this.extensionsOverride(extensionsResult) : extensionsResult;
++		noteAccountsWriters(this.extensionsResult.extensions);
+ 		this.applyExtensionSourceInfo(this.extensionsResult.extensions, metadataByPath);
+ 
+ 		const skillPaths = this.noSkills
+diff --git a/packages/coding-agent/src/main.ts b/packages/coding-agent/src/main.ts
+index 88aa3c5d30775fb468ceaa94dd7ddfc3e8eab5ef..294803f7630f51d142ea9d159f5a36d775142091 100644
+--- a/packages/coding-agent/src/main.ts
++++ b/packages/coding-agent/src/main.ts
+@@ -34,6 +34,7 @@ import { createProjectTrustContext } from "./cli/project-trust.ts";
+ import { selectSession } from "./cli/session-picker.ts";
+ import { shouldRunFirstTimeSetup, showFirstTimeSetup, showStartupSelector } from "./cli/startup-ui.ts";
+ import { APP_NAME, ENV_SESSION_DIR, expandTildePath, getAgentDir, getPackageDir, VERSION } from "./config.ts";
++import { ARCA_CAPABILITIES } from "./core/account-selection.ts";
+ import { type CreateAgentSessionRuntimeFactory, createAgentSessionRuntime } from "./core/agent-session-runtime.ts";
+ import {
+ 	type AgentSessionRuntimeDiagnostic,
+@@ -648,6 +649,11 @@ export async function main(args: string[], options?: MainOptions) {
+ 		process.exit(0);
+ 	}
+ 
++	if (parsed.arcaCapabilities) {
++		console.log(JSON.stringify(ARCA_CAPABILITIES));
++		process.exit(0);
++	}
++
+ 	if (parsed.export) {
+ 		let result: string;
+ 		try {
+diff --git a/packages/coding-agent/test/account-selection.test.ts b/packages/coding-agent/test/account-selection.test.ts
+new file mode 100644
+index 0000000000000000000000000000000000000000..6b29d9ff499c952c4353609a573900dcaa54469e
+--- /dev/null
++++ b/packages/coding-agent/test/account-selection.test.ts
+@@ -0,0 +1,338 @@
++import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
++import { tmpdir } from "node:os";
++import { join } from "node:path";
++import { type Credential, createModels, type Provider } from "@earendil-works/pi-ai";
++import lockfile from "proper-lockfile";
++import { afterEach, beforeEach, describe, expect, test } from "vitest";
++import { accountEnvName, loginsInProgress, noteAccountsWriters } from "../src/core/account-selection.ts";
++import { AuthStorage, ReadOnlyAuthStorage } from "../src/core/auth-storage.ts";
++import { ModelRuntime } from "../src/core/model-runtime.ts";
++
++const PROVIDER = "anthropic";
++const ENV = "PI_ACCOUNT_ANTHROPIC";
++
++function oauth(tag: string, expiresIn: number, extra: Record<string, unknown> = {}): Credential {
++	return {
++		type: "oauth",
++		access: `access-${tag}`,
++		refresh: `refresh-${tag}`,
++		expires: Date.now() + expiresIn,
++		...extra,
++	};
++}
++
++/** OAuth server double: each refresh token works once (Anthropic rotates and kills the old one). */
++function rotatingProvider() {
++	const used = new Set<string>();
++	let calls = 0;
++	const provider: Provider = {
++		id: PROVIDER,
++		name: "Rotating",
++		auth: {
++			oauth: {
++				name: "OAuth",
++				login: async () => {
++					throw new Error("not used");
++				},
++				refresh: async (credential) => {
++					calls++;
++					if (used.has(credential.refresh)) throw new Error(`refresh token reused: ${credential.refresh}`);
++					used.add(credential.refresh);
++					await new Promise((resolve) => setTimeout(resolve, 30));
++					return {
++						...credential,
++						access: `${credential.access}+`,
++						refresh: `${credential.refresh}+`,
++						expires: Date.now() + 3_600_000,
++					};
++				},
++				toAuth: async (credential) => ({ apiKey: credential.access }),
++			},
++		},
++		getModels: () => [],
++		stream: () => {
++			throw new Error("not used");
++		},
++		streamSimple: () => {
++			throw new Error("not used");
++		},
++	};
++	return { provider, calls: () => calls };
++}
++
++describe("PI_ACCOUNT_<PROVIDER> account selection", () => {
++	const dir = join(tmpdir(), `pi-account-selection-${Date.now()}-${Math.random().toString(36).slice(2)}`);
++	const authPath = join(dir, "auth.json");
++	const bucketPath = join(dir, "accounts.json");
++	const saved = process.env[ENV];
++
++	const writeAuth = (data: Record<string, Credential>) => writeFileSync(authPath, JSON.stringify(data));
++	const writeBucket = (active: Record<string, string>, accounts: Record<string, Record<string, Credential>>) =>
++		writeFileSync(bucketPath, JSON.stringify({ version: 1, active, accounts }));
++	const readJson = (path: string) => JSON.parse(readFileSync(path, "utf-8"));
++	const auth = async (storage: AuthStorage, provider: Provider) => {
++		const models = createModels({ credentials: storage });
++		models.setProvider(provider);
++		return (await models.getAuth(PROVIDER))?.auth;
++	};
++
++	beforeEach(() => {
++		if (existsSync(dir)) rmSync(dir, { recursive: true });
++		mkdirSync(dir, { recursive: true });
++		delete process.env[ENV];
++	});
++
++	afterEach(() => {
++		if (existsSync(dir)) rmSync(dir, { recursive: true });
++		noteAccountsWriters([]);
++		delete (globalThis as Record<symbol, unknown>)[Symbol.for("arca.accounts.lockProtocol")];
++		if (saved === undefined) delete process.env[ENV];
++		else process.env[ENV] = saved;
++	});
++
++	test("maps provider ids to env names", () => {
++		expect(accountEnvName("anthropic")).toBe("PI_ACCOUNT_ANTHROPIC");
++		expect(accountEnvName("openai-codex")).toBe("PI_ACCOUNT_OPENAI_CODEX");
++	});
++
++	test("without the env, auth.json is used as before", async () => {
++		writeAuth({ anthropic: oauth("global", 3_600_000) });
++		writeBucket({ anthropic: "work" }, { anthropic: { work: oauth("work", 3_600_000) } });
++		expect(await AuthStorage.create(authPath).read(PROVIDER)).toMatchObject({ access: "access-global" });
++	});
++
++	test("with the env, the selected account is read from accounts.json; other providers keep auth.json", async () => {
++		writeAuth({ anthropic: oauth("global", 3_600_000), other: { type: "api_key", key: "k" } });
++		writeBucket(
++			{ anthropic: "work" },
++			{ anthropic: { work: oauth("work", 3_600_000), client: oauth("client", 3_600_000) } },
++		);
++		process.env[ENV] = "client";
++		const storage = AuthStorage.create(authPath);
++		expect(await storage.read(PROVIDER)).toMatchObject({ access: "access-client" });
++		expect(await storage.read("other")).toEqual({ type: "api_key", key: "k" });
++		expect(await new ReadOnlyAuthStorage(authPath).read(PROVIDER)).toMatchObject({ access: "access-client" });
++	});
++
++	test("a missing account is an error, never a fallback to auth.json", async () => {
++		writeAuth({ anthropic: oauth("global", 3_600_000) });
++		writeBucket({}, { anthropic: { work: oauth("work", 3_600_000) } });
++		process.env[ENV] = "ghost";
++		const storage = AuthStorage.create(authPath);
++		await expect(auth(storage, rotatingProvider().provider)).rejects.toThrow(
++			/anthropic\/ghost.*PI_ACCOUNT_ANTHROPIC/,
++		);
++		expect((await storage.list()).map((entry) => entry.providerId)).toContain(PROVIDER);
++		await expect(storage.delete(PROVIDER)).rejects.toThrow(/\/accounts/);
++	});
++
++	test("refreshing an inactive account rewrites only its entry and leaves auth.json untouched", async () => {
++		writeAuth({ anthropic: oauth("global", 3_600_000) });
++		writeBucket({ anthropic: "work" }, { anthropic: { work: oauth("work", 3_600_000), client: oauth("client", 0) } });
++		const authBefore = readFileSync(authPath, "utf-8");
++		process.env[ENV] = "client";
++		const { provider } = rotatingProvider();
++		expect(await auth(AuthStorage.create(authPath), provider)).toEqual({ apiKey: "access-client+" });
++		const bucket = readJson(bucketPath);
++		expect(bucket.accounts.anthropic.client.refresh).toBe("refresh-client+");
++		expect(bucket.accounts.anthropic.work.refresh).toBe("refresh-work");
++		expect(readFileSync(authPath, "utf-8")).toBe(authBefore);
++	});
++
++	test("refreshing the global active account also updates its auth.json slot", async () => {
++		writeAuth({ anthropic: oauth("work", 0) });
++		writeBucket({ anthropic: "work" }, { anthropic: { work: oauth("work", 0) } });
++		process.env[ENV] = "work";
++		const { provider } = rotatingProvider();
++		expect(await auth(AuthStorage.create(authPath), provider)).toEqual({ apiKey: "access-work+" });
++		expect(readJson(bucketPath).accounts.anthropic.work.refresh).toBe("refresh-work+");
++		expect(readJson(authPath).anthropic.refresh).toBe("refresh-work+");
++	});
++
++	test("never adopts a diverged global slot: the selected account stays the bucket entry", async () => {
++		// Slot holds another login of the same provider (no accountId on Anthropic): /login without save.
++		writeAuth({ anthropic: oauth("personal", 3_600_000) });
++		writeBucket({ anthropic: "work" }, { anthropic: { work: oauth("work", 0) } });
++		const authBefore = readFileSync(authPath, "utf-8");
++		process.env[ENV] = "work";
++		expect(await auth(AuthStorage.create(authPath), rotatingProvider().provider)).toEqual({ apiKey: "access-work+" });
++		expect(readFileSync(authPath, "utf-8")).toBe(authBefore);
++		expect(readJson(bucketPath).accounts.anthropic.work.refresh).toBe("refresh-work+");
++	});
++
++	test("a global refresh of the active account is chained into accounts.json", async () => {
++		writeAuth({ anthropic: oauth("work", 0) });
++		writeBucket({ anthropic: "work" }, { anthropic: { work: oauth("work", 0), other: oauth("other", 0) } });
++		const rot = rotatingProvider();
++		expect(await auth(AuthStorage.create(authPath), rot.provider)).toEqual({ apiKey: "access-work+" });
++		expect(readJson(authPath).anthropic.refresh).toBe("refresh-work+");
++		const bucket = readJson(bucketPath);
++		expect(bucket.accounts.anthropic.work.refresh).toBe("refresh-work+");
++		expect(bucket.accounts.anthropic.other.refresh).toBe("refresh-other");
++		// A later PI_ACCOUNT_* session on the same account does not reuse the consumed token.
++		process.env[ENV] = "work";
++		expect(await auth(AuthStorage.create(authPath), rot.provider)).toEqual({ apiKey: "access-work+" });
++		expect(rot.calls()).toBe(1);
++	});
++
++	test("a global refresh of a slot outside the bucket chain leaves accounts.json alone", async () => {
++		writeAuth({ anthropic: oauth("personal", 0) });
++		writeBucket({ anthropic: "work" }, { anthropic: { work: oauth("work", 3_600_000) } });
++		const before = readFileSync(bucketPath, "utf-8");
++		expect(await auth(AuthStorage.create(authPath), rotatingProvider().provider)).toEqual({
++			apiKey: "access-personal+",
++		});
++		expect(readFileSync(bucketPath, "utf-8")).toBe(before);
++	});
++
++	test("login is refused for a provider selected by env and is never chained into the bucket", async () => {
++		writeAuth({ anthropic: oauth("work", 0) });
++		writeBucket({ anthropic: "work" }, { anthropic: { work: oauth("work", 0) } });
++		const storage = AuthStorage.create(authPath);
++		const runtime = await ModelRuntime.create({ credentials: storage });
++		process.env[ENV] = "work";
++		await expect(runtime.login(PROVIDER, "oauth", { signal: undefined } as never)).rejects.toThrow(/\/accounts/);
++		delete process.env[ENV];
++		loginsInProgress.add(PROVIDER);
++		try {
++			await storage.modify(PROVIDER, async () => oauth("intruder", 3_600_000));
++		} finally {
++			loginsInProgress.delete(PROVIDER);
++		}
++		expect(readJson(authPath).anthropic.refresh).toBe("refresh-intruder");
++		expect(readJson(bucketPath).accounts.anthropic.work.refresh).toBe("refresh-work");
++	});
++
++	test("does not adopt or overwrite an auth.json slot of another identity", async () => {
++		writeAuth({ anthropic: oauth("other", 3_600_000, { accountId: "B" }) });
++		writeBucket({ anthropic: "work" }, { anthropic: { work: oauth("work", 0, { accountId: "A" }) } });
++		const authBefore = readFileSync(authPath, "utf-8");
++		process.env[ENV] = "work";
++		expect(await auth(AuthStorage.create(authPath), rotatingProvider().provider)).toEqual({ apiKey: "access-work+" });
++		expect(readFileSync(authPath, "utf-8")).toBe(authBefore);
++	});
++
++	test("concurrent sessions on the same account refresh once and keep the rotation", async () => {
++		writeAuth({});
++		writeBucket({}, { anthropic: { work: oauth("work", 0) } });
++		process.env[ENV] = "work";
++		const rot = rotatingProvider();
++		const results = await Promise.all(
++			Array.from({ length: 4 }, () => auth(AuthStorage.create(authPath), rot.provider)),
++		);
++		expect(results).toEqual(Array(4).fill({ apiKey: "access-work+" }));
++		expect(rot.calls()).toBe(1);
++		expect(readJson(bucketPath).accounts.anthropic.work.refresh).toBe("refresh-work+");
++	});
++
++	test("a rejected refresh names the account and keeps the stored credential", async () => {
++		writeBucket({}, { anthropic: { work: oauth("work", 0) } });
++		const before = readFileSync(bucketPath, "utf-8");
++		process.env[ENV] = "work";
++		const provider = rotatingProvider().provider;
++		provider.auth.oauth!.refresh = async () => {
++			throw new Error("invalid_grant");
++		};
++		await expect(auth(AuthStorage.create(authPath), provider)).rejects.toThrow(/anthropic\/work/);
++		expect(readFileSync(bucketPath, "utf-8")).toBe(before);
++	});
++
++	test("waits for the accounts.json lock held by another writer", async () => {
++		writeBucket({}, { anthropic: { work: oauth("work", 0) } });
++		process.env[ENV] = "work";
++		const release = await lockfile.lock(bucketPath, { realpath: false });
++		let done = false;
++		const pending = auth(AuthStorage.create(authPath), rotatingProvider().provider).then((value) => {
++			done = true;
++			return value;
++		});
++		await new Promise((resolve) => setTimeout(resolve, 150));
++		expect(done).toBe(false);
++		await release();
++		expect(await pending).toEqual({ apiKey: "access-work+" });
++	});
++
++	const journalDir = join(dir, "accounts.rotations");
++	const writeJournal = (from: string, to: Credential) => {
++		mkdirSync(journalDir, { recursive: true });
++		writeFileSync(join(journalDir, `1-1-x.json`), JSON.stringify({ provider: PROVIDER, from, to }));
++	};
++
++	test("a kill after accounts.json but before auth.json is repaired from the journal", async () => {
++		const next = oauth("work2", 3_600_000);
++		writeAuth({ anthropic: oauth("work", 0) }); // slot still holds the consumed token
++		writeBucket({ anthropic: "work" }, { anthropic: { work: next } });
++		writeJournal("refresh-work", next);
++		const rot = rotatingProvider();
++		// Global session, no env: replays before refreshing, so the dead token is never sent.
++		expect(await auth(AuthStorage.create(authPath), rot.provider)).toEqual({ apiKey: "access-work2" });
++		expect(rot.calls()).toBe(0);
++		expect(readJson(authPath).anthropic.refresh).toBe("refresh-work2");
++		expect(readdirSync(journalDir)).toEqual([]);
++	});
++
++	test("a kill after auth.json but before accounts.json is repaired for env sessions", async () => {
++		const next = oauth("work2", 3_600_000);
++		writeAuth({ anthropic: next });
++		writeBucket({}, { anthropic: { work: oauth("work", 0) } });
++		writeJournal("refresh-work", next);
++		process.env[ENV] = "work";
++		const rot = rotatingProvider();
++		expect(await auth(AuthStorage.create(authPath), rot.provider)).toEqual({ apiKey: "access-work2" });
++		expect(rot.calls()).toBe(0);
++		expect(readJson(bucketPath).accounts.anthropic.work.refresh).toBe("refresh-work2");
++	});
++
++	test("a refreshed token survives a failed bucket write and is replayed later", async () => {
++		writeBucket({}, { anthropic: { work: oauth("work", 0) } });
++		const bucketContent = readFileSync(bucketPath, "utf-8");
++		process.env[ENV] = "work";
++		const rot = rotatingProvider();
++		const refresh = rot.provider.auth.oauth!.refresh;
++		rot.provider.auth.oauth!.refresh = async (credential, signal) => {
++			const next = await refresh(credential, signal);
++			rmSync(bucketPath);
++			mkdirSync(bucketPath); // accounts.json becomes unwritable after the network refresh
++			return next;
++		};
++		await expect(auth(AuthStorage.create(authPath), rot.provider)).rejects.toThrow();
++		const [file] = readdirSync(journalDir);
++		expect(JSON.parse(readFileSync(join(journalDir, file), "utf-8")).to.refresh).toBe("refresh-work+");
++		rmSync(bucketPath, { recursive: true });
++		writeFileSync(bucketPath, bucketContent);
++		rot.provider.auth.oauth!.refresh = refresh;
++		expect(await auth(AuthStorage.create(authPath), rot.provider)).toEqual({ apiKey: "access-work+" });
++		expect(rot.calls()).toBe(1);
++		expect(readJson(bucketPath).accounts.anthropic.work.refresh).toBe("refresh-work+");
++	});
++
++	test("PI_ACCOUNT_* is refused while an /accounts extension without the new lock protocol is loaded", async () => {
++		writeBucket({}, { anthropic: { work: oauth("work", 3_600_000) } });
++		process.env[ENV] = "work";
++		const legacy = [{ path: "/old/accounts.ts", commands: new Map([["accounts", {}]]) }];
++		noteAccountsWriters(legacy);
++		await expect(AuthStorage.create(authPath).read(PROVIDER)).rejects.toThrow(
++			/\/old\/accounts\.ts.*old accounts\.json lock/,
++		);
++		(globalThis as Record<symbol, unknown>)[Symbol.for("arca.accounts.lockProtocol")] = 2;
++		noteAccountsWriters(legacy);
++		expect(await AuthStorage.create(authPath).read(PROVIDER)).toMatchObject({ access: "access-work" });
++		noteAccountsWriters([]); // no /accounts extension (subagent --no-extensions): allowed
++		expect(await AuthStorage.create(authPath).read(PROVIDER)).toMatchObject({ access: "access-work" });
++	});
++
++	test("a corrupt accounts.json does not break the refresh of a global session", async () => {
++		writeAuth({ anthropic: oauth("work", 0) });
++		writeFileSync(bucketPath, "{ not json");
++		const rot = rotatingProvider();
++		expect(await auth(AuthStorage.create(authPath), rot.provider)).toEqual({ apiKey: "access-work+" });
++		expect(readJson(authPath).anthropic.refresh).toBe("refresh-work+");
++		// The rotation stays journaled until the bucket is readable again.
++		expect(readdirSync(journalDir)).toHaveLength(1);
++		writeBucket({ anthropic: "work" }, { anthropic: { work: oauth("work", 0) } });
++		process.env[ENV] = "work";
++		expect(await auth(AuthStorage.create(authPath), rot.provider)).toEqual({ apiKey: "access-work+" });
++		expect(rot.calls()).toBe(1);
++		expect(readdirSync(journalDir)).toEqual([]);
++	});
++});

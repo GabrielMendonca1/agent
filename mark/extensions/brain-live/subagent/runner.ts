@@ -1,0 +1,861 @@
+/**
+ * Child process runner for subagents.
+ *
+ * Extracted from index.ts so the async job manager (jobs.ts) and its tests can
+ * drive real execution without loading the TUI/extension surface. The only
+ * runtime imports here are node builtins plus agent discovery/tier lookup, so a
+ * test can import this module and swap `runnerHooks.spawn` for a fake child.
+ */
+
+import { spawn as nodeSpawn, spawnSync } from "node:child_process";
+import * as fs from "node:fs";
+import { createHash } from "node:crypto";
+import * as os from "node:os";
+import * as path from "node:path";
+import { fileURLToPath } from "node:url";
+import type { AgentToolResult, ThinkingLevel } from "@earendil-works/pi-agent-core";
+import type { Message } from "@earendil-works/pi-ai";
+import { SessionManager, withFileMutationQueue } from "@earendil-works/pi-coding-agent";
+import { resolveModelRef } from "../lib/tiers.ts";
+import { projectRules } from "../../../juice/workflow.mjs";
+import { readHostFreePercent, waitForHostMemory } from "./host-memory.ts";
+import { listDescendants, signalProcesses } from "./process-tree.ts";
+import type { AgentConfig, AgentScope } from "./agents.ts";
+
+/** Preview cap. Never applied to what is stored: full outputs are kept in the job record. */
+export const PREVIEW_OUTPUT_CAP = 50 * 1024;
+/** A single JSONL line bigger than this is a protocol/output overflow: explicit error, never silent truncation. */
+export const MAX_STDOUT_LINE_BYTES = 8 * 1024 * 1024;
+/**
+ * Total stdout budget for one child: guards against runaway output, not memory (lines are
+ * parsed and dropped; only the last assistant text is kept, and the per-line cap bounds the
+ * buffer). `pi --mode json` repeats each tool result in ~4 events, so a long worker legitimately
+ * streams tens of MB; 16 MB killed real 30-minute implementation jobs.
+ */
+export const MAX_STDOUT_TOTAL_BYTES = 256 * 1024 * 1024;
+/** Streaming previews the runner ignores (`pi --mode json` serializes `type` first). */
+export function isStreamingPreviewLine(line: string): boolean {
+	return line.startsWith('{"type":"message_update"') || line.startsWith('{"type":"tool_execution_update"');
+}
+/** stderr is diagnostic only: bounded in memory. */
+export const MAX_STDERR_BYTES = 64 * 1024;
+/** Above this, the task goes to a temp file passed as `@path` instead of argv (E2BIG guard). */
+export const ARG_INLINE_CAP = 16 * 1024;
+/**
+ * Shared ceiling of concurrently spawned children (all jobs of one manager).
+ * Deliberately high: a `pi` child is 100-200 MB and the memory guard is the
+ * host-free check in host-memory.ts, not a head count.
+ */
+export const GLOBAL_CHILD_LIMIT = 32;
+
+export interface UsageStats {
+	input: number;
+	output: number;
+	cacheRead: number;
+	cacheWrite: number;
+	cost: number;
+	contextTokens: number;
+	turns: number;
+}
+
+export interface SingleResult {
+	agent: string;
+	agentSource: "user" | "project" | "unknown";
+	task: string;
+	exitCode: number;
+	/** Only the last assistant text is retained — never the tool/thinking transcript. */
+	finalText: string;
+	stderr: string;
+	usage: UsageStats;
+	model?: string;
+	modelLabel?: string;
+	/** Effective CLI thinking level (fixed by the selected role/model pair). */
+	thinking?: string;
+	/** Isolamento do bash de papéis somente leitura. */
+	sandbox?: SandboxMode;
+	stopReason?: string;
+	errorMessage?: string;
+	/** Caminho da sessão do filho, quando criada. */
+	sessionFile?: string;
+	step?: number;
+}
+
+export interface JobSummary {
+	jobId: string;
+	/** `running`, `completed`… ou `resumed (n)` para um job retomado após uma queda. */
+	status: string;
+	/** Retomadas já gastas pelo job. */
+	resumes?: number;
+	mode: "single" | "parallel" | "chain";
+	agents: string[];
+	/** Effective authorized selections, aligned with tasks/agents. */
+	models?: Array<{ model?: string; thinking?: string }>;
+	createdAt: number;
+	finishedAt?: number;
+	resultPath?: string;
+	resultBytes?: number;
+	note?: string;
+}
+
+export interface SubagentDetails {
+	mode: "single" | "parallel" | "chain" | "control";
+	agentScope: AgentScope;
+	projectAgentsDir: string | null;
+	results: SingleResult[];
+	job?: JobSummary;
+	jobs?: JobSummary[];
+}
+
+export interface DispatchDefaults {
+	parentSession?: string;
+	model?: string;
+	thinkingLevel?: ThinkingLevel;
+	/** Pilot only: snapshot at launch, not whatever run the parent starts later. */
+	juice?: {
+		statePath: string;
+		supportModel?: string;
+		/** Slot por papel decidido pela receita do projeto e pelo despachante: apoio | principal. */
+		slots?: Record<string, "apoio" | "principal">;
+	};
+}
+
+export type OnUpdateCallback = (partial: AgentToolResult<SubagentDetails>) => void;
+
+export function emptyUsage(): UsageStats {
+	return { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, contextTokens: 0, turns: 0 };
+}
+
+/** Last text part of one assistant message, if any. */
+function assistantText(msg: Message): string | undefined {
+	if (msg.role !== "assistant") return undefined;
+	for (let i = msg.content.length - 1; i >= 0; i--) {
+		const part = msg.content[i];
+		if (part.type === "text") return part.text;
+	}
+	return undefined;
+}
+
+/**
+ * Bounded slot pool shared by every job of a manager: at most `limit` children
+ * exist at any time, no matter how many jobs are active. An abort while waiting
+ * never spawns.
+ */
+export class ChildSlots {
+	private inUse = 0;
+	private readonly waiters: Array<() => void> = [];
+	constructor(private readonly limit: number) {}
+
+	get active(): number {
+		return this.inUse;
+	}
+
+	async acquire(signal?: AbortSignal): Promise<(() => void) | null> {
+		if (signal?.aborted) return null;
+		if (this.inUse < this.limit) {
+			this.inUse++;
+			return this.release();
+		}
+		const granted = await new Promise<boolean>((resolve) => {
+			const onAbort = () => {
+				const idx = this.waiters.indexOf(wake);
+				if (idx >= 0) this.waiters.splice(idx, 1);
+				resolve(false);
+			};
+			const wake = () => {
+				signal?.removeEventListener("abort", onAbort);
+				resolve(true);
+			};
+			this.waiters.push(wake);
+			signal?.addEventListener("abort", onAbort, { once: true });
+		});
+		if (!granted) return null;
+		if (signal?.aborted) {
+			this.release()();
+			return null;
+		}
+		return this.release();
+	}
+
+	private release(): () => void {
+		let done = false;
+		return () => {
+			if (done) return;
+			done = true;
+			this.inUse--;
+			this.wakeNext();
+		};
+	}
+
+	private wakeNext() {
+		const next = this.waiters.shift();
+		if (!next) return;
+		this.inUse++;
+		next();
+	}
+}
+
+export function isFailedResult(result: SingleResult): boolean {
+	return result.exitCode !== 0 || result.stopReason === "error" || result.stopReason === "aborted";
+}
+
+export function getResultOutput(result: SingleResult): string {
+	if (isFailedResult(result)) {
+		const error = result.errorMessage || result.stderr;
+		return error && result.finalText && error !== result.finalText
+			? `${error}\n\n[partial output]\n${result.finalText}`
+			: error || result.finalText || "(no output)";
+	}
+	return result.finalText || "(no output)";
+}
+
+/** Preview only (UI/notification). Stored results are never passed through this. */
+export function previewOutput(output: string, cap = PREVIEW_OUTPUT_CAP): string {
+	const byteLength = Buffer.byteLength(output, "utf8");
+	if (byteLength <= cap) return output;
+
+	let truncated = output.slice(0, cap);
+	while (Buffer.byteLength(truncated, "utf8") > cap) {
+		truncated = truncated.slice(0, -1);
+	}
+	return `${truncated}\n\n[Preview truncated: ${byteLength - Buffer.byteLength(truncated, "utf8")} bytes omitted. Full output preserved in the job result file.]`;
+}
+
+export function prettyModelLabel(model: string | undefined, tier: string | undefined): string | undefined {
+	if (tier) return tier;
+	if (!model) return undefined;
+	const provider = model.includes("/") ? model.split("/", 1)[0] : model;
+	const labels: Record<string, string> = {
+		anthropic: "Claude",
+		"openai-codex": "Codex",
+		openai: "OpenAI",
+		google: "Gemini",
+		"google-gemini-cli": "Gemini",
+		"google-antigravity": "Gemini",
+	};
+	return labels[provider] ?? provider;
+}
+
+const FIRST_TOKEN_EVENTS = new Set([
+	"text_start", "text_delta", "thinking_start", "thinking_delta", "toolcall_start", "toolcall_delta",
+]);
+
+const CACHE_KEEPER_PATH = path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "cache-keeper.ts");
+/** Extensão que registra web_search/web_fetch; o filho roda --no-extensions. */
+const WEB_EXTENSION_PATH = path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "..", "mark", "web", "index.ts");
+const WEB_TOOLS = new Set(["web_search", "web_fetch"]);
+
+export type SandboxMode = "seatbelt" | "bwrap" | "none";
+let probedSandbox: SandboxMode | undefined;
+
+/** Sonda local, uma vez por processo; indisponibilidade nunca impede o despacho. */
+export function sandboxForTools(tools?: string[]): SandboxMode | undefined {
+	if (!tools?.length || tools.includes("edit") || tools.includes("write")) return undefined;
+	// Escape exclusivo dos checks offline para provar o detector no modo degradado.
+	if (process.env.PI_OFFLINE === "1" && process.env.MARK_TEST_SANDBOX_NONE === "1") return "none";
+	if (probedSandbox !== undefined) return probedSandbox;
+	probedSandbox = "none";
+	try {
+		if (process.platform === "darwin" && fs.existsSync("/usr/bin/sandbox-exec")) probedSandbox = "seatbelt";
+		else if (process.platform === "linux" && spawnSync("bwrap", ["--ro-bind", "/", "/", "true"], { timeout: 5000, stdio: "ignore" }).status === 0) probedSandbox = "bwrap";
+	} catch { /* plataforma sem sandbox: detector continua ativo */ }
+	return probedSandbox;
+}
+
+/** Estado e conteúdo dos caminhos sujos, inclusive renomes e arquivos não rastreados. */
+function checkoutSnapshot(cwd: string): Map<string, string> | undefined {
+	const git = (args: string[]) => spawnSync("git", args, { cwd, encoding: "utf8", env: { ...process.env, GIT_OPTIONAL_LOCKS: "0" }, maxBuffer: 64 * 1024 * 1024 });
+	const root = git(["rev-parse", "--show-toplevel"]);
+	if (root.status !== 0) return undefined;
+	const status = git(["-C", root.stdout.trim(), "status", "--porcelain", "-z", "--untracked-files=all"]);
+	if (status.status !== 0) throw new Error("read-only checkout detector: git status failed");
+	const snapshot = new Map<string, string>();
+	const entries = status.stdout.split("\0");
+	const record = (name: string, state: string) => {
+		const file = path.join(root.stdout.trim(), name);
+		let content: string;
+		try {
+			const stat = fs.lstatSync(file);
+			content = `${stat.mode}:` + (stat.isSymbolicLink() ? fs.readlinkSync(file) : stat.isFile() ? createHash("sha256").update(fs.readFileSync(file)).digest("hex") : "directory");
+		} catch (error: any) {
+			if (error.code !== "ENOENT") throw error;
+			content = "missing";
+		}
+		snapshot.set(name, `${state}:${content}`);
+	};
+	for (let i = 0; i < entries.length; i++) {
+		const entry = entries[i];
+		if (!entry) continue;
+		const state = entry.slice(0, 2);
+		record(entry.slice(3), state);
+		if (/[RC]/.test(state) && entries[i + 1]) record(entries[++i], state);
+	}
+	return snapshot;
+}
+
+/** Saídas do filho de aquecimento (contrato do cache-keeper). */
+export const PREFETCH_EXIT = { warmed: 0, unsupported: 3, timeout: 4, providerError: 5 } as const;
+
+/**
+ * Aquece o cache do prefixo (system+tools) de um papel: mesmo argv do filho real
+ * (agente/modelo/thinking/tools/skills), tarefa ".", `--no-session`, sem UI.
+ * Nunca lança; devolve o exit code (0 aquecido, 3 sem suporte, 4 timeout, 5 erro, outro = falha).
+ */
+export async function prefetchAgent(
+	opts: Omit<RunAgentOptions, "task" | "onUpdate" | "makeDetails" | "onFirstToken" | "onProcessStarted" | "prefetch">,
+): Promise<number> {
+	if (!fs.existsSync(CACHE_KEEPER_PATH)) return PREFETCH_EXIT.unsupported; // sem o keeper o filho faria o trabalho de verdade
+	if (opts.signal?.aborted) return 143;
+	try {
+		const r = await runSingleAgent({ ...opts, task: ".", prefetch: true, makeDetails: () => ({}) as SubagentDetails });
+		return r.exitCode;
+	} catch {
+		return -1;
+	}
+}
+
+export async function mapWithConcurrencyLimit<TIn, TOut>(
+	items: TIn[],
+	concurrency: number,
+	fn: (item: TIn, index: number) => Promise<TOut>,
+	shouldStop?: () => boolean,
+): Promise<TOut[]> {
+	if (items.length === 0) return [];
+	const limit = Math.max(1, Math.min(concurrency, items.length));
+	const results: TOut[] = new Array(items.length);
+	let nextIndex = 0;
+	const workers = new Array(limit).fill(null).map(async () => {
+		while (true) {
+			// After an abort no further task may be started: a shutdown must not
+			// leave a queued task spawning a child in the next session.
+			if (shouldStop?.()) return;
+			const current = nextIndex++;
+			if (current >= items.length) return;
+			results[current] = await fn(items[current], current);
+		}
+	});
+	await Promise.all(workers);
+	return results;
+}
+
+async function writePromptToTempFile(
+	agentName: string,
+	prompt: string,
+	reuseDir?: string,
+): Promise<{ dir: string; filePath: string }> {
+	const tmpDir = reuseDir ?? (await fs.promises.mkdtemp(path.join(os.tmpdir(), "pi-subagent-")));
+	const safeName = agentName.replace(/[^\w.-]+/g, "_");
+	const filePath = path.join(tmpDir, `prompt-${safeName}.md`);
+	await withFileMutationQueue(filePath, async () => {
+		await fs.promises.writeFile(filePath, prompt, { encoding: "utf-8", mode: 0o600 });
+	});
+	return { dir: tmpDir, filePath };
+}
+
+export function getPiInvocation(args: string[]): { command: string; args: string[] } {
+	const currentScript = process.argv[1];
+	const execName = path.basename(process.execPath).toLowerCase();
+	const isGenericRuntime = /^(node|bun)(\.exe)?$/.test(execName);
+	// Homebrew may remove the versioned executable while this session stays alive.
+	const executableExists = fs.existsSync(process.execPath);
+	const command = executableExists ? process.execPath : isGenericRuntime ? execName : "pi";
+	const isBunVirtualScript = currentScript?.startsWith("/$bunfs/root/");
+	if (currentScript && !isBunVirtualScript && fs.existsSync(currentScript) && (executableExists || isGenericRuntime)) {
+		return { command, args: [currentScript, ...args] };
+	}
+
+	if (!isGenericRuntime) {
+		return { command, args };
+	}
+
+	return { command: "pi", args };
+}
+
+/**
+ * Test seams. `getPiInvocation` resolves `process.argv[1]`, which under a test
+ * runner is the test file itself; tests replace `spawn` (and may replace the
+ * invocation) instead of spawning a recursive worker.
+ */
+export const runnerHooks = {
+	spawn: nodeSpawn as typeof nodeSpawn,
+	getPiInvocation,
+	killGraceMs: 5000,
+	/** Leitura de memória livre do host; testes fixam em 100. */
+	hostFreePercent: readHostFreePercent,
+	listDescendants,
+	signalProcesses,
+};
+
+export interface RunAgentOptions {
+	defaultCwd: string;
+	dispatchDefaults: DispatchDefaults;
+	agents: AgentConfig[];
+	agentName: string;
+	task: string;
+	cwd?: string;
+	/** Checkout de origem para regras e prefixo compartilhado. */
+	sourceCwd?: string;
+	/** Already-authorized central role choice. Takes precedence over legacy frontmatter/defaults. */
+	roleModel?: { model: string; thinking: string };
+	step?: number;
+	signal?: AbortSignal;
+	onUpdate?: OnUpdateCallback;
+	makeDetails: (results: SingleResult[]) => SubagentDetails;
+	onProcessStarted?: (agentName: string) => () => void;
+	/** Shared child-process slot pool; resolves null when aborted before a slot frees. */
+	acquireSlot?: (signal?: AbortSignal) => Promise<(() => void) | null>;
+	/** Arquivo da sessão pai, no formato oficial do Pi. */
+	parentSession?: string;
+	/** Chamado uma vez no 1º token efetivo do filho (delta de texto/thinking/toolcall). */
+	onFirstToken?: () => void;
+	/** Interno: filho de aquecimento (use prefetchAgent). */
+	prefetch?: boolean;
+}
+
+interface ChildRunOptions {
+	args: string[];
+	cwd: string;
+	agentName: string;
+	/** Every child of this job debits the original parent's budget. */
+	juiceStatePath?: string;
+	signal?: AbortSignal;
+	/** Mutado no lugar: o chamador é dono do resultado. */
+	result: SingleResult;
+	emitUpdate: () => void;
+	onProcessStarted?: (agentName: string) => () => void;
+	acquireSlot?: (signal?: AbortSignal) => Promise<(() => void) | null>;
+	onFirstToken?: () => void;
+	/** Variáveis extras só deste filho. */
+	extraEnv?: Record<string, string>;
+	/** Aquecimento: 1 request, nenhuma tool; o runner mata se o filho passar disso. */
+	prefetch?: boolean;
+}
+
+/** Run one classic Pi child, without replay after a crash. */
+async function runPiChild(opts: ChildRunOptions): Promise<void> {
+	const { result, signal } = opts;
+	let processFinished: (() => void) | undefined;
+	let releaseSlot: (() => void) | null | undefined;
+	try {
+		// Slot first: the global ceiling must bound spawned processes, not queued work.
+		if (opts.acquireSlot) {
+			releaseSlot = await opts.acquireSlot(signal);
+			if (releaseSlot === null) {
+				result.exitCode = 143;
+				result.stopReason = "aborted";
+				result.errorMessage = "Subagent aborted before start";
+				return;
+			}
+		}
+		// Host sem memória segura o spawn em vez de empurrar o Mac para o swap.
+		// Abortado enquanto esperava slot/memória: não nasce.
+		if (signal?.aborted || !(await waitForHostMemory({ signal, hostFreePercent: runnerHooks.hostFreePercent })) || signal?.aborted) {
+			result.exitCode = 143;
+			result.stopReason = "aborted";
+			result.errorMessage = "Subagent aborted before start";
+			return;
+		}
+
+		let wasAborted = false;
+		let spawnError: string | undefined;
+		let outputOverflow: string | undefined;
+
+		const exitCode = await new Promise<number>((resolve) => {
+			const invocation = runnerHooks.getPiInvocation(opts.args);
+			const proc = runnerHooks.spawn(invocation.command, invocation.args, {
+				cwd: opts.cwd,
+				shell: false,
+				stdio: ["ignore", "pipe", "pipe"],
+				...(opts.juiceStatePath || opts.extraEnv ? { env: {
+					...process.env,
+					...(opts.juiceStatePath ? { MARK_JUICE_STATE: opts.juiceStatePath, MARK_JUICE_CHILD: "1" } : {}),
+					...opts.extraEnv,
+				} } : {}),
+			});
+			let buffer = "";
+			let stdoutBytes = 0;
+			let killTimer: ReturnType<typeof setTimeout> | undefined;
+			let settled = false;
+
+			const processLine = (line: string) => {
+				if (!line.trim()) return;
+				let event: any;
+				try {
+					event = JSON.parse(line);
+				} catch {
+					return;
+				}
+
+				// 1º token efetivo: o provider já processou (e escreveu no cache) o prefixo.
+				// Não é o evento `start` (cabeçalho chega antes do conteúdo).
+				if (
+					opts.onFirstToken &&
+					event.type === "message_update" &&
+					FIRST_TOKEN_EVENTS.has(event.assistantMessageEvent?.type)
+				) {
+					const fire = opts.onFirstToken;
+					opts.onFirstToken = undefined;
+					try { fire(); } catch { /* listener must not break the stream */ }
+				}
+
+				// Rede de segurança do aquecimento: tool nunca roda; após a 1ª resposta, morre.
+				if (opts.prefetch && event.type === "tool_execution_start") {
+					result.errorMessage = "prefetch: tool bloqueada";
+					killProc();
+					return;
+				}
+				if (opts.prefetch && event.type === "message_end" && event.message?.role === "assistant") {
+					// O keeper sai sozinho com o código do contrato; se não sair, morre.
+					setTimeout(() => { if (proc.exitCode === null && proc.signalCode === null) killProc(); }, 3000).unref?.();
+				}
+
+				if (event.type === "message_end" && event.message) {
+					const msg = event.message as Message;
+					const text = assistantText(msg);
+					// Only the latest assistant text survives: no transcript in memory.
+					if (text !== undefined) result.finalText = text;
+
+					if (msg.role === "assistant") {
+						result.usage.turns++;
+						const usage = msg.usage;
+						if (usage) {
+							result.usage.input += usage.input || 0;
+							result.usage.output += usage.output || 0;
+							result.usage.cacheRead += usage.cacheRead || 0;
+							result.usage.cacheWrite += usage.cacheWrite || 0;
+							result.usage.cost += usage.cost?.total || 0;
+							result.usage.contextTokens = usage.totalTokens || 0;
+						}
+						if (!result.model && msg.model) result.model = msg.model;
+						if (msg.stopReason) result.stopReason = msg.stopReason;
+						if (msg.errorMessage) result.errorMessage = msg.errorMessage;
+					}
+					opts.emitUpdate();
+				}
+
+				// tool_result_end payloads are deliberately dropped: the UI never shows them.
+			};
+
+			// Descendentes vistos enquanto o filho ainda vivia: depois do SIGKILL eles
+			// viram órfãos do launchd e não há mais como achá-los pela árvore.
+			const descendants = new Set<number>();
+			const snapshotDescendants = () => {
+				if (!proc.pid) return;
+				for (const pid of runnerHooks.listDescendants(proc.pid)) descendants.add(pid);
+			};
+			const killDescendants = () => {
+				if (descendants.size === 0) return;
+				runnerHooks.signalProcesses(descendants, "SIGKILL");
+				descendants.clear();
+			};
+
+			const killProc = () => {
+				if (wasAborted) return;
+				wasAborted = true;
+				snapshotDescendants();
+				proc.kill("SIGTERM");
+				killTimer = setTimeout(() => {
+					// `proc.killed` only says a signal was delivered; a child that
+					// ignores SIGTERM is still alive. Exit state is the real check.
+					if (proc.exitCode === null && proc.signalCode === null) {
+						snapshotDescendants();
+						proc.kill("SIGKILL");
+					}
+					killDescendants();
+				}, runnerHooks.killGraceMs);
+				killTimer.unref?.();
+			};
+
+			const cleanup = () => {
+				if (killTimer) clearTimeout(killTimer);
+				signal?.removeEventListener("abort", killProc);
+			};
+
+			const finish = (code: number) => {
+				if (settled) return;
+				settled = true;
+				cleanup();
+				resolve(code);
+			};
+
+			const overflow = (why: string) => {
+				if (outputOverflow) return;
+				outputOverflow = why;
+				buffer = "";
+				// Explicit failure beats silent truncation of a result.
+				result.errorMessage ||= why;
+				killProc();
+			};
+
+			proc.stdout?.on("data", (data: Buffer | string) => {
+				if (outputOverflow) return;
+				const chunk = typeof data === "string" ? data : data.toString();
+				buffer += chunk;
+				const lines = buffer.split("\n");
+				buffer = lines.pop() || "";
+				if (Buffer.byteLength(buffer, "utf-8") > MAX_STDOUT_LINE_BYTES) {
+					overflow(`Subagent output limit exceeded (JSONL line > ${MAX_STDOUT_LINE_BYTES} bytes).`);
+					return;
+				}
+				for (const line of lines) {
+					const lineBytes = Buffer.byteLength(line, "utf-8");
+					if (lineBytes > MAX_STDOUT_LINE_BYTES) {
+						overflow(`Subagent output limit exceeded (JSONL line > ${MAX_STDOUT_LINE_BYTES} bytes).`);
+						return;
+					}
+					// Prévias de streaming não entram no orçamento: o runner as descarta e
+					// `message_update` de tool call traz os argumentos acumulados a cada
+					// evento (cresce ao quadrado com o tamanho de um `write`). O teto por
+					// linha continua valendo para elas.
+					if (!isStreamingPreviewLine(line)) {
+						stdoutBytes += lineBytes;
+						if (stdoutBytes > MAX_STDOUT_TOTAL_BYTES) {
+							overflow(`Subagent output limit exceeded (> ${MAX_STDOUT_TOTAL_BYTES} bytes of stdout).`);
+							return;
+						}
+					}
+					processLine(line);
+				}
+			});
+
+			proc.stderr?.on("data", (data: Buffer | string) => {
+				if (Buffer.byteLength(result.stderr, "utf-8") >= MAX_STDERR_BYTES) return;
+				result.stderr += data.toString();
+				if (Buffer.byteLength(result.stderr, "utf-8") > MAX_STDERR_BYTES) {
+					result.stderr = `${result.stderr.slice(0, MAX_STDERR_BYTES)}\n[stderr truncated]`;
+				}
+			});
+
+
+			proc.on("close", (code: number | null, closeSignal?: NodeJS.Signals | null) => {
+				if (buffer.trim()) processLine(buffer);
+				// O `pi` mata os filhos que rastreia no SIGTERM; o que sobrou é órfão nosso.
+				if (wasAborted) killDescendants();
+				// A signal kill reports code === null: never let that read as success.
+				finish(code ?? (closeSignal || wasAborted ? 143 : 1));
+			});
+
+			proc.on("error", (err: Error) => {
+				spawnError = err?.message || "spawn failed";
+				result.stderr += `${spawnError}\n`;
+				finish(1);
+			});
+
+			// Handlers existem ANTES dos callbacks: uma falha de tracking não abandona
+			// o processo nem libera o slot antes de observar sua saída.
+			try { processFinished = opts.onProcessStarted?.(opts.agentName); }
+			catch (error) { spawnError ||= `Subagent tracking failed: ${String(error)}`; }
+			if (spawnError) killProc();
+
+			if (signal) {
+				if (signal.aborted) killProc();
+				else signal.addEventListener("abort", killProc, { once: true });
+			}
+			// Aquecimento nunca passa do teto (o keeper já sai em 60 s).
+			if (opts.prefetch) setTimeout(() => { if (proc.exitCode === null && proc.signalCode === null) killProc(); }, 75_000).unref?.();
+		});
+
+		result.exitCode = exitCode;
+		if (spawnError) {
+			result.errorMessage ||= spawnError;
+			result.stopReason = "error";
+			if (result.exitCode === 0) result.exitCode = 1;
+		}
+		if (outputOverflow) {
+			result.stopReason = "error";
+			result.errorMessage ||= outputOverflow;
+			if (result.exitCode === 0) result.exitCode = 1;
+			return;
+		}
+		if (wasAborted) {
+			result.stopReason = "aborted";
+			result.errorMessage ||= "Subagent aborted";
+			if (result.exitCode === 0) result.exitCode = 143;
+		}
+
+	} finally {
+		try { processFinished?.(); }
+		finally { releaseSlot?.(); }
+	}
+}
+
+export async function runSingleAgent(opts: RunAgentOptions): Promise<SingleResult> {
+	const { agents, agentName, task, step, signal, onUpdate, makeDetails } = opts;
+	const agent = agents.find((a) => a.name === agentName);
+
+	if (!agent) {
+		const available = agents.map((a) => `"${a.name}"`).join(", ") || "none";
+		return {
+			agent: agentName,
+			agentSource: "unknown",
+			task,
+			exitCode: 1,
+			finalText: "",
+			stderr: `Unknown agent: "${agentName}". Available agents: ${available}.`,
+			errorMessage: `Unknown agent: "${agentName}". Available agents: ${available}.`,
+			usage: emptyUsage(),
+			step,
+		};
+	}
+
+	// Garime: filho enxuto. Sem extensões (presence, relay, vault, kernel…) nem skills;
+	// AGENTS.md/CLAUDE.md continuam valendo. Só as tools do frontmatter.
+	const args: string[] = ["--mode", "json", "-p", "--no-extensions"];
+	const cwd = opts.cwd ?? opts.defaultCwd;
+	const sandbox = sandboxForTools(agent.tools);
+	const extraEnv: Record<string, string> = { MARK_BASH_SANDBOX: "", MARK_SANDBOX_CWD: "" };
+	if (sandbox && sandbox !== "none") {
+		args.push("-e", path.join(path.dirname(CACHE_KEEPER_PATH), "bash-sandbox.ts"));
+		extraEnv.MARK_BASH_SANDBOX = sandbox;
+		extraEnv.MARK_SANDBOX_CWD = cwd;
+	}
+	if (opts.prefetch) Object.assign(extraEnv, { MARK_CACHE_PREFETCH: "1", MARK_JUICE_CHILD: "1" });
+	let sessionFile: string | undefined;
+	if (opts.prefetch) args.push("--no-session");
+	else {
+		// Seed the official JSONL header so the CLI opens a child of this parent.
+		const session = SessionManager.create(opts.cwd ?? opts.defaultCwd, undefined, { parentSession: opts.parentSession });
+		const file = session.getSessionFile()!;
+		fs.mkdirSync(path.dirname(file), { recursive: true });
+		fs.writeFileSync(file, JSON.stringify(session.getHeader()) + "\n", { mode: 0o600, flag: "wx" });
+		args.push("--session", file);
+		sessionFile = file;
+	}
+	// Aquecimento: o cache-keeper troca o 1º request por max_tokens 1 sem thinking e sai.
+	// Não muda system/tools (só before_provider_request), então o prefixo é o do filho real.
+	// Filhos do piloto (MARK_JUICE_CHILD=1) carregam o cache-keeper em modo filho: só a
+	// prompt_cache_key estável do Codex/Responses (Anthropic intacto). Fora do piloto não:
+	// sem MARK_JUICE_CHILD o keeper rodaria em modo pai (aquecimento) dentro do filho.
+	if ((opts.prefetch || opts.dispatchDefaults.juice) && fs.existsSync(CACHE_KEEPER_PATH)) args.push("-e", CACHE_KEEPER_PATH);
+	// O read nativo do Pi clássico já lê imagens; o loadout do papel basta.
+	// Pilot children retain the skills catalog; the runtime gate is inherited via
+	// NODE_OPTIONS, independently of extension discovery. Legacy dispatch is unchanged.
+	if (!opts.dispatchDefaults.juice) args.push("--no-skills");
+	// Explicit child extensions can provide an offline
+	// provider in checks. Never inherit the parent's whole profile.
+	for (const ext of (process.env.MARK_SUBAGENT_CHILD_EXTENSIONS ?? "").split(":").filter(Boolean)) {
+		args.push("-e", ext);
+	}
+	// Papel que declara web_search/web_fetch precisa da extensão que os registra;
+	// sem ela o --tools filtra para nada e o filho fica sem web.
+	if (agent.tools?.some((t) => WEB_TOOLS.has(t)) && fs.existsSync(WEB_EXTENSION_PATH)) args.push("-e", WEB_EXTENSION_PATH);
+	const inheritsDispatchConfig = !agent.model;
+	// Central role config wins for native roles. Without it, preserve legacy
+	// project/user frontmatter (`model`, `tier:*`, `thinking`) and parent defaults.
+	const resolved = !opts.roleModel && agent.model ? resolveModelRef(agent.model) : undefined;
+	const model = opts.roleModel?.model ?? resolved?.model ?? opts.dispatchDefaults.model;
+	if (model) args.push("--model", model);
+	const thinking = opts.roleModel?.thinking ?? agent.thinking ?? resolved?.thinking;
+	if (thinking) {
+		args.push("--thinking", thinking);
+	} else if (inheritsDispatchConfig && opts.dispatchDefaults.thinkingLevel) {
+		args.push("--thinking", opts.dispatchDefaults.thinkingLevel);
+	}
+	if (agent.tools && agent.tools.length > 0) args.push("--tools", agent.tools.join(","));
+
+	let tmpPromptDir: string | null = null;
+	let tmpPromptPath: string | null = null;
+
+	const currentResult: SingleResult = {
+		agent: agentName,
+		agentSource: agent.source,
+		sandbox,
+		sessionFile,
+		task,
+		exitCode: -1,
+		finalText: "",
+		stderr: "",
+		usage: emptyUsage(),
+		model,
+		modelLabel: prettyModelLabel(model, resolved?.tier),
+		thinking: thinking ?? (inheritsDispatchConfig ? opts.dispatchDefaults.thinkingLevel : undefined),
+		step,
+	};
+
+	const emitUpdate = () => {
+		if (onUpdate) {
+			onUpdate({
+				content: [{ type: "text", text: previewOutput(currentResult.finalText) || "(running...)" }],
+				details: makeDetails([currentResult]),
+			});
+		}
+	};
+
+	let tmpTaskPath: string | null = null;
+	try {
+		let promptPath: string | undefined;
+		if (agent.systemPrompt.trim()) {
+			const tmp = await writePromptToTempFile(agent.name, agent.systemPrompt);
+			tmpPromptDir = tmp.dir;
+			tmpPromptPath = tmp.filePath;
+			promptPath = tmp.filePath;
+			args.push("--system-prompt", promptPath);
+		}
+
+		// Orientação do projeto DESTE filho: as regras aprendidas no `cwd` efetivo
+		// dele (projeto B nunca recebe as de A). Só na mensagem do filho — não entra
+		// no registro do job, no brief persistido, nem em nada que volte ao pai.
+		// Aquecimento (tarefa ".") fica de fora.
+		const guidance = opts.prefetch ? "" : projectRules(opts.sourceCwd ?? cwd);
+		// argv is a hard OS limit (E2BIG): a big task goes to a file read by the
+		// child as `@path` (pi CLI file argument), never into the command line.
+		const sandboxNotice = sandbox === "none" ? "\n\nSandbox: none on this platform; writes are detected after the run and fail the task." : "";
+		const inlineTask = (guidance ? `Task: ${task}\n\n${guidance}` : `Task: ${task}`) + sandboxNotice;
+		if (Buffer.byteLength(inlineTask, "utf-8") > ARG_INLINE_CAP) {
+			let messagePath: string;
+			const tmp = await writePromptToTempFile(`${agent.name}-task`, inlineTask, tmpPromptDir ?? undefined);
+			tmpPromptDir = tmp.dir;
+			tmpTaskPath = tmp.filePath;
+			messagePath = tmp.filePath;
+			args.push("--", `@${messagePath}`, "Execute the task described in the attached file.");
+		} else {
+			args.push(inlineTask);
+		}
+
+		const before = sandbox ? checkoutSnapshot(cwd) : undefined;
+		await runPiChild(
+			{
+				args,
+				cwd,
+				agentName,
+				juiceStatePath: opts.dispatchDefaults.juice?.statePath,
+				signal,
+				result: currentResult,
+				emitUpdate,
+				onProcessStarted: opts.onProcessStarted,
+				acquireSlot: opts.acquireSlot,
+				onFirstToken: opts.onFirstToken,
+				extraEnv,
+				...(opts.prefetch ? { prefetch: true } : {}),
+			},
+		);
+		if (before) {
+			const after = checkoutSnapshot(cwd);
+			const changed = after ? [...new Set([...before.keys(), ...after.keys()])].filter((name) => before.get(name) !== after.get(name)).sort() : ["(git checkout unavailable)"];
+			if (changed.length) {
+				currentResult.stopReason = "error";
+				currentResult.errorMessage = `read-only role modified the checkout: ${changed.join(", ")}`;
+				currentResult.exitCode = 1;
+			}
+		}
+		return currentResult;
+	} finally {
+		if (tmpTaskPath)
+			try {
+				fs.unlinkSync(tmpTaskPath);
+			} catch {
+				/* ignore */
+			}
+		if (tmpPromptPath)
+			try {
+				fs.unlinkSync(tmpPromptPath);
+			} catch {
+				/* ignore */
+			}
+		if (tmpPromptDir)
+			try {
+				fs.rmdirSync(tmpPromptDir);
+			} catch {
+				/* ignore */
+			}
+	}
+}

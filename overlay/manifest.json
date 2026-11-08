@@ -1,0 +1,286 @@
+{
+	"schema": 2,
+	"name": "mark-pi",
+	"mark": "II",
+	"officialRepository": "https://github.com/earendil-works/pi.git",
+	"officialPackage": "@earendil-works/pi-coding-agent",
+	"overlayBase": "f9a26365568127461c47a07a37dcb42c140a3ac5",
+	"overlayRef": "v1.5.0",
+	"patches": [
+		{
+			"name": "pi-black",
+			"path": "overlay/pi-black.patch",
+			"sha256": "17fad608b43f7c5f59eaa64e6d652a71259fde475d695e8322b5eceb9d6f59a0",
+			"tests": [
+				"packages/ai/test/anthropic-claude-code.test.ts",
+				"packages/ai/test/anthropic-auth-token.test.ts",
+				"packages/coding-agent/test/interactive-mode-anthropic-warning.test.ts"
+			]
+		},
+		{
+			"name": "garime-frame",
+			"path": "overlay/garime-frame.patch",
+			"sha256": "9e278856e77d2dfbfa704ff359d3dd9f24cb9a944c83354b5f48c33681f4274c",
+			"tests": [
+				"packages/coding-agent/test/garime-frame.test.ts",
+				"packages/coding-agent/test/interactive-tui.test.ts"
+			]
+		},
+		{
+			"name": "pi-account-env",
+			"path": "overlay/pi-account-env.patch",
+			"description": "PI_ACCOUNT_<PROVIDER>=<nome> resolve a credencial pela conta do bucket accounts.json (contas por projeto no ARCA); estrito, refresh sob proper-lockfile; `pi --arca-capabilities` declara suporte.",
+			"sha256": "405e4712172f2daf619e02c23f73fdf892de58511a3fe7bd2578666775891189",
+			"tests": [
+				"packages/coding-agent/test/account-selection.test.ts",
+				"packages/coding-agent/test/auth-storage.test.ts"
+			]
+		},
+		{
+			"name": "transcript-feedback",
+			"path": "overlay/transcript-feedback.patch",
+			"sha256": "db2031971e3ed22335892c991b6d8b89fb0c45b4d6880cc3ceb9921205808ab2",
+			"description": "Resumo contextual curto em terceira pessoa via Haiku (PI_TUI_RECAP_MODEL), até duas tentativas assíncronas por turno (primário → Luna deduplicado), com fallback local imediato. Falhas e timeout permitem Luna; cancelamento real ou aborto do provider não. Avisos semânticos opt-in via PI_TUI_FEEDBACK=1 ou /heads-up on, até PI_TUI_FEEDBACK_MAX_NOTICES tentativas por execução (default 3, faixa 0..10); dedupe e avaliação 1/2/0. PI_TUI_FEEDBACK=0 desliga tudo. Preserva mascaramento, afterTranscript, persistência sem projeção de modelo e tail ajustável.",
+			"tests": [
+				"packages/coding-agent/test/run-feedback.test.ts",
+				"packages/coding-agent/test/interactive-tui.test.ts"
+			]
+		},
+		{
+			"name": "stream-markdown",
+			"path": "overlay/stream-markdown.patch",
+			"description": "Agrupamento de message_update por quadro no host clássico e PI_TUI_HZ (30..240, default 60), com teto adaptativo. Cache de Markdown e reuso de componentes são upstream Pi 1.5.0.",
+			"sha256": "5d6369d6251da9d5006785e890143ca8fde7289c4e56c8253a6856401342579b",
+			"tests": [
+				"packages/coding-agent/test/stream-markdown.test.ts",
+				"packages/coding-agent/test/garime-frame.test.ts",
+				"packages/coding-agent/test/interactive-tui.test.ts"
+			]
+		},
+		{
+			"name": "mark-skill-curation",
+			"path": "overlay/mark-skill-curation.patch",
+			"description": "PI_AUTOMATIC_SKILLS opt-in: curadoria do anúncio no formatter compartilhado; catálogo e arquivos intactos.",
+			"sha256": "3d34182af2ce978681872592a3964d466f9d24bd7646a01b00b41dbe6e341b86",
+			"tests": [
+				"packages/coding-agent/test/skill-curation.test.ts",
+				"packages/coding-agent/test/skills.test.ts"
+			]
+		},
+		{
+			"name": "codemode-typed-results",
+			"path": "overlay/codemode-typed-results.patch",
+			"description": "Structured read/grep/find results in scripts; direct display text unchanged.",
+			"sha256": "f10452b930db0b6795ee61ffab7f50cdc09dbb179ee1f388de8b8006c98f403d",
+			"tests": [
+				"packages/coding-agent/test/codemode-typed-results.test.ts",
+				"packages/coding-agent/test/tools.test.ts",
+				"packages/coding-agent/test/read-line-range-display.test.ts"
+			]
+		},
+		{
+			"name": "codemode-background",
+			"path": "overlay/codemode-background.patch",
+			"description": "Background codemode runs after a five-minute wait, partial output, completion events and cancellation.",
+			"sha256": "75c6c51699fcff28ff86ec3470000011909ff8e1de58f5bcce4623a38ab47e5d",
+			"tests": [
+				"packages/coding-agent/test/codemode-background.test.ts",
+				"packages/coding-agent/test/codemode-worker-admission.test.ts",
+				"packages/codemode/test/source.test.ts",
+				"packages/coding-agent/test/suite/agent-session-codemode.test.ts",
+				"packages/coding-agent/test/codemode-worker-config.test.ts"
+			]
+		},
+		{
+			"name": "tool-load-append",
+			"path": "overlay/tool-load-append.patch",
+			"description": "Mid-session tool additions preserve the initial prompt and append guidelines through structured system updates.",
+			"tests": [
+				"packages/coding-agent/test/tool-load-append.test.ts",
+				"packages/coding-agent/test/tool-search.test.ts",
+				"packages/coding-agent/test/suite/agent-session-codemode.test.ts",
+				"packages/coding-agent/test/suite/agent-session-prompt.test.ts",
+				"packages/coding-agent/test/suite/agent-session-mcp.test.ts"
+			],
+			"sha256": "3aca3170320fffe6ea6dbd91fac16c53953eaa73e90030f2289c99e8d9709761"
+		},
+		{
+			"name": "cc-hidden-tool-names",
+			"path": "overlay/cc-hidden-tool-names.patch",
+			"description": "Lane OAuth Anthropic: o modelo chama tools pelo nome do Claude Code (Bash, Read). Quando a tool está escondida do request (codemode only), o nome volta em minúsculas em vez de dar 'Tool Bash not found'.",
+			"sha256": "083d4b7ec64c52dbd20fcbc13c227a360f1309b0d744ef16fc4bb9bf0a8dc05a",
+			"tests": [
+				"packages/ai/test/cc-hidden-tool-names.test.ts",
+				"packages/ai/test/anthropic-claude-code.test.ts"
+			]
+		}
+	],
+	"modelData": [
+		{
+			"officialVersion": "0.85.1",
+			"path": "overlay/model-data/0.85.1",
+			"manifestSha256": "e92838bf9dc88cddb9b0cca09eed201135c39e4ab7875e8a6fa447daaf5cdc44"
+		},
+		{
+			"officialVersion": "0.86.0",
+			"path": "overlay/model-data/0.86.0",
+			"manifestSha256": "33ac1810ab3bf743b0b7f647c52f420586e2d6699f0628dbeeeff362d0af3882"
+		},
+		{
+			"officialVersion": "0.86.1",
+			"path": "overlay/model-data/0.86.1",
+			"manifestSha256": "16d9d9af457fc8cea192558df1775ab0682f5a9de2f3f4db35a3f485eb498383"
+		},
+		{
+			"officialVersion": "0.87.1",
+			"path": "overlay/model-data/0.87.1",
+			"manifestSha256": "b28fc20ae79d801409f5e8bba02a8ee953494d9124dd8c3506b421c70864ff62"
+		},
+		{
+			"officialVersion": "0.99.1",
+			"path": "overlay/model-data/0.99.1",
+			"manifestSha256": "c1bb0931877f2be444ccf210feed185088331f573fa1c4211f24b8111b8e9b26"
+		},
+		{
+			"officialVersion": "0.99.2",
+			"path": "overlay/model-data/0.99.2",
+			"manifestSha256": "c027d3dad96f165510cf94a9fe72504f558d3570fe070660e3d8588dea1e63ca"
+		},
+		{
+			"officialVersion": "1.0.0",
+			"path": "overlay/model-data/1.0.0",
+			"manifestSha256": "1c84c2fe69147b13f5b60b6164122b85cfd4806835157c73a8211cdaed87e92a"
+		},
+		{
+			"officialVersion": "1.0.2",
+			"path": "overlay/model-data/1.0.2",
+			"manifestSha256": "231d8f95640cccf19b6af0f00908c171c5258e1978c485dd609b73578530383e"
+		},
+		{
+			"officialVersion": "1.0.4",
+			"path": "overlay/model-data/1.0.4",
+			"manifestSha256": "cc48909dfc315529456a1a48d2e4e0cf2c7199a60ce54cef68aa493efe0c10e3"
+		},
+		{
+			"officialVersion": "1.1.0",
+			"path": "overlay/model-data/1.1.0",
+			"manifestSha256": "273eb372c80e9f39bbc79435940e7188230bad6c7e3ae47d80532dcd10ce8ed1"
+		},
+		{
+			"officialVersion": "1.3.0",
+			"path": "overlay/model-data/1.3.0",
+			"manifestSha256": "05a7f9b7d8fc9a28018f38c6ebb4b0321e3c3685fd6bed191730d5b32d9e60af"
+		},
+		{
+			"officialVersion": "1.4.0",
+			"path": "overlay/model-data/1.4.0",
+			"manifestSha256": "c2f8e71ea4191ebff20f1a104f74f7b71237cc5c6744a6815b7efa96d231db44"
+		},
+		{
+			"officialVersion": "1.5.0",
+			"path": "overlay/model-data/1.5.0",
+			"manifestSha256": "cf17cbcc7bbf526c30f246c7574bc56e323d919177992785ca330cad1773d75b"
+		}
+	],
+	"releaseOverlays": [
+		{
+			"name": "pi-ai",
+			"workspace": "packages/ai",
+			"package": "@earendil-works/pi-ai",
+			"markerFile": "dist/api/anthropic-messages.js",
+			"requiredMarker": "external, sdk-cli"
+		},
+		{
+			"name": "pi-tui",
+			"workspace": "packages/tui",
+			"package": "@earendil-works/pi-tui",
+			"markerFile": "dist/components/markdown.js",
+			"requiredMarker": "CODESPAN_SYMBOL"
+		}
+	],
+	"platformSkippedTests": {
+		"win32": [
+			{
+				"file": "packages/coding-agent/test/auth-storage.test.ts",
+				"name": "keeps a coalesced reload alive while another credential reader is waiting",
+				"reason": "upstream: reescreve auth.json com o mesmo tamanho e no NTFS a revisão (tamanho+mtime) não muda a tempo; falha 5 em 6 no Windows"
+			}
+		]
+	},
+	"compatibility": {
+		"commands": [
+			"npm ci --ignore-scripts",
+			"overlay/model-data/<version> + npm -w packages/ai run check:model-data (or hydrate-model-data with --hydrate)",
+			"npm run check",
+			"npm run build:offline (npm run build with --hydrate)",
+			"vitest: every patches[].tests entry",
+			"npm pack + installed CLI smoke"
+		],
+		"bundleMarkers": [
+			{
+				"name": "pi-black claude agent identity",
+				"patch": "pi-black",
+				"path": "dist/bundle",
+				"marker": "external, sdk-cli"
+			},
+			{
+				"name": "garime-frame fullscreen inset",
+				"patch": "garime-frame",
+				"path": "dist/bundle",
+				"marker": "PI_TUI_MARGIN_X"
+			},
+			{
+				"name": "pi-account-env session account selection",
+				"patch": "pi-account-env",
+				"path": "dist/bundle",
+				"marker": "PI_ACCOUNT_"
+			},
+			{
+				"name": "skill announcement curation",
+				"patch": "mark-skill-curation",
+				"path": "dist/bundle",
+				"marker": "PI_AUTOMATIC_SKILLS"
+			},
+			{
+				"name": "transcript feedback observer entry",
+				"patch": "transcript-feedback",
+				"path": "dist/bundle",
+				"marker": "arca.feedback.v2"
+			},
+			{
+				"name": "stream markdown frame rate",
+				"patch": "stream-markdown",
+				"path": "dist/bundle",
+				"marker": "PI_TUI_HZ"
+			}
+		],
+		"upstreamLayouts": [
+			{
+				"name": "unbundled",
+				"binPi": "dist/cli.js",
+				"sourceFiles": [
+					"packages/coding-agent/src/cli.ts",
+					"packages/coding-agent/tsconfig.build.json"
+				]
+			},
+			{
+				"name": "bundle",
+				"binPi": "dist/bundle/cli.js",
+				"sourceFiles": [
+					"packages/coding-agent/src/cli.ts",
+					"packages/coding-agent/tsconfig.build.json",
+					"scripts/build-coding-agent-bundle.mjs"
+				],
+				"buildScriptContains": "build-coding-agent-bundle.mjs",
+				"packedFiles": [
+					"package/dist/cli.js"
+				]
+			}
+		],
+		"forbiddenOverlayMarkers": [
+			"prime-agent",
+			"prime agent",
+			".prime/agent"
+		]
+	}
+}

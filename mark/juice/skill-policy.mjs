@@ -1,0 +1,43 @@
+import { loadCompanySkillCategories, loadSkillCategories } from './skill-categories.mjs';
+/** Curadoria Mark: catálogo completo para o humano, anúncio automático mínimo. */
+export const AUTOMATIC_GLOBAL_SKILLS = Object.freeze(['peers', 'megamind', 'prometheus', 'cua', 'diagram', 'arca-ops', 'omni-ops']);
+
+const SYSTEM_SKILLS = Object.freeze(loadSkillCategories().find(c => c.name === 'system')?.skills ?? []);
+/** Skills de empresa (ARCA/Omni) entram só para quem tem o enrollment, e aí são automáticas. */
+const COMPANY_SKILLS = Object.freeze(loadCompanySkillCategories().flatMap(c => c.skills));
+/** Skills pessoais comuns, a categoria system e as de empresa do usuário ficam sempre visíveis. */
+export function automaticSkillNames() {
+  return [...new Set([...AUTOMATIC_GLOBAL_SKILLS, ...SYSTEM_SKILLS, ...COMPANY_SKILLS])];
+}
+export function isAutomaticSkill(name) {
+  return automaticSkillNames().includes(name);
+}
+
+export const PREVIOUS_SKILL_POLICY_ENV = 'MARK_JUICE_SKILLS_BEFORE';
+
+/** Desfazer só a política instalada pelo Mark, preservando eventual env do usuário. */
+export function restoreSkillPolicyEnvironment(env) {
+  if (!Object.hasOwn(env, PREVIOUS_SKILL_POLICY_ENV)) return;
+  const previous = JSON.parse(env[PREVIOUS_SKILL_POLICY_ENV]);
+  if (previous !== null && typeof previous !== 'string') throw new Error('Mark: snapshot de curadoria inválido');
+  if (previous === null) delete env.PI_AUTOMATIC_SKILLS;
+  else env.PI_AUTOMATIC_SKILLS = previous;
+  delete env[PREVIOUS_SKILL_POLICY_ENV];
+}
+
+/**
+ * Opt-in do formatter compartilhado do SDK (overlay/mark-skill-curation.patch).
+ * O catálogo inteiro segue em /skill:, inclusive no host durável, sem modificar
+ * objetos nem SKILL.md. As automáticas de trabalho vêm da pasta system/.
+ * A prova de capacidade evita ativar silenciosamente sobre um SDK antigo.
+ */
+export function installSkillPolicy(formatSkillsForPrompt) {
+  const env = process.env;
+  env[PREVIOUS_SKILL_POLICY_ENV] ??= JSON.stringify(env.PI_AUTOMATIC_SKILLS ?? null);
+  env.PI_AUTOMATIC_SKILLS = automaticSkillNames().join(',');
+  const probe = { name: 'mark-policy-probe', description: 'compatibility probe', filePath: '/mark-policy-probe/SKILL.md', baseDir: '/mark-policy-probe', source: 'user', disableModelInvocation: false };
+  if (typeof formatSkillsForPrompt !== 'function' || formatSkillsForPrompt([probe]) !== '') {
+    restoreSkillPolicyEnvironment(env);
+    throw new Error('Mark: SDK sem curadoria de skills; prepare/promova a release com mark-skill-curation antes de ativar este artefato');
+  }
+}

@@ -1,0 +1,61 @@
+diff --git a/packages/ai/src/api/anthropic-messages.ts b/packages/ai/src/api/anthropic-messages.ts
+index e9315709b1f4bb85a54eb586535636d672dc0529..eab98fc0dfe7595d740abfc6720018344bb3444b 100644
+--- a/packages/ai/src/api/anthropic-messages.ts
++++ b/packages/ai/src/api/anthropic-messages.ts
+@@ -126,12 +126,14 @@ const ccToolLookup = new Map(claudeCodeTools.map((t) => [t.toLowerCase(), t]));
+ 
+ // Convert tool name to CC canonical casing if it matches (case-insensitive)
+ const toClaudeCodeName = (name: string) => ccToolLookup.get(name.toLowerCase()) ?? name;
+-const fromClaudeCodeName = (name: string, tools?: Tool[]) => {
++export const fromClaudeCodeName = (name: string, tools?: Tool[]) => {
++	const lowerName = name.toLowerCase();
+ 	if (tools && tools.length > 0) {
+-		const lowerName = name.toLowerCase();
+ 		const matchedTool = tools.find((tool) => tool.name.toLowerCase() === lowerName);
+ 		if (matchedTool) return matchedTool.name;
+ 	}
++	// Tools hidden from the request (codemode "only") are still callable by their lowercase name.
++	if (ccToolLookup.get(lowerName) === name && name !== lowerName) return lowerName;
+ 	return name;
+ };
+ 
+@@ -649,7 +651,14 @@ export const stream: StreamFunction<"anthropic-messages", AnthropicOptions> = (
+ 			let response: Response;
+ 			for (;;) {
+ 				options?.signal?.throwIfAborted();
+-				const built = buildParams(model, normalizedContext, isOAuth, options, disablePreferredStrictTools, billingHeader);
++				const built = buildParams(
++					model,
++					normalizedContext,
++					isOAuth,
++					options,
++					disablePreferredStrictTools,
++					billingHeader,
++				);
+ 				if (built.providerThinkingLevel) output.providerThinkingLevel = built.providerThinkingLevel;
+ 				let params = built.params;
+ 				const nextParams = await options?.onPayload?.(params, model);
+diff --git a/packages/ai/test/cc-hidden-tool-names.test.ts b/packages/ai/test/cc-hidden-tool-names.test.ts
+new file mode 100644
+index 0000000000000000000000000000000000000000..e66dda4e57a5574989bb58e1af749c00577dc7d4
+--- /dev/null
++++ b/packages/ai/test/cc-hidden-tool-names.test.ts
+@@ -0,0 +1,18 @@
++import { describe, expect, it } from "vitest";
++import { fromClaudeCodeName } from "../src/api/anthropic-messages.ts";
++
++const tool = (name: string) => ({ name, description: "", parameters: { type: "object", properties: {} } }) as any;
++
++describe("fromClaudeCodeName", () => {
++	it("maps to the declared tool name", () => {
++		expect(fromClaudeCodeName("Bash", [tool("bash"), tool("codemode")])).toBe("bash");
++	});
++	it("lowercases a Claude Code name whose tool is hidden from the request", () => {
++		expect(fromClaudeCodeName("Bash", [tool("codemode"), tool("jobs")])).toBe("bash");
++		expect(fromClaudeCodeName("Read", [])).toBe("read");
++	});
++	it("keeps names that are not Claude Code tools", () => {
++		expect(fromClaudeCodeName("MyTool", [tool("codemode")])).toBe("MyTool");
++		expect(fromClaudeCodeName("codemode", [tool("codemode")])).toBe("codemode");
++	});
++});

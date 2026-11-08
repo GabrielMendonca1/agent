@@ -1,0 +1,783 @@
+diff --git a/packages/coding-agent/src/modes/interactive/components/assistant-message.ts b/packages/coding-agent/src/modes/interactive/components/assistant-message.ts
+index 7cb2960316e424cada820c2afbc26048e39bfb2a..535f44010f6b2a12c0b15750da5cfa7f34e0077d 100644
+--- a/packages/coding-agent/src/modes/interactive/components/assistant-message.ts
++++ b/packages/coding-agent/src/modes/interactive/components/assistant-message.ts
+@@ -10,6 +10,8 @@ import {
+ } from "@earendil-works/pi-tui";
+ import type { MarkdownTransformer } from "../../../core/extensions/types.ts";
+ import { getMarkdownTheme, theme } from "../theme/theme.ts";
++import { HangingIndent } from "./hanging-indent.ts";
++import { readTuiAgentIndent, readTuiBlockGap, readTuiProseGap, readTuiThinkIndent } from "./inset-layout.ts";
+ import { createMarkdownTransform } from "./markdown-transform.ts";
+ 
+ const OSC133_ZONE_START = "\x1b]133;A\x07";
+@@ -134,9 +136,9 @@ export class AssistantMessageComponent extends Container {
+ 		// line before the first visible block and after each visible thinking run that is followed
+ 		// by more visible content, while hidden thinking runs without a label contribute nothing.
+ 		let needsSpacer = true;
+-		const addVisibleChild = (child: Component) => {
++		const addVisibleChild = (child: Component, prose = false) => {
+ 			if (needsSpacer) {
+-				this.contentContainer.addChild(new Spacer(1));
++				this.contentContainer.addChild(new Spacer(prose ? readTuiProseGap() : readTuiBlockGap()));
+ 				needsSpacer = false;
+ 			}
+ 			this.contentContainer.addChild(child);
+@@ -150,22 +152,22 @@ export class AssistantMessageComponent extends Container {
+ 				// Assistant text messages with no background - trim the text
+ 				// Set paddingY=0 to avoid extra spacing before tool executions
+ 				const text = content.text.trim();
+-				addVisibleChild(
+-					markdownBlock(
+-						"text",
+-						text,
+-						() =>
+-							new Markdown(text, this.outputPad, 0, this.markdownTheme, undefined, {
+-								transform: createMarkdownTransform(
+-									"assistant",
+-									() => this.isStreaming,
+-									this.markdownTransformers,
+-									this.messageId,
+-									this.timestamp,
+-								),
+-							}),
+-					),
++				const prose = markdownBlock(
++					"text",
++					text,
++					() =>
++						new Markdown(text, this.outputPad, 0, this.markdownTheme, undefined, {
++							transform: createMarkdownTransform(
++								"assistant",
++								() => this.isStreaming,
++								this.markdownTransformers,
++								this.messageId,
++								this.timestamp,
++							),
++						}),
+ 				);
++				const agentIndent = readTuiAgentIndent();
++				addVisibleChild(agentIndent > 0 ? new HangingIndent(prose, agentIndent) : prose, true);
+ 			} else if (content.type === "thinking") {
+ 				const thinkingBlocks: string[] = [];
+ 				for (; i < message.content.length; i++) {
+@@ -217,8 +219,11 @@ export class AssistantMessageComponent extends Container {
+ 									},
+ 								),
+ 						);
++				const thinkIndent = hidden ? 0 : readTuiThinkIndent();
++				const thinkingBlock =
++					thinkIndent > 0 ? new HangingIndent(thinkingComponent, thinkIndent) : thinkingComponent;
+ 				addVisibleChild(
+-					new MouseRegion(thinkingComponent, (event) => {
++					new MouseRegion(thinkingBlock, (event) => {
+ 						if (event.type !== "click" || event.button !== "left") return undefined;
+ 						this.thinkingVisibilityOverrides.set(runIndex, !hidden);
+ 						if (this.lastMessage) this.updateContent(this.lastMessage);
+diff --git a/packages/coding-agent/src/modes/interactive/components/bash-execution.ts b/packages/coding-agent/src/modes/interactive/components/bash-execution.ts
+index 2c789bf5b66e904758d732c5da24761bc4f9d8a3..9ce3dec6c1acf94146bcd72e7ee78722eed5e3c1 100644
+--- a/packages/coding-agent/src/modes/interactive/components/bash-execution.ts
++++ b/packages/coding-agent/src/modes/interactive/components/bash-execution.ts
+@@ -12,6 +12,7 @@ import {
+ import { stripAnsi } from "../../../utils/ansi.ts";
+ import { theme } from "../theme/theme.ts";
+ import { DynamicBorder } from "./dynamic-border.ts";
++import { readTuiBlockGap } from "./inset-layout.ts";
+ import { keyHint, keyText } from "./keybinding-hints.ts";
+ import { truncateToVisualLines } from "./visual-truncate.ts";
+ 
+@@ -39,8 +40,8 @@ export class BashExecutionComponent extends Container {
+ 		this.outputPad = outputPad;
+ 		const borderColor = (str: string) => theme.fg(this.colorKey, str);
+ 
+-		// Add spacer
+-		this.addChild(new Spacer(1));
++		// garime-frame: respiro entre blocos do transcript (PI_TUI_BLOCK_GAP).
++		this.addChild(new Spacer(readTuiBlockGap()));
+ 
+ 		// Top border
+ 		this.addChild(new DynamicBorder(borderColor));
+diff --git a/packages/coding-agent/src/modes/interactive/components/custom-entry.ts b/packages/coding-agent/src/modes/interactive/components/custom-entry.ts
+index 81d381ee94066682c74deeadda55791f4ed7b18e..ae08a864aa5fccb93a48fa662cd0c2574b8c0a25 100644
+--- a/packages/coding-agent/src/modes/interactive/components/custom-entry.ts
++++ b/packages/coding-agent/src/modes/interactive/components/custom-entry.ts
+@@ -3,6 +3,7 @@ import { Box, Container, Spacer, Text } from "@earendil-works/pi-tui";
+ import type { EntryRenderer } from "../../../core/extensions/types.ts";
+ import type { CustomEntry } from "../../../core/session-manager.ts";
+ import { theme } from "../theme/theme.ts";
++import { readTuiBlockGap } from "./inset-layout.ts";
+ import { keyHint, keyText } from "./keybinding-hints.ts";
+ 
+ /**
+@@ -64,7 +65,8 @@ export class CustomEntryComponent extends Container {
+ 		}
+ 
+ 		this.customComponent = component;
+-		this.addChild(new Spacer(1));
++		// garime-frame: respiro entre blocos do transcript (PI_TUI_BLOCK_GAP).
++		this.addChild(new Spacer(readTuiBlockGap()));
+ 		this.addChild(component);
+ 	}
+ }
+diff --git a/packages/coding-agent/src/modes/interactive/components/custom-message.ts b/packages/coding-agent/src/modes/interactive/components/custom-message.ts
+index 6dcddf402d936921599bcabaf0f80fb8c5b7bcef..428c0f91a898541befe3912154e699bb4ffa8d93 100644
+--- a/packages/coding-agent/src/modes/interactive/components/custom-message.ts
++++ b/packages/coding-agent/src/modes/interactive/components/custom-message.ts
+@@ -4,6 +4,7 @@ import { Box, Container, Markdown, type MarkdownTheme, Spacer, Text } from "@ear
+ import type { MessageRenderer } from "../../../core/extensions/types.ts";
+ import type { CustomMessage } from "../../../core/messages.ts";
+ import { getMarkdownTheme, theme } from "../theme/theme.ts";
++import { readTuiBlockGap } from "./inset-layout.ts";
+ import { keyHint, keyText } from "./keybinding-hints.ts";
+ 
+ /**
+@@ -31,7 +32,8 @@ export class CustomMessageComponent extends Container {
+ 		this.markdownTheme = markdownTheme;
+ 		this.outputPad = outputPad;
+ 
+-		this.addChild(new Spacer(1));
++		// garime-frame: respiro entre blocos do transcript (PI_TUI_BLOCK_GAP).
++		this.addChild(new Spacer(readTuiBlockGap()));
+ 
+ 		// Create box with purple background (used for default rendering)
+ 		this.box = new Box(1, 1, (t) => theme.bg("customMessageBg", t));
+diff --git a/packages/coding-agent/src/modes/interactive/components/hanging-indent.ts b/packages/coding-agent/src/modes/interactive/components/hanging-indent.ts
+new file mode 100644
+index 0000000000000000000000000000000000000000..9ce21efea4ed57c954ba34b397d6bb79544a6e6b
+--- /dev/null
++++ b/packages/coding-agent/src/modes/interactive/components/hanging-indent.ts
+@@ -0,0 +1,43 @@
++import type { Component } from "@earendil-works/pi-tui";
++
++/**
++ * Desenha o filho mais estreito e recua todas as linhas DEPOIS da primeira
++ * linha visível.
++ *
++ * garime-frame: a fala do agente da casa tem bullet `⏺` na primeira linha (a
++ * extensão garime-tui o escreve no texto) e as continuações alinhadas sob ele;
++ * o corpo do pensamento tem o cabeçalho na margem e o resto recuado. O
++ * `Markdown` não tem indentação pendente — o `paddingX` dele recua TODAS as
++ * linhas —, então ela vive aqui, fora dele.
++ *
++ * Linha em branco não recebe recuo: espaço à toa no fim da linha vira sujeira
++ * ao copiar do terminal.
++ */
++export class HangingIndent implements Component {
++	private readonly child: Component;
++	private readonly indent: number;
++
++	constructor(child: Component, indent: number) {
++		this.child = child;
++		this.indent = indent;
++	}
++
++	render(width: number): string[] {
++		if (this.indent <= 0) return this.child.render(width);
++		const pad = " ".repeat(this.indent);
++		const lines = this.child.render(Math.max(1, width - this.indent));
++		let seen = false;
++		return lines.map((line) => {
++			if (line.trim() === "") return line;
++			if (!seen) {
++				seen = true;
++				return line;
++			}
++			return pad + line;
++		});
++	}
++
++	invalidate(): void {
++		this.child.invalidate();
++	}
++}
+diff --git a/packages/coding-agent/src/modes/interactive/components/inset-layout.ts b/packages/coding-agent/src/modes/interactive/components/inset-layout.ts
+new file mode 100644
+index 0000000000000000000000000000000000000000..e7bfae770c0bea2d138cbcbb1a77c7dd3888be2a
+--- /dev/null
++++ b/packages/coding-agent/src/modes/interactive/components/inset-layout.ts
+@@ -0,0 +1,127 @@
++import { type Component, HStack, Spacer, VStack } from "@earendil-works/pi-tui";
++
++/** Upper bound so a stray env value cannot swallow the viewport. */
++const MAX_MARGIN = 8;
++
++/** Upper bound for the blank gap between transcript blocks. */
++const MAX_BLOCK_GAP = 4;
++
++/** Default number of blank lines between transcript blocks. */
++const DEFAULT_BLOCK_GAP = 2;
++
++/**
++ * Default horizontal margin.
++ *
++ * garime-frame: 4 é a medida do respiro R3 ("bem arejado"), a combinação que a
++ * casa adotou. `PI_TUI_MARGIN_X` continua mandando.
++ */
++const DEFAULT_MARGIN_X = 2;
++
++/**
++ * Read a TUI margin from the environment.
++ *
++ * garime-frame: margens do fullscreen são ajustáveis sem rebuild
++ * (`PI_TUI_MARGIN_X`, `PI_TUI_MARGIN_Y`), só reiniciando o pi.
++ */
++export function readTuiMargin(name: string, fallback: number, env: NodeJS.ProcessEnv = process.env): number {
++	const raw = env[name];
++	if (raw === undefined || raw.trim() === "") return clampMargin(fallback);
++	const parsed = Number.parseInt(raw.trim(), 10);
++	if (!Number.isFinite(parsed) || parsed < 0) return clampMargin(fallback);
++	return clampMargin(parsed);
++}
++
++/**
++ * Blank lines separating two transcript blocks (user message, assistant
++ * message/thinking, tool card).
++ *
++ * garime-frame: `PI_TUI_BLOCK_GAP` (0..4, default 2). Valor inválido, negativo
++ * ou não numérico volta ao default; acima do teto é limitado.
++ */
++export function readTuiBlockGap(env: NodeJS.ProcessEnv = process.env): number {
++	return Math.min(MAX_BLOCK_GAP, readTuiMargin("PI_TUI_BLOCK_GAP", DEFAULT_BLOCK_GAP, env));
++}
++
++/**
++ * Margem lateral do fullscreen.
++ *
++ * garime-frame: `PI_TUI_MARGIN_X` (0..8, default 2). Existe como função para
++ * centralizar o default do host clássico.
++ */
++export function readTuiMarginX(env: NodeJS.ProcessEnv = process.env): number {
++	return readTuiMargin("PI_TUI_MARGIN_X", DEFAULT_MARGIN_X, env);
++}
++
++/**
++ * Linhas em branco entre o último bloco do agente e o próximo pedido do
++ * usuário — o "respiro final" do turno, independente do gap comum.
++ *
++ * garime-frame: `PI_TUI_AGENT_TAIL` (0..4, default 2).
++ */
++export function readTuiAgentTail(env: NodeJS.ProcessEnv = process.env): number {
++	return Math.min(MAX_BLOCK_GAP, readTuiMargin("PI_TUI_AGENT_TAIL", 2, env));
++}
++
++/**
++ * Linhas em branco antes da FALA do agente (não do pensamento, não dos cards).
++ *
++ * garime-frame: `PI_TUI_PROSE_GAP` (0..4). Ausente, cai no gap comum — então
++ * mexer só em `PI_TUI_BLOCK_GAP` continua mexendo na tela inteira.
++ */
++export function readTuiProseGap(env: NodeJS.ProcessEnv = process.env): number {
++	if (env.PI_TUI_PROSE_GAP === undefined || env.PI_TUI_PROSE_GAP.trim() === "") return readTuiBlockGap(env);
++	return Math.min(MAX_BLOCK_GAP, readTuiMargin("PI_TUI_PROSE_GAP", DEFAULT_BLOCK_GAP, env));
++}
++
++/**
++ * Recuo pendente da fala do agente: a primeira linha leva o bullet que a
++ * extensão escreveu (`⏺ `) e as seguintes alinham sob ele.
++ *
++ * garime-frame: `PI_TUI_AGENT_INDENT` (0..4, default 2); 0 volta ao texto
++ * corrido do upstream.
++ */
++export function readTuiAgentIndent(env: NodeJS.ProcessEnv = process.env): number {
++	return Math.min(MAX_BLOCK_GAP, readTuiMargin("PI_TUI_AGENT_INDENT", 2, env));
++}
++
++/**
++ * Recuo do CORPO do pensamento, sem a barra de citação: o cabeçalho
++ * (`✻ Thinking…`, escrito pela extensão) fica na margem e o resto anda para a
++ * direita.
++ *
++ * garime-frame: `PI_TUI_THINK_INDENT` (0..4, default 2).
++ */
++export function readTuiThinkIndent(env: NodeJS.ProcessEnv = process.env): number {
++	return Math.min(MAX_BLOCK_GAP, readTuiMargin("PI_TUI_THINK_INDENT", 2, env));
++}
++
++function clampMargin(value: number): number {
++	if (!Number.isFinite(value) || value <= 0) return 0;
++	return Math.min(MAX_MARGIN, Math.floor(value));
++}
++
++/**
++ * Wrap the fullscreen layout root in blank gutters so nothing paints on the
++ * terminal edges. Horizontal gutters come first so the vertical ones span the
++ * full width and stay empty.
++ */
++export function insetLayoutRoot(content: Component, marginX: number, marginY: number): Component {
++	const x = clampMargin(marginX);
++	const y = clampMargin(marginY);
++	let node: Component = content;
++	if (x > 0) {
++		node = new HStack([
++			{ component: new Spacer(0), basis: x, grow: 0, shrink: 0 },
++			{ component: node, basis: 0, grow: 1, shrink: 1, minSize: 1 },
++			{ component: new Spacer(0), basis: x, grow: 0, shrink: 0 },
++		]);
++	}
++	if (y > 0) {
++		node = new VStack([
++			{ component: new Spacer(y), basis: y, grow: 0, shrink: 0 },
++			{ component: node, basis: 0, grow: 1, shrink: 1, minSize: 1 },
++			{ component: new Spacer(y), basis: y, grow: 0, shrink: 0 },
++		]);
++	}
++	return node;
++}
+diff --git a/packages/coding-agent/src/modes/interactive/components/tool-execution.ts b/packages/coding-agent/src/modes/interactive/components/tool-execution.ts
+index 6d691b426503fe51c36dc0aee3ca68c7d99bc812..74d3d5eda5a119e272c65d4c61e4f8b7b936e462 100644
+--- a/packages/coding-agent/src/modes/interactive/components/tool-execution.ts
++++ b/packages/coding-agent/src/modes/interactive/components/tool-execution.ts
+@@ -11,6 +11,7 @@ import {
+ 	type TuiMouseEvent,
+ } from "@earendil-works/pi-tui";
+ import type { ToolDefinition, ToolRenderContext, ToolRenderers } from "../../../core/extensions/types.ts";
++import { readTuiBlockGap } from "./inset-layout.ts";
+ 
+ /** What this component needs from a tool: how to draw it, without executing it. */
+ export type { ToolRenderers };
+@@ -84,7 +85,8 @@ export class ToolExecutionComponent extends Container {
+ 		this.ui = ui;
+ 		this.cwd = cwd;
+ 
+-		this.addChild(new Spacer(1));
++		// garime-frame: respiro entre blocos do transcript (PI_TUI_BLOCK_GAP).
++		this.addChild(new Spacer(readTuiBlockGap()));
+ 
+ 		// Always create all shell variants. contentBox is used for default renderer-based composition.
+ 		// selfRenderContainer is used when the tool renders its own framing.
+diff --git a/packages/coding-agent/src/modes/interactive/interactive-mode.ts b/packages/coding-agent/src/modes/interactive/interactive-mode.ts
+index 6c6fbcf370a1795050aa6f363e7b0007c16f399b..36be8963b12dd250eeec8739fcdac989c4d98c40 100644
+--- a/packages/coding-agent/src/modes/interactive/interactive-mode.ts
++++ b/packages/coding-agent/src/modes/interactive/interactive-mode.ts
+@@ -151,6 +151,13 @@ import { ExtensionEditorComponent } from "./components/extension-editor.ts";
+ import { ExtensionInputComponent } from "./components/extension-input.ts";
+ import { ExtensionSelectorComponent } from "./components/extension-selector.ts";
+ import { FooterComponent, formatTokens } from "./components/footer.ts";
++import {
++	insetLayoutRoot,
++	readTuiAgentTail,
++	readTuiBlockGap,
++	readTuiMargin,
++	readTuiMarginX,
++} from "./components/inset-layout.ts";
+ import { formatKeyText, keyDisplayText, keyHint, keyText, rawKeyHint } from "./components/keybinding-hints.ts";
+ import { LoginDialogComponent } from "./components/login-dialog.ts";
+ import { createMermaidMarkdownTransformer } from "./components/mermaid.ts";
+@@ -647,6 +654,8 @@ export class InteractiveMode {
+ 		this.documentContainer.addChild(this.headerContainer);
+ 		this.documentContainer.addChild(this.loadedResourcesContainer);
+ 		this.documentContainer.addChild(this.chatContainer);
++		// garime-frame: a última mensagem ganha ar antes do input.
++		this.documentContainer.addChild(new Spacer(readTuiMargin("PI_TUI_TRANSCRIPT_TAIL", 2)));
+ 		this.pendingMessagesContainer = new Container();
+ 		this.statusContainer = new Container();
+ 		this.widgetContainerAbove = new Container();
+@@ -1002,7 +1011,8 @@ export class InteractiveMode {
+ 			scrollbarThumbStyle: (text) => theme.fg("scrollbarThumb", text),
+ 		});
+ 		this.transcriptScrollView = viewport.transcript;
+-		this.fullscreenLayoutRoot = viewport.root;
++		// garime-frame: margem lateral; topo e fundo sem margem por padrão.
++		this.fullscreenLayoutRoot = insetLayoutRoot(viewport.root, readTuiMarginX(), readTuiMargin("PI_TUI_MARGIN_Y", 0));
+ 		this.mountInteractiveTui(this.renderer, [
+ 			this.documentContainer,
+ 			this.pendingMessagesContainer,
+@@ -2589,7 +2599,8 @@ export class InteractiveMode {
+ 	 */
+ 	private renderWidgets(): void {
+ 		if (!this.widgetContainerAbove || !this.widgetContainerBelow) return;
+-		this.renderWidgetContainer(this.widgetContainerAbove, this.extensionWidgetsAbove, true, true);
++		// garime-frame: sem Spacer(1) acima do editor — a margem era ar parado.
++		this.renderWidgetContainer(this.widgetContainerAbove, this.extensionWidgetsAbove, false, false);
+ 		this.renderWidgetContainer(this.widgetContainerBelow, this.extensionWidgetsBelow, false, false);
+ 		this.ui.requestRender();
+ 	}
+@@ -3977,7 +3988,8 @@ export class InteractiveMode {
+ 				break;
+ 			}
+ 			case "compactionSummary": {
+-				this.chatContainer.addChild(new Spacer(1));
++				// garime-frame: respiro entre blocos do transcript (PI_TUI_BLOCK_GAP).
++				this.chatContainer.addChild(new Spacer(readTuiBlockGap()));
+ 				const component = new CompactionSummaryMessageComponent(
+ 					message,
+ 					this.getMarkdownThemeWithSettings(),
+@@ -3988,7 +4000,8 @@ export class InteractiveMode {
+ 				break;
+ 			}
+ 			case "branchSummary": {
+-				this.chatContainer.addChild(new Spacer(1));
++				// garime-frame: respiro entre blocos do transcript (PI_TUI_BLOCK_GAP).
++				this.chatContainer.addChild(new Spacer(readTuiBlockGap()));
+ 				const component = new BranchSummaryMessageComponent(
+ 					message,
+ 					this.getMarkdownThemeWithSettings(),
+@@ -4004,7 +4017,10 @@ export class InteractiveMode {
+ 				const textContent = this.getUserMessageText(message);
+ 				if (textContent) {
+ 					if (this.chatContainer.children.length > 0) {
+-						this.chatContainer.addChild(new Spacer(1));
++						// garime-frame: respiro FINAL do agente (PI_TUI_AGENT_TAIL) — o pedido
++						// do usuário abre um turno novo e ganha mais ar que um bloco qualquer
++						// do mesmo turno.
++						this.chatContainer.addChild(new Spacer(readTuiAgentTail()));
+ 					}
+ 					const skillBlock = parseSkillBlock(textContent);
+ 					if (skillBlock) {
+@@ -4018,7 +4034,8 @@ export class InteractiveMode {
+ 						this.chatContainer.addChild(component);
+ 						// Render user message separately if present
+ 						if (skillBlock.userMessage) {
+-							this.chatContainer.addChild(new Spacer(1));
++							// garime-frame: respiro entre blocos do transcript (PI_TUI_BLOCK_GAP).
++							this.chatContainer.addChild(new Spacer(readTuiBlockGap()));
+ 							const userComponent = new UserMessageComponent(
+ 								skillBlock.userMessage,
+ 								this.getMarkdownThemeWithSettings(),
+diff --git a/packages/coding-agent/src/modes/interactive/theme/system-theme.ts b/packages/coding-agent/src/modes/interactive/theme/system-theme.ts
+index a215797e300b4fcdaadb2e0af1fc04c40ff0eb28..6c84bb248da2e31e4581384b880a794913c15309 100644
+--- a/packages/coding-agent/src/modes/interactive/theme/system-theme.ts
++++ b/packages/coding-agent/src/modes/interactive/theme/system-theme.ts
+@@ -100,6 +100,13 @@ const TOKEN_FAMILIES: Record<ThemeToken, FamilyName> = {
+ 	borderAccent: "violet",
+ 	customMessageLabel: "violet",
+ 	mdCode: "violet",
++	// garime-frame: as cores do `código` inline por tipo. No tema do sistema elas
++	// seguem a mesma família do mdCode; quem quiser separá-las de verdade declara
++	// os tokens no JSON do tema.
++	mdCodeCommand: "violet",
++	mdCodeSymbol: "violet",
++	mdCodePath: "violet",
++	mdCodeUrl: "violet",
+ 	mdListBullet: "violet",
+ 	syntaxType: "violet",
+ 	border: "blue",
+@@ -307,7 +314,19 @@ const RULES: Rule[] = [
+ 	},
+ 	{ token: "toolOutput", on: ["background", ...TOOL_PANELS], level: "readable" },
+ 	...each(
+-		["mdHeading", "mdLink", "mdLinkUrl", "mdCode", "mdQuote", "mdCodeBlockBorder", "mdListBullet"],
++		[
++			"mdHeading",
++			"mdLink",
++			"mdLinkUrl",
++			"mdCode",
++			"mdCodeCommand",
++			"mdCodeSymbol",
++			"mdCodePath",
++			"mdCodeUrl",
++			"mdQuote",
++			"mdCodeBlockBorder",
++			"mdListBullet",
++		],
+ 		["background", ...MESSAGE_PANELS],
+ 		"readable",
+ 	),
+diff --git a/packages/coding-agent/src/modes/interactive/theme/theme-tokens.ts b/packages/coding-agent/src/modes/interactive/theme/theme-tokens.ts
+index a291cf134825f0a95296e6958c3b0dc7fdecb65d..a9a3bbdd09b926530df1ef058f03197ad6ce62ce 100644
+--- a/packages/coding-agent/src/modes/interactive/theme/theme-tokens.ts
++++ b/packages/coding-agent/src/modes/interactive/theme/theme-tokens.ts
+@@ -68,6 +68,26 @@ export const THEME_TOKENS = defineThemeTokens({
+ 	mdLink: { slot: "foreground", description: "Markdown link text" },
+ 	mdLinkUrl: { slot: "foreground", description: "Markdown link URL" },
+ 	mdCode: { slot: "foreground", description: "Markdown inline code" },
++	mdCodeCommand: {
++		slot: "foreground",
++		description: "Markdown inline code: command (falls back to mdCode when omitted)",
++		fallback: "mdCode",
++	},
++	mdCodeSymbol: {
++		slot: "foreground",
++		description: "Markdown inline code: symbol (falls back to mdCode when omitted)",
++		fallback: "mdCode",
++	},
++	mdCodePath: {
++		slot: "foreground",
++		description: "Markdown inline code: path (falls back to mdCode when omitted)",
++		fallback: "mdCode",
++	},
++	mdCodeUrl: {
++		slot: "foreground",
++		description: "Markdown inline code: url (falls back to mdCode when omitted)",
++		fallback: "mdCode",
++	},
+ 	mdCodeBlock: { slot: "foreground", description: "Markdown code block content" },
+ 	mdCodeBlockBorder: { slot: "foreground", description: "Markdown code block fences" },
+ 	mdQuote: { slot: "foreground", description: "Markdown blockquote text" },
+diff --git a/packages/coding-agent/src/modes/interactive/theme/theme.ts b/packages/coding-agent/src/modes/interactive/theme/theme.ts
+index 922b23d9ffce12c368c93987c9ff7968ba9f64e1..9a6ca14318c48c8840d430c50ae5ab26dea46e9b 100644
+--- a/packages/coding-agent/src/modes/interactive/theme/theme.ts
++++ b/packages/coding-agent/src/modes/interactive/theme/theme.ts
+@@ -1064,6 +1064,10 @@ export function getMarkdownTheme(): MarkdownTheme {
+ 		link: (text: string) => theme.fg("mdLink", text),
+ 		linkUrl: (text: string) => theme.fg("mdLinkUrl", text),
+ 		code: (text: string) => theme.fg("mdCode", text),
++		codeCommand: (text: string) => theme.fg("mdCodeCommand", text),
++		codeSymbol: (text: string) => theme.fg("mdCodeSymbol", text),
++		codePath: (text: string) => theme.fg("mdCodePath", text),
++		codeUrl: (text: string) => theme.fg("mdCodeUrl", text),
+ 		codeBlock: (text: string) => theme.fg("mdCodeBlock", text),
+ 		codeBlockBorder: (text: string) => theme.fg("mdCodeBlockBorder", text),
+ 		quote: (text: string) => theme.fg("mdQuote", text),
+diff --git a/packages/coding-agent/test/garime-frame.test.ts b/packages/coding-agent/test/garime-frame.test.ts
+new file mode 100644
+index 0000000000000000000000000000000000000000..b8ea046374583f4e43e04b72a7ccc3adb05787f8
+--- /dev/null
++++ b/packages/coding-agent/test/garime-frame.test.ts
+@@ -0,0 +1,187 @@
++import { readFileSync } from "node:fs";
++import { fileURLToPath } from "node:url";
++import { Text } from "@earendil-works/pi-tui";
++import { describe, expect, it, test } from "vitest";
++import { HangingIndent } from "../src/modes/interactive/components/hanging-indent.ts";
++import {
++	insetLayoutRoot,
++	readTuiAgentIndent,
++	readTuiAgentTail,
++	readTuiBlockGap,
++	readTuiMargin,
++	readTuiMarginX,
++	readTuiProseGap,
++	readTuiThinkIndent,
++} from "../src/modes/interactive/components/inset-layout.ts";
++
++describe("garime frame", () => {
++	test("the widget row above the editor carries no dead margin", () => {
++		const source = readFileSync(
++			fileURLToPath(new URL("../src/modes/interactive/interactive-mode.ts", import.meta.url)),
++			"utf8",
++		);
++		expect(source).toContain(
++			"this.renderWidgetContainer(this.widgetContainerAbove, this.extensionWidgetsAbove, false, false);",
++		);
++		expect(source).not.toContain(
++			"this.renderWidgetContainer(this.widgetContainerAbove, this.extensionWidgetsAbove, true, true);",
++		);
++	});
++});
++
++describe("garime frame inset layout", () => {
++	it("keeps content off the terminal edges", () => {
++		const root = insetLayoutRoot(new Text("hello", 0, 0), 2, 1);
++		const lines = root.render(20);
++
++		expect(lines[0]).toBe("");
++		expect(lines[lines.length - 1]).toBe("");
++		expect(lines[1]?.startsWith("  ")).toBe(true);
++		expect(lines[1]?.endsWith("  ")).toBe(true);
++		expect(lines[1]).toContain("hello");
++	});
++
++	it("returns the content untouched when both margins are zero", () => {
++		const content = new Text("hello", 0, 0);
++		expect(insetLayoutRoot(content, 0, 0)).toBe(content);
++	});
++
++	it("uses the house margin (R3) by default", () => {
++		expect(readTuiMarginX({})).toBe(2);
++		expect(readTuiMarginX({ PI_TUI_MARGIN_X: "2" })).toBe(2);
++		expect(readTuiMarginX({ PI_TUI_MARGIN_X: "0" })).toBe(0);
++		expect(readTuiMarginX({ PI_TUI_MARGIN_X: "999" })).toBe(8);
++		expect(readTuiMarginX({ PI_TUI_MARGIN_X: "abc" })).toBe(2);
++	});
++
++	it("reads margins from the environment and clamps them", () => {
++		expect(readTuiMargin("PI_TUI_MARGIN_X", 2, {})).toBe(2);
++		expect(readTuiMargin("PI_TUI_MARGIN_X", 2, { PI_TUI_MARGIN_X: "0" })).toBe(0);
++		expect(readTuiMargin("PI_TUI_MARGIN_X", 2, { PI_TUI_MARGIN_X: "4" })).toBe(4);
++		expect(readTuiMargin("PI_TUI_MARGIN_X", 2, { PI_TUI_MARGIN_X: "999" })).toBe(8);
++		expect(readTuiMargin("PI_TUI_MARGIN_X", 2, { PI_TUI_MARGIN_X: "abc" })).toBe(2);
++		expect(readTuiMargin("PI_TUI_MARGIN_X", 2, { PI_TUI_MARGIN_X: "-3" })).toBe(2);
++		expect(readTuiMargin("PI_TUI_TRANSCRIPT_TAIL", 2, {})).toBe(2);
++		expect(readTuiMargin("PI_TUI_TRANSCRIPT_TAIL", 2, { PI_TUI_TRANSCRIPT_TAIL: "0" })).toBe(0);
++	});
++});
++
++describe("garime frame transcript block gap", () => {
++	it("separates transcript blocks by two blank lines by default", () => {
++		expect(readTuiBlockGap({})).toBe(2);
++		expect(readTuiBlockGap({ PI_TUI_BLOCK_GAP: "" })).toBe(2);
++		expect(readTuiBlockGap({ PI_TUI_BLOCK_GAP: "  " })).toBe(2);
++	});
++
++	it("honours the configured gap and clamps it to the allowed range", () => {
++		expect(readTuiBlockGap({ PI_TUI_BLOCK_GAP: "0" })).toBe(0);
++		expect(readTuiBlockGap({ PI_TUI_BLOCK_GAP: "1" })).toBe(1);
++		expect(readTuiBlockGap({ PI_TUI_BLOCK_GAP: "4" })).toBe(4);
++		expect(readTuiBlockGap({ PI_TUI_BLOCK_GAP: "9" })).toBe(4);
++	});
++
++	it("falls back to the default on an invalid value", () => {
++		expect(readTuiBlockGap({ PI_TUI_BLOCK_GAP: "abc" })).toBe(2);
++		expect(readTuiBlockGap({ PI_TUI_BLOCK_GAP: "-1" })).toBe(2);
++		// parseInt trunca: "3.9" ainda é um inteiro legível, não um valor inválido.
++		expect(readTuiBlockGap({ PI_TUI_BLOCK_GAP: "3.9" })).toBe(3);
++	});
++
++	it("drives the block spacers of the transcript components", () => {
++		const read = (path: string) => readFileSync(fileURLToPath(new URL(path, import.meta.url)), "utf8");
++		const assistant = read("../src/modes/interactive/components/assistant-message.ts");
++		const tool = read("../src/modes/interactive/components/tool-execution.ts");
++
++		// Os dois spacers do bloco do assistente passaram a perguntar o que vem
++		// Lazy visible blocks share one gap helper; hidden thinking adds no gap.
++		expect(assistant.match(/readTuiBlockGap\(\)/g)?.length).toBe(1);
++		expect(tool).toContain("new Spacer(readTuiBlockGap())");
++	});
++});
++
++describe("garime frame breathing room (R3)", () => {
++	it("gives the end of the agent turn two blank lines by default", () => {
++		expect(readTuiAgentTail({})).toBe(2);
++		expect(readTuiAgentTail({ PI_TUI_AGENT_TAIL: "0" })).toBe(0);
++		expect(readTuiAgentTail({ PI_TUI_AGENT_TAIL: "9" })).toBe(4);
++		expect(readTuiAgentTail({ PI_TUI_AGENT_TAIL: "abc" })).toBe(2);
++	});
++
++	it("falls back to the common gap when the prose gap is unset", () => {
++		expect(readTuiProseGap({})).toBe(2);
++		expect(readTuiProseGap({ PI_TUI_BLOCK_GAP: "1" })).toBe(1);
++		expect(readTuiProseGap({ PI_TUI_BLOCK_GAP: "1", PI_TUI_PROSE_GAP: "2" })).toBe(2);
++		expect(readTuiProseGap({ PI_TUI_PROSE_GAP: "0" })).toBe(0);
++		expect(readTuiProseGap({ PI_TUI_PROSE_GAP: "  " })).toBe(2);
++	});
++
++	it("hangs the agent speech and the thinking body by two columns", () => {
++		expect(readTuiAgentIndent({})).toBe(2);
++		expect(readTuiAgentIndent({ PI_TUI_AGENT_INDENT: "0" })).toBe(0);
++		expect(readTuiThinkIndent({})).toBe(2);
++		expect(readTuiThinkIndent({ PI_TUI_THINK_INDENT: "0" })).toBe(0);
++	});
++
++	it("drives the transcript spacers of the assistant block", () => {
++		const read = (path: string) => readFileSync(fileURLToPath(new URL(path, import.meta.url)), "utf8");
++		const assistant = read("../src/modes/interactive/components/assistant-message.ts");
++		const interactive = read("../src/modes/interactive/interactive-mode.ts");
++
++		expect(assistant.match(/readTuiProseGap\(\)/g)?.length).toBe(1);
++		expect(assistant).toContain("new HangingIndent(prose, agentIndent)");
++		expect(assistant).toContain("new HangingIndent(thinkingComponent, thinkIndent)");
++		expect(interactive).toContain("new Spacer(readTuiAgentTail())");
++	});
++});
++
++describe("garime frame hanging indent", () => {
++	const lines = (text: string[], indent: number) =>
++		new HangingIndent({ render: () => text, invalidate: () => {} }, indent).render(20);
++
++	it("indents every line after the first visible one", () => {
++		expect(lines(["um", "dois", "tres"], 2)).toEqual(["um", "  dois", "  tres"]);
++	});
++
++	it("leaves blank lines alone and never indents the header", () => {
++		expect(lines(["", "cabecalho", "", "corpo"], 2)).toEqual(["", "cabecalho", "", "  corpo"]);
++	});
++
++	it("is a no-op at zero", () => {
++		expect(lines(["um", "dois"], 0)).toEqual(["um", "dois"]);
++	});
++
++	it("narrows the child by the indent", () => {
++		const widths: number[] = [];
++		const child = {
++			render: (width: number) => {
++				widths.push(width);
++				return ["x"];
++			},
++			invalidate: () => {},
++		};
++		new HangingIndent(child, 2).render(20);
++		expect(widths).toEqual([18]);
++	});
++});
++
++describe("garime frame inline code colors", () => {
++	const markdown = readFileSync(
++		fileURLToPath(new URL("../../tui/src/components/markdown.ts", import.meta.url)),
++		"utf8",
++	);
++
++	it("classifies a codespan by reference type, falling back to code", () => {
++		expect(markdown).toContain("private styleCodespan(text: string): string {");
++		expect(markdown).toContain("return theme.code(text);");
++	});
++
++	it("keeps every existing theme valid: the new tokens fall back to mdCode", () => {
++		const theme = readFileSync(
++			fileURLToPath(new URL("../src/modes/interactive/theme/theme-tokens.ts", import.meta.url)),
++			"utf8",
++		);
++		for (const token of ["mdCodeCommand", "mdCodeSymbol", "mdCodePath", "mdCodeUrl"]) {
++			expect(theme).toMatch(new RegExp(`${token}: \{[^}]*fallback: "mdCode"`));
++		}
++	});
++});
+diff --git a/packages/tui/src/components/markdown.ts b/packages/tui/src/components/markdown.ts
+index a21f75181bf5302376ff72deeae7673df1b82a89..c9f13fca1e593bb07639cec7c2c687df75135fce 100644
+--- a/packages/tui/src/components/markdown.ts
++++ b/packages/tui/src/components/markdown.ts
+@@ -234,6 +234,16 @@ export interface MarkdownTheme {
+ 	link: (text: string) => string;
+ 	linkUrl: (text: string) => string;
+ 	code: (text: string) => string;
++	/**
++	 * garime-frame: `código` inline por TIPO de referência. Em prosa o markdown
++	 * do Pi tinha uma cor só para tudo entre crases, então comando, símbolo,
++	 * caminho e URL dividiam a cor do código. Tema que não declara o token cai
++	 * em `code`, logo todo tema existente continua valendo.
++	 */
++	codeCommand?: (text: string) => string;
++	codeSymbol?: (text: string) => string;
++	codePath?: (text: string) => string;
++	codeUrl?: (text: string) => string;
+ 	codeBlock: (text: string) => string;
+ 	codeBlockBorder: (text: string) => string;
+ 	quote: (text: string) => string;
+@@ -261,6 +271,15 @@ export interface MarkdownOptions {
+ 	renderLatex?: boolean;
+ }
+ 
++// garime-frame: classificação do `código` inline (ver `styleCodespan`). As
++// âncoras são de propósito: só um span que É a referência inteira muda de cor.
++const CODESPAN_URL = /^(?:https?|file):\/\/\S+$/;
++const CODESPAN_COMMAND =
++	/^(?:pnpm|npm|npx|yarn|bun|node|deno|git|vitest|jest|rg|pi|cargo|go|make|docker|kubectl|python|python3|uv|pip|bash|sh|zsh|ssh|curl)\b/;
++const CODESPAN_PATH =
++	/^(?:[~.]?\/)?[\w@.-]+(?:\/[\w@.-]+)*\.[A-Za-z][\w]{0,9}(?::\d+(?:-\d+)?)?$|^(?:[~.]?\/)[\w@./-]+$/;
++const CODESPAN_SYMBOL = /^[A-Za-z_$][\w.$]*\(\)$/;
++
+ interface InlineStyleContext {
+ 	applyText: (text: string) => string;
+ 	stylePrefix: string;
+@@ -736,6 +755,22 @@ export class Markdown implements Component {
+ 		return lines;
+ 	}
+ 
++	/**
++	 * garime-frame: uma cor por tipo de referência dentro de crases.
++	 *
++	 * A classificação é a mesma que a extensão garime-tui usa nos cards de tool
++	 * (`codeTokens` em `claude-style.ts`), para que a mesma coisa tenha a mesma
++	 * cor dentro e fora do card. Tema sem o token novo cai em `code`.
++	 */
++	private styleCodespan(text: string): string {
++		const theme = this.theme;
++		if (theme.codeUrl && CODESPAN_URL.test(text)) return theme.codeUrl(text);
++		if (theme.codeCommand && CODESPAN_COMMAND.test(text)) return theme.codeCommand(text);
++		if (theme.codePath && CODESPAN_PATH.test(text)) return theme.codePath(text);
++		if (theme.codeSymbol && CODESPAN_SYMBOL.test(text)) return theme.codeSymbol(text);
++		return theme.code(text);
++	}
++
+ 	private renderInlineTokens(tokens: Token[], styleContext?: InlineStyleContext): string {
+ 		let result = "";
+ 		const resolvedStyleContext = styleContext ?? this.getDefaultInlineStyleContext();
+@@ -788,7 +823,7 @@ export class Markdown implements Component {
+ 				}
+ 
+ 				case "codespan":
+-					result += this.theme.code(token.text) + stylePrefix;
++					result += this.styleCodespan(token.text) + stylePrefix;
+ 					break;
+ 
+ 				case "link": {

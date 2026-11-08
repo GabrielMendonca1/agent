@@ -1,0 +1,629 @@
+diff --git a/packages/codemode/src/runtime/execution.ts b/packages/codemode/src/runtime/execution.ts
+index 06199e9f3bf1c1aeb9b623c39c37d038448e8438..092dc2a213826ab137262ebca3418939f0c448d0 100644
+--- a/packages/codemode/src/runtime/execution.ts
++++ b/packages/codemode/src/runtime/execution.ts
+@@ -197,7 +197,7 @@ class Execution {
+ 	private readonly delivered = new Set<number>();
+ 	private readonly signal: AbortSignal | undefined;
+ 	private readonly timer: ReturnType<typeof setTimeout> | undefined;
+-	private readonly output: CodemodeOutputItem[] = [];
++	readonly output: CodemodeOutputItem[] = [];
+ 	private readonly calls: CodemodeCall[] = [];
+ 	private readonly pending = new Map<number, PendingCall>();
+ 	/** Whether the execution has its outcome. */
+@@ -485,6 +485,11 @@ export class CodemodeSandboxBase {
+ 		return this.toolsByName.delete(name);
+ 	}
+ 
++	/** Output received from active runs so far. Returns a copy. */
++	outputSoFar(): CodemodeOutputItem[] {
++		return [...this.running].flatMap((run) => run.output.map((item) => ({ ...item })));
++	}
++
+ 	get tools(): CodemodeTool[] {
+ 		return [...this.toolsByName.values()];
+ 	}
+diff --git a/packages/codemode/src/source.ts b/packages/codemode/src/source.ts
+index 6d7ba8573008646b811e8bf0ce323b5eb9a89adc..2447a0879b0bbac0a36e28e889aa549391024e4a 100644
+--- a/packages/codemode/src/source.ts
++++ b/packages/codemode/src/source.ts
+@@ -10,8 +10,8 @@
+ 
+ export const CODEMODE_OPTIONS_PREFIX = "// @options:";
+ 
+-const SUPPORTED_FIELDS = ["max_output_tokens", "timeout_ms"] as const;
+-const SUPPORTED_FIELDS_TEXT = "`max_output_tokens` and `timeout_ms`";
++const SUPPORTED_FIELDS = ["max_output_tokens", "timeout_ms", "background", "wait_ms"] as const;
++const SUPPORTED_FIELDS_TEXT = "`max_output_tokens`, `timeout_ms`, `background` and `wait_ms`";
+ /** Largest delay `setTimeout` supports, which bounds `timeout_ms`. */
+ const MAX_TIMEOUT_MS = 2_147_483_647;
+ 
+@@ -32,6 +32,8 @@ SOURCE: /[\s\S]+/
+ export interface CodemodeSourceOptions {
+ 	/** Token budget for the script's output. */
+ 	maxOutputTokens?: number;
++	background?: boolean;
++	waitMs?: number;
+ 	/** Hard deadline for the whole script in milliseconds, including tool calls. */
+ 	timeoutMs?: number;
+ }
+@@ -75,7 +77,17 @@ function parseOptions(directive: string): CodemodeSourceOptions {
+ 		}
+ 	}
+ 	const options: CodemodeSourceOptions = {};
+-	const { max_output_tokens, timeout_ms } = fields;
++	const { max_output_tokens, timeout_ms, background, wait_ms } = fields;
++	if (background !== undefined) {
++		if (typeof background !== "boolean")
++			throw new CodemodeSourceError("@options field `background` must be a boolean");
++		options.background = background;
++	}
++	if (wait_ms !== undefined) {
++		if (!isSafeInteger(wait_ms) || wait_ms > MAX_TIMEOUT_MS)
++			throw new CodemodeSourceError("@options field `wait_ms` must be a non-negative integer up to 2147483647");
++		options.waitMs = wait_ms;
++	}
+ 	if (max_output_tokens !== undefined) {
+ 		if (!isSafeInteger(max_output_tokens)) {
+ 			throw new CodemodeSourceError("@options field `max_output_tokens` must be a non-negative safe integer");
+diff --git a/packages/codemode/test/source.test.ts b/packages/codemode/test/source.test.ts
+index 36e7c0b7297dca32e6300e66b4be9abc51d5c10c..4a9aee0503847c92c3f503567b6ff6624088c143 100644
+--- a/packages/codemode/test/source.test.ts
++++ b/packages/codemode/test/source.test.ts
+@@ -54,7 +54,7 @@ describe("parseCodemodeSource", () => {
+ 			["// @options: [1]\ntext(1)", /@options must be a JSON object with supported fields/],
+ 			[
+ 				'// @options: {"yield": 1}\ntext(1)',
+-				"@options only supports `max_output_tokens` and `timeout_ms`; got `yield`",
++				"@options only supports `max_output_tokens`, `timeout_ms`, `background` and `wait_ms`; got `yield`",
+ 			],
+ 			[
+ 				'// @options: {"max_output_tokens": 1.5}\ntext(1)',
+diff --git a/packages/coding-agent/docs/codemode.md b/packages/coding-agent/docs/codemode.md
+index 0cb6e6e86dda8b9b38a1c4b42f3ea467975b7acb..0684c15e32272798eff15d8e1aee7f071d4eb18f 100644
+--- a/packages/coding-agent/docs/codemode.md
++++ b/packages/coding-agent/docs/codemode.md
+@@ -13,6 +13,7 @@ A script may start with an options line. It must be the first line; an options l
+ ```
+ 
+ - `max_output_tokens` (default 10000) limits the output. Longer output keeps its start and end, and the full text is written to a temp file whose path is included in the result. A script fails when its output passes 16777216 characters of text and base64 image data or 100000 `text()`, `image()`, and `console` calls; write large data to a file with a tool instead.
++- `background` (default false) returns early; `wait_ms` (default 300000) sets the foreground wait. See [Background scripts](#background-scripts).
+ - `timeout_ms` is a hard deadline for the whole script, including any wait for a free worker. It is unset by default. Image generation can take minutes, so do not set a short deadline for scripts that generate images.
+ 
+ The result starts with `Script completed` or `Script failed`, the wall time, and the output. Text and image items appear in order, each on its own line. When the output has more than one text item (from `text()` or `return`), each starts with a `==> text N/M <==` line. `console` calls follow in one `<console_output>` block with one line per call. A failed script keeps its partial output, followed by `Script error:` and the error. Tool calls are real: calls made before a failure are not undone. Calls still running when the script ends are cancelled, and unawaited promises are discarded.
+@@ -230,3 +231,9 @@ for (const block of result.output) {
+ - At most two codemode workers may be alive across all sessions in one pi process; `PI_CODEMODE_MAX_WORKERS` changes the limit. A cancelled worker occupies its slot until it exits. At capacity, new scripts wait for a free worker in arrival order. A script that gets no worker within 60 seconds, or before its `timeout_ms`, fails without running.
+ - A script that waits on a promise that can never settle (no tool call pending) fails immediately, since there are no timers.
+ - Scripts cannot start other `codemode` scripts.
++
++### Background scripts
++
++The first-line `@options` accepts `background: true` (return immediately) and `wait_ms` (non-negative milliseconds, default 300000). If the script finishes within this wait, the result is unchanged. Otherwise the tool returns a job id and output received so far. The script continues with its own abort signal; cancelling the original tool call no longer stops it. `timeout_ms` remains a hard deadline.
++
++The extension emits `codemode:job` with `{ jobId, status, result, sessionId }` when a background run settles (`done`, `failed`, or `cancelled`), and `status: "running"` when it detaches. Emit `codemode:job:cancel` with `{ jobId }` to stop it. Session shutdown stops background runs. Background runs hold worker slots (default two per process); `PI_CODEMODE_MAX_WORKERS` sets the capacity. Store writes apply when the script completes.
+diff --git a/packages/coding-agent/src/extensions/codemode/execute.ts b/packages/coding-agent/src/extensions/codemode/execute.ts
+index b3635999f7c8bcd73253f3813149ee18a5cea8a7..ab8fa076faa956b7bada83b538734aa1e0234244 100644
+--- a/packages/coding-agent/src/extensions/codemode/execute.ts
++++ b/packages/coding-agent/src/extensions/codemode/execute.ts
+@@ -1,3 +1,4 @@
++import { randomUUID } from "node:crypto";
+ /**
+  * Runs one codemode script in the sandbox. Split from tool.ts and loaded through
+  * execute.lazy.ts so the sandbox runtime only loads when a script runs.
+@@ -492,163 +493,217 @@ function toScriptValue(tool: AgentTool<any>, outcome: AgentToolCallOutcome): unk
+ export async function executeCodemode(
+ 	toolCallId: string,
+ 	input: CodemodeToolInput,
+-	signal: AbortSignal | undefined,
++	callerSignal: AbortSignal | undefined,
+ 	onUpdate: ((result: AgentToolResult<CodemodeToolDetails>) => void) | undefined,
+ 	ctx: ExtensionToolContext | undefined,
+ 	options: CodemodeToolOptions = {},
+ ): Promise<AgentToolResult<CodemodeToolDetails>> {
+ 	const startedAt = performance.now();
+ 	const { code, options: sourceOptions } = parseCodemodeSource(input.code);
+-	const calls: CodemodeNestedCall[] = [];
+-	// Usage of the script's `models.*` calls. Nested tool calls report theirs through the session.
+-	let modelUsage: Usage | undefined;
+-	// Images returned by `models.generateImages()`, to notice a script that never shows them.
+-	let generatedImages = 0;
+-	const addGeneratedImages = (count: number) => {
+-		generatedImages += count;
+-	};
+-	const addModelUsage = (usage: Usage) => {
+-		modelUsage = modelUsage ? combineUsage(modelUsage, usage) : usage;
+-	};
++	const ownerSessionId = ctx?.sessionManager.getSessionId();
++	const own = new AbortController();
++	const signal = own.signal;
++	const forwardAbort = () => own.abort(callerSignal?.reason);
++	if (callerSignal?.aborted) forwardAbort();
++	else callerSignal?.addEventListener("abort", forwardAbort, { once: true });
++	let detached = false;
++	let sandbox: CodemodeSandbox | undefined;
++	const run = async (): Promise<AgentToolResult<CodemodeToolDetails>> => {
++		const calls: CodemodeNestedCall[] = [];
++		// Usage of the script's `models.*` calls. Nested tool calls report theirs through the session.
++		let modelUsage: Usage | undefined;
++		// Images returned by `models.generateImages()`, to notice a script that never shows them.
++		let generatedImages = 0;
++		const addGeneratedImages = (count: number) => {
++			generatedImages += count;
++		};
++		const addModelUsage = (usage: Usage) => {
++			modelUsage = modelUsage ? combineUsage(modelUsage, usage) : usage;
++		};
+ 
+-	const snapshot = (): CodemodeToolDetails => ({ calls: calls.map((call) => ({ ...call })) });
+-	const publish = () => onUpdate?.({ content: [], details: snapshot() });
+-	// Show the script as running before its first nested call, so the row's timer starts.
+-	publish();
++		const snapshot = (): CodemodeToolDetails => ({ calls: calls.map((call) => ({ ...call })) });
++		const publish = () => !detached && onUpdate?.({ content: [], details: snapshot() });
++		// Show the script as running before its first nested call, so the row's timer starts.
++		publish();
+ 
+-	const callable = ctx ? getCodemodeCallableTools(ctx.tools) : [];
+-	// ALL_TOOLS entries carry the declaration.
+-	const guidelines = options.getToolGuidelines?.();
+-	const samples = new Map(
+-		callable.map((tool) => [tool.name, renderToolSample(toCodemodeDeclaration(tool, guidelines?.get(tool.name)))]),
+-	);
+-	const sandboxTools: CodemodeTool[] = callable.map((tool) => ({
+-		name: tool.name,
+-		description: samples.get(tool.name),
+-		execute: async (args, { signal: callSignal }) => {
+-			const record: CodemodeNestedCall = {
+-				id: `${toolCallId}/?`,
+-				name: tool.name,
+-				args: previewArgs(args),
+-				status: "running",
++		const callable = ctx ? getCodemodeCallableTools(ctx.tools) : [];
++		// ALL_TOOLS entries carry the declaration.
++		const guidelines = options.getToolGuidelines?.();
++		const samples = new Map(
++			callable.map((tool) => [tool.name, renderToolSample(toCodemodeDeclaration(tool, guidelines?.get(tool.name)))]),
++		);
++		const sandboxTools: CodemodeTool[] = callable.map((tool) => ({
++			name: tool.name,
++			description: samples.get(tool.name),
++			execute: async (args, { signal: callSignal }) => {
++				const record: CodemodeNestedCall = {
++					id: `${toolCallId}/?`,
++					name: tool.name,
++					args: previewArgs(args),
++					status: "running",
++				};
++				calls.push(record);
++				publish();
++				const callStartedAt = performance.now();
++				// Only tools from ctx.tools are callable, so ctx is set here.
++				if (!ctx) throw new Error("Tool calls need a session");
++				const outcome = await ctx.executeTool(tool.name, args, { signal: callSignal });
++				record.id = outcome.toolCall.id;
++				record.durationMs = performance.now() - callStartedAt;
++				if (outcome.isError) {
++					record.status = callSignal.aborted ? "cancelled" : "error";
++					record.error = truncateText(textOf(outcome.result) || `Tool "${tool.name}" failed`, ERROR_PREVIEW_CHARS);
++				} else {
++					record.status = "ok";
++				}
++				publish();
++				return toScriptValue(tool, outcome);
++			},
++		}));
++
++		// The wait for a worker counts toward the script's deadline.
++		const deadline = sourceOptions.timeoutMs ?? Number.POSITIVE_INFINITY;
++		const waitStartedAt = performance.now();
++		const admission = await reserveCodemodeWorker(signal, Math.min(deadline, CODEMODE_WORKER_WAIT_MS));
++		const waitedMs = performance.now() - waitStartedAt;
++		if (admission !== "reserved") {
++			const waited = ((performance.now() - startedAt) / 1000).toFixed(1);
++			const reason = signal?.reason;
++			const error =
++				admission === "aborted"
++					? `Script aborted: ${reason instanceof Error ? reason.message : "Execution aborted"}`
++					: deadline <= CODEMODE_WORKER_WAIT_MS
++						? `Script timed out: Execution timed out after ${deadline} ms while waiting for a free codemode worker`
++						: `No codemode worker became free within ${CODEMODE_WORKER_WAIT_MS / 1000} seconds. All ${maxCodemodeWorkers()} workers, shared by every session in this process, are held by other scripts. Retry after they finish.`;
++			return {
++				content: [
++					{ type: "text", text: `Script failed\nWall time ${waited} seconds\nOutput:\n` },
++					{ type: "text", text: `Script error:\n${error}\n\nThe script did not start.` },
++				],
++				details: snapshot(),
++				isError: true,
+ 			};
+-			calls.push(record);
+-			publish();
+-			const callStartedAt = performance.now();
+-			// Only tools from ctx.tools are callable, so ctx is set here.
+-			if (!ctx) throw new Error("Tool calls need a session");
+-			const outcome = await ctx.executeTool(tool.name, args, { signal: callSignal });
+-			record.id = outcome.toolCall.id;
+-			record.durationMs = performance.now() - callStartedAt;
+-			if (outcome.isError) {
+-				record.status = callSignal.aborted ? "cancelled" : "error";
+-				record.error = truncateText(textOf(outcome.result) || `Tool "${tool.name}" failed`, ERROR_PREVIEW_CHARS);
+-			} else {
+-				record.status = "ok";
+-			}
+-			publish();
+-			return toScriptValue(tool, outcome);
+-		},
+-	}));
+-
+-	// The wait for a worker counts toward the script's deadline.
+-	const deadline = sourceOptions.timeoutMs ?? Number.POSITIVE_INFINITY;
+-	const waitStartedAt = performance.now();
+-	const admission = await reserveCodemodeWorker(signal, Math.min(deadline, CODEMODE_WORKER_WAIT_MS));
+-	const waitedMs = performance.now() - waitStartedAt;
+-	if (admission !== "reserved") {
+-		const waited = ((performance.now() - startedAt) / 1000).toFixed(1);
+-		const reason = signal?.reason;
+-		const error =
+-			admission === "aborted"
+-				? `Script aborted: ${reason instanceof Error ? reason.message : "Execution aborted"}`
+-				: deadline <= CODEMODE_WORKER_WAIT_MS
+-					? `Script timed out: Execution timed out after ${deadline} ms while waiting for a free codemode worker`
+-					: `No codemode worker became free within ${CODEMODE_WORKER_WAIT_MS / 1000} seconds. All ${maxCodemodeWorkers()} workers, shared by every session in this process, are held by other scripts. Retry after they finish.`;
+-		return {
+-			content: [
+-				{ type: "text", text: `Script failed\nWall time ${waited} seconds\nOutput:\n` },
+-				{ type: "text", text: `Script error:\n${error}\n\nThe script did not start.` },
+-			],
+-			details: snapshot(),
+-			isError: true,
+-		};
+-	}
+-	// The reservation covers the one worker this script starts. A launch that resumes after the result
+-	// settled finds it released and starts no worker.
+-	let reserved = true;
++		}
++		// The reservation covers the one worker this script starts. A launch that resumes after the result
++		// settled finds it released and starts no worker.
++		let reserved = true;
+ 
+-	let sandbox: CodemodeSandbox | undefined;
+-	let result: CodemodeResult;
+-	try {
+-		sandbox = new CodemodeSandbox({
+-			tools: sandboxTools,
+-			globals: [
+-				...createDiscoveryGlobals(callable, samples, options),
+-				...(options.models && ctx
+-					? createModelGlobals(ctx.modelRegistry, toolCallId, calls, publish, addModelUsage, addGeneratedImages)
+-					: []),
+-			],
+-			timeoutMs: Math.max(1, Math.round(deadline - waitedMs)),
+-			memoryLimitBytes: CODEMODE_MEMORY_LIMIT_BYTES,
+-			wasm: loadQuickJSWasm(getQuickJSWasmPath()),
+-			workerUrl: getCodemodeWorkerSpecifier(),
+-			acquireWorker: () => {
+-				if (!reserved) throw new Error("The script already settled");
+-				// From here the sandbox releases the slot when the worker actually exits.
++		let result: CodemodeResult;
++		try {
++			sandbox = new CodemodeSandbox({
++				tools: sandboxTools,
++				globals: [
++					...createDiscoveryGlobals(callable, samples, options),
++					...(options.models && ctx
++						? createModelGlobals(ctx.modelRegistry, toolCallId, calls, publish, addModelUsage, addGeneratedImages)
++						: []),
++				],
++				timeoutMs: Math.max(1, Math.round(deadline - waitedMs)),
++				memoryLimitBytes: CODEMODE_MEMORY_LIMIT_BYTES,
++				wasm: loadQuickJSWasm(getQuickJSWasmPath()),
++				workerUrl: getCodemodeWorkerSpecifier(),
++				acquireWorker: () => {
++					if (!reserved) throw new Error("The script already settled");
++					// From here the sandbox releases the slot when the worker actually exits.
++					reserved = false;
++					return releaseCodemodeWorker;
++				},
++			});
++			const store = ctx ? readCodemodeStore(ctx.sessionManager.getBranch()) : {};
++			result = await sandbox.execute(code, { signal, store });
++		} finally {
++			await sandbox?.close();
++			if (reserved) {
+ 				reserved = false;
+-				return releaseCodemodeWorker;
+-			},
+-		});
+-		const store = ctx ? readCodemodeStore(ctx.sessionManager.getBranch()) : {};
+-		result = await sandbox.execute(code, { signal, store });
+-	} finally {
+-		await sandbox?.close();
+-		if (reserved) {
+-			reserved = false;
+-			releaseCodemodeWorker();
++				releaseCodemodeWorker();
++			}
++		}
++		// Calls still marked running were cut off by the script ending, a timeout, or an abort.
++		for (const call of calls) {
++			if (call.status === "running") call.status = "cancelled";
+ 		}
+-	}
+-	// Calls still marked running were cut off by the script ending, a timeout, or an abort.
+-	for (const call of calls) {
+-		if (call.status === "running") call.status = "cancelled";
+-	}
+ 
+-	const scriptOutput = [...result.output];
+-	if (result.ok) {
+-		const { set, delete: deleted } = result.storeWrites;
+-		if (Object.keys(set).length > 0 || deleted.length > 0) {
+-			options.appendEntry?.(CODEMODE_STORE_ENTRY_TYPE, { set, delete: deleted });
++		const scriptOutput = [...result.output];
++		if (result.ok) {
++			const { set, delete: deleted } = result.storeWrites;
++			if (
++				(Object.keys(set).length > 0 || deleted.length > 0) &&
++				ownerSessionId === ctx?.sessionManager.getSessionId()
++			) {
++				options.appendEntry?.(CODEMODE_STORE_ENTRY_TYPE, { set, delete: deleted });
++			}
++			// pi extension: a returned value is appended like text().
++			if (result.value !== undefined) scriptOutput.push({ type: "text", text: valueText(result.value) });
++		}
++		const items = formatOutput(scriptOutput);
++		if (!result.ok) items.push({ type: "text", text: `Script error:\n${formatError(result, calls)}` });
++		if (generatedImages > 0 && !items.some((item) => item.type === "image")) {
++			items.push({
++				type: "text",
++				text: `Note: models.generateImages() returned ${generatedImages} image${generatedImages === 1 ? "" : "s"} that the script did not show. Show each image block of result.output with image(block).`,
++			});
+ 		}
+-		// pi extension: a returned value is appended like text().
+-		if (result.value !== undefined) scriptOutput.push({ type: "text", text: valueText(result.value) });
+-	}
+-	const items = formatOutput(scriptOutput);
+-	if (!result.ok) items.push({ type: "text", text: `Script error:\n${formatError(result, calls)}` });
+-	if (generatedImages > 0 && !items.some((item) => item.type === "image")) {
+-		items.push({
+-			type: "text",
+-			text: `Note: models.generateImages() returned ${generatedImages} image${generatedImages === 1 ? "" : "s"} that the script did not show. Show each image block of result.output with image(block).`,
+-		});
+-	}
+ 
+-	const truncated = await truncateOutput(
+-		joinAdjacentText(items),
+-		sourceOptions.maxOutputTokens ?? DEFAULT_MAX_OUTPUT_TOKENS,
+-	);
+-	// After truncation, which joins the text items and moves images after them, so each path stays
+-	// next to its image and is never cut.
+-	const output = joinAdjacentText(await saveImages(truncated.items));
+-	const wallTime = ((performance.now() - startedAt) / 1000).toFixed(1);
+-	const header = `${result.ok ? "Script completed" : "Script failed"}\nWall time ${wallTime} seconds\nOutput:\n`;
+-	const details = snapshot();
+-	if (truncated.fullOutputPath) details.fullOutputPath = truncated.fullOutputPath;
+-	return {
+-		content: [{ type: "text", text: header }, ...output],
+-		details,
+-		...(modelUsage ? { usage: modelUsage } : {}),
+-		...(result.ok ? {} : { isError: true }),
+-	};
++		const truncated = await truncateOutput(
++			joinAdjacentText(items),
++			sourceOptions.maxOutputTokens ?? DEFAULT_MAX_OUTPUT_TOKENS,
++		);
++		// After truncation, which joins the text items and moves images after them, so each path stays
++		// next to its image and is never cut.
++		const output = joinAdjacentText(await saveImages(truncated.items));
++		const wallTime = ((performance.now() - startedAt) / 1000).toFixed(1);
++		const header = `${result.ok ? "Script completed" : "Script failed"}\nWall time ${wallTime} seconds\nOutput:\n`;
++		const details = snapshot();
++		if (truncated.fullOutputPath) details.fullOutputPath = truncated.fullOutputPath;
++		return {
++			content: [{ type: "text", text: header }, ...output],
++			details,
++			...(modelUsage ? { usage: modelUsage } : {}),
++			...(result.ok ? {} : { isError: true }),
++		};
++	}; // run owns sandbox cleanup, including after the tool call returns.
++	const pending = run().finally(() => callerSignal?.removeEventListener("abort", forwardAbort));
++	const timeout = Symbol("background");
++	let timer: ReturnType<typeof setTimeout> | undefined;
++	try {
++		const first = await Promise.race([
++			pending,
++			new Promise<typeof timeout>((resolve) => {
++				timer = setTimeout(
++					() => resolve(timeout),
++					sourceOptions.background ? 0 : (sourceOptions.waitMs ?? 300_000),
++				);
++			}),
++		]);
++		if (first !== timeout) return first;
++		detached = true;
++		callerSignal?.removeEventListener("abort", forwardAbort);
++		const jobId = `cm_${randomUUID()}`;
++		options.onBackgroundStarted?.(jobId, own, ownerSessionId);
++		void pending
++			.then(
++				(result) => options.onBackgroundSettled?.(jobId, result),
++				(error) =>
++					options.onBackgroundSettled?.(jobId, {
++						content: [{ type: "text", text: String(error) }],
++						details: { calls: [] },
++						isError: true,
++					}),
++			)
++			.catch(() => {
++				/* A notification listener must not fail the run. */
++			});
++		const partial = await truncateOutput(
++			joinAdjacentText(formatOutput(sandbox?.outputSoFar() ?? [])),
++			sourceOptions.maxOutputTokens ?? DEFAULT_MAX_OUTPUT_TOKENS,
++		);
++		return {
++			content: [{ type: "text", text: `Script running in background (job ${jobId})` }, ...partial.items],
++			details: { calls: [] },
++		};
++	} finally {
++		clearTimeout(timer);
++	}
+ }
+ 
+ /**
+diff --git a/packages/coding-agent/src/extensions/codemode/index.ts b/packages/coding-agent/src/extensions/codemode/index.ts
+index 67492b65b653d7ca243e430e288afecc479f9e46..1e4a5a3a8de5c3034da8409ad1a38b1f601b3964 100644
+--- a/packages/coding-agent/src/extensions/codemode/index.ts
++++ b/packages/coding-agent/src/extensions/codemode/index.ts
+@@ -31,8 +31,32 @@ function readInlineBudget(pi: ExtensionAPI): number | undefined {
+ 
+ export function createCodemodeExtension(options: CodemodeExtensionOptions = {}): ExtensionFactory {
+ 	return (pi) => {
++		const jobs = new Map<string, { controller: AbortController; sessionId?: string }>();
++		pi.events.on("codemode:job:cancel", (data: unknown) => {
++			const jobId = (data as { jobId?: string })?.jobId;
++			if (jobId) jobs.get(jobId)?.controller.abort();
++		});
++		pi.on("session_shutdown", () => {
++			for (const job of jobs.values()) job.controller.abort();
++			jobs.clear();
++		});
+ 		pi.registerTool({
+ 			...createCodemodeToolDefinition({
++				onBackgroundStarted: (jobId, controller, sessionId) => {
++					jobs.set(jobId, { controller, sessionId });
++					pi.events.emit("codemode:job", { jobId, status: "running", sessionId });
++				},
++				onBackgroundSettled: (jobId, result) => {
++					const job = jobs.get(jobId);
++					if (!job) return;
++					jobs.delete(jobId);
++					pi.events.emit("codemode:job", {
++						jobId,
++						status: job.controller.signal.aborted ? "cancelled" : result.isError ? "failed" : "done",
++						result,
++						sessionId: job.sessionId,
++					});
++				},
+ 				appendEntry: (customType, data) => pi.appendEntry(customType, data),
+ 				models: options.models ?? true,
+ 				getToolNamespace: (name) => pi.getAllTools().find((tool) => tool.name === name)?.namespace,
+diff --git a/packages/coding-agent/src/extensions/codemode/tool.ts b/packages/coding-agent/src/extensions/codemode/tool.ts
+index 648ba610930531eaddd8e107e3202aab91d0dfbb..fcbad28da2930ad618d40471ea57352ad13ec2da 100644
+--- a/packages/coding-agent/src/extensions/codemode/tool.ts
++++ b/packages/coding-agent/src/extensions/codemode/tool.ts
+@@ -22,7 +22,7 @@
+  */
+ 
+ import { join } from "node:path";
+-import type { AgentTool } from "@earendil-works/pi-agent-core";
++import type { AgentTool, AgentToolResult } from "@earendil-works/pi-agent-core";
+ import type { CodemodeJsonSchema, CodemodeTool } from "@earendil-works/pi-codemode";
+ import { renderToolOutputType, renderToolSample, toCodemodeIdentifier } from "@earendil-works/pi-codemode/declarations";
+ import { CODEMODE_SOURCE_GRAMMAR } from "@earendil-works/pi-codemode/source";
+@@ -53,6 +53,8 @@ export type CodemodeModelRuntime = Pick<
+ >;
+ 
+ export interface CodemodeToolOptions {
++	onBackgroundStarted?: (jobId: string, controller: AbortController, sessionId?: string) => void;
++	onBackgroundSettled?: (jobId: string, result: AgentToolResult<CodemodeToolDetails>) => void;
+ 	/** Namespace of a tool, for `searchTools()` ranking and its `namespace` filter. */
+ 	getToolNamespace?: (toolName: string) => ToolNamespace | undefined;
+ 	/** Prompt guidelines of every tool, by tool name, shown with declarations by `describeTool()` and `ALL_TOOLS`. */
+diff --git a/packages/coding-agent/test/codemode-background.test.ts b/packages/coding-agent/test/codemode-background.test.ts
+new file mode 100644
+index 0000000000000000000000000000000000000000..1a253ddb69052e75b7aa724c7d1e0de825fa0ae7
+--- /dev/null
++++ b/packages/coding-agent/test/codemode-background.test.ts
+@@ -0,0 +1,79 @@
++import { CodemodeSandbox, parseCodemodeSource } from "@earendil-works/pi-codemode";
++import { expect, it, vi } from "vitest";
++import { executeCodemode } from "../src/extensions/codemode/execute.ts";
++
++it("validates background options", () => {
++	expect(parseCodemodeSource('// @options: {"background":true,"wait_ms":0}\nreturn 1').options).toEqual({
++		background: true,
++		waitMs: 0,
++	});
++	for (const options of [{ background: 1 }, { wait_ms: -1 }, { wait_ms: 2147483648 }]) {
++		expect(() => parseCodemodeSource(`// @options: ${JSON.stringify(options)}\nreturn 1`)).toThrow();
++	}
++});
++it("keeps fast scripts synchronous", async () => {
++	const settled = vi.fn();
++	const result = await executeCodemode("fast", { code: "return 42" }, undefined, undefined, undefined, {
++		onBackgroundSettled: settled,
++	});
++	expect(result.content).toContainEqual({ type: "text", text: "42" });
++	expect(settled).not.toHaveBeenCalled();
++});
++it("returns partial output, detaches abort, and settles once", async () => {
++	const caller = new AbortController();
++	let finish!: () => void;
++	let ownSignal: AbortSignal | undefined;
++	const execute = vi.spyOn(CodemodeSandbox.prototype, "execute").mockImplementation(async (_code, options) => {
++		ownSignal = options?.signal;
++		await new Promise<void>((resolve) => {
++			finish = resolve;
++		});
++		return { ok: true, value: "ok", output: [], calls: [], storeWrites: { set: {}, delete: [] }, durationMs: 1 };
++	});
++	const snapshot = vi
++		.spyOn(CodemodeSandbox.prototype, "outputSoFar")
++		.mockReturnValue([{ type: "text", text: "partial" }]);
++	try {
++		const settled = vi.fn();
++		const started = vi.fn();
++		const result = await executeCodemode(
++			"bg",
++			{ code: '// @options: {"wait_ms":1}\nreturn 1' },
++			caller.signal,
++			undefined,
++			undefined,
++			{ onBackgroundStarted: started, onBackgroundSettled: settled },
++		);
++		expect(result.content).toContainEqual({ type: "text", text: "partial" });
++		expect(started).toHaveBeenCalledOnce();
++		caller.abort();
++		expect(ownSignal?.aborted).toBe(false);
++		finish();
++		await vi.waitFor(() => expect(settled).toHaveBeenCalledOnce());
++		expect(settled.mock.calls[0][1].content).toContainEqual({ type: "text", text: "ok" });
++	} finally {
++		execute.mockRestore();
++		snapshot.mockRestore();
++	}
++});
++it("cancels a real detached sandbox", async () => {
++	let controller: AbortController | undefined;
++	const settled = vi.fn();
++	const result = await executeCodemode(
++		"cancel",
++		{ code: '// @options: {"background":true}\nwhile(true) {}' },
++		undefined,
++		undefined,
++		undefined,
++		{
++			onBackgroundStarted: (_id, c) => {
++				controller = c;
++			},
++			onBackgroundSettled: settled,
++		},
++	);
++	expect(result.content[0]).toMatchObject({ text: expect.stringContaining("Script running in background (job cm_") });
++	controller!.abort();
++	await vi.waitFor(() => expect(settled).toHaveBeenCalledOnce());
++	expect(settled.mock.calls[0][1].isError).toBe(true);
++});
+diff --git a/packages/coding-agent/test/suite/agent-session-codemode.test.ts b/packages/coding-agent/test/suite/agent-session-codemode.test.ts
+index 150c4078d2772a33a130a08853fe1cee716b915e..2b96461847d63c8976c3f2a187c88a5788f0adb7 100644
+--- a/packages/coding-agent/test/suite/agent-session-codemode.test.ts
++++ b/packages/coding-agent/test/suite/agent-session-codemode.test.ts
+@@ -538,7 +538,7 @@ describe("codemode options and store", () => {
+ 		expect(invalid.content).toEqual([
+ 			{
+ 				type: "text",
+-				text: "@options only supports `max_output_tokens` and `timeout_ms`; got `yield`",
++				text: "@options only supports `max_output_tokens`, `timeout_ms`, `background` and `wait_ms`; got `yield`",
+ 			},
+ 		]);
+ 

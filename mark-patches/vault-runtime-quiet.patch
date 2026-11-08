@@ -1,0 +1,21 @@
+diff --git a/extensions/brain-live/vault-runtime.ts b/extensions/brain-live/vault-runtime.ts
+index bf8853c..d1656fd 100644
+--- a/extensions/brain-live/vault-runtime.ts
++++ b/extensions/brain-live/vault-runtime.ts
+@@ -36,6 +36,8 @@ function markdownCount(dir: string): number {
+ 
+ export function validatePiVault(root = PI_VAULT_DIR): VaultValidation {
+   const errors: string[] = [];
++  // Sem o Vault (máquina de sócio, sem ~/Sistema/Pi): nada a validar e nada a reclamar.
++  if (!existsSync(root)) return { skills: 0, errors: [] };
+   const skillsDir = join(root, "skills");
+   let skills = 0;
+   try {
+@@ -153,6 +155,7 @@ export default function vaultRuntime(pi: ExtensionAPI) {
+   });
+ 
+   pi.on("session_start", (_event, ctx: ExtensionContext) => {
++    if (!existsSync(PI_VAULT_DIR)) return; // sem Vault o rodapé não ganha indicador nenhum
+     const status = validation.errors.length > 0
+       ? `vault/Pi ${validation.skills} · ${validation.errors.length} erro(s)`
+       : `vault/Pi ${validation.skills}`;

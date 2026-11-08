@@ -1,0 +1,270 @@
+{
+  "defaultTimeoutMs": 120000,
+  "parallel": 4,
+  "checks": [
+    {
+      "name": "checks-runner",
+      "cmd": "node scripts/test-checks-runner.mjs",
+      "tags": ["fast"]
+    },
+    {
+      "name": "overlay-layers",
+      "cmd": "node scripts/test-layers.mjs",
+      "tags": [
+        "fast"
+      ]
+    },
+    {
+      "name": "extensions-patch",
+      "cmd": "node scripts/test-regen-extensions-patch.mjs",
+      "tags": [
+        "fast"
+      ]
+    },
+    {
+      "name": "mark-skills",
+      "cmd": "node scripts/test-skills.mjs",
+      "tags": [
+        "fast"
+      ]
+    },
+    {
+      "name": "overlay-store-lock",
+      "cmd": "node scripts/test-store-lock.mjs",
+      "tags": [
+        "fast"
+      ]
+    },
+    {
+      "name": "overlay-internal-packages",
+      "cmd": "node scripts/test-internal-packages.mjs",
+      "tags": [
+        "fast"
+      ]
+    },
+    {
+      "name": "overlay-prepare-promote",
+      "cmd": "node scripts/test-prepare-promote.mjs",
+      "tags": ["slow"]
+    },
+    {
+      "name": "overlay-status-gc",
+      "cmd": "node scripts/test-overlay-status-gc.mjs",
+      "tags": [
+        "fast"
+      ]
+    },
+    {
+      "name": "mark-web",
+      "cmd": "node scripts/test-mark-web.mjs",
+      "tags": ["fast"]
+    },
+    {
+      "name": "mark-setup",
+      "cmd": "node scripts/test-mark-setup.mjs",
+      "tags": [
+        "fast"
+      ]
+    },
+    {
+      "name": "mark-extensions",
+      "cmd": "node scripts/test-extensions.mjs",
+      "tags": [
+        "fast"
+      ]
+    },
+    {
+      "name": "megamind-profile",
+      "cmd": "node scripts/test-megamind-profile.mjs",
+      "tags": [
+        "fast"
+      ]
+    },
+    {
+      "name": "mark-startup",
+      "cmd": "node scripts/test-mark-startup.mjs",
+      "tags": ["integration", "slow"]
+    },
+    {
+      "name": "juice-dispatch",
+      "cmd": "node scripts/test-juice-dispatch.mjs",
+      "tags": [
+        "juice",
+        "integration"
+      ]
+    },
+    {
+      "name": "juice-wire",
+      "cmd": "node scripts/test-juice-wire.mjs",
+      "tags": [
+        "juice",
+        "integration"
+      ]
+    },
+    {
+      "name": "juice-panel",
+      "cmd": "node scripts/test-juice-panel.mjs",
+      "tags": [
+        "juice",
+        "integration"
+      ]
+    },
+    {
+      "name": "mark-sessions",
+      "cmd": "node scripts/test-mark-sessions.mjs",
+      "tags": [
+        "integration"
+      ]
+    },
+    {
+      "name": "megamind-requests",
+      "cmd": "node scripts/test-megamind-requests.mjs",
+      "tags": [
+        "fast"
+      ]
+    },
+    {
+      "name": "megamind-status",
+      "cmd": "node scripts/test-megamind-status.mjs",
+      "tags": [
+        "fast"
+      ]
+    },
+    {
+      "name": "mark-mine",
+      "cmd": "node scripts/test-mark-mine.mjs",
+      "tags": [
+        "fast"
+      ]
+    },
+    {
+      "name": "subagent-dispatch",
+      "cmd": "node scripts/test-subagent-dispatch.mjs",
+      "tags": ["integration", "slow"]
+    },
+    {
+      "name": "mark-learn",
+      "cmd": "node scripts/test-mark-learn.mjs",
+      "tags": [
+        "fast"
+      ]
+    },
+    {
+      "name": "cache-e2e",
+      "cmd": "node scripts/test-cache-e2e.mjs",
+      "tags": [
+        "fast"
+      ]
+    },
+    {
+      "name": "cache-prefetch",
+      "cmd": "node scripts/test-cache-prefetch.mjs",
+      "tags": ["slow"]
+    },
+    {
+      "name": "mark-child-env",
+      "cmd": "node scripts/test-mark-child-env.mjs",
+      "tags": [
+        "fast"
+      ]
+    },
+    {
+      "name": "mark-tui",
+      "cmd": "node scripts/test-mark-tui.mjs",
+      "tags": ["integration", "slow"]
+    },
+    {
+      "name": "mark-theme-mode",
+      "cmd": "node scripts/test-mark-theme-mode.mjs",
+      "tags": ["integration", "tui"]
+    },
+    {
+      "name": "mark-host",
+      "cmd": "node scripts/test-mark-host.mjs",
+      "tags": [
+        "fast"
+      ]
+    },
+    {
+      "name": "mark-ii-runtime",
+      "cmd": "node scripts/test-mark-ii-runtime.mjs",
+      "tags": ["integration", "mark-ii"],
+      "timeoutMs": 180000
+    },
+    {
+      "name": "mark-ii-resources",
+      "cmd": "node scripts/test-mark-ii-resources.mjs",
+      "tags": ["integration", "mark-ii", "slow"]
+    },
+    {
+      "name": "mark-ii-installed",
+      "cmd": "node scripts/test-mark-ii-installed.mjs",
+      "tags": ["integration", "mark-ii"],
+      "timeoutMs": 240000
+    },
+    {
+      "name": "mark-notes",
+      "cmd": "node scripts/test-mark-notes.mjs",
+      "tags": ["fast", "mark-ii"]
+    },
+    {
+      "name": "mark-skill-policy",
+      "cmd": "node scripts/test-mark-skill-policy.mjs",
+      "tags": ["fast", "mark-ii"]
+    },
+    {
+      "name": "mark-skill-picker",
+      "cmd": "node scripts/test-mark-skill-picker.mjs",
+      "tags": ["fast", "mark-ii"]
+    },
+    {
+      "name": "mark-editor-chrome",
+      "cmd": "node scripts/test-mark-editor-chrome.mjs",
+      "tags": ["fast"]
+    },
+    {
+      "name": "mark-header-hints",
+      "cmd": "node scripts/test-mark-header-hints.mjs",
+      "tags": ["fast"]
+    },
+    {
+      "name": "peers-status",
+      "cmd": "node scripts/test-peers-status.mjs",
+      "tags": ["fast"]
+    },
+    {
+      "name": "mark-model-roles",
+      "cmd": "node scripts/test-mark-model-roles.mjs",
+      "tags": ["fast", "mark-ii"]
+    },
+    {
+      "name": "mark-compaction",
+      "cmd": "node scripts/test-mark-compaction.mjs",
+      "tags": ["fast", "mark-ii"]
+    },
+    {
+      "name": "mark-media",
+      "cmd": "node scripts/test-mark-media.mjs",
+      "tags": ["integration", "mark-ii"],
+      "timeoutMs": 240000
+    },
+    {
+      "name": "mark-headless",
+      "cmd": "node scripts/test-mark-headless.mjs",
+      "tags": ["fast"]
+    },
+    {
+      "name": "loop-guard",
+      "cmd": "node scripts/test-loop-guard.mjs",
+      "tags": ["fast"]
+    },
+    {
+      "name": "cache-keeper",
+      "cmd": "node scripts/test-cache-keeper.mjs",
+      "tags": [
+        "juice",
+        "fast"
+      ]
+    }
+  ]
+}

@@ -1,0 +1,434 @@
+diff --git a/packages/coding-agent/src/modes/interactive/interactive-mode.ts b/packages/coding-agent/src/modes/interactive/interactive-mode.ts
+index fd64e53f0f25ca2527e4e0cf3028972a29d84b4e..a8ef630c608573d43e84f99fbafdff3aef7b9b8f 100644
+--- a/packages/coding-agent/src/modes/interactive/interactive-mode.ts
++++ b/packages/coding-agent/src/modes/interactive/interactive-mode.ts
+@@ -196,6 +196,7 @@ import { getModelSearchText } from "./model-search.ts";
+ import { type BlockedStatus, ProgramStatusReporter } from "./program-status-reporter.ts";
+ import { FEEDBACK_ENTRY, RunFeedback } from "./run-feedback.ts";
+ import { shareSession } from "./session-share.ts";
++import { StreamingBatch } from "./streaming-batch.ts";
+ import {
+ 	getAvailableThemes,
+ 	getAvailableThemesWithPaths,
+@@ -527,6 +528,16 @@ export class InteractiveMode {
+ 	private streamingComponent: AssistantMessageComponent | undefined = undefined;
+ 	private readonly entriesRenderedByBoundaryCompaction = new Set<string>();
+ 	private streamingMessage: AssistantMessage | undefined = undefined;
++	// garime-stream: deltas de `message_update` agrupados em no máximo um `updateContent`
++	// por quadro. O flush é garantido em message_end, início de tool e abort.
++	private readonly streamingBatch = new StreamingBatch<AssistantMessage>(
++		(message) => {
++			if (!this.streamingComponent) return;
++			this.streamingComponent.updateContent(message, true);
++			this.ui.requestRender();
++		},
++		() => this.ui.frameIntervalMs(),
++	);
+ 
+ 	// Tool execution tracking: toolCallId -> component
+ 	private pendingTools = new Map<string, ToolExecutionComponent>();
+@@ -2333,7 +2344,27 @@ export class InteractiveMode {
+ 		return true;
+ 	}
+ 
++	/**
++	 * garime-stream: agrupa os deltas de streaming. O primeiro delta de uma janela aparece
++	 * na hora; os seguintes esperam o próximo quadro (mesmo intervalo do throttle do render),
++	 * e só o último estado da mensagem é aplicado. Nada é perdido: `flushStreamingUpdate`
++	 * roda antes de tool/abort e `message_end` traz a mensagem completa.
++	 */
++	private queueStreamingUpdate(message: AssistantMessage): void {
++		this.streamingBatch.queue(message);
++	}
++
++	private flushStreamingUpdate(): void {
++		this.streamingBatch.flush();
++	}
++
++	/** Descarta o pendente: quem chama já vai desenhar o estado final da mensagem. */
++	private cancelStreamingUpdate(): void {
++		this.streamingBatch.cancel();
++	}
++
+ 	private renderCurrentSessionState(): void {
++		this.cancelStreamingUpdate();
+ 		this.loadedResourcesContainer.clear();
+ 		this.chatContainer.clear();
+ 		this.feedbackTranscript?.clear();
+@@ -3663,11 +3694,13 @@ if (!dialogOpen) this.editorContainer.addChild(this.editor as Component);
+ 			case "message_update":
+ 				if (this.streamingComponent && event.message.role === "assistant") {
+ 					this.streamingMessage = event.message;
+-					this.streamingComponent.updateContent(this.streamingMessage, true);
++					this.queueStreamingUpdate(this.streamingMessage);
+ 
+ 					for (const content of this.streamingMessage.content) {
+ 						if (content.type === "toolCall") {
+ 							if (!this.pendingTools.has(content.id)) {
++								// A tool entra depois da mensagem: o texto pendente precisa estar na tela.
++								this.flushStreamingUpdate();
+ 								const component = new ToolExecutionComponent(
+ 									content.name,
+ 									content.id,
+@@ -3692,12 +3725,14 @@ if (!dialogOpen) this.editorContainer.addChild(this.editor as Component);
+ 							}
+ 						}
+ 					}
+-					this.ui.requestRender();
++					// garime-stream: o render é do flush do agrupamento (imediato ou no próximo quadro),
++					// que sempre acontece porque todo delta passa por `queueStreamingUpdate`.
+ 				}
+ 				break;
+ 
+ 			case "message_end":
+ 				if (event.message.role === "user") break;
++				this.cancelStreamingUpdate();
+ 				if (this.streamingComponent && event.message.role === "assistant") {
+ 					this.streamingMessage = event.message;
+ 					let errorMessage: string | undefined;
+@@ -3743,6 +3778,7 @@ if (!dialogOpen) this.editorContainer.addChild(this.editor as Component);
+ 				break;
+ 
+ 			case "tool_execution_start": {
++				this.flushStreamingUpdate();
+ 				// Nested calls (from codemode scripts) are shown inside their parent's row.
+ 				if (event.parentToolCallId) break;
+ 				let component = this.pendingTools.get(event.toolCallId);
+@@ -3790,6 +3826,7 @@ if (!dialogOpen) this.editorContainer.addChild(this.editor as Component);
+ 			}
+ 
+ 			case "agent_end":
++				this.cancelStreamingUpdate();
+ 				if (this.settingsManager.getShowTerminalProgress()) {
+ 					this.ui.terminal.setProgress(false);
+ 				}
+diff --git a/packages/coding-agent/src/modes/interactive/streaming-batch.ts b/packages/coding-agent/src/modes/interactive/streaming-batch.ts
+new file mode 100644
+index 0000000000000000000000000000000000000000..b227fcf45f0c0557320ecf2a797a07dc283d0d8e
+--- /dev/null
++++ b/packages/coding-agent/src/modes/interactive/streaming-batch.ts
+@@ -0,0 +1,71 @@
++import { getTuiFrameIntervalMs } from "@earendil-works/pi-tui";
++
++/**
++ * garime-stream: agrupa os deltas de streaming de um host.
++ *
++ * O primeiro delta de uma janela é aplicado na hora; os seguintes esperam o próximo quadro
++ * (o intervalo EFETIVO da TUI — `PI_TUI_HZ` já com o teto adaptativo) e só o último estado
++ * chega ao componente.
++ * Nada é perdido: quem fecha a mensagem, começa uma tool ou aborta chama `flush()` (aplica o
++ * pendente agora) ou `cancel()` (descarta porque já vai desenhar o estado final).
++ *
++ * O host clássico (`interactive-mode`) usa esta classe.
++ */
++export class StreamingBatch<T> {
++	#pending: T | undefined;
++	#timer: NodeJS.Timeout | undefined;
++	#lastApplyAt = 0;
++	readonly #onApply: (value: T) => void;
++	/** O intervalo efetivo de quem desenha; o default serve a quem não tem TUI à mão (bancadas). */
++	readonly #intervalMs: () => number;
++
++	constructor(onApply: (value: T) => void, intervalMs: () => number = getTuiFrameIntervalMs) {
++		this.#onApply = onApply;
++		this.#intervalMs = intervalMs;
++	}
++
++	/** O pendente que ainda não foi aplicado; os testes e o host conferem que nada ficou atrás. */
++	get pending(): T | undefined {
++		return this.#pending;
++	}
++
++	/** Há quadro agendado? Usado em teste para garantir que nenhum timer fica solto. */
++	get armed(): boolean {
++		return this.#timer !== undefined;
++	}
++
++	queue(value: T): void {
++		this.#pending = value;
++		if (this.#timer !== undefined) return;
++		const interval = Math.max(1, this.#intervalMs());
++		const elapsed = Date.now() - this.#lastApplyAt;
++		if (elapsed >= interval) {
++			this.flush();
++			return;
++		}
++		this.#timer = setTimeout(() => {
++			this.#timer = undefined;
++			this.flush();
++		}, interval - elapsed);
++	}
++
++	flush(): void {
++		this.#disarm();
++		const value = this.#pending;
++		this.#pending = undefined;
++		if (value === undefined) return;
++		this.#lastApplyAt = Date.now();
++		this.#onApply(value);
++	}
++
++	cancel(): void {
++		this.#disarm();
++		this.#pending = undefined;
++	}
++
++	#disarm(): void {
++		if (this.#timer === undefined) return;
++		clearTimeout(this.#timer);
++		this.#timer = undefined;
++	}
++}
+diff --git a/packages/coding-agent/test/stream-markdown.test.ts b/packages/coding-agent/test/stream-markdown.test.ts
+new file mode 100644
+index 0000000000000000000000000000000000000000..43fe3431d741179668fc493d4d640e068a590f01
+--- /dev/null
++++ b/packages/coding-agent/test/stream-markdown.test.ts
+@@ -0,0 +1,103 @@
++import { getTuiFrameIntervalMs } from "@earendil-works/pi-tui";
++import { describe, expect, test, vi } from "vitest";
++import { InteractiveMode } from "../src/modes/interactive/interactive-mode.ts";
++import { StreamingBatch } from "../src/modes/interactive/streaming-batch.ts";
++
++describe("agrupamento de deltas no host clássico", () => {
++	type StreamingMode = {
++		applied: unknown[];
++		streamingComponent: { updateContent: (message: unknown, streaming: boolean) => void } | undefined;
++		ui: { requestRender: () => void; frameIntervalMs: () => number };
++		streamingBatch: StreamingBatch<unknown>;
++		queueStreamingUpdate: (message: unknown) => void;
++		flushStreamingUpdate: () => void;
++		cancelStreamingUpdate: () => void;
++	};
++
++	/** O modo real, sem construtor: os métodos privados e o `apply` do host são os do código. */
++	function context(): StreamingMode {
++		const applied: unknown[] = [];
++		const mode = Object.assign(Object.create(InteractiveMode.prototype), {
++			applied,
++			streamingComponent: { updateContent: (message: unknown) => applied.push(message) },
++			ui: { requestRender: () => {}, frameIntervalMs: () => getTuiFrameIntervalMs() },
++		}) as StreamingMode;
++		mode.streamingBatch = new StreamingBatch<unknown>(
++			(message) => {
++				if (!mode.streamingComponent) return;
++				mode.streamingComponent.updateContent(message, true);
++				mode.ui.requestRender();
++			},
++			() => mode.ui.frameIntervalMs(),
++		);
++		return mode;
++	}
++
++	test("vários deltas num quadro viram um único updateContent, com o último estado", () => {
++		vi.useFakeTimers();
++		try {
++			const ctx = context();
++			ctx.queueStreamingUpdate("a");
++			expect(ctx.applied).toEqual(["a"]);
++			ctx.queueStreamingUpdate("b");
++			ctx.queueStreamingUpdate("c");
++			ctx.queueStreamingUpdate("d");
++			expect(ctx.applied).toEqual(["a"]);
++			vi.advanceTimersByTime(getTuiFrameIntervalMs());
++			expect(ctx.applied).toEqual(["a", "d"]);
++			expect(ctx.streamingBatch.armed).toBe(false);
++		} finally {
++			vi.useRealTimers();
++		}
++	});
++
++	test("flush entrega o pendente na hora; cancel descarta sem timer solto", () => {
++		vi.useFakeTimers();
++		try {
++			const ctx = context();
++			ctx.queueStreamingUpdate("a");
++			ctx.queueStreamingUpdate("b");
++			ctx.flushStreamingUpdate();
++			expect(ctx.applied).toEqual(["a", "b"]);
++			expect(ctx.streamingBatch.armed).toBe(false);
++
++			ctx.queueStreamingUpdate("c");
++			ctx.cancelStreamingUpdate();
++			vi.advanceTimersByTime(1000);
++			expect(ctx.applied).toEqual(["a", "b"]);
++			expect(ctx.streamingBatch.pending).toBeUndefined();
++		} finally {
++			vi.useRealTimers();
++		}
++	});
++});
++
++describe("PI_TUI_HZ", () => {
++	test("60 Hz por padrão, 30..240 aceitos, inválido volta ao default", () => {
++		const cases: Array<[string | undefined, number]> = [
++			[undefined, 16],
++			["", 16],
++			["60", 16],
++			["120", 8],
++			["240", 4],
++			["30", 33],
++			["29", 16],
++			["241", 16],
++			["0", 16],
++			["-120", 16],
++			["abc", 16],
++			["12e3", 16],
++		];
++		const previous = process.env.PI_TUI_HZ;
++		try {
++			for (const [value, expected] of cases) {
++				if (value === undefined) delete process.env.PI_TUI_HZ;
++				else process.env.PI_TUI_HZ = value;
++				expect(getTuiFrameIntervalMs(), `PI_TUI_HZ=${value}`).toBe(expected);
++			}
++		} finally {
++			if (previous === undefined) delete process.env.PI_TUI_HZ;
++			else process.env.PI_TUI_HZ = previous;
++		}
++	});
++});
+diff --git a/packages/tui/src/index.ts b/packages/tui/src/index.ts
+index 8b4f9ea4a7269386418c8095ac269d01ed9a040b..5d1e4fda6c923295a59e40cff95a25a2f9641354 100644
+--- a/packages/tui/src/index.ts
++++ b/packages/tui/src/index.ts
+@@ -161,6 +161,7 @@ export {
+ 	CURSOR_MARKER,
+ 	compositeTuiLine,
+ 	type Focusable,
++	getTuiFrameIntervalMs,
+ 	isFocusable,
+ 	isViewportTUI,
+ 	type OverlayAnchor,
+diff --git a/packages/tui/src/tui.ts b/packages/tui/src/tui.ts
+index ad11a36c5f332e680661d66a6af301b556917357..43b0b56e2eefbd2d2b97193715a7f7b6ad03d68d 100644
+--- a/packages/tui/src/tui.ts
++++ b/packages/tui/src/tui.ts
+@@ -488,6 +488,8 @@ export interface TUI extends Component {
+ 	stop(options?: TuiStopOptions): void;
+ 	renderNow(force?: boolean): void;
+ 	requestRender(force?: boolean): void;
++	/** garime-stream: intervalo efetivo entre quadros throttled, em ms (já com o teto adaptativo). */
++	frameIntervalMs(): number;
+ 	addInputListener(listener: TuiInputListener): () => void;
+ 	removeInputListener(listener: TuiInputListener): void;
+ 	onTerminalColorSchemeChange(listener: (scheme: TerminalColorScheme) => void): () => void;
+@@ -509,6 +511,38 @@ export function isViewportTUI(tui: TUI): tui is ViewportTUI {
+ 	return (tui as Partial<ViewportTUI>)[VIEWPORT_TUI] === true;
+ }
+ 
++/**
++ * garime-stream: taxa de quadros do render throttled (streaming, timers, spinner).
++ * `PI_TUI_HZ` aceita 30..240; vazio, inválido ou fora da faixa volta a 60 Hz. Teclado
++ * não passa por aqui: `requestImmediateRender()` continua imediato.
++ */
++const DEFAULT_TUI_HZ = 60;
++const MIN_TUI_HZ = 30;
++const MAX_TUI_HZ = 240;
++/** Quadro acima disso significa que subir o Hz só gastaria CPU: o teto cai para 60 Hz. */
++const SLOW_FRAME_MS = 4;
++
++let tuiHzSource: string | undefined;
++let tuiHzInterval = Math.floor(1000 / DEFAULT_TUI_HZ);
++
++/** Intervalo mínimo entre quadros pedido pelo ambiente, em ms (sem o teto adaptativo). */
++export function getTuiFrameIntervalMs(): number {
++	const raw = process.env.PI_TUI_HZ ?? "";
++	if (raw !== tuiHzSource) {
++		tuiHzSource = raw;
++		const parsed = Number.parseFloat(raw.trim());
++		const hz = Number.isFinite(parsed) && parsed >= MIN_TUI_HZ && parsed <= MAX_TUI_HZ ? parsed : DEFAULT_TUI_HZ;
++		// Piso, para que 60 Hz continue valendo os 16 ms de sempre (1000/60 = 16,67).
++		tuiHzInterval = Math.max(1, Math.floor(1000 / hz));
++	}
++	return tuiHzInterval;
++}
++
++/** tmux e SSH pagam cada byte caro; acima de 60 Hz eles só acumulam atraso. */
++function isConstrainedTerminalSession(): boolean {
++	return Boolean(process.env.TMUX || process.env.SSH_CONNECTION || process.env.SSH_TTY);
++}
++
+ export abstract class TuiBase extends Container implements TUI {
+ 	abstract readonly mode: TuiMode;
+ 	public terminal: Terminal;
+@@ -521,7 +555,10 @@ export abstract class TuiBase extends Container implements TUI {
+ 	private immediateRenderScheduled = false;
+ 	private renderTimer: NodeJS.Timeout | undefined;
+ 	private lastRenderAt = 0;
++	/** Piso de segurança: 60 Hz. O teto configurado só passa disso quando o quadro é barato. */
+ 	private static readonly MIN_RENDER_INTERVAL_MS = 16;
++	/** Custo recente de um quadro (máximo com decaimento), base do teto adaptativo. */
++	private recentFrameCostMs = 0;
+ 	private showHardwareCursor = false;
+ 	private clearOnShrink = false;
+ 	protected fullRedrawCount = 0;
+@@ -1027,7 +1064,40 @@ export abstract class TuiBase extends Container implements TUI {
+ 		this.renderRequested = false;
+ 		this.cancelRenderTimer();
+ 		this.lastRenderAt = performance.now();
+-		this.doRender();
++		this.runRender();
++	}
++
++	/** Renderiza medindo o custo do quadro, que alimenta o teto adaptativo de Hz. */
++	private runRender(): void {
++		const started = performance.now();
++		try {
++			this.doRender();
++		} finally {
++			const cost = performance.now() - started;
++			this.recentFrameCostMs = cost > this.recentFrameCostMs ? cost : this.recentFrameCostMs * 0.9 + cost * 0.1;
++		}
++	}
++
++	/**
++	 * garime-stream: o mesmo intervalo que esta TUI usa para agendar o próximo quadro.
++	 * Quem agrupa deltas (`StreamingBatch`) precisa do intervalo EFETIVO, com o teto adaptativo,
++	 * não do Hz pedido pelo ambiente.
++	 */
++	frameIntervalMs(): number {
++		return this.minRenderIntervalMs();
++	}
++
++	/**
++	 * Intervalo efetivo do render throttled: o pedido por `PI_TUI_HZ`, limitado a 60 Hz
++	 * quando o quadro medido está caro (mensagem grande em streaming) ou a sessão é tmux/SSH.
++	 */
++	private minRenderIntervalMs(): number {
++		const requested = getTuiFrameIntervalMs();
++		if (requested >= TuiBase.MIN_RENDER_INTERVAL_MS) return requested;
++		if (this.recentFrameCostMs > SLOW_FRAME_MS || isConstrainedTerminalSession()) {
++			return TuiBase.MIN_RENDER_INTERVAL_MS;
++		}
++		return requested;
+ 	}
+ 
+ 	requestRender(force = false): void {
+@@ -1054,7 +1124,7 @@ export abstract class TuiBase extends Container implements TUI {
+ 			this.cancelRenderTimer();
+ 			this.renderRequested = false;
+ 			this.lastRenderAt = performance.now();
+-			this.doRender();
++			this.runRender();
+ 		});
+ 	}
+ 
+@@ -1069,7 +1139,7 @@ export abstract class TuiBase extends Container implements TUI {
+ 			return;
+ 		}
+ 		const elapsed = performance.now() - this.lastRenderAt;
+-		const delay = Math.max(0, TuiBase.MIN_RENDER_INTERVAL_MS - elapsed);
++		const delay = Math.max(0, this.minRenderIntervalMs() - elapsed);
+ 		this.renderTimer = setTimeout(() => {
+ 			this.renderTimer = undefined;
+ 			if (this.stopped || !this.renderRequested) {
+@@ -1077,7 +1147,7 @@ export abstract class TuiBase extends Container implements TUI {
+ 			}
+ 			this.renderRequested = false;
+ 			this.lastRenderAt = performance.now();
+-			this.doRender();
++			this.runRender();
+ 			if (this.renderRequested) {
+ 				this.scheduleRender();
+ 			}

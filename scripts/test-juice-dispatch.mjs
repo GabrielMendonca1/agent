@@ -1,0 +1,210 @@
+#!/usr/bin/env node
+// Concrete regression: queued children must inherit the ORIGINAL run, not a later
+// parent's budget; pilot routing must not read/write global model tiers.
+import assert from 'node:assert/strict';
+import { EventEmitter } from 'node:events';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { createRequire } from 'node:module';
+import { homedir, tmpdir } from 'node:os';
+import { dirname, join, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+const repo = resolve(dirname(fileURLToPath(import.meta.url)), '..');
+const pkg = join(process.env.PI_OVERLAY_STORE || join(homedir(), '.local/share/pi-overlay'), 'current/lib/node_modules/@earendil-works/pi-coding-agent');
+if (!existsSync(join(pkg, 'package.json'))) throw new Error('Pi instalado é necessário para verificar o dispatch do piloto.');
+const req = createRequire(join(pkg, 'package.json'));
+const { createJiti } = req('jiti');
+const root = mkdtempSync(join(tmpdir(), 'juice-dispatch-'));
+const savedEnv = { ...process.env };
+let checks = 0;
+try {
+  process.env.HOME = root;
+  process.env.USERPROFILE = root;
+  process.env.PI_CODING_AGENT_DIR = join(root, 'agent');
+  const jiti = createJiti(import.meta.url, { fsCache: false, moduleCache: true, alias: {
+    '@earendil-works/pi-coding-agent': join(pkg, 'dist/index.js'),
+  } });
+  const runner = await jiti.import(join(repo, 'mark/extensions/brain-live/subagent/runner.ts'));
+  const jobs = await jiti.import(join(repo, 'mark/extensions/brain-live/subagent/jobs.ts'));
+  const defaults = { model: 'test/principal', thinkingLevel: 'low', juice: { statePath: join(root, 'original.json'), supportModel: 'test/economico' } };
+  const routed = jobs.resolveJobTaskModels([{ agent: 'scout', task: 'inventário' }, { agent: 'worker', task: 'alteração' }], defaults);
+  assert.equal(routed.ok, true);
+  assert.equal(routed.tasks[0].model, 'test/economico');
+  assert.equal(routed.tasks[1].model, 'test/principal');
+  checks++; console.log('ok apoio para scout e principal para worker, sem Vault');
+  const bySlot = jobs.resolveJobTaskModels([{ agent: 'worker', task: 'w' }, { agent: 'reviewer', task: 'r' }], { ...defaults, juice: { ...defaults.juice, slots: { worker: 'apoio', reviewer: 'apoio' } } });
+  assert.deepEqual(bySlot.tasks.map(t => t.model), ['test/economico', 'test/economico']);
+  checks++; console.log('ok receita/despachante: slot por papel decide o modelo');
+  assert.equal(jobs.resolveJobTaskModels([{ agent: 'scout', task: 'x', model: 'test/terceiro' }], defaults).ok, false);
+  assert.equal(jobs.resolveJobTaskModels([{ agent: 'scout', task: 'x', model: 'test/principal' }], defaults).ok, true);
+  checks++; console.log('ok override só admite os dois modelos selecionados');
+  const inherited = jobs.resolveJobTaskModels([{ agent: 'scout', task: 'x' }], { ...defaults, juice: { statePath: defaults.juice.statePath } });
+  assert.equal(inherited.tasks[0].model, 'test/principal');
+  checks++; console.log('ok apoio não configurado herda principal');
+
+  // Regressão (bug relatado): complex NÃO apaga a config de subagente que o usuário já tinha.
+  // (a) `roleModels` do models.json dele manda, com o thinking do par autorizado;
+  // (b) papel com `model`/`thinking` no próprio .md decide no runner (nada é fixado aqui);
+  // (c) papel sem config própria segue no slot principal/apoio do piloto.
+  {
+    const vault = join(root, 'Sistema/Pi');
+    mkdirSync(vault, { recursive: true });
+    const tier = (model) => ({ label: 'l', description: 'd', model, thinking: 'medium' });
+    writeFileSync(join(vault, 'models.json'), JSON.stringify({
+      tiers: { fast: tier('test/fast'), standard: tier('test/std'), deep: tier('test/deep'), visual: tier('test/vis'), image: tier('test/img') },
+      roleModels: { reviewer: [{ model: 'test/antigo-reviewer', thinking: 'xhigh' }, { model: 'test/segunda-opcao', thinking: 'low' }] },
+    }) + '\n');
+    // MODELS_FILE = <sistemaDir>/Pi/models.json e sistemaDir vem do HOME isolado deste teste.
+    const freshJobs = jobs;
+    const roleFiles = [{ name: 'reviewer' }, { name: 'planner', model: 'tier:deep', thinking: 'high' }, { name: 'worker' }];
+    const kept = freshJobs.resolveJobTaskModels([{ agent: 'reviewer', task: 'r' }, { agent: 'planner', task: 'p' }, { agent: 'worker', task: 'w' }], defaults, roleFiles);
+    assert.equal(kept.ok, true, kept.error);
+    assert.deepEqual(kept.tasks[0], { agent: 'reviewer', task: 'r', model: 'test/antigo-reviewer', thinking: 'xhigh' }, 'roleModels do usuário preservado no piloto');
+    assert.deepEqual(kept.tasks[1], { agent: 'planner', task: 'p' }, 'papel com config no .md não é sobrescrito pelo slot');
+    assert.equal(kept.tasks[2].model, 'test/principal', 'papel sem config própria segue no slot');
+    assert.equal(kept.tasks[2].thinking, 'low', 'papel sem config herda o thinking do pedido');
+    const alt = freshJobs.resolveJobTaskModels([{ agent: 'reviewer', task: 'r', model: 'test/segunda-opcao' }], defaults, roleFiles);
+    assert.deepEqual(alt.tasks[0].thinking, 'low', 'escolha explícita dentro da lista do papel vale com o thinking do par');
+    const denied = freshJobs.resolveJobTaskModels([{ agent: 'reviewer', task: 'r', model: 'test/principal' }], defaults, roleFiles);
+    assert.equal(denied.ok, false, 'modelo fora da lista do papel configurado é recusado');
+    assert.match(denied.error, /not allowed for agent "reviewer"/);
+    const modelsFile = join(vault, 'models.json');
+    const validConfig = readFileSync(modelsFile, 'utf8');
+    writeFileSync(modelsFile, '{ invalid');
+    const broken = freshJobs.resolveJobTaskModels([{ agent: 'reviewer', task: 'r' }], defaults, roleFiles);
+    assert.equal(broken.ok, false, 'config existente inválida não pode ignorar silenciosamente a allowlist');
+    writeFileSync(modelsFile, validConfig);
+    checks++; console.log('ok complex preserva config de papel (roleModels e frontmatter); configuração inválida bloqueia; slot só preenche o que falta');
+  }
+
+  let captured;
+  runner.runnerHooks.hostFreePercent = () => 100;
+  runner.runnerHooks.getPiInvocation = (args) => ({ command: 'fake-pi', args });
+  runner.runnerHooks.spawn = (_command, args, opts) => {
+    captured = { args, opts };
+    const child = new EventEmitter();
+    child.stdout = new EventEmitter();
+    child.stderr = new EventEmitter();
+    child.kill = () => true;
+    queueMicrotask(() => {
+      child.stdout.emit('data', JSON.stringify({ type: 'message_end', message: { role: 'assistant', content: [{ type: 'text', text: 'feito' }], usage: { input: 1, output: 2, cost: { total: 0 } }, stopReason: 'stop' } }) + '\n');
+      child.emit('close', 0);
+    });
+    return child;
+  };
+  process.env.MARK_JUICE_ENABLED = '1';
+  process.env.MARK_JUICE_STATE = join(root, 'later-parent.json');
+  const agent = { name: 'scout', description: 'fixture', systemPrompt: '', tools: ['read'], source: 'user' };
+  const result = await runner.runSingleAgent({ defaultCwd: root, dispatchDefaults: defaults, agents: [agent], agentName: 'scout', task: 'fixture', roleModel: { model: 'test/economico', thinking: 'low' }, makeDetails: (results) => ({ mode: 'single', agentScope: 'user', projectAgentsDir: null, results }) });
+  assert.equal(result.exitCode, 0);
+  assert.equal(captured.opts.env.MARK_JUICE_STATE, defaults.juice.statePath);
+  assert.equal(captured.opts.env.MARK_JUICE_CHILD, '1');
+  assert.equal(captured.args[captured.args.indexOf('--model') + 1], 'test/economico');
+  assert.ok(!captured.args.includes('--no-skills'));
+  checks++; console.log('ok filho compartilha snapshot original de budget e preserva skills');
+
+  // Papel com config no próprio .md, sem par central: o filho nasce com o modelo/thinking
+  // do arquivo do usuário (resolvendo `tier:`), não com o principal do piloto.
+  {
+    const planner = { name: 'planner', description: 'fixture', systemPrompt: '', tools: ['read'], source: 'user', model: 'tier:deep', thinking: 'high' };
+    await runner.runSingleAgent({ defaultCwd: root, dispatchDefaults: defaults, agents: [planner], agentName: 'planner', task: 'fixture', makeDetails: (results) => ({ mode: 'single', agentScope: 'user', projectAgentsDir: null, results }) });
+    assert.equal(captured.args[captured.args.indexOf('--model') + 1], 'test/deep', 'frontmatter `model: tier:deep` do usuário vale no piloto');
+    assert.equal(captured.args[captured.args.indexOf('--thinking') + 1], 'high', 'frontmatter `thinking` do usuário vale no piloto');
+    checks++; console.log('ok papel com model/thinking no .md manda no filho (piloto)');
+  }
+
+  // Regras aprendidas do projeto: vão só na mensagem do filho e só as do cwd EFETIVO dele.
+  const project = (name, rules) => {
+    const dir = join(root, name);
+    mkdirSync(join(dir, '.mark'), { recursive: true });
+    writeFileSync(join(dir, '.mark/workflow.md'), ['# Receita', '', 'versão: v2', '', '## Regras aprendidas', ...rules.map(r => `- ${r}`), ''].join('\n'));
+    return dir;
+  };
+  const projA = project('proj-a', ['regra exclusiva do projeto A']);
+  const projB = project('proj-b', ['regra exclusiva do projeto B']);
+  const message = () => captured.args[captured.args.length - 1];
+  const runIn = (opts) => runner.runSingleAgent({ defaultCwd: root, dispatchDefaults: defaults, agents: [agent], agentName: 'scout', task: 'fixture', roleModel: { model: 'test/economico', thinking: 'low' }, makeDetails: (results) => ({ mode: 'single', agentScope: 'user', projectAgentsDir: null, results }), ...opts });
+
+  let child = await runIn({ cwd: projA });
+  assert.match(message(), /^Task: fixture\n\n## Project notes\n/, message());
+  assert.match(message(), /- regra exclusiva do projeto A/);
+  assert.doesNotMatch(message(), /projeto B/, 'regras de outro projeto não entram');
+  assert.equal(child.task, 'fixture', 'o registro do job guarda a tarefa, não as regras');
+  child = await runIn({ cwd: projB });
+  assert.match(message(), /- regra exclusiva do projeto B/);
+  assert.doesNotMatch(message(), /projeto A/, 'cwd por tarefa decide as regras');
+  await runIn({ defaultCwd: projB, cwd: undefined });
+  assert.match(message(), /- regra exclusiva do projeto B/, 'sem cwd por tarefa vale o cwd do dispatch');
+  await runIn({ cwd: root });
+  assert.equal(message(), 'Task: fixture', 'projeto sem regras: mensagem intacta');
+  const warm = await runner.prefetchAgent({ defaultCwd: projA, dispatchDefaults: defaults, agents: [agent], agentName: 'scout', roleModel: { model: 'test/economico', thinking: 'low' } });
+  assert.equal(typeof warm, 'number');
+  assert.equal(message(), 'Task: .', 'aquecimento não leva regras (prefixo intacto)');
+  checks++; console.log('ok regras do projeto só na mensagem do filho, pelo cwd efetivo; aquecimento intacto');
+
+  // Teto do bloco de orientação: nada de receita gigante comendo o contexto do filho.
+  const { RULES_GUIDANCE_CAP, RULES_SOURCE_CAP, projectRules } = await import(join(repo, 'mark/juice/workflow.mjs'));
+  const recipeOf = (dir) => readFileSync(join(dir, '.mark/workflow.md'), 'utf8');
+  const guidanceRules = (text) => text.split('\n').filter((l) => l.startsWith('- ')).map((l) => l.slice(2));
+  const emoji = project('proj-emoji', ['regra com acentuação e emoji 🚀🧪 — cabe inteira', 'segunda regra ção ✓']);
+  let guidance = projectRules(emoji);
+  assert.ok(Buffer.byteLength(guidance, 'utf8') <= RULES_GUIDANCE_CAP);
+  assert.deepEqual(guidanceRules(guidance), ['regra com acentuação e emoji 🚀🧪 — cabe inteira', 'segunda regra ção ✓']);
+  const giant = `regra enorme 🚀 ${'á'.repeat(RULES_GUIDANCE_CAP)}`;
+  const huge = project('proj-huge', [giant, 'regra curta depois da enorme', `outra enorme ${'b'.repeat(RULES_GUIDANCE_CAP)}`, 'última curta 🧪']);
+  guidance = projectRules(huge);
+  assert.ok(Buffer.byteLength(guidance, 'utf8') <= RULES_GUIDANCE_CAP, 'bloco respeita o teto');
+  assert.deepEqual(guidanceRules(guidance), ['regra curta depois da enorme', 'última curta 🧪'], 'regra maior que o orçamento é descartada inteira, as curtas seguem');
+  assert.ok(!guidance.includes('regra enorme') && !guidance.includes('outra enorme'));
+  const many = Array.from({ length: 400 }, (_, i) => `regra ${String(i).padStart(3, '0')} 🧪 ${'detalhe '.repeat(6)}fim`);
+  const crowd = project('proj-many', many);
+  guidance = projectRules(crowd);
+  const kept = guidanceRules(guidance);
+  assert.ok(Buffer.byteLength(guidance, 'utf8') <= RULES_GUIDANCE_CAP);
+  assert.ok(kept.length > 10 && kept.length < many.length, `truncou pelo teto (${kept.length} de ${many.length})`);
+  assert.deepEqual(kept, many.slice(0, kept.length), 'ordem preservada e cada regra inteira');
+  assert.equal(projectRules(crowd), guidance, 'determinístico entre chamadas');
+  const before = recipeOf(crowd);
+  assert.equal(projectRules(crowd), guidance);
+  assert.equal(recipeOf(crowd), before, 'receita nunca truncada nem reescrita');
+  const over = project('proj-fonte-grande', [`x ${'y'.repeat(RULES_SOURCE_CAP)}`, 'regra curta que não será lida']);
+  assert.ok(readFileSync(join(over, '.mark/workflow.md')).byteLength > RULES_SOURCE_CAP);
+  assert.equal(projectRules(over), '', 'fonte acima do teto: fail closed, sem injetar');
+  const overBefore = recipeOf(over);
+  assert.equal(projectRules(over), '');
+  assert.equal(recipeOf(over), overBefore, 'fonte grande permanece intacta');
+  const edge = project('proj-limite-fonte', []);
+  const tail = '\n## Regras aprendidas\n- regra inteira no limite\n';
+  const edgeText = '#'.repeat(RULES_SOURCE_CAP - Buffer.byteLength(tail, 'utf8')) + tail;
+  const edgeFile = join(edge, '.mark/workflow.md');
+  writeFileSync(edgeFile, edgeText);
+  assert.equal(Buffer.byteLength(edgeText, 'utf8'), RULES_SOURCE_CAP);
+  assert.deepEqual(guidanceRules(projectRules(edge)), ['regra inteira no limite'], '64KiB exatos ainda entram');
+  writeFileSync(edgeFile, edgeText + 'x');
+  assert.equal(projectRules(edge), '', '64KiB+1 não entram');
+  const nonRegular = join(root, 'proj-diretorio');
+  mkdirSync(join(nonRegular, '.mark/workflow.md'), { recursive: true });
+  assert.equal(projectRules(nonRegular), '', 'diretório no lugar do arquivo: fail closed');
+  assert.equal(projectRules(join(root, 'nao-existe')), '', 'projeto ausente: sem orientação');
+  assert.equal(projectRules(undefined), '');
+  await runIn({ cwd: huge });
+  const capped = message();
+  assert.ok(Buffer.byteLength(capped, 'utf8') <= RULES_GUIDANCE_CAP + Buffer.byteLength('Task: fixture\n\n', 'utf8'));
+  assert.deepEqual(guidanceRules(capped), ['regra curta depois da enorme', 'última curta 🧪'], 'mensagem do filho sem regra parcial');
+  checks++; console.log('ok orientação limitada a 8KiB UTF-8, regras inteiras, fonte >64KiB não injetada');
+
+  delete process.env.MARK_JUICE_ENABLED;
+  delete process.env.MARK_JUICE_STATE;
+  await runner.runSingleAgent({ defaultCwd: root, dispatchDefaults: { model: 'test/principal' }, agents: [agent], agentName: 'scout', task: 'fixture', makeDetails: (results) => ({ mode: 'single', agentScope: 'user', projectAgentsDir: null, results }) });
+  // Fora do piloto, só o ambiente do sandbox é acrescentado ao papel somente leitura.
+  const sandbox = runner.sandboxForTools(agent.tools);
+  assert.deepEqual(captured.opts.env, { ...process.env, MARK_BASH_SANDBOX: sandbox === 'none' ? '' : sandbox, MARK_SANDBOX_CWD: sandbox === 'none' ? '' : root });
+  assert.ok(captured.args.includes('--no-skills'));
+  checks++; console.log('ok dispatch legado permanece inalterado fora do piloto');
+
+  console.log(`${checks} checks passed`);
+} finally {
+  for (const key of Object.keys(process.env)) if (!(key in savedEnv)) delete process.env[key];
+  Object.assign(process.env, savedEnv);
+  rmSync(root, { recursive: true, force: true });
+}
