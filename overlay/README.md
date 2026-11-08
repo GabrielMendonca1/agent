@@ -225,7 +225,7 @@ Depois da ativação, somente releases não referenciadas são coletadas; `curre
 
 `agent overlay-gc [--dry-run] [--keep N]` libera espaço; `--keep` padrão 1 (um item sem uso de cada tipo). `--dry-run` lista caminho, tamanho e total, sem lock e sem apagar. Apaga releases órfãs, artefatos do Agent sem uso, recibos `prepared` sem release, backups além dos 5 mais recentes e `runtime/build-cache`. Nunca apaga `current`, `previous`, o artefato do Agent ativo e o de rollback, nem releases preparadas ainda promovíveis. `candidates/` e `runtime/resource-snapshots/` só são reportados.
 
-Aviso de defasagem: ao abrir o Agent interativo ligado, se o checkout de origem estiver N commits à frente da instalação, sai uma linha em stderr com o comando do updater do checkout (`agent overlay-update` roda o updater do bundle, que não traz commits novos). Só git local, cache de 1h em `stale-notice.json`, limite de 300 ms, nunca bloqueia; não aparece em `-p`/`--mode` nem fora de TTY. Desligue com `PI_OVERLAY_STALE_NOTICE=0`.
+Aviso de defasagem: ao abrir o Agent interativo ligado, se o checkout de origem estiver N commits à frente da instalação, sai uma linha em stderr com o comando do updater do checkout (`agent overlay-update` roda o updater do bundle, que não traz commits novos). Só git local, cache de 1h em `stale-notice.json`, limite de 300 ms, nunca bloqueia; não aparece em `-p`/`--mode` nem fora de TTY. Desligue com `AGENT_STALE_NOTICE=0`.
 
 Camada removida: `context-windows` saiu em 2026-10. `--with context-windows` falha; registrada em `layers.json`, o updater avisa e ignora.
 

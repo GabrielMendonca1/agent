@@ -63,7 +63,7 @@ export const legacyNamesOf = (name) => LEGACY_EXTENSION_NAMES[name] ?? [];
 /** Marcador da pasta de papéis: diz quais `.md` são do Agent e podem ser atualizados. */
 export const AGENTS_MARKER = ".agent-agents.json";
 /** Linha de PATH; o marcador é o que torna a escrita no rc idempotente. */
-export const PATH_MARKER = "# agent: pi em ~/.local/bin";
+export const PATH_MARKER = "# agent: agent em ~/.local/bin";
 const PATH_LINE = `case ":$PATH:" in *":$HOME/.local/bin:"*) ;; *) export PATH="$HOME/.local/bin:$PATH" ;; esac`;
 
 /** Defaults do Gabriel; escritos só onde o usuário não tem a chave. */

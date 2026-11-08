@@ -1,6 +1,6 @@
 # Origem das skills deste diretório
 
-Skills de terceiros, instaladas aqui com o nome final do MARK II. Todas MIT.
+Skills de terceiros, instaladas aqui com o nome final do Agent. Todas MIT.
 Frontmatter (nome, descrição, `disable-model-invocation`) reescrito para o Pi;
 referências cruzadas e trechos marcados abaixo foram adaptados. Corpo de resto
 preservado. `agents/` (Codex), `tests/`, `evals/`, `.github/` não foram copiados.
@@ -33,7 +33,7 @@ uma linha curta no system prompt e agrupa o seletor de `/skill:`.
 As skills pessoais não são movidas nem modificadas.
 
 `dev/debug` veio da antiga `skills/debug` do overlay (incluindo `references/tactics.md`).
-Agora é distribuída somente pelo Mark II, sob demanda, sem cópia nas skills padrão do overlay.
+Agora é distribuída somente pelo Agent, sob demanda, sem cópia nas skills padrão do overlay.
 
 ## Adaptações de corpo
 

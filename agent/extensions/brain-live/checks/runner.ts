@@ -385,7 +385,7 @@ export function writeLastRun(
 function environmentSnapshot(): Record<string, string> {
   const snap: Record<string, string> = { node: process.version, plataforma: process.platform };
   try {
-    const release = ["pi-overlay", "pi-rlm-overlay"]
+    const release = ["agent", "pi-overlay", "pi-rlm-overlay"]
       .map((store) => join(homedir(), ".local", "share", store, "current"))
       .find((candidate) => existsSync(candidate));
     if (!release) throw new Error("Pi runtime ausente");
