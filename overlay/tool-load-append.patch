@@ -224,7 +224,7 @@ index 0000000000000000000000000000000000000000..3ccdbbe579f358809be586a88fb24e96
 +			...(forced
 +				? [
 +						(pi: ExtensionAPI) => {
-+							pi.on("before_agent_start", () => ({ systemPrompt: "Exact Mark prompt." }));
++							pi.on("before_agent_start", () => ({ systemPrompt: "Exact Agent prompt." }));
 +							if (hidden)
 +								pi.registerTool({
 +									name: "bridge",
@@ -276,7 +276,7 @@ index 0000000000000000000000000000000000000000..3ccdbbe579f358809be586a88fb24e96
 +		expect(JSON.stringify(requests[1]!.messages[0])).toBe(head);
 +		expect(requests[1]!.messages.slice(0, requests[0]!.messages.length)).toEqual(requests[0]!.messages);
 +		if (hidden) expect(getCurrentTools(requests[1]!.messages).map((tool) => tool.name)).not.toContain("bash");
-+		expect(requests[1]!.messages[0]).toMatchObject({ role: "system", content: "Exact Mark prompt." });
++		expect(requests[1]!.messages[0]).toMatchObject({ role: "system", content: "Exact Agent prompt." });
 +		const updates = requests[1]!.messages.slice(1).filter((message) => message.role === "system");
 +		expect(updates.some((message) => message.toolsAdded?.some((tool) => tool.name === "launch_satellite"))).toBe(
 +			true,

@@ -1,7 +1,6 @@
 {
 	"schema": 2,
-	"name": "mark-pi",
-	"mark": "II",
+	"name": "agent",
 	"officialRepository": "https://github.com/earendil-works/pi.git",
 	"officialPackage": "@earendil-works/pi-coding-agent",
 	"overlayBase": "f9a26365568127461c47a07a37dcb42c140a3ac5",
@@ -39,7 +38,7 @@
 		{
 			"name": "transcript-feedback",
 			"path": "overlay/transcript-feedback.patch",
-			"sha256": "db2031971e3ed22335892c991b6d8b89fb0c45b4d6880cc3ceb9921205808ab2",
+			"sha256": "a3e512367acd00b800619f9b2c019ccda9254a36b8cf4c76d6930880ffa326f1",
 			"description": "Resumo contextual curto em terceira pessoa via Haiku (PI_TUI_RECAP_MODEL), até duas tentativas assíncronas por turno (primário → Luna deduplicado), com fallback local imediato. Falhas e timeout permitem Luna; cancelamento real ou aborto do provider não. Avisos semânticos opt-in via PI_TUI_FEEDBACK=1 ou /heads-up on, até PI_TUI_FEEDBACK_MAX_NOTICES tentativas por execução (default 3, faixa 0..10); dedupe e avaliação 1/2/0. PI_TUI_FEEDBACK=0 desliga tudo. Preserva mascaramento, afterTranscript, persistência sem projeção de modelo e tail ajustável.",
 			"tests": [
 				"packages/coding-agent/test/run-feedback.test.ts",
@@ -58,10 +57,10 @@
 			]
 		},
 		{
-			"name": "mark-skill-curation",
-			"path": "overlay/mark-skill-curation.patch",
+			"name": "agent-skill-curation",
+			"path": "overlay/agent-skill-curation.patch",
 			"description": "PI_AUTOMATIC_SKILLS opt-in: curadoria do anúncio no formatter compartilhado; catálogo e arquivos intactos.",
-			"sha256": "3d34182af2ce978681872592a3964d466f9d24bd7646a01b00b41dbe6e341b86",
+			"sha256": "36827f3f462ab3cf312f62f1a399d41e8bd291ec23f2ff8bfbbe9152d514009c",
 			"tests": [
 				"packages/coding-agent/test/skill-curation.test.ts",
 				"packages/coding-agent/test/skills.test.ts"
@@ -102,7 +101,7 @@
 				"packages/coding-agent/test/suite/agent-session-prompt.test.ts",
 				"packages/coding-agent/test/suite/agent-session-mcp.test.ts"
 			],
-			"sha256": "3aca3170320fffe6ea6dbd91fac16c53953eaa73e90030f2289c99e8d9709761"
+			"sha256": "adc3a8b07f9e2cef7d16e39fc4878570a1d7422941d7806a353b707c2a2bb94e"
 		},
 		{
 			"name": "cc-hidden-tool-names",
@@ -237,7 +236,7 @@
 			},
 			{
 				"name": "skill announcement curation",
-				"patch": "mark-skill-curation",
+				"patch": "agent-skill-curation",
 				"path": "dist/bundle",
 				"marker": "PI_AUTOMATIC_SKILLS"
 			},

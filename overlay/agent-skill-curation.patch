@@ -7,7 +7,7 @@ index 48df4536b9a62642855fdeed2ab44a6202968a96..be1d61329f14966e8791772bf80f46a9
  }
  
 +/**
-+ * mark-skill-curation: curadoria opt-in do que é anunciado ao modelo.
++ * agent-skill-curation: curadoria opt-in do que é anunciado ao modelo.
 + *
 + * Quando `PI_AUTOMATIC_SKILLS` está **definida** (mesmo vazia), ela é a lista autoritativa dos
 + * nomes de skill anunciados no prompt: nomes separados por vírgula, espaços em volta ignorados,
@@ -54,7 +54,7 @@ index 0000000000000000000000000000000000000000..97e3a94b7bf3c484dac6ee153bbac19f
 +import { createSyntheticSourceInfo } from "../src/core/source-info.ts";
 +
 +/**
-+ * mark-skill-curation: a curadoria do que é anunciado ao modelo vive no formatter, e não num
++ * agent-skill-curation: a curadoria do que é anunciado ao modelo vive no formatter, e não num
 + * wrapper de loader, para cobrir todos os consumidores de skills.
 + * Estes testes fixam o contrato: sem a variável,
 + * comportamento nativo; com a variável, a lista é autoritativa e uma lista vazia não anuncia nada.
