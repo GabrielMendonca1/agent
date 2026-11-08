@@ -3,7 +3,7 @@ import { join } from 'node:path';
 
 /** Snapshot usado só no session_start, para não alterar o prefixo entre turnos. */
 export function readNotesMetadata(cwd, now = Date.now()) {
-  const file = join(cwd, '.mark/notes.md');
+  const file = join(cwd, '.agent/notes.md');
   try {
     const count = readFileSync(file, 'utf8').split(/\r?\n/).filter(line => line.trim()).length;
     return { count, ageDays: Math.max(0, Math.floor((now - statSync(file).mtimeMs) / 86400000)) };
@@ -13,7 +13,7 @@ export function readNotesMetadata(cwd, now = Date.now()) {
 /** /notes lê o mapa atual, mas nunca atualiza o snapshot do system prompt. */
 export function unmappedDocs(cwd) {
   let map = '';
-  try { map = readFileSync(join(cwd, '.mark/notes.md'), 'utf8'); } catch (error) {
+  try { map = readFileSync(join(cwd, '.agent/notes.md'), 'utf8'); } catch (error) {
     if (error.code !== 'ENOENT') throw error;
   }
   const mapped = new Set(map.split(/\r?\n/).filter(line => line.includes(' — ')).map(line => line.split(' — ')[0].trim()));

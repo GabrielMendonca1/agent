@@ -22,14 +22,14 @@
  * - D: compactação por limiar com o cache quente é adiada (`compactionDecision`); manual,
  *   overflow e o limite duro passam sempre.
  * - F: prévia ANTES da escolha para a TUI (`estimateSwitch` em globalThis); depois da troca,
- *   aviso + evento `mark:cache-estimate` em pi.events (pós-fato, não é prévia).
+ *   aviso + evento `agent:cache-estimate` em pi.events (pós-fato, não é prévia).
  * - H: OpenAI/Codex sem `prompt_cache_key` (ou em subagente) ganham chave do prefixo estável.
  * - I: compactação ociosa (como no Claude Code). Quando o aquecimento acaba (janela fechada,
- *   refresh pulado ou sem acerto) e o contexto tem ≥ MARK_IDLE_COMPACT_MIN_TOKENS (padrão 200K,
+ *   refresh pulado ou sem acerto) e o contexto tem ≥ AGENT_IDLE_COMPACT_MIN_TOKENS (padrão 200K,
  *   piso 100K), compacta antes do cache esfriar, nunca antes de 54 min parado. Só com o agente
- *   ocioso, sem fila e com o editor vazio. Desliga: MARK_IDLE_COMPACT=0.
+ *   ocioso, sem fila e com o editor vazio. Desliga: AGENT_IDLE_COMPACT=0.
  *
- * Desliga: MARK_CACHE_KEEPER=0. Teste: MARK_CACHE_KEEPER_TEST=1 faz um refresh já no agent_settled.
+ * Desliga: AGENT_CACHE_KEEPER=0. Teste: AGENT_CACHE_KEEPER_TEST=1 faz um refresh já no agent_settled.
  */
 import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
@@ -82,24 +82,24 @@ export function warmWindow(gaps: Gap[], ttl: number): number {
   return best;
 }
 
-const MAX_PING_USD = Number(process.env.MARK_CACHE_KEEPER_MAX_PING_USD ?? 0.5);
+const MAX_PING_USD = Number(process.env.AGENT_CACHE_KEEPER_MAX_PING_USD ?? 0.5);
 const ledger = (event: Record<string, unknown>) => { try { recordJuiceCacheEvent(event); } catch { /* best-effort */ } };
 
 export default function cacheKeeper(pi: ExtensionAPI) {
-  if (process.env.MARK_CACHE_KEEPER === "0") return;
-  const child = process.env.MARK_JUICE_CHILD === "1";
+  if (process.env.AGENT_CACHE_KEEPER === "0") return;
+  const child = process.env.AGENT_JUICE_CHILD === "1";
 
   // H — vale também em subagentes: chave do prefixo estável quando falta ou é por sessão de filho.
   pi.on("before_provider_request", (event: { payload: Payload }) => {
     const key = openaiCacheKey(event.payload, { child });
     if (key) return { ...event.payload, prompt_cache_key: key };
   });
-  // E — filho de prefetch (MARK_CACHE_PREFETCH=1, lançado pelo runner com tarefa "."): o 1º
+  // E — filho de prefetch (AGENT_CACHE_PREFETCH=1, lançado pelo runner com tarefa "."): o 1º
   // request só escreve tools+system no cache (max_tokens 1, sem thinking) e o processo sai logo
   // depois da resposta, antes de o Pi tratar o `length` como recuperável (compactação/retry).
   // Fora da Anthropic sai antes de qualquer request. Limite: um request, 60 s.
-  if (child && process.env.MARK_CACHE_PREFETCH === "1") {
-    const noExit = process.env.MARK_CACHE_PREFETCH_NO_EXIT === "1"; // só testes
+  if (child && process.env.AGENT_CACHE_PREFETCH === "1") {
+    const noExit = process.env.AGENT_CACHE_PREFETCH_NO_EXIT === "1"; // só testes
     const exit = (code: number) => { if (!noExit) process.exit(code); };
     let sent = false;
     pi.on("session_start", (_e, ctx) => {
@@ -135,8 +135,8 @@ export default function cacheKeeper(pi: ExtensionAPI) {
   let lastDrop: ReturnType<typeof firstChangedSegment> | undefined;
   let deferredTurns = 0;
   // I — compactação ociosa: um disparo por pausa.
-  const idleEnabled = process.env.MARK_IDLE_COMPACT !== "0";
-  const idleMin = idleCompactMinTokens(process.env.MARK_IDLE_COMPACT_MIN_TOKENS);
+  const idleEnabled = process.env.AGENT_IDLE_COMPACT !== "0";
+  const idleMin = idleCompactMinTokens(process.env.AGENT_IDLE_COMPACT_MIN_TOKENS);
   let idleTimer: ReturnType<typeof setTimeout> | undefined;
   let idleAt: number | undefined;
   let idleCompacting = false;
@@ -151,7 +151,7 @@ export default function cacheKeeper(pi: ExtensionAPI) {
   }
 
   const store = (cwd: string) => {
-    const base = process.env.MARK_JUICE_HOME || join(homedir(), ".pi/agent");
+    const base = process.env.AGENT_JUICE_HOME || join(homedir(), ".pi/agent");
     const dir = join(base, "cache-keeper");
     mkdirSync(dir, { recursive: true });
     return join(dir, createHash("sha1").update(cwd).digest("hex").slice(0, 12) + ".json");
@@ -215,7 +215,7 @@ export default function cacheKeeper(pi: ExtensionAPI) {
       if (ctx.hasUI) ctx.ui.notify(text, level);
     };
     ctx.compact({
-      onComplete: (r: any) => done(`Compactado enquanto ocioso, antes do cache expirar (~${Math.round((r?.tokensBefore ?? tokens) / 1000)}k tokens → resumo). Desligar: MARK_IDLE_COMPACT=0`, "info"),
+      onComplete: (r: any) => done(`Compactado enquanto ocioso, antes do cache expirar (~${Math.round((r?.tokensBefore ?? tokens) / 1000)}k tokens → resumo). Desligar: AGENT_IDLE_COMPACT=0`, "info"),
       onError: (e: Error) => done(`Compactação ociosa não rodou: ${e.message}`, "warning"),
     });
   }
@@ -240,7 +240,7 @@ export default function cacheKeeper(pi: ExtensionAPI) {
   });
   // Corpo final (runtime.mjs, depois de tool-lexicon/image-normalize etc.) substitui o parcial.
   let captureFinal = false;
-  (globalThis as any)[Symbol.for("mark.cache-keeper.finalPayload")] = (p: Payload) => {
+  (globalThis as any)[Symbol.for("agent.cache-keeper.finalPayload")] = (p: Payload) => {
     if (!captureFinal || pinging) return;
     captureFinal = false;
     remember(p, pendingModel);
@@ -301,12 +301,12 @@ export default function cacheKeeper(pi: ExtensionAPI) {
       stats.pings += 1;
       stats.cost += u.cost?.total ?? 0;
       const hit = prompt > 0 && (u.cacheRead ?? 0) >= 0.9 * prompt;
-      if (process.env.MARK_CACHE_KEEPER_TEST === "1") process.stderr.write(`cache-keeper usage: ${JSON.stringify(u)} stop=${response?.stopReason} err=${response?.errorMessage ?? ""}\n`);
+      if (process.env.AGENT_CACHE_KEEPER_TEST === "1") process.stderr.write(`cache-keeper usage: ${JSON.stringify(u)} stop=${response?.stopReason} err=${response?.errorMessage ?? ""}\n`);
       if (!hit) stats.misses += 1;
       return hit;
     } catch (error) {
       if (refreshCycle !== cycle) return false;
-      if (process.env.MARK_CACHE_KEEPER_TEST === "1") process.stderr.write(`cache-keeper erro: ${error}\n`);
+      if (process.env.AGENT_CACHE_KEEPER_TEST === "1") process.stderr.write(`cache-keeper erro: ${error}\n`);
       ledger({ event: "warm_skip", reason: "error" });
       return false;
     } finally {
@@ -443,9 +443,9 @@ export default function cacheKeeper(pi: ExtensionAPI) {
   });
 
   // F — PRÉVIA para a TUI mostrar ANTES da escolha (seletor de modelo):
-  // `globalThis[Symbol.for("mark.cache-keeper.estimateSwitch")]?.(toModel, ctx)` → estimativa
+  // `globalThis[Symbol.for("agent.cache-keeper.estimateSwitch")]?.(toModel, ctx)` → estimativa
   // com o estado atual (modelo ativo, tokens, TTL, cache quente). Pura: não muda nada nem grava.
-  (globalThis as any)[Symbol.for("mark.cache-keeper.estimateSwitch")] = (to: any, ctx: ExtensionContext) => {
+  (globalThis as any)[Symbol.for("agent.cache-keeper.estimateSwitch")] = (to: any, ctx: ExtensionContext) => {
     const from = ctx.model as any;
     const tokens = ctx.getContextUsage?.()?.tokens ?? 0;
     if (!from || !to || !tokens) return undefined;
@@ -457,7 +457,7 @@ export default function cacheKeeper(pi: ExtensionAPI) {
     const tokens = ctx.getContextUsage?.()?.tokens ?? 0;
     const est = modelSwitchEstimate({ from: event.previousModel, to: event.model, tokens, ttlSeconds: last ? ttlOf(last.payload) : 300, warm: warmUntil !== undefined && Date.now() < warmUntil });
     if (est.sameModel || !tokens) return;
-    (pi as any).events?.emit?.("mark:cache-estimate", { kind: "model-switch", from: `${event.previousModel.provider}/${event.previousModel.id}`, to: `${event.model.provider}/${event.model.id}`, ...est });
+    (pi as any).events?.emit?.("agent:cache-estimate", { kind: "model-switch", from: `${event.previousModel.provider}/${event.previousModel.id}`, to: `${event.model.provider}/${event.model.id}`, ...est });
     if (ctx.hasUI && est.extraUsd !== undefined && est.extraUsd >= 0.01) {
       ctx.ui.notify(`Troca de modelo reescreve ~${Math.round(tokens / 1000)}k tokens de cache: ~US$${est.rebuildUsd!.toFixed(2)} no próximo turno (continuar custaria ~US$${(est.stayUsd ?? 0).toFixed(2)}).`, "info");
     }
@@ -476,8 +476,8 @@ export default function cacheKeeper(pi: ExtensionAPI) {
     if (!last) return;
     idleSince = Date.now();
     idleTokens = ctx.getContextUsage?.()?.tokens ?? undefined;
-    if (process.env.MARK_CACHE_KEEPER_TEST === "1") {
-      const delay = Number(process.env.MARK_CACHE_KEEPER_TEST_DELAY ?? 0) * 1000;
+    if (process.env.AGENT_CACHE_KEEPER_TEST === "1") {
+      const delay = Number(process.env.AGENT_CACHE_KEEPER_TEST_DELAY ?? 0) * 1000;
       if (delay) await new Promise((r) => setTimeout(r, delay));
       const ok = await refresh(ctx);
       process.stderr.write(`cache-keeper test: ${ok ? "hit" : "miss"} (${stats.pings} ping)\n`);
@@ -520,7 +520,7 @@ export default function cacheKeeper(pi: ExtensionAPI) {
       const win = warmWindow(gaps, ttl);
       ctx.ui.notify([
         `TTL ${ttl >= 3600 ? "1 h" : "5 min"} · janela de aquecimento ${(win / 3600).toFixed(1)} h${gaps.length < MIN_SAMPLES ? ` (padrão; ${gaps.length}/${MIN_SAMPLES} pausas registradas)` : ` (${gaps.length} pausas deste projeto)`}`,
-        `compactação ociosa: ${idleEnabled ? `≥${Math.round(idleMin / 1000)}k tokens${idleAt ? ` · agendada ${hhmm(idleAt)}` : ""}` : "desligada (MARK_IDLE_COMPACT=0)"}`,
+        `compactação ociosa: ${idleEnabled ? `≥${Math.round(idleMin / 1000)}k tokens${idleAt ? ` · agendada ${hhmm(idleAt)}` : ""}` : "desligada (AGENT_IDLE_COMPACT=0)"}`,
         `pings nesta sessão: ${stats.pings} (${stats.misses} sem acerto, US$${stats.cost.toFixed(4)})` + (warmUntil ? ` · cache garantido até ${hhmm(warmUntil)}` : ""),
         ...(dropLabel() ? [dropLabel()!] : []),
         ...ledgerLines(),

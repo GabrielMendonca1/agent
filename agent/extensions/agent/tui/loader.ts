@@ -1,5 +1,5 @@
 /**
- * Mark loader no transcript, após a última mensagem/tool.
+ * Agent loader no transcript, após a última mensagem/tool.
  * Requer runtime com placement público afterTranscript; ativar só após a release.
  * Quadros a 250 ms, contadores amostrados separadamente a 1000 ms.
  *
@@ -175,7 +175,7 @@ export function textoEsquerda(estado: Estado): string {
  * no rodapé) para a linha caber em 60 colunas.
  *
  * A cor do verbo: a fábrica do widget recebe `(tui, theme)`, então o tema ATIVO
- * chega aqui e a linha acompanha claro/escuro e hot-swap. Sem tema, usa cc-mark
+ * chega aqui e a linha acompanha claro/escuro e hot-swap. Sem tema, usa cc-agent
  * escuro; GARIME_CLAUDE_APPEARANCE e GARIME_CLAUDE_ACCENT continuam disponíveis.
  */
 export function linhaClaude(

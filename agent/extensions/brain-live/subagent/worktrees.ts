@@ -50,8 +50,8 @@ export function isolateWriters(record: JobRecord, agents: AgentConfig[], persist
 		const sourceBranch = currentBranch(root);
 		for (const { task, index, cwd } of group) {
 			const name = `${record.jobId}-${index + 1}`;
-			const worktree = path.join(getAgentDir(), "mark", "worktrees", name);
-			const branch = `mark/${name}`;
+			const worktree = path.join(getAgentDir(), "agent", "worktrees", name);
+			const branch = `agent/${name}`;
 			fs.mkdirSync(path.dirname(worktree), { recursive: true });
 			git(root, ["worktree", "add", "-b", branch, worktree, baseSha]);
 			Object.assign(task, { worktree, branch, sourceCwd: cwd, sourceBranch, baseSha, cwd: path.join(worktree, path.relative(root, cwd)) });

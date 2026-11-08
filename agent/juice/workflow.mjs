@@ -1,13 +1,13 @@
-// Receita do projeto: `.mark/workflow.md`, ao lado do AGENTS.md.
-// Texto legível e editável. O Mark lê no início de cada run e, mais tarde,
+// Receita do projeto: `.agent/workflow.md`, ao lado do AGENTS.md.
+// Texto legível e editável. O Agent lê no início de cada run e, mais tarde,
 // escreve nela o que aprendeu. Só I/O explícito: read/write do arquivo e, para
-// manter `.mark` fora do git nos projetos que não o versionam, `git` em leitura.
+// manter `.agent` fora do git nos projetos que não o versionam, `git` em leitura.
 // A receita é interna ao agente principal: nada aqui vai ao prompt dele.
 import { execFileSync } from 'node:child_process';
 import { appendFileSync, closeSync, constants, existsSync, fstatSync, mkdirSync, openSync, readFileSync, readSync, writeFileSync } from 'node:fs';
 import { basename, dirname, isAbsolute, join } from 'node:path';
 
-export const WORKFLOW_DIR = '.mark';
+export const WORKFLOW_DIR = '.agent';
 export const WORKFLOW_FILE = 'workflow.md';
 export const SLOTS = ['apoio', 'principal'];
 
@@ -19,7 +19,7 @@ export const DEFAULT_STEPS = [
 
 export function defaultWorkflow(project) {
   return [
-    `# Receita do Mark — ${project}`,
+    `# Receita do Agent — ${project}`,
     '',
     'família: change-with-tests',
     'versão: v1',
@@ -143,8 +143,8 @@ export function projectRules(cwd) {
   }
 }
 
-const IGNORE_LINE = '/.mark/';
-const IGNORE_EQUIVALENTS = new Set(['/.mark/', '/.mark', '.mark/', '.mark']);
+const IGNORE_LINE = '/.agent/';
+const IGNORE_EQUIVALENTS = new Set(['/.agent/', '/.agent', '.agent/', '.agent']);
 
 /** git silencioso: devolve stdout ou null (sem git, fora de repo, erro). */
 function git(cwd, args) {
@@ -156,9 +156,9 @@ function git(cwd, args) {
 }
 
 /**
- * `.mark/` fora do git por projeto, sem tocar o `.gitignore`: a linha vai no
+ * `.agent/` fora do git por projeto, sem tocar o `.gitignore`: a linha vai no
  * exclude local (`.git/info/exclude`, resolvido por `rev-parse --git-path` para
- * funcionar em worktree). Onde `.mark` já é versionado, nada é ignorado.
+ * funcionar em worktree). Onde `.agent` já é versionado, nada é ignorado.
  * Idempotente, preserva o conteúdo do exclude e nunca lança.
  */
 export function ignoreWorkflowLocally(cwd) {
@@ -183,7 +183,7 @@ export function ignoreWorkflowLocally(cwd) {
   }
 }
 
-/** Garante `.mark/workflow.md` em repositórios git; devolve o texto ou null. */
+/** Garante `.agent/workflow.md` em repositórios git; devolve o texto ou null. */
 export function ensureWorkflow(cwd) {
   if (!cwd || !existsSync(join(cwd, '.git'))) return null;
   const file = join(cwd, WORKFLOW_DIR, WORKFLOW_FILE);

@@ -80,8 +80,8 @@ export interface Palette {
 	delFg: string;
 }
 
-/** Paleta oficial cc-mark escura. */
-export const CC_MARK_DARK: Palette = {
+/** Paleta oficial cc-agent escura. */
+export const CC_AGENT_DARK: Palette = {
 	text: "#f7f7f7",
 	muted: "#9a9a9a",
 	dim: "#626262",
@@ -103,8 +103,8 @@ export const CC_MARK_DARK: Palette = {
 	delFg: "#FFD6DC",
 };
 
-/** Paleta oficial cc-mark clara. */
-export const CC_MARK_LIGHT: Palette = {
+/** Paleta oficial cc-agent clara. */
+export const CC_AGENT_LIGHT: Palette = {
 	text: "#1a1a1a",
 	muted: "#505050",
 	dim: "#5a5a5a",
@@ -146,7 +146,7 @@ export function effectiveTheme(theme: ThemeLike | undefined, env: NodeJS.Process
 }
 
 /**
- * Roxo do modo complex (mockup aprovado; não é o accent do tema, que no cc-mark
+ * Roxo do modo complex (mockup aprovado; não é o accent do tema, que no cc-agent
  * é azul). O escuro fica como está; o claro é a mesma família de matiz com
  * contraste de TEXTO em fundo claro (#5B32AD: 8,4:1 sobre #ffffff, 7,8:1 sobre
  * #f7f7f7), porque #B19AFF em fundo claro dá 2,4:1 e não se lê.
@@ -178,7 +178,7 @@ export function isLight(theme: ThemeLike | undefined): boolean {
  */
 export function paletteFor(theme: ThemeLike | undefined, env: NodeJS.ProcessEnv = process.env): Palette {
 	const light = isLight(effectiveTheme(theme, env));
-	const base = light ? CC_MARK_LIGHT : CC_MARK_DARK;
+	const base = light ? CC_AGENT_LIGHT : CC_AGENT_DARK;
 	const accent = accentOverride(env) ?? hexOf(theme, "accent") ?? base.accent;
 	return {
 		...base,

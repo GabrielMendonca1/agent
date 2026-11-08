@@ -33,7 +33,7 @@ export function headerTips(theme: LogoTheme, opts: { skills: readonly string[]; 
 
 export function headerLines(width: number, theme: LogoTheme, parts: { tips: readonly string[] }): string[] {
  if (width <= 0) return [];
- return [theme.fg("accent", "✳") + " " + theme.bold("Mark"), ...parts.tips.slice(0, 1)]
+ return [theme.fg("accent", "✳") + " " + theme.bold("Agent"), ...parts.tips.slice(0, 1)]
   .map(line => truncateToWidth(line, width, "…"));
 }
 

@@ -13,8 +13,8 @@ import toolDisplay from "./tool-display";
 export {
 	accentOverride,
 	claudeStyleEnabled,
-	CC_MARK_DARK,
-	CC_MARK_LIGHT,
+	CC_AGENT_DARK,
+	CC_AGENT_LIGHT,
 } from "./claude-style";
 export { layoutFor, readCount } from "./claude-layout";
 // `headerLines` também existe em logo.ts (cabeçalho da sessão): o card entra
@@ -28,7 +28,7 @@ export {
 } from "./claude-cards";
 export { prefixAgentBullet, prefixUserChevron, transformProse } from "./claude-prose";
 export { transformThinking, transformThinkingClaude } from "./thinking";
-export { MarkEditor, type SkillPickerSources } from "./editor";
+export { AgentEditor, type SkillPickerSources } from "./editor";
 export {
 	AUTOMATIC_MARK,
 	buildCatalog,
@@ -47,7 +47,7 @@ export { modeStatus, subagentMascots } from "./status-line";
 export { headerLines } from "./logo";
 export { alvoDe, fmtDuracao, fmtTokens, montarLinha, textoDireita } from "./loader";
 
-export default function markTui(pi: ExtensionAPI) {
+export default function agentTui(pi: ExtensionAPI) {
 	pi.on("session_start", (_event, ctx) => {
 		if (ctx.mode === "tui") ctx.ui.setFooter(undefined);
 	});

@@ -1,6 +1,6 @@
 {
   "$schema": "https://raw.githubusercontent.com/earendil-works/pi/main/packages/coding-agent/src/modes/interactive/theme/theme-schema.json",
-  "name": "grayscale-baimin-claude-cc-mark",
+  "name": "grayscale-baimin-claude-cc-agent",
   "vars": {
     "black": "#050505",
     "charcoal": "#0d0d0d",

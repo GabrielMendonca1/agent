@@ -22,7 +22,7 @@ through your own user). **Another machine, or a person → Megamind.**
 ## Acesso às VMs
 
 No PC matriculado, `ssh omni` / `ssh arca` passam a existir sozinhos para a
-empresa conectada: o Mark gera uma chave ed25519 por empresa, registra a chave
+empresa conectada: o Agent gera uma chave ed25519 por empresa, registra a chave
 pública no Megamind e mantém apenas o bloco delimitado dessa empresa em
 `~/.ssh/config`. O usuário e o host vêm do servidor conforme o acesso do sócio.
 `/megamind` mostra o destino e o fingerprint registrado, ou o motivo de ainda não

@@ -91,7 +91,7 @@ const LABELS: Record<string, string> = {
 };
 
 /**
- * Nomes como o Claude Code CLI mostra (estilo cc-mark): a busca é
+ * Nomes como o Claude Code CLI mostra (estilo cc-agent): a busca é
  * `Search`, o glob é `Glob` e o checklist aparece como `Update Todos`.
  */
 const CC_LABELS: Record<string, string> = {
@@ -554,7 +554,7 @@ export function claudeRenderers(): {
 	};
 }
 
-export default function markClaudeCards(pi: ExtensionAPI) {
+export default function agentClaudeCards(pi: ExtensionAPI) {
 	if (!claudeStyleEnabled()) return;
 	if (typeof pi.registerToolRenderer !== "function") return;
 	// Resolver oficial da TUI: Claude Code para todas as ferramentas,

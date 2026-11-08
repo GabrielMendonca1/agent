@@ -227,24 +227,24 @@ export function renderProjectOverviewResult(result: any, expanded: boolean, them
 
 type DoctorTool = Pick<ReturnType<ExtensionAPI["getAllTools"]>[number], "name" | "exposure" | "sourceInfo">;
 type DoctorCommand = Pick<ReturnType<ExtensionAPI["getCommands"]>[number], "name" | "source" | "sourceInfo">;
-const MARK_EXTENSIONS_ROOT = fileURLToPath(new URL("../../", import.meta.url));
+const AGENT_EXTENSIONS_ROOT = fileURLToPath(new URL("../../", import.meta.url));
 
 /** Registry público, não descoberta de disco: um nome nativo pode ser um override. */
-export function buildMarkDoctorReport(input: {
+export function buildAgentDoctorReport(input: {
   tools: DoctorTool[];
   activeTools: string[];
   commands: DoctorCommand[];
   settings: { cacheWarming?: unknown };
   mode: "simple" | "complex" | null;
-  markExtensionsRoot?: string;
+  agentExtensionsRoot?: string;
 }): string {
   const clean = (value: unknown) => typeof value === "string" ? value.replace(/[\u0000-\u001f\u007f]/g, " ") : "não observado";
-  const root = (input.markExtensionsRoot ?? MARK_EXTENSIONS_ROOT).replace(/\\/g, "/").replace(/\/$/, "") + "/";
+  const root = (input.agentExtensionsRoot ?? AGENT_EXTENSIONS_ROOT).replace(/\\/g, "/").replace(/\/$/, "") + "/";
   const origin = (source: DoctorTool["sourceInfo"] | undefined) => {
     const path = clean(source?.path);
     const normalized = path.replace(/\\/g, "/");
     if (normalized.startsWith("builtin:")) return `Pi nativo · ${path}`;
-    if (normalized.startsWith(root)) return `Mark · ${normalized.slice(root.length)}`;
+    if (normalized.startsWith(root)) return `Agent · ${normalized.slice(root.length)}`;
     return `extensão/integração · ${path}`;
   };
   const declared = new Set(input.activeTools);
@@ -255,8 +255,8 @@ export function buildMarkDoctorReport(input: {
   const warming = ["off", "streaming", "idle"].includes(String(input.settings.cacheWarming))
     ? String(input.settings.cacheWarming) : "streaming (padrão do Pi 1.4)";
   const lines = [
-    "MARK · DIAGNÓSTICO DA SESSÃO",
-    `Modo Mark: ${input.mode ?? "não observado"}`,
+    "AGENT · DIAGNÓSTICO DA SESSÃO",
+    `Modo Agent: ${input.mode ?? "não observado"}`,
     `Ferramentas registradas: ${tools.length}; declaradas: ${tools.filter(tool => declared.has(tool.name)).length}`,
     "Origem observada no registry; nome da ferramenta não determina sua origem.",
     "",
@@ -290,21 +290,21 @@ export function buildMarkDoctorReport(input: {
 
 export default function projectOperator(pi: ExtensionAPI) {
   // Independente do snapshot de projeto: funciona até em diretório inert.
-  pi.registerCommand("mark-doctor", {
+  pi.registerCommand("agent-doctor", {
     description: "origem e exposição das ferramentas da sessão, sem inferência ou probes",
     handler: async (_args, ctx) => {
       let mode: "simple" | "complex" | null = null;
       try { mode = readSessionMode(ctx); } catch { /* modo inválido não autoriza nada */ }
-      const report = buildMarkDoctorReport({
+      const report = buildAgentDoctorReport({
         tools: pi.getAllTools(), activeTools: pi.getActiveTools(), commands: pi.getCommands(),
         settings: { cacheWarming: pi.getSettings().cacheWarming }, mode,
       });
       if (ctx.hasUI) {
         // Viewer nativo com scroll/cópia; o texto devolvido nunca é salvo nem enviado.
-        await ctx.ui.editor("Diagnóstico Mark · alterações descartadas ao fechar", report);
+        await ctx.ui.editor("Diagnóstico Agent · alterações descartadas ao fechar", report);
       } else if (ctx.mode === "json") {
         // stderr preserva o protocolo JSONL oficial em stdout.
-        console.error(JSON.stringify({ type: "mark_doctor", report }));
+        console.error(JSON.stringify({ type: "agent_doctor", report }));
       } else {
         console.error(report);
       }

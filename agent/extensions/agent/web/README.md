@@ -3,10 +3,10 @@
 Carregar explicitamente (funciona também com `--no-extensions`):
 
 ```sh
-pi -e /Users/biel/Projects/mark-pi-wt/web-tools/mark/extensions/mark/web/index.ts
+pi -e /Users/biel/Projects/agent/agent/extensions/agent/web/index.ts
 ```
 
-No bundle/imagem, use `<raiz-mark>/extensions/mark/web/index.ts`.
+No bundle/imagem, use `<raiz-agent>/extensions/agent/web/index.ts`.
 Viaja no setup/vendor, mas não entra nos settings interativos nem headless.
 
 - `web_search({query})`: Gemini `gemini-2.5-flash` com Google Search grounding;
@@ -28,11 +28,11 @@ Credenciais: `auth.json` em `PI_CODING_AGENT_DIR` (padrão `~/.pi/agent`), entra
 Nenhuma escrita em disco, instalação ou dependência extra.
 
 Env:
-- `MARK_WEB_MAX_SEARCHES=20`, `MARK_WEB_MAX_FETCHES=40`: limites por sessão
+- `AGENT_WEB_MAX_SEARCHES=20`, `AGENT_WEB_MAX_FETCHES=40`: limites por sessão
   carregada; tentativas com erro e páginas também contam; zero desabilita.
-- `MARK_WEB_GOOGLE_MODEL`, `MARK_WEB_OPENROUTER_MODEL`: modelos opcionais.
-- Somente testes: `NODE_ENV=test` permite `MARK_WEB_GOOGLE_BASE_URL` e
-  `MARK_WEB_OPENROUTER_BASE_URL` em HTTP loopback (nunca URL da tool).
+- `AGENT_WEB_GOOGLE_MODEL`, `AGENT_WEB_OPENROUTER_MODEL`: modelos opcionais.
+- Somente testes: `NODE_ENV=test` permite `AGENT_WEB_GOOGLE_BASE_URL` e
+  `AGENT_WEB_OPENROUTER_BASE_URL` em HTTP loopback (nunca URL da tool).
   Use apenas credenciais falsas nesse modo. Não existe bypass SSRF por env.
 
-Verificação offline: `node scripts/test-mark-web.mjs`.
+Verificação offline: `node scripts/test-agent-web.mjs`.

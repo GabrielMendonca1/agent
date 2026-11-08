@@ -1,4 +1,4 @@
-/** Mark escolhe o modelo; o Pi prepara, gera e valida o resumo. */
+/** Agent escolhe o modelo; o Pi prepara, gera e valida o resumo. */
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { sessionCachePolicy } from "../../juice/cache-policy.mjs";
 

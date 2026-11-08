@@ -1,4 +1,4 @@
-// NODE_OPTIONS=--import=file:///.../mark/juice/runtime.mjs
+// NODE_OPTIONS=--import=file:///.../agent/juice/runtime.mjs
 // Coverage: this installation's ModelRuntime provider dispatch. Not a sandbox:
 // external SDK instances, HTTP tools and arbitrary plugins can bypass it.
 import { randomUUID } from 'node:crypto';
@@ -8,9 +8,9 @@ import { getJuicePreferences, getJuiceSnapshot, juiceOperation, juiceStatePath, 
 import { JUICE_KIND } from './cache-policy.mjs';
 import { installSkillPolicy, restoreSkillPolicyEnvironment } from './skill-policy.mjs';
 
-const installed = Symbol.for('mark.juice.runtime.v1');
+const installed = Symbol.for('agent.juice.runtime.v1');
 export function installJuiceGate(ModelRuntime) {
-  if (process.env.MARK_JUICE_ENABLED !== '1') return false;
+  if (process.env.AGENT_JUICE_ENABLED !== '1') return false;
   requireJuice();
   const proto = ModelRuntime.prototype;
   if (proto[installed]) return true;
@@ -32,7 +32,7 @@ export function installJuiceGate(ModelRuntime) {
     // Chamadas marcadas (ex.: aquecimento do cache-keeper) entram com kind próprio no ledger.
     const tagged = options?.[JUICE_KIND];
     const kind = typeof tagged === 'string' && /^[a-z][a-z0-9-]{0,31}$/.test(tagged) ? tagged
-      : process.env.MARK_CACHE_PREFETCH === '1' ? 'cache-prefetch' : method;
+      : process.env.AGENT_CACHE_PREFETCH === '1' ? 'cache-prefetch' : method;
     // Filho de prefetch: o cache-keeper troca o corpo por max_tokens 1; reservar o teto do modelo
     // apertaria o em-voo à toa. É só a reserva contábil; o provider segue intacto.
     const reserved = kind === 'cache-prefetch' ? 1 : requested;
@@ -51,7 +51,7 @@ export function installJuiceGate(ModelRuntime) {
       const original = options.onPayload;
       options = { ...options, onPayload: async (payload, m) => {
         const result = await original(payload, m);
-        try { globalThis[Symbol.for('mark.cache-keeper.finalPayload')]?.(result === undefined ? payload : result); } catch { /* observação apenas */ }
+        try { globalThis[Symbol.for('agent.cache-keeper.finalPayload')]?.(result === undefined ? payload : result); } catch { /* observação apenas */ }
         return result;
       } };
     }
@@ -123,21 +123,21 @@ export function installJuiceGate(ModelRuntime) {
   return true;
 }
 
-if (process.env.MARK_JUICE_ENABLED === '1') {
+if (process.env.AGENT_JUICE_ENABLED === '1') {
   requireJuice();
   // Watchers and children must observe the same generation-specific file.
-  process.env.MARK_JUICE_STATE = juiceStatePath();
-  const root = process.env.MARK_JUICE_PI_ROOT;
-  if (!root || !isAbsolute(root)) throw new Error('Juice: MARK_JUICE_PI_ROOT must identify the target installation');
+  process.env.AGENT_JUICE_STATE = juiceStatePath();
+  const root = process.env.AGENT_JUICE_PI_ROOT;
+  if (!root || !isAbsolute(root)) throw new Error('Juice: AGENT_JUICE_PI_ROOT must identify the target installation');
   // Deliberately no automatic new-run transition. Reload/continue/new session in
   // this profile reuse the same ledger; the ledger only accumulates cost.
-  if (process.env.MARK_JUICE_CHILD === '1') {
+  if (process.env.AGENT_JUICE_CHILD === '1') {
     if (!getJuiceSnapshot()) throw new Error('Juice child requires an existing parent run');
   } else {
     const prefs = getJuicePreferences();
-    if (prefs.supportModel) process.env.MARK_JUICE_SUPPORT_MODEL = prefs.supportModel;
-    else delete process.env.MARK_JUICE_SUPPORT_MODEL;
-    juiceOperation({ op: 'init', runId: process.env.MARK_JUICE_RUN_ID || randomUUID(), mode: prefs.mode });
+    if (prefs.supportModel) process.env.AGENT_JUICE_SUPPORT_MODEL = prefs.supportModel;
+    else delete process.env.AGENT_JUICE_SUPPORT_MODEL;
+    juiceOperation({ op: 'init', runId: process.env.AGENT_JUICE_RUN_ID || randomUUID(), mode: prefs.mode });
   }
   const entry = 'dist/core/model-runtime.js';
   const { ModelRuntime } = await import(pathToFileURL(join(root, entry)).href);

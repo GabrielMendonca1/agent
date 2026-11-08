@@ -12,7 +12,7 @@ export function requestText(args) {
 		body: (args.question || "") + (args.context ? `\n\n${args.context}` : "") + "\n\n[ask_user]" + (args.options ?? []).map(option => `\n- ${normalizeOption(option)}`).join(""),
 	};
 }
-export function escalationDelay(value = process.env.MARK_ASK_USER_MEGAMIND_AFTER_MS) {
+export function escalationDelay(value = process.env.AGENT_ASK_USER_MEGAMIND_AFTER_MS) {
 	if (value === "off" || value === "-1") return -1;
 	const parsed = value?.trim() ? Number(value) : 60_000;
 	return Number.isFinite(parsed) && parsed >= 0 ? parsed : 60_000;

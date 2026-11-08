@@ -1,5 +1,5 @@
 /**
- * Mark Paste Image (estilo Claude Code)
+ * Agent Paste Image (estilo Claude Code)
  *
  * Ao colar texto que contém caminho(s) de imagem, o caminho vira [Image #N]
  * imediatamente no editor. No envio, cada [Image #N] é anexado como imagem

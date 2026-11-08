@@ -1,8 +1,8 @@
 # Skills de empresa
 
-Skills do Mark com escopo de empresa: `arca/<skill>/SKILL.md` e `omni/<skill>/SKILL.md`.
+Skills do Agent com escopo de empresa: `arca/<skill>/SKILL.md` e `omni/<skill>/SKILL.md`.
 
-- Ficam fora de `mark/skills` porque aquela pasta vai para todo usuário em `settings.skills`.
+- Ficam fora de `agent/skills` porque aquela pasta vai para todo usuário em `settings.skills`.
 - Cada pasta só entra na sessão (via `resources_discover` em `extensions/brain-live/juice.ts`) para
   quem tem o enrollment da empresa: `~/.config/arca-projects/config.json` ou
   `~/.config/omni-megamind/config.json` (critério em `juice/companies.mjs`, o mesmo do Megamind).

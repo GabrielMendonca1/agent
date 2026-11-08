@@ -76,7 +76,7 @@ function testCommand(repo, commit, tests) {
 
 /** Monta o commit sintético: árvore do pai + blobs de teste do commit. */
 function buildSynthetic(repo, commit, parent, tests) {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'mark-mine-idx-'));
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'agent-mine-idx-'));
   const env = { ...process.env, GIT_INDEX_FILE: path.join(dir, 'index') };
   try {
     gitOk(repo, ['read-tree', parent], { env });
@@ -90,11 +90,11 @@ function buildSynthetic(repo, commit, parent, tests) {
     // Datas e autor fixos: o sha do commit sintético precisa ser estável entre rodadas.
     const date = gitOk(repo, ['show', '-s', '--format=%aI', commit]);
     const ident = {
-      GIT_AUTHOR_NAME: 'mark-mine', GIT_AUTHOR_EMAIL: 'mine@mark',
-      GIT_COMMITTER_NAME: 'mark-mine', GIT_COMMITTER_EMAIL: 'mine@mark',
+      GIT_AUTHOR_NAME: 'agent-mine', GIT_AUTHOR_EMAIL: 'mine@agent',
+      GIT_COMMITTER_NAME: 'agent-mine', GIT_COMMITTER_EMAIL: 'mine@agent',
       GIT_AUTHOR_DATE: date, GIT_COMMITTER_DATE: date,
     };
-    const msg = `mark task from ${commit.slice(0, 12)}`;
+    const msg = `agent task from ${commit.slice(0, 12)}`;
     return gitOk(repo, ['commit-tree', tree, '-p', parent, '-m', msg], { env: { ...process.env, ...ident } });
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
@@ -103,7 +103,7 @@ function buildSynthetic(repo, commit, parent, tests) {
 
 /** Roda o comando numa worktree temporária e descarta. */
 function runAt(repo, rev, cmd) {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'mark-mine-wt-'));
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'agent-mine-wt-'));
   const wt = path.join(dir, 'wt');
   const add = git(repo, ['worktree', 'add', '--detach', wt, rev]);
   if (add.status !== 0) {
@@ -148,7 +148,7 @@ function buildPrompt(tests, subject, cmd) {
 
 export function mineTasks({ repo = process.cwd(), max = 20, depth = 200, dryRun = false } = {}) {
   const root = gitOk(repo, ['rev-parse', '--show-toplevel']);
-  const tasksDir = path.join(root, '.mark', 'tasks');
+  const tasksDir = path.join(root, '.agent', 'tasks');
   const existing = new Set(
     (fs.existsSync(tasksDir) ? fs.readdirSync(tasksDir) : [])
       .filter((f) => f.endsWith('.json'))
@@ -194,7 +194,7 @@ export function mineTasks({ repo = process.cwd(), max = 20, depth = 200, dryRun 
     };
 
     if (!dryRun) {
-      gitOk(root, ['update-ref', `refs/mark/tasks/${id}`, sha]);
+      gitOk(root, ['update-ref', `refs/agent/tasks/${id}`, sha]);
       fs.mkdirSync(tasksDir, { recursive: true });
       fs.writeFileSync(path.join(tasksDir, `${id}.json`), `${JSON.stringify(task, null, 2)}\n`);
     }

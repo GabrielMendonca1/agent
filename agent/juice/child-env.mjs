@@ -1,6 +1,6 @@
 import { restoreSkillPolicyEnvironment } from './skill-policy.mjs';
 
-const PRELOAD = /(^|[\\/])mark[\\/]juice[\\/]runtime\.mjs$/;
+const PRELOAD = /(^|[\\/])agent[\\/]juice[\\/]runtime\.mjs$/;
 const isPreload = (value) => PRELOAD.test(String(value).replace(/^file:\/\//, ''));
 
 function stripPreload(nodeOptions) {
@@ -17,7 +17,7 @@ function stripPreload(nodeOptions) {
 
 /**
  * Env para comandos que a sessão executa a pedido do usuário/agente (bash, codemode):
- * sem o preload do Juice, sem a curadoria de skills e sem MARK_JUICE_*. Devolve cópia;
+ * sem o preload do Juice, sem a curadoria de skills e sem AGENT_JUICE_*. Devolve cópia;
  * o processo pai e os subagentes seguem com process.env intacto.
  */
 export function userCommandEnv(env = process.env) {
@@ -29,7 +29,7 @@ export function userCommandEnv(env = process.env) {
       else delete copy.NODE_OPTIONS;
     }
     restoreSkillPolicyEnvironment(copy);
-    for (const key of Object.keys(copy)) if (key.startsWith('MARK_JUICE_')) delete copy[key];
+    for (const key of Object.keys(copy)) if (key.startsWith('AGENT_JUICE_')) delete copy[key];
     return copy;
   } catch {
     return { ...env };

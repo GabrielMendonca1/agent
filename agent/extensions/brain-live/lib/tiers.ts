@@ -16,7 +16,7 @@ import { sistemaDir } from "./paths";
 export const TIER_NAMES = ["fast", "standard", "deep", "visual", "image"] as const;
 export type TierName = (typeof TIER_NAMES)[number];
 
-/** Papéis nativos do Mark. A ordem é a exibida em /models. */
+/** Papéis nativos do Agent. A ordem é a exibida em /models. */
 export const ROLE_NAMES = ["scout", "worker", "planner", "reviewer", "visual"] as const;
 
 export interface Tier {

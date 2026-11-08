@@ -1,5 +1,5 @@
 /**
- * Mark Spinner
+ * Agent Spinner
  *
  * Troca o spinner de "working" pela logo Pi da Garime em miniatura
  * (meios-blocos, 4x2 caracteres) se montando bloco a bloco e pulsando. Sem bold/brilho — só tons do tema (text/muted/dim), funciona

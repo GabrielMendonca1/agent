@@ -3,9 +3,9 @@ import { existsSync, readdirSync, readFileSync, realpathSync, statSync } from 'n
 import { basename, dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { COMPANY_SKILLS_DIR, userCompanies } from './companies.mjs';
-export const MARK_SKILLS_DIR = join(dirname(fileURLToPath(import.meta.url)), '../skills');
+export const AGENT_SKILLS_DIR = join(dirname(fileURLToPath(import.meta.url)), '../skills');
 
-export function loadSkillCategories(root = MARK_SKILLS_DIR) {
+export function loadSkillCategories(root = AGENT_SKILLS_DIR) {
   return readdirSync(root, { withFileTypes: true }).filter(e => e.isDirectory() && !e.name.startsWith('.'))
     .sort((a, b) => a.name < b.name ? -1 : a.name > b.name ? 1 : 0)
     .map(e => ({ name: e.name, skills: skillCandidates(join(root, e.name)).map(file => {

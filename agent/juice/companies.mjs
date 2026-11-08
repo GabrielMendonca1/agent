@@ -1,7 +1,7 @@
 /**
- * Empresas do usuário (ARCA, Omni) e as skills do Mark com escopo de empresa.
+ * Empresas do usuário (ARCA, Omni) e as skills do Agent com escopo de empresa.
  *
- * `mark/company-skills/<empresa>/<skill>/SKILL.md` fica FORA de `mark/skills` (que o updater
+ * `agent/company-skills/<empresa>/<skill>/SKILL.md` fica FORA de `agent/skills` (que o updater
  * registra para todo mundo em `settings.skills`): cada pasta só entra na sessão, via
  * `resources_discover` (juice.ts), para quem tem o enrollment daquela empresa.
  */

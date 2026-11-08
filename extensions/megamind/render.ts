@@ -2,7 +2,7 @@
  * Como o Megamind aparece na tela (e só na tela).
  *
  * 1. Tool call recolhida em UMA linha, no espírito do card compacto do
- *    Mark TUI (`mark/extensions/mark/tui/compact-tools.ts`):
+ *    Agent TUI (`agent/extensions/agent/tui/compact-tools.ts`):
  *
  *      ◈ megamind → @leo  "libera o push?"            ✓ entregue
  *

@@ -1,8 +1,8 @@
-# Juice do Mark — ledger + aprendizado (TS/JS)
+# Juice do Agent — ledger + aprendizado (TS/JS)
 
-O Mark interativo não usa binário nativo. `client.mjs` mantém preferências em
-`MARK_JUICE_HOME/preferences.v3.json` (padrão `~/.pi/agent/mark-juice/`) e contabilidade
-em `MARK_JUICE_STATE` (padrão `<home>/run.v3.json`). Opt-in: `MARK_JUICE_ENABLED=1`.
+O Agent interativo não usa binário nativo. `client.mjs` mantém preferências em
+`AGENT_JUICE_HOME/preferences.v3.json` (padrão `~/.pi/agent/agent-juice/`) e contabilidade
+em `AGENT_JUICE_STATE` (padrão `<home>/run.v3.json`). Opt-in: `AGENT_JUICE_ENABLED=1`.
 Caminhos devem ser absolutos. Nenhum limite de token ou grant é imposto.
 
 Escrita: trava de diretório com dono PID/nonce, leitura/alteração sob a trava,
@@ -11,7 +11,7 @@ reaproveitado; trava sem dono exige limpeza manual, nunca é roubada por idade.
 O conteúdo mantém schema v2; versões inválidas falham explicitamente.
 A geração Rust/v1 continua em `run.json` e `preferences.json`, com seu ambiente
 histórico. O launcher JS usa `run.v3.json`, inclusive em episódios. O client JS
-usa somente esse nome no diretório indicado por `MARK_JUICE_STATE` (ou no home);
+usa somente esse nome no diretório indicado por `AGENT_JUICE_STATE` (ou no home);
 nunca abre, migra ou altera o ledger Rust. O preload publica o caminho resolvido
 no env para watchers, subagentes e `pi -p`. As preferências JS são independentes:
 na primeira leitura/escrita, apenas o modo válido de `preferences.json` pode ser
@@ -48,7 +48,7 @@ SDKs arbitrários nem tools HTTP externas; não é sandbox nem teto universal de
 
 ## Modo da sessão
 
-O branch ativo do Pi guarda uma entrada `custom` de tipo `mark-mode`, com
+O branch ativo do Pi guarda uma entrada `custom` de tipo `agent-mode`, com
 `{ version: 1, mode: 'simple' | 'complex' }`. A última entrada desse tipo
 é a autoridade para prompt, interface e bloqueio de subagentes. Sem entrada,
 a sessão salva uma vez o padrão das preferências; dados inválidos bloqueiam o dispatch.
@@ -59,7 +59,7 @@ somente a sessão atual, não as preferências nem o ledger compartilhado.
 
 `juice.ts` mantém a interface simple/complex, compactação e bloqueio de
 subagent em simple. Após run com checks verdes, o modelo de apoio pode escrever
-0–3 regras em `.mark/workflow.md`. Cada regra recebe `[by: Mark; proven: no]`;
-`.mark/history.json` guarda também `by` (modelo de apoio), `mode` e `proven: no`.
+0–3 regras em `.agent/workflow.md`. Cada regra recebe `[by: Agent; proven: no]`;
+`.agent/history.json` guarda também `by` (modelo de apoio), `mode` e `proven: no`.
 `parseWorkflow` continua lendo as regras. Não existe prova local automática nem
 estado de prova no rodapé.

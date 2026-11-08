@@ -5,7 +5,7 @@ argument-hint: "Foco da próxima sessão"
 ---
 
 Encerre a tarefa atual escrevendo um handoff de no máximo 40 linhas em
-`.mark/handoff.md` do cwd (crie `.mark/` se necessário). Sobrescreva o handoff
+`.agent/handoff.md` do cwd (crie `.agent/` se necessário). Sobrescreva o handoff
 anterior; não grave em diretório temporário.
 
 Inclua apenas o necessário para continuar:
@@ -18,5 +18,5 @@ Inclua apenas o necessário para continuar:
 
 Não inclua segredos nem invente commits, resultados ou verificações. Fora de um
 repositório git, indique que commits não se aplicam. Não faça commit automaticamente.
-Termine o handoff lembrando: se criou ou alterou uma nota, atualize `.mark/notes.md`.
+Termine o handoff lembrando: se criou ou alterou uma nota, atualize `.agent/notes.md`.
 Confirme brevemente o caminho gravado.

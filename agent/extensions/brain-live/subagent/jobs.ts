@@ -61,13 +61,13 @@ const prefetchState = new Map<string, { inflight: boolean; until: number }>();
 
 /**
  * Prefetch do próximo papel (cache E). Opt-in, DESLIGADO por padrão: só com
- * MARK_CACHE_PREFETCH_NEXT=1. Custa MAIS que não aquecer (escrita do prefixo
+ * AGENT_CACHE_PREFETCH_NEXT=1. Custa MAIS que não aquecer (escrita do prefixo
  * 1,25× + leitura 0,1× no filho real + 1 token); o ganho é só latência do 1º
  * request da etapa seguinte. Um aquecimento por prefixo (agent+model+thinking+cwd),
  * nunca com outro em voo ou filho real recente (até TTL×0,9).
  */
 export function prefetchAllowed(_spec: Pick<LaunchSpec, "dispatchDefaults">, key: string, now: number, env: NodeJS.ProcessEnv = process.env): boolean {
-	if (env.MARK_CACHE_PREFETCH_NEXT !== "1") return false;
+	if (env.AGENT_CACHE_PREFETCH_NEXT !== "1") return false;
 	const st = prefetchState.get(key);
 	return !st || (!st.inflight && st.until <= now);
 }

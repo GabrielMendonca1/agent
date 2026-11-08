@@ -6,13 +6,13 @@ import { readFile } from 'node:fs/promises';
 import { withDirectoryLock } from './lock.mjs';
 
 const MODES = ['simple', 'complex'];
-const home = () => process.env.MARK_JUICE_HOME || join(homedir(), '.pi/agent/mark-juice');
+const home = () => process.env.AGENT_JUICE_HOME || join(homedir(), '.pi/agent/agent-juice');
 // Even an inherited broker path selects only its directory, never its file.
-export const juiceStatePath = () => join(process.env.MARK_JUICE_STATE ? dirname(process.env.MARK_JUICE_STATE) : home(), 'run.v3.json');
+export const juiceStatePath = () => join(process.env.AGENT_JUICE_STATE ? dirname(process.env.AGENT_JUICE_STATE) : home(), 'run.v3.json');
 const ledger = juiceStatePath;
 const preferencesPath = () => join(home(), 'preferences.v3.json');
 export function juiceEnabled() {
-  return process.env.MARK_JUICE_ENABLED === '1' && isAbsolute(home()) && isAbsolute(ledger());
+  return process.env.AGENT_JUICE_ENABLED === '1' && isAbsolute(home()) && isAbsolute(ledger());
 }
 export function requireJuice() {
   if (!juiceEnabled()) throw new Error('Juice paused: missing or invalid opt-in configuration');
@@ -62,7 +62,7 @@ function preferences(prefs) {
 const defaults = () => {
   // Only the mode is seeded from legacy preferences; the broker file is read-only.
   const legacy = read(join(home(), 'preferences.json'), null);
-  return { mode: MODES.includes(legacy?.mode) ? legacy.mode : 'simple', supportModel: process.env.MARK_JUICE_SUPPORT_MODEL || null };
+  return { mode: MODES.includes(legacy?.mode) ? legacy.mode : 'simple', supportModel: process.env.AGENT_JUICE_SUPPORT_MODEL || null };
 };
 function initialPreferences() {
   return update(preferencesPath(), old => preferences(old || defaults()));
@@ -72,10 +72,10 @@ export function getJuicePreferences() {
 }
 export function setJuicePreferences(patch) {
   requireJuice();
-  if (process.env.MARK_JUICE_CHILD === '1') throw new Error('Juice children cannot change preferences');
+  if (process.env.AGENT_JUICE_CHILD === '1') throw new Error('Juice children cannot change preferences');
   const prefs = update(preferencesPath(), old => preferences({ ...(old || defaults()), ...patch }));
-  if (prefs.supportModel) process.env.MARK_JUICE_SUPPORT_MODEL = prefs.supportModel;
-  else delete process.env.MARK_JUICE_SUPPORT_MODEL;
+  if (prefs.supportModel) process.env.AGENT_JUICE_SUPPORT_MODEL = prefs.supportModel;
+  else delete process.env.AGENT_JUICE_SUPPORT_MODEL;
   return prefs;
 }
 const empty = (runId, mode) => ({ version: 2, runId, mode, calls: { used: 0 }, output: { used: 0, reserved: 0 }, usd: 0, pending: [], receipts: [], cache: { gaps: emptyGaps(), breaks: {}, warmSkips: {}, decisions: {} } });
@@ -203,7 +203,7 @@ export function recordJuiceCacheEvent(event) {
 }
 export function setJuiceMode(mode) {
   requireJuice();
-  if (process.env.MARK_JUICE_CHILD === '1') throw new Error('Juice children cannot change mode');
+  if (process.env.AGENT_JUICE_CHILD === '1') throw new Error('Juice children cannot change mode');
   if (!MODES.includes(mode)) throw new Error('Invalid Juice mode');
   // Global default for new/old branches without a saved mode, not session authority.
   setJuicePreferences({ mode });

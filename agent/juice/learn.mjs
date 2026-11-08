@@ -1,5 +1,5 @@
 // Aprender do trabalho real: ao fim de um run com checks verdes, um modelo barato
-// escreve 0–3 regras curtas em `.mark/workflow.md`. Funções puras aqui; a chamada
+// escreve 0–3 regras curtas em `.agent/workflow.md`. Funções puras aqui; a chamada
 // ao modelo e o I/O ficam na extensão.
 import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
@@ -119,7 +119,7 @@ export function parseRules(answer) {
   return out;
 }
 
-const norm = s => s.replace(/(?: \[by: Mark; proven: no\])+$/, '').toLowerCase().replace(/[`'"().,;:]/g, '').replace(/\s+/g, ' ').trim();
+const norm = s => s.replace(/(?: \[by: Agent; proven: no\])+$/, '').toLowerCase().replace(/[`'"().,;:]/g, '').replace(/\s+/g, ' ').trim();
 
 /** Mescla regras novas no texto da receita; devolve { text, added, version } ou null se nada mudou. */
 export function mergeRules(workflowText, newRules, floor = 0) {
@@ -162,7 +162,7 @@ function applyLearnedLocked(cwd, newRules, meta) {
   let history = [];
   try { history = JSON.parse(readFileSync(hist, 'utf8')); if (!Array.isArray(history)) history = []; } catch { history = []; }
   const floor = Math.max(0, ...history.map(h => parseInt(String(h?.version ?? '').replace(/\D/g, ''), 10) || 0));
-  const merged = mergeRules(before, newRules.map(r => `${r} [by: Mark; proven: no]`), floor);
+  const merged = mergeRules(before, newRules.map(r => `${r} [by: Agent; proven: no]`), floor);
   if (!merged) return null;
   writeFileSync(file, merged.text);
   history.push({ version: merged.version, at: new Date().toISOString(), added: merged.added, previous: before, ...meta, proven: 'no' });

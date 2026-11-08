@@ -1,10 +1,10 @@
-// Política de prompt cache do Mark II (backend, sem UI). Funções puras, testadas em
+// Política de prompt cache do Agent (backend, sem UI). Funções puras, testadas em
 // scripts/test-cache-keeper.mjs; quem liga ao caminho real é cache-keeper.ts (aquecimento,
 // compactação, troca de modelo, chave OpenAI) e o runner de subagentes (leque escalonado).
 // Nada aqui guarda texto de payload: só números e enums.
 
 /** Option-symbol que o runtime Juice lê como `kind` da chamada (ex.: 'cache-warm'). Símbolo não serializa no provider. */
-export const JUICE_KIND = Symbol.for('mark.juice.kind');
+export const JUICE_KIND = Symbol.for('agent.juice.kind');
 
 /** Preço em US$ por token de um modelo do Pi (`model.cost` vem em US$/milhão). */
 function perToken(model, key) {
@@ -105,7 +105,7 @@ export function compactionDecision({ reason, warm, tokens, contextWindow, ttlSec
 /**
  * I — compactação ociosa (idle compaction do Claude Code: conversa ≥200K tokens parada ~54 min é
  * compactada antes do cache de 1 h vencer; `idleCompaction: false` desliga e
- * CLAUDE_CODE_IDLE_COMPACT_MIN_TOKENS ajusta o mínimo, com piso de 100K). No Mark o keeper aquece o
+ * CLAUDE_CODE_IDLE_COMPACT_MIN_TOKENS ajusta o mínimo, com piso de 100K). No Agent o keeper aquece o
  * prefixo por uma janela; o resumo sai quando o cache vai esfriar de vez (janela fechada, refresh
  * pulado ou sem acerto). Na volta, o turno escreve o resumo S no cache em vez do contexto L inteiro.
  * Nunca antes de `floorS` parado: quem volta logo não perde o histórico literal.
@@ -114,7 +114,7 @@ export const IDLE_COMPACT_DEFAULT_MIN_TOKENS = 200_000;
 export const IDLE_COMPACT_FLOOR_TOKENS = 100_000;
 export const IDLE_COMPACT_FLOOR_S = 3240; // 90% de 1 h, o mesmo ponto do Claude Code
 
-/** Mínimo de tokens a partir de MARK_IDLE_COMPACT_MIN_TOKENS ("150000", "150k", "1M"); piso 100K. */
+/** Mínimo de tokens a partir de AGENT_IDLE_COMPACT_MIN_TOKENS ("150000", "150k", "1M"); piso 100K. */
 export function idleCompactMinTokens(raw) {
   if (raw === undefined || raw === null || String(raw).trim() === '') return IDLE_COMPACT_DEFAULT_MIN_TOKENS;
   const m = /^\s*(\d+(?:\.\d+)?)\s*([kKmM]?)\s*$/.exec(String(raw));
@@ -164,12 +164,12 @@ export function sessionCachePolicy(ctx) {
 
 /** Um objeto de evento por tentativa automática. ctx.compact() depois chega como manual. */
 export function allowAutoCompaction(ctx) {
-  return sessionCachePolicy(ctx)?.deferCompaction({ reason: 'threshold', source: 'mark.auto' }, ctx) !== true;
+  return sessionCachePolicy(ctx)?.deferCompaction({ reason: 'threshold', source: 'agent.auto' }, ctx) !== true;
 }
 
 /**
  * E — prefetch do próximo papel: o runner lança o filho do papel seguinte com
- * MARK_CACHE_PREFETCH=1 e tarefa ".". O 1º request desse filho vira um aquecimento: corpo do
+ * AGENT_CACHE_PREFETCH=1 e tarefa ".". O 1º request desse filho vira um aquecimento: corpo do
  * próprio Pi (tools + system idênticos ao filho real), max_tokens 1 e sem `thinking` (thinking
  * só invalida o cache das MENSAGENS; tools/system continuam). Devolve o payload a enviar, ou
  * undefined se não for Messages API da Anthropic com cache_control (aí o filho segue normal e
@@ -195,7 +195,7 @@ function fnv64(text) {
  * que basta na sessão principal. Duas lacunas: (1) chamada sem sessionId sai sem chave;
  * (2) subagentes do mesmo papel compartilham instructions+tools mas cada um tem sessionId
  * próprio, então caem em máquinas diferentes. Nesses casos a chave vira o hash do prefixo
- * estável (instructions + tools): `mark-<16 hex>`, ≤ 64 chars. Devolve undefined para manter.
+ * estável (instructions + tools): `agent-<16 hex>`, ≤ 64 chars. Devolve undefined para manter.
  * Não promete hit: o roteamento da OpenAI usa chave + prefixo; a medição fica no ledger.
  */
 export function openaiCacheKey(payload, { child = false } = {}) {
@@ -203,7 +203,7 @@ export function openaiCacheKey(payload, { child = false } = {}) {
   if (process.env.PI_CACHE_RETENTION === 'none') return undefined; // cache desligado pelo usuário
   if (payload.prompt_cache_key && !child) return undefined;
   const prefix = JSON.stringify([payload.model ?? '', payload.instructions ?? '', payload.tools ?? []]);
-  return `mark-${fnv64(prefix)}`;
+  return `agent-${fnv64(prefix)}`;
 }
 
 /**

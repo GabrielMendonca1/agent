@@ -79,7 +79,7 @@ export function transformThinkingClaude(markdown: string, env: NodeJS.ProcessEnv
  * prosa precisam dividir o mesmo ponto de registro — dois registros fariam o
  * segundo apagar o primeiro.
  */
-export default function markThinking(pi: ExtensionAPI) {
+export default function agentThinking(pi: ExtensionAPI) {
 	const claude = claudeStyleEnabled();
 	pi.registerMarkdownTransformer((markdown, context) => {
 		if (context.messageType === "assistant-thinking") {

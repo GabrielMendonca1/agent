@@ -6,7 +6,7 @@ const ONLY = [
 ];
 
 export function codemodeModeFor(model, env = process.env) {
-  if (env.MARK_CODEMODE_MODE === 'on' || env.MARK_CODEMODE_MODE === 'only') return env.MARK_CODEMODE_MODE;
+  if (env.AGENT_CODEMODE_MODE === 'on' || env.AGENT_CODEMODE_MODE === 'only') return env.AGENT_CODEMODE_MODE;
   const key = model ? `${model.provider}/${model.id}` : '';
   return ONLY.some(pattern => pattern.test(key)) ? 'only' : 'on';
 }
