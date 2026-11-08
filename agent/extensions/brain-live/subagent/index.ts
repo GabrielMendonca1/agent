@@ -1,4 +1,4 @@
-import { subagentMascots } from "../../mark/tui/status-line";
+import { subagentMascots } from "../../agent/tui/status-line";
 /**
  * Subagent Tool - Delegate tasks to specialized agents (asynchronous)
  *
@@ -291,7 +291,7 @@ export function describeAgentTools(agent: Pick<AgentConfig, "tools">): string {
  * read/grep/find/ls, e voltou sem executar nada.
  */
 export const SUBAGENT_CAPABILITY_RULE =
-	"Route by the tool list printed for each role below, not by how the task sounds: a task that must run an executable (ffmpeg, whisper, a test command, any shell step) needs a role whose tools include `bash`, and a role limited to read/grep/find/ls will report instead of running it. On MARK II, `read` supports image files when the selected model supports images. A provider 503 is an availability failure, not a missing tool: report it and do not silently change the role's authorized model.";
+	"Route by the tool list printed for each role below, not by how the task sounds: a task that must run an executable (ffmpeg, whisper, a test command, any shell step) needs a role whose tools include `bash`, and a role limited to read/grep/find/ls will report instead of running it. On Agent, `read` supports image files when the selected model supports images. A provider 503 is an availability failure, not a missing tool: report it and do not silently change the role's authorized model.";
 
 export function describeUserAgents(): string {
 	try {
@@ -313,7 +313,7 @@ export function describeUserAgents(): string {
 	}
 }
 
-/** Receita do projeto (.mark/workflow.md), tolerante à ausência. */
+/** Receita do projeto (.agent/workflow.md), tolerante à ausência. */
 function readRecipe(cwd: string): { steps: Array<{ role: string; slot: "apoio" | "principal"; contract: string }> } {
 	try {
 		const text = readWorkflow(cwd);
@@ -339,7 +339,7 @@ async function dispatchSlot(
 	if (signal?.aborted) return fallback;
 	const support = defaults.juice?.supportModel;
 	const primary = defaults.model;
-	if (!support || !primary || support === primary || process.env.MARK_DISPATCHER === "0") return fallback;
+	if (!support || !primary || support === primary || process.env.AGENT_DISPATCHER === "0") return fallback;
 	try {
 		const [provider, ...rest] = support.split("/");
 		const model = ctx.modelRegistry.find(provider, rest.join("/"));
@@ -516,7 +516,7 @@ export default function (pi: ExtensionAPI) {
 	// Team state for the footer (mode extension): who is running / done / failed.
 	const emitTeam = (record: JobRecord) => {
 		try {
-			pi.events?.emit?.("mark:team", { id: record.jobId, agents: record.agents, status: record.status });
+			pi.events?.emit?.("agent:team", { id: record.jobId, agents: record.agents, status: record.status });
 		} catch {
 			/* a listener must never break job flow */
 		}
@@ -660,7 +660,7 @@ export default function (pi: ExtensionAPI) {
 		promptSnippet: juiceEnabled()
 			? "Delegate roles to subagents (async: returns a jobId, result arrives later; independent tasks in parallel)"
 			: "Delegate reading, recon, review and self-contained implementation to subagents (async: returns a jobId, result arrives later)",
-		// No Mark, a política de delegação vem de policy.mjs apenas em complex. O Vault
+		// No Agent, a política de delegação vem de policy.mjs apenas em complex. O Vault
 		// mantém metadados de todas as tools no system: repetir diretrizes aqui vazaria em simple.
 		promptGuidelines: juiceEnabled() ? [] : [
 			"Act as an orchestrator: delegate recon and bulk reading to `scout`, isolated implementation to `worker`, and review to `reviewer`; keep your own context for decisions and integration. Use subagent action integrate to merge committed isolated work after review.",
@@ -773,9 +773,9 @@ export default function (pi: ExtensionAPI) {
 					// Authorization belongs to the active session branch, not the ledger.
 					if (ensureSessionMode(pi, ctx) !== "complex") return fail("Modo simple: trabalhe sozinho com as ferramentas. Só o usuário muda para complex (Shift+Tab).");
 					// Keep the accounting availability check; its mode is not authorization.
-					if (!getJuiceSnapshot() || !process.env.MARK_JUICE_STATE) return fail("Mark: ledger indisponível; nenhum subagente foi lançado.");
+					if (!getJuiceSnapshot() || !process.env.AGENT_JUICE_STATE) return fail("Agent: ledger indisponível; nenhum subagente foi lançado.");
 					const prefs = getJuicePreferences();
-					dispatchDefaults.juice = { statePath: process.env.MARK_JUICE_STATE, supportModel: prefs.supportModel ?? undefined, slots: {} };
+					dispatchDefaults.juice = { statePath: process.env.AGENT_JUICE_STATE, supportModel: prefs.supportModel ?? undefined, slots: {} };
 				} catch (error) {
 					return fail(`Juice indisponível; dispatch bloqueado: ${error instanceof Error ? error.message : String(error)}`);
 				}

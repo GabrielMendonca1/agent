@@ -1,5 +1,5 @@
 /**
- * Modo do Mark: `simple` ⇄ `complex`.
+ * Modo do Agent: `simple` ⇄ `complex`.
  *
  *   simple   → orquestrador sozinho, `subagent` bloqueado na chamada.
  *   complex  → equipe pela receita do projeto, `subagent` liberado.
@@ -14,15 +14,15 @@
  * Shift+Tab alterna. `/mode [simple|complex]` também. O agente nunca vê limite
  * de token: o ledger JSON só mede custo, disponível ao humano em /cost.
  * Compactação: ~450k em janelas de 1M; faltando 10% nas menores.
- * Receita do projeto: `.mark/workflow.md` (criada em repositórios git) é interna —
+ * Receita do projeto: `.agent/workflow.md` (criada em repositórios git) é interna —
  * o modelo principal NÃO a vê (nem no prompt, nem em nota): ela só alimenta os slots
  * de modelo por papel do `subagent` e o aprendizado.
  * Aprender do trabalho real: run com checks verdes → o modelo de apoio escreve
  * 0–3 regras na receita (centavos). Nunca o modelo principal; nunca em filhos.
  */
-import { modeStatus } from '../mark/tui/status-line';
+import { modeStatus } from '../agent/tui/status-line';
 import type { ExtensionAPI, ExtensionContext, Theme } from '@earendil-works/pi-coding-agent';
-import { markStatus, shortModel, type ModeFooterState, type TeamStatus } from '../../juice/panel.ts';
+import { agentStatus, shortModel, type ModeFooterState, type TeamStatus } from '../../juice/panel.ts';
 import { getJuicePreferences, juiceEnabled } from '../../juice/client.mjs';
 import { ensureWorkflow, parseWorkflow, readWorkflow } from '../../juice/workflow.mjs';
 import { categoryPrompt } from '../../juice/skill-categories.mjs';
@@ -43,8 +43,8 @@ import type { JuiceMode } from '../../juice/protocol.d.ts';
  */
 export function modeNote(mode: JuiceMode): string {
   return mode === 'complex'
-    ? 'Modo do Mark agora: complex — trabalhe com a equipe (`subagent`); a política de complex está no system prompt.'
-    : 'Modo do Mark agora: simple — trabalhe sozinho; sem política de complex no system prompt e com `subagent` bloqueado.';
+    ? 'Modo do Agent agora: complex — trabalhe com a equipe (`subagent`); a política de complex está no system prompt.'
+    : 'Modo do Agent agora: simple — trabalhe sozinho; sem política de complex no system prompt e com `subagent` bloqueado.';
 }
 const COMPACT_AT_1M = 450_000;
 const TEAM_TOOL = 'subagent';
@@ -83,16 +83,16 @@ export function refusal(tool: string, mode: JuiceMode): string | null {
 }
 
 export function learnEligible(support: string | null | undefined, env: NodeJS.ProcessEnv = process.env): boolean {
-  return env.MARK_JUICE_CHILD !== '1' && env.MARK_LEARN === '1' && !!support;
+  return env.AGENT_JUICE_CHILD !== '1' && env.AGENT_LEARN === '1' && !!support;
 }
 
 export default function (pi: ExtensionAPI) {
-  // Mark II desligado = sem hooks; com ele, activeToolsFor liga subagent e codemode no session_start.
+  // Agent desligado = sem hooks; com ele, activeToolsFor liga subagent e codemode no session_start.
   if (!juiceEnabled()) return;
   let statusContext: ExtensionContext | undefined;
   let state: ModeFooterState = { mode: 'simple', model: '—', usd: null, sessionUsd: 0, team: [] };
   let notedMode: JuiceMode | null = null;
-  // Rodapé e execução usam learnEligible: aprendizado só com MARK_LEARN=1.
+  // Rodapé e execução usam learnEligible: aprendizado só com AGENT_LEARN=1.
   let projectNotes = ''; // Snapshot só no session_start; nunca reler por turno.
 
   // /next is isolated from policy/notes injection: switching the host
@@ -105,12 +105,12 @@ export default function (pi: ExtensionAPI) {
     if (event.messageType !== undefined && event.messageType !== 'user') return;
     const firstRun = firstHandoffRun;
     firstHandoffRun = false;
-    const file = join(ctx.cwd, '.mark/handoff.md');
+    const file = join(ctx.cwd, '.agent/handoff.md');
     try {
       if (!shouldInjectHandoff({ messageType: event.messageType, firstRun, mtime: Math.floor(statSync(file).mtimeMs), now: Date.now() })) return;
       const content = readFileSync(file, 'utf8');
-      renameSync(file, join(ctx.cwd, '.mark/handoff.consumed.md'));
-      return { message: { customType: 'mark-handoff', content, display: false } };
+      renameSync(file, join(ctx.cwd, '.agent/handoff.consumed.md'));
+      return { message: { customType: 'agent-handoff', content, display: false } };
     } catch { /* absent/unreadable handoff must not block a normal run */ }
   });
   pi.registerCommand('next', {
@@ -122,7 +122,7 @@ export default function (pi: ExtensionAPI) {
       const keep = /(?:^|\s)--keep(?=\s|$)/.test(args);
       const focus = args.replace(/(?:^|\s)--keep(?=\s|$)/g, ' ').trim();
       try {
-        const file = join(ctx.cwd, '.mark/handoff.md');
+        const file = join(ctx.cwd, '.agent/handoff.md');
         const previous = existsSync(file) ? { mtime: statSync(file).mtimeMs, content: readFileSync(file, 'utf8') } : null;
         // Subscribe before sending: waitForIdle alone can race with run startup.
         const finished = new Promise<void>(resolve => { handoffFinished = resolve; });
@@ -138,7 +138,7 @@ export default function (pi: ExtensionAPI) {
         const parentSession = ctx.sessionManager.getSessionFile();
         await ctx.newSession({
           parentSession,
-          setup: async manager => { manager.appendCustomEntry('mark-next', { parentSession }); },
+          setup: async manager => { manager.appendCustomEntry('agent-next', { parentSession }); },
         });
       } catch (error) {
         ctx.ui.notify(error instanceof Error ? error.message : String(error), 'error');
@@ -154,13 +154,13 @@ export default function (pi: ExtensionAPI) {
   const render = () => {
     snapshot = undefined;
     if (statusContext?.mode === 'tui') {
-      statusContext.ui.setStatus('mark-mode', modeStatus(state.mode));
-      statusContext.ui.setStatus('mark-next', state.nextHint ? '/next encerra a tarefa' : undefined);
+      statusContext.ui.setStatus('agent-mode', modeStatus(state.mode));
+      statusContext.ui.setStatus('agent-next', state.nextHint ? '/next encerra a tarefa' : undefined);
     }
   };
-  (globalThis as any)[Symbol.for('mark.footer.line')] = (theme: Pick<Theme, 'fg'>) => markStatus(theme, observed());
+  (globalThis as any)[Symbol.for('agent.footer.line')] = (theme: Pick<Theme, 'fg'>) => agentStatus(theme, observed());
   // Leitores de compatibilidade: não são fonte do rodapé nativo nem autoridade de modo.
-  (globalThis as any)[Symbol.for('mark.state')] = () => (snapshot ??= observed());
+  (globalThis as any)[Symbol.for('agent.state')] = () => (snapshot ??= observed());
   // Só estado observável; o que não dá para observar fica undefined → "—".
   const observed = (): ModeFooterState => {
     let deferred: ModeFooterState['deferred'];
@@ -180,7 +180,7 @@ export default function (pi: ExtensionAPI) {
       ttl: process.env.PI_CACHE_RETENTION === 'long' ? '1h' : '5m',
       learn: support === undefined ? undefined : learnEligible(support),
       deferred,
-      prefetch: process.env.MARK_CACHE_PREFETCH_NEXT === '1',
+      prefetch: process.env.AGENT_CACHE_PREFETCH_NEXT === '1',
     };
   };
   function refresh(ctx?: ExtensionContext) {
@@ -199,10 +199,10 @@ export default function (pi: ExtensionAPI) {
   }
   function setMode(mode: JuiceMode, ctx: ExtensionContext) {
     try {
-      if (process.env.MARK_JUICE_CHILD === '1') throw new Error('Juice children cannot change mode');
+      if (process.env.AGENT_JUICE_CHILD === '1') throw new Error('Juice children cannot change mode');
       saveSessionMode(pi, ctx, mode);
       const saved = ensureSessionMode(pi, ctx);
-      if (saved !== mode) throw new Error('Mark: não foi possível salvar o modo da sessão.');
+      if (saved !== mode) throw new Error('Agent: não foi possível salvar o modo da sessão.');
       applyMode(saved);
       refresh(ctx);
     } catch (error) {
@@ -210,8 +210,8 @@ export default function (pi: ExtensionAPI) {
     }
   }
   function dispose() {
-    statusContext?.ui.setStatus('mark-mode', undefined);
-    statusContext?.ui.setStatus('mark-next', undefined);
+    statusContext?.ui.setStatus('agent-mode', undefined);
+    statusContext?.ui.setStatus('agent-next', undefined);
     statusContext = undefined;
   }
 
@@ -229,7 +229,7 @@ export default function (pi: ExtensionAPI) {
     refresh(ctx);
   });
   pi.on('session_shutdown', async () => { dispose(); });
-  // Skills de empresa (mark/company-skills/<empresa>): só para quem tem o enrollment.
+  // Skills de empresa (agent/company-skills/<empresa>): só para quem tem o enrollment.
   pi.on('resources_discover', async () => {
     const skillPaths = companySkillDirs();
     return skillPaths.length ? { skillPaths } : undefined;
@@ -248,7 +248,7 @@ export default function (pi: ExtensionAPI) {
       notedMode === state.mode ? '' : modeNote(state.mode),
     ].filter(Boolean);
     notedMode = state.mode;
-    const message = () => notes.length ? { customType: 'mark-mode', content: notes.join('\n\n'), display: false } : undefined;
+    const message = () => notes.length ? { customType: 'agent-mode', content: notes.join('\n\n'), display: false } : undefined;
     const result = (systemPrompt: string | null) => {
       const msg = message();
       if (systemPrompt === null && !msg) return undefined;
@@ -261,11 +261,11 @@ export default function (pi: ExtensionAPI) {
     // handler roda antes do vault-runtime o prompt ainda não está forçado (só seções, que
     // o vault renderiza); quando roda depois, o texto forçado não tem as seções.
     const opts = event.systemPromptOptions;
-    const policy: JuiceMode | null = process.env.MARK_JUICE_CHILD === '1' ? null : state.mode;
+    const policy: JuiceMode | null = process.env.AGENT_JUICE_CHILD === '1' ? null : state.mode;
     if (policy && opts) {
       opts.sections ??= {};
-      const sections: Record<string, string | undefined> = { ...policySections(policy), mark_skill_categories: categoryPrompt() };
-      opts.sections.mark_skill_categories = sections.mark_skill_categories!;
+      const sections: Record<string, string | undefined> = { ...policySections(policy), agent_skill_categories: categoryPrompt() };
+      opts.sections.agent_skill_categories = sections.agent_skill_categories!;
       for (const name of POLICY_SECTIONS) {
         if (sections[name]) opts.sections[name] = sections[name]!;
         else delete opts.sections[name];
@@ -273,12 +273,12 @@ export default function (pi: ExtensionAPI) {
     }
     // Mesmo snapshot na seção estruturada e no prompt forçado por outra extensão.
     if (policy && opts) {
-      if (projectNotes) opts.sections!.mark_notes = projectNotes.slice('<mark_notes>'.length, -'</mark_notes>'.length);
-      else delete opts.sections!.mark_notes;
+      if (projectNotes) opts.sections!.agent_notes = projectNotes.slice('<agent_notes>'.length, -'</agent_notes>'.length);
+      else delete opts.sections!.agent_notes;
     }
     const forced = typeof opts?.forceSystemPrompt === 'string' ? opts.forceSystemPrompt : null;
     const withPolicy = policy && forced !== null
-      ? `${appendPolicy(forced, policy)}\n\n<mark_skill_categories>\n${categoryPrompt()}\n</mark_skill_categories>${projectNotes ? `\n\n${projectNotes}` : ''}`
+      ? `${appendPolicy(forced, policy)}\n\n<agent_skill_categories>\n${categoryPrompt()}\n</agent_skill_categories>${projectNotes ? `\n\n${projectNotes}` : ''}`
       : null;
     return result(withPolicy);
   });
@@ -357,11 +357,11 @@ export default function (pi: ExtensionAPI) {
     if (!rules.length) return;
     const merged = applyLearned(ctx.cwd, rules, { by: supportId, mode: state.mode, proven: 'no' });
     if (!merged) return;
-    pi.events.emit('mark:workflow-changed', { cwd: ctx.cwd, version: merged.version, added: merged.added });
+    pi.events.emit('agent:workflow-changed', { cwd: ctx.cwd, version: merged.version, added: merged.added });
     if (ctx.hasUI) ctx.ui.notify(`receita ${merged.version}: ${merged.added.length} regra(s) aprendida(s)`, 'info');
   }
   // Team state from the subagent extension.
-  pi.events.on('mark:team', (data: { agents?: string[]; status?: TeamStatus }) => {
+  pi.events.on('agent:team', (data: { agents?: string[]; status?: TeamStatus }) => {
     if (!Array.isArray(data?.agents) || !data.status) return;
     const team = [...state.team];
     for (const agent of data.agents) {
@@ -381,25 +381,25 @@ export default function (pi: ExtensionAPI) {
       const reason = refusal(event.toolName, mode);
       return reason ? { block: true, reason } : undefined;
     } catch (error) {
-      return { block: true, reason: `Mark: dispatch bloqueado: ${error instanceof Error ? error.message : String(error)}` };
+      return { block: true, reason: `Agent: dispatch bloqueado: ${error instanceof Error ? error.message : String(error)}` };
     }
   });
   pi.registerShortcut('shift+tab', {
-    description: 'Mark: simple ⇄ complex',
+    description: 'Agent: simple ⇄ complex',
     handler: async (ctx) => setMode(ensureSessionMode(pi, ctx) === 'simple' ? 'complex' : 'simple', ctx),
   });
   // Independente dos comandos de modo: /notes só pede manutenção do mapa ao agente.
   pi.registerCommand('notes', {
-    description: 'Mark: acrescentar ao mapa os documentos ainda sem nota',
+    description: 'Agent: acrescentar ao mapa os documentos ainda sem nota',
     handler: async (_args, ctx) => {
       let files: string[];
       try { files = unmappedDocs(ctx.cwd); } catch (error) {
         ctx.ui.notify(`Não foi possível listar notas: ${error instanceof Error ? error.message : String(error)}`, 'error');
         return;
       }
-      if (!files.length) { ctx.ui.notify('Nenhum documento sem linha em .mark/notes.md.', 'info'); return; }
+      if (!files.length) { ctx.ui.notify('Nenhum documento sem linha em .agent/notes.md.', 'info'); return; }
       pi.sendUserMessage([
-        'Atualize .mark/notes.md neste projeto (crie o mapa se não existir).',
+        'Atualize .agent/notes.md neste projeto (crie o mapa se não existir).',
         'Leia os documentos abaixo e acrescente uma linha por arquivo no formato caminho — assunto; preserve as linhas existentes e não duplique caminhos.',
         'Documentos sem linha no mapa:',
         ...files.map(file => `- ${file}`),
@@ -407,7 +407,7 @@ export default function (pi: ExtensionAPI) {
     },
   });
   pi.registerCommand('mode', {
-    description: 'Mark: simple | complex (Shift+Tab alterna)',
+    description: 'Agent: simple | complex (Shift+Tab alterna)',
     handler: async (args, ctx) => {
       const arg = args.trim();
       if (arg === 'simple' || arg === 'complex') return setMode(arg, ctx);

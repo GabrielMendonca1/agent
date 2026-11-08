@@ -7,7 +7,7 @@ import { compactToolsEnabled, incomingComponent, receiptLine, type ToolTheme } f
 import { registerPeerTools } from "./tools.ts";
 
 const EXIT_HOOK = Symbol.for("pi-peers.exit-hook");
-const STATUS_KEY = "mark-meta-peers";
+const STATUS_KEY = "agent-meta-peers";
 
 function hookExit(mesh: Mesh): void {
   const slot = globalThis as Record<symbol, { drop: () => void } | undefined>;

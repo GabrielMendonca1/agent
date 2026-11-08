@@ -3,13 +3,13 @@ import { getJuicePreferences } from '../../../juice/client.mjs';
 /** @typedef {import('@earendil-works/pi-coding-agent').ExtensionContext} ExtensionContext */
 /** @typedef {import('../../../juice/protocol.d.ts').JuiceMode} JuiceMode */
 
-const ENTRY_TYPE = 'mark-mode';
+const ENTRY_TYPE = 'agent-mode';
 // Pi mutates the branch before _persist. A thrown append must not authorize
 // that in-memory entry, even through a fresh context for the same session.
 // Native ESM cache shares this guard across Pi's independent Jiti loaders/reloads.
 /** @type {WeakMap<ExtensionContext['sessionManager'], Set<string | undefined>>} */
 const failedWrites = new WeakMap();
-const writeError = () => new Error('Mark: falha ao salvar o modo da sessão. Use /mode simple ou /mode complex para recuperar.');
+const writeError = () => new Error('Agent: falha ao salvar o modo da sessão. Use /mode simple ou /mode complex para recuperar.');
 /** @param {unknown} mode @returns {mode is JuiceMode} */
 function validMode(mode) {
   return mode === 'simple' || mode === 'complex';
@@ -32,7 +32,7 @@ function readBranchMode(ctx) {
     const entry = branch[i];
     if (entry.type !== 'custom' || entry.customType !== ENTRY_TYPE) continue;
     const data = /** @type {{ version?: unknown; mode?: unknown } | null} */ (entry.data);
-    if (data?.version !== 1 || !validMode(data.mode)) throw new Error('Mark: modo da sessão inválido. Use /mode simple ou /mode complex.');
+    if (data?.version !== 1 || !validMode(data.mode)) throw new Error('Agent: modo da sessão inválido. Use /mode simple ou /mode complex.');
     return data.mode;
   }
   return null;
@@ -45,7 +45,7 @@ function readBranchMode(ctx) {
  * @returns {void}
  */
 export function saveSessionMode(pi, ctx, mode) {
-  if (!validMode(mode)) throw new Error('Mark: modo inválido.');
+  if (!validMode(mode)) throw new Error('Agent: modo inválido.');
   const manager = ctx.sessionManager;
   const sessionId = manager.getSessionId?.();
   try {

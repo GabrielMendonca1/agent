@@ -1,5 +1,5 @@
 /**
- * Mark Click-to-Cursor
+ * Agent Click-to-Cursor
  *
  * Estilo Claude Code: clicar dentro do editor move o cursor até o ponto
  * clicado. Como a árvore de layout do pi não expõe o editor como box,

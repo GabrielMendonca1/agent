@@ -193,7 +193,7 @@ export type InboxDeps = {
 export function isAskUserItem(item: CoreItem): boolean {
   if (item.kind === "ask") return /(?:^|\n)\[ask_user\](?:\r?\n|$)/u.test(item.body ?? "");
   if (item.kind !== "reply") return false;
-  const ids = (globalThis as Record<symbol, unknown>)[Symbol.for("mark.askUser.requests")];
+  const ids = (globalThis as Record<symbol, unknown>)[Symbol.for("agent.askUser.requests")];
   return ids instanceof Set && ids.has(item.id);
 }
 

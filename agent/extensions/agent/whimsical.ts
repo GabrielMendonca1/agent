@@ -2,8 +2,8 @@
  * whimsical — frases enquanto o modelo pensa.
  *
  * Publica a frase no barramento `pi.events` (`garime:frase`), que a linha de
- * progresso da Mark TUI mostra enquanto nenhuma ferramenta está rodando, e
- * também no indicador nativo (`setWorkingMessage`) para hosts sem a Mark TUI.
+ * progresso da Agent TUI mostra enquanto nenhuma ferramenta está rodando, e
+ * também no indicador nativo (`setWorkingMessage`) para hosts sem a Agent TUI.
  *
  * Troca a cada turno do modelo e, num turno longo, a cada ROTACAO_MS. O relógio
  * é `unref` e morre no fim do agente: não segura o processo nem vaza no reload.

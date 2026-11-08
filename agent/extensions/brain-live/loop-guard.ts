@@ -2,7 +2,7 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { EMPTY_STOP, initialState, next, NUDGE, STOP } from "../../juice/loop-guard.mjs";
 
 export default function loopGuard(pi: ExtensionAPI) {
-  if (process.env.MARK_LOOP_GUARD === "0") return;
+  if (process.env.AGENT_LOOP_GUARD === "0") return;
   let state = initialState();
 
   pi.on("session_start", () => { try { state = initialState(); } catch { /* best-effort */ } });

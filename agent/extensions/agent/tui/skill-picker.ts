@@ -1,8 +1,8 @@
 /**
- * Seletor minimalista de `/skill:` (MARK II)
+ * Seletor minimalista de `/skill:` (Agent)
  *
  * Lógica PURA do seletor: catálogo, filtro, navegação e desenho das linhas. Quem
- * liga nas teclas e no render do input é o `MarkEditor` (editor.ts).
+ * liga nas teclas e no render do input é o `AgentEditor` (editor.ts).
  *
  * Fonte do catálogo: os comandos REAIS da sessão (`pi.getCommands()`, source
  * `skill`), cruzados com as categorias (`loadSkillCategories()`). Nada é lido do disco
@@ -11,7 +11,7 @@
  * carregados simplesmente não aparece.
  *
  * Quem decide o que é automático é a curadoria (`isAutomaticSkill` em
- * mark/juice/skill-policy.mjs, injetada pelo editor). Esta UI não mantém lista
+ * agent/juice/skill-policy.mjs, injetada pelo editor). Esta UI não mantém lista
  * própria de automáticas: sem a função, ninguém ganha o losango.
  *
  * Este módulo não importa nada (nem do SDK): é testável direto por API pública.

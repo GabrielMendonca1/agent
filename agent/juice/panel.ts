@@ -18,7 +18,7 @@ export interface ModeFooterState {
   sessionUsd?: number | null;
   /** Team members touched in this session, in first-seen order, with last status. */
   team: Array<{ agent: string; status: TeamStatus }>;
-  /** Campos do rodapé unificado (markStatus). undefined = não observado → "—". */
+  /** Campos do rodapé unificado (agentStatus). undefined = não observado → "—". */
   host?: 'durável' | 'clássico';
   support?: string | null;
   /** Último turno: cacheRead / (input + cacheRead + cacheWrite), 0–1. */
@@ -58,11 +58,11 @@ export function shortModel(id: string | undefined): string {
 }
 
 /**
- * Segmentos do Mark para o rodapé unificado (mark/tui/footer.ts linha 2), em ordem de
+ * Segmentos do Agent para o rodapé unificado (agent/tui/footer.ts linha 2), em ordem de
  * prioridade: o corte por largura come do fim. Só estado observado; o resto vira "—".
  * Consumo = equivalente de API do ledger, não cobrança nem quota.
  */
-export function markStatus(theme: Pick<Theme, 'fg'>, state: ModeFooterState): string {
+export function agentStatus(theme: Pick<Theme, 'fg'>, state: ModeFooterState): string {
   const dim = (s: string) => theme.fg('dim', s);
   const muted = (s: string) => theme.fg('muted', s);
   const on = (v: boolean | undefined) => v === undefined ? dim('—') : v ? theme.fg('success', 'on') : dim('off');

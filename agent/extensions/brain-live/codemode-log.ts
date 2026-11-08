@@ -29,7 +29,7 @@ function logLine(record: Record<string, unknown>): string {
 }
 
 export default function codemodeLog(pi: ExtensionAPI) {
-  if (process.env.MARK_CODEMODE_LOG === "0") return;
+  if (process.env.AGENT_CODEMODE_LOG === "0") return;
   const pending = new Map<string, { name: string; args: unknown; parent: string }>();
   const logs = new Map<string, string>();
   const reset = () => { try { pending.clear(); logs.clear(); } catch { /* best-effort */ } };

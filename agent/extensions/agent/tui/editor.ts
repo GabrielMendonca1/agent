@@ -40,12 +40,12 @@ export interface SkillPickerSources {
 	commands: () => readonly SkillCommandInfo[];
 	/** Categorias das pastas (`loadSkillCategories()`); chamado só ao ABRIR o seletor. */
 	categories: () => readonly CategoryLike[];
-	/** Curadoria (mark/juice/skill-policy.mjs); ausente = ninguém é automática. */
+	/** Curadoria (agent/juice/skill-policy.mjs); ausente = ninguém é automática. */
 	isAutomaticSkill?: IsAutomaticSkill;
 }
 
-export class MarkEditor extends CustomEditor {
-	private readonly markKeys: { matches(data: string, action: string): boolean };
+export class AgentEditor extends CustomEditor {
+	private readonly agentKeys: { matches(data: string, action: string): boolean };
 	private readonly focusPlan: (request: PlanFocusRequest) => void;
 	/** Tema ATIVO do Pi (o `theme` do editor é um `EditorTheme`, sem `appearance`). */
 	private readonly appTheme: () => ThemeLike | undefined;
@@ -65,7 +65,7 @@ export class MarkEditor extends CustomEditor {
 		skillSources?: SkillPickerSources,
 	) {
 		super(tui, theme, keybindings);
-		this.markKeys = keybindings;
+		this.agentKeys = keybindings;
 		this.focusPlan = focusPlan;
 		this.appTheme = appTheme;
 		this.skillSources = skillSources;
@@ -78,7 +78,7 @@ export class MarkEditor extends CustomEditor {
 
 	private matches(data: string, action: string): boolean {
 		try {
-			return this.markKeys.matches(data, action) === true;
+			return this.agentKeys.matches(data, action) === true;
 		} catch {
 			return false;
 		}
@@ -220,7 +220,7 @@ export class MarkEditor extends CustomEditor {
 			// best-effort: um seletor quebrado nunca trava o input
 		}
 		try {
-			if (!isKeyRelease(data) && this.markKeys.matches(data, "app.interrupt") && !this.isShowingAutocomplete()) {
+			if (!isKeyRelease(data) && this.agentKeys.matches(data, "app.interrupt") && !this.isShowingAutocomplete()) {
 				const now = Date.now();
 				const hasText = this.getText().length > 0;
 				if (hasText && now - this.lastEscAt < DOUBLE_ESC_MS) {
@@ -237,7 +237,7 @@ export class MarkEditor extends CustomEditor {
 		// O plano fica ABAIXO do input (placement público em plan.ts), então é o ↓ que desce
 		// para ele; o ↑ continua inteiro para o histórico de prompts do Pi.
 		const mayFocusPlan = !isKeyRelease(data)
-			&& this.markKeys.matches(data, "tui.editor.cursorDown")
+			&& this.agentKeys.matches(data, "tui.editor.cursorDown")
 			&& !this.isShowingAutocomplete();
 		// Só com o input vazio: com texto (inclusive histórico já trazido ou prompt
 		// multilinha) o ↓ é todo do editor. Sem plano visível, `handled` fica false e
@@ -276,12 +276,12 @@ export class MarkEditor extends CustomEditor {
 
 }
 
-export default function markEditor(pi: ExtensionAPI) {
-	const live = new Map<MarkEditor, ScrollFollowMonitor>();
+export default function agentEditor(pi: ExtensionAPI) {
+	const live = new Map<AgentEditor, ScrollFollowMonitor>();
 	pi.on("session_start", (_event, ctx) => {
 		if (ctx.mode !== "tui") return;
 		ctx.ui.setEditorComponent((tui, theme, keybindings) => {
-			const editor = new MarkEditor(
+			const editor = new AgentEditor(
 			tui,
 			theme,
 			keybindings,
@@ -303,12 +303,12 @@ export default function markEditor(pi: ExtensionAPI) {
 				const label = scroll && !scroll.following
 					? scroll.newOutput ? "↓ nova saída · End" : `↓${scroll.linesBelow > 0 ? ` ${scroll.linesBelow} abaixo` : ""} · End`
 					: undefined;
-				if (label !== lastScroll) { lastScroll = label; ctx.ui.setStatus("mark-scroll", label); }
+				if (label !== lastScroll) { lastScroll = label; ctx.ui.setStatus("agent-scroll", label); }
 			};
 			editor.onDispose = () => {
 				rate.dispose(); monitor.dispose(); live.delete(editor);
 				editor.beforeRender = undefined;
-				ctx.ui.setStatus("mark-scroll", undefined);
+				ctx.ui.setStatus("agent-scroll", undefined);
 			};
 			return editor;
 		});

@@ -67,7 +67,7 @@ export function createWeb(options: { env?: NodeJS.ProcessEnv; lookup?: typeof lo
 		if (!/^\d+$/.test(value) || !Number.isSafeInteger(Number(value))) throw new Error(`${name} inválido`);
 		return Number(value);
 	}
-	const maxSearches = cap("MARK_WEB_MAX_SEARCHES", 20), maxFetches = cap("MARK_WEB_MAX_FETCHES", 40);
+	const maxSearches = cap("AGENT_WEB_MAX_SEARCHES", 20), maxFetches = cap("AGENT_WEB_MAX_FETCHES", 40);
 	async function get(url: URL, signal: AbortSignal): Promise<{ status: number; location?: string; type: string; body: string }> {
 		const host = url.hostname.replace(/^\[|\]$/g, "");
 		let onAbort: () => void = () => {};
@@ -146,7 +146,7 @@ export function createWeb(options: { env?: NodeJS.ProcessEnv; lookup?: typeof lo
 		let answer = "", sources: Source[] = [], provider = "google", source = GOOGLE;
 		try {
 			if (auth.google?.type !== "api_key" || !auth.google.key) throw new Error("Google ausente");
-			const data = await post(`${apiBase("MARK_WEB_GOOGLE_BASE_URL", GOOGLE)}/models/${encodeURIComponent(env.MARK_WEB_GOOGLE_MODEL ?? "gemini-2.5-flash")}:generateContent`, { "x-goog-api-key": auth.google.key }, {
+			const data = await post(`${apiBase("AGENT_WEB_GOOGLE_BASE_URL", GOOGLE)}/models/${encodeURIComponent(env.AGENT_WEB_GOOGLE_MODEL ?? "gemini-2.5-flash")}:generateContent`, { "x-goog-api-key": auth.google.key }, {
 				contents: [{ role: "user", parts: [{ text: `Pesquise e responda brevemente com fontes: ${input.query}` }] }], tools: [{ google_search: {} }], generationConfig: { maxOutputTokens: 2048 },
 			});
 			const candidate = data.candidates?.[0];
@@ -157,8 +157,8 @@ export function createWeb(options: { env?: NodeJS.ProcessEnv; lookup?: typeof lo
 			signal.throwIfAborted();
 			if (auth.openrouter?.type !== "api_key" || !auth.openrouter.key) throw new Error("Google indisponível e OpenRouter ausente");
 			provider = "openrouter"; source = OPENROUTER;
-			const data = await post(`${apiBase("MARK_WEB_OPENROUTER_BASE_URL", OPENROUTER)}/chat/completions`, { Authorization: `Bearer ${auth.openrouter.key}` }, {
-				model: env.MARK_WEB_OPENROUTER_MODEL ?? "google/gemini-2.5-flash", plugins: [{ id: "web" }], max_tokens: 2048,
+			const data = await post(`${apiBase("AGENT_WEB_OPENROUTER_BASE_URL", OPENROUTER)}/chat/completions`, { Authorization: `Bearer ${auth.openrouter.key}` }, {
+				model: env.AGENT_WEB_OPENROUTER_MODEL ?? "google/gemini-2.5-flash", plugins: [{ id: "web" }], max_tokens: 2048,
 				messages: [{ role: "user", content: `Pesquise e responda brevemente com fontes: ${input.query}` }],
 			});
 			const message = data.choices?.[0]?.message;

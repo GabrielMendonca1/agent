@@ -241,7 +241,7 @@ const FIRST_TOKEN_EVENTS = new Set([
 
 const CACHE_KEEPER_PATH = path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "cache-keeper.ts");
 /** Extensão que registra web_search/web_fetch; o filho roda --no-extensions. */
-const WEB_EXTENSION_PATH = path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "..", "mark", "web", "index.ts");
+const WEB_EXTENSION_PATH = path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "..", "agent", "web", "index.ts");
 const WEB_TOOLS = new Set(["web_search", "web_fetch"]);
 
 export type SandboxMode = "seatbelt" | "bwrap" | "none";
@@ -251,7 +251,7 @@ let probedSandbox: SandboxMode | undefined;
 export function sandboxForTools(tools?: string[]): SandboxMode | undefined {
 	if (!tools?.length || tools.includes("edit") || tools.includes("write")) return undefined;
 	// Escape exclusivo dos checks offline para provar o detector no modo degradado.
-	if (process.env.PI_OFFLINE === "1" && process.env.MARK_TEST_SANDBOX_NONE === "1") return "none";
+	if (process.env.PI_OFFLINE === "1" && process.env.AGENT_TEST_SANDBOX_NONE === "1") return "none";
 	if (probedSandbox !== undefined) return probedSandbox;
 	probedSandbox = "none";
 	try {
@@ -467,7 +467,7 @@ async function runPiChild(opts: ChildRunOptions): Promise<void> {
 				stdio: ["ignore", "pipe", "pipe"],
 				...(opts.juiceStatePath || opts.extraEnv ? { env: {
 					...process.env,
-					...(opts.juiceStatePath ? { MARK_JUICE_STATE: opts.juiceStatePath, MARK_JUICE_CHILD: "1" } : {}),
+					...(opts.juiceStatePath ? { AGENT_JUICE_STATE: opts.juiceStatePath, AGENT_JUICE_CHILD: "1" } : {}),
 					...opts.extraEnv,
 				} } : {}),
 			});
@@ -702,13 +702,13 @@ export async function runSingleAgent(opts: RunAgentOptions): Promise<SingleResul
 	const args: string[] = ["--mode", "json", "-p", "--no-extensions"];
 	const cwd = opts.cwd ?? opts.defaultCwd;
 	const sandbox = sandboxForTools(agent.tools);
-	const extraEnv: Record<string, string> = { MARK_BASH_SANDBOX: "", MARK_SANDBOX_CWD: "" };
+	const extraEnv: Record<string, string> = { AGENT_BASH_SANDBOX: "", AGENT_SANDBOX_CWD: "" };
 	if (sandbox && sandbox !== "none") {
 		args.push("-e", path.join(path.dirname(CACHE_KEEPER_PATH), "bash-sandbox.ts"));
-		extraEnv.MARK_BASH_SANDBOX = sandbox;
-		extraEnv.MARK_SANDBOX_CWD = cwd;
+		extraEnv.AGENT_BASH_SANDBOX = sandbox;
+		extraEnv.AGENT_SANDBOX_CWD = cwd;
 	}
-	if (opts.prefetch) Object.assign(extraEnv, { MARK_CACHE_PREFETCH: "1", MARK_JUICE_CHILD: "1" });
+	if (opts.prefetch) Object.assign(extraEnv, { AGENT_CACHE_PREFETCH: "1", AGENT_JUICE_CHILD: "1" });
 	let sessionFile: string | undefined;
 	if (opts.prefetch) args.push("--no-session");
 	else {
@@ -722,9 +722,9 @@ export async function runSingleAgent(opts: RunAgentOptions): Promise<SingleResul
 	}
 	// Aquecimento: o cache-keeper troca o 1º request por max_tokens 1 sem thinking e sai.
 	// Não muda system/tools (só before_provider_request), então o prefixo é o do filho real.
-	// Filhos do piloto (MARK_JUICE_CHILD=1) carregam o cache-keeper em modo filho: só a
+	// Filhos do piloto (AGENT_JUICE_CHILD=1) carregam o cache-keeper em modo filho: só a
 	// prompt_cache_key estável do Codex/Responses (Anthropic intacto). Fora do piloto não:
-	// sem MARK_JUICE_CHILD o keeper rodaria em modo pai (aquecimento) dentro do filho.
+	// sem AGENT_JUICE_CHILD o keeper rodaria em modo pai (aquecimento) dentro do filho.
 	if ((opts.prefetch || opts.dispatchDefaults.juice) && fs.existsSync(CACHE_KEEPER_PATH)) args.push("-e", CACHE_KEEPER_PATH);
 	// O read nativo do Pi clássico já lê imagens; o loadout do papel basta.
 	// Pilot children retain the skills catalog; the runtime gate is inherited via
@@ -732,7 +732,7 @@ export async function runSingleAgent(opts: RunAgentOptions): Promise<SingleResul
 	if (!opts.dispatchDefaults.juice) args.push("--no-skills");
 	// Explicit child extensions can provide an offline
 	// provider in checks. Never inherit the parent's whole profile.
-	for (const ext of (process.env.MARK_SUBAGENT_CHILD_EXTENSIONS ?? "").split(":").filter(Boolean)) {
+	for (const ext of (process.env.AGENT_SUBAGENT_CHILD_EXTENSIONS ?? "").split(":").filter(Boolean)) {
 		args.push("-e", ext);
 	}
 	// Papel que declara web_search/web_fetch precisa da extensão que os registra;

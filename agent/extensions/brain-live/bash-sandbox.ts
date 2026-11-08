@@ -6,8 +6,8 @@ import { fileURLToPath } from "node:url";
 import { createBashTool, type ExtensionAPI } from "@earendil-works/pi-coding-agent";
 
 export default function (pi: ExtensionAPI) {
-	const mode = process.env.MARK_BASH_SANDBOX;
-	const cwd = process.env.MARK_SANDBOX_CWD;
+	const mode = process.env.AGENT_BASH_SANDBOX;
+	const cwd = process.env.AGENT_SANDBOX_CWD;
 	if (!cwd || (mode !== "seatbelt" && mode !== "bwrap")) return;
 	const home = homedir();
 	const profile = join(dirname(fileURLToPath(import.meta.url)), "sandbox", "readonly.sb");

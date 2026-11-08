@@ -4,7 +4,7 @@
  * O agente substitui o plano inteiro pelo tool `plan`. O estado do plano
  * persiste na sessão; a expansão é apenas visual e reinicia em cada sessão.
  *
- * Posição: na montagem MARK II o widget vai para BAIXO do input
+ * Posição: na montagem Agent o widget vai para BAIXO do input
  * (placement público `belowEditor`). Por isso a
  * navegação é vertical coerente com isso: ↓ no input vazio desce para o plano,
  * ↑ (ou esc) no plano volta para o input.

@@ -1,29 +1,29 @@
 /**
- * Políticas GLOBAIS do Mark no system prompt do agente principal.
+ * Políticas GLOBAIS do Agent no system prompt do agente principal.
  *
  * Autonomia (vale sempre, nos dois modos) e complex (vale só
  * enquanto o modo for complex). Nada de receita de projeto aqui: a receita
- * (`.mark/workflow.md`) continua interna e nunca chega ao principal.
+ * (`.agent/workflow.md`) continua interna e nunca chega ao principal.
  *
  * Determinismo: o texto é constante por modo — sem contador, data, cwd ou nome de
  * projeto. Mesmo modo em turnos diferentes = texto idêntico (prefixo de cache intacto).
- * Trocar de modo muda o system efetivo: a seção `mark_complex` entra e SAI de verdade
+ * Trocar de modo muda o system efetivo: a seção `agent_complex` entra e SAI de verdade
  * (no host clássico pelo diff de seções do Pi, que manda `null` para remover; no prompt
  * forçado/durável porque o texto é remontado a cada run).
  */
 
 /** Ponteiro por sessão; metadados vêm do chamador, nunca do cwd ou relógio aqui. */
 export function notesSection({ count, ageDays }) {
-  return count === 0 ? '' : `<mark_notes>Mapa de notas do projeto em .mark/notes.md (${count} linhas, atualizado há ${ageDays} dias): leia-o antes de explorar e responda pela nota quando ela cobrir a pergunta; quando a resposta for decidir algo, verifique no código.</mark_notes>`;
+  return count === 0 ? '' : `<agent_notes>Mapa de notas do projeto em .agent/notes.md (${count} linhas, atualizado há ${ageDays} dias): leia-o antes de explorar e responda pela nota quando ela cobrir a pergunta; quando a resposta for decidir algo, verifique no código.</agent_notes>`;
 }
 
-export const AUTONOMY_SECTION = 'mark_autonomy';
-export const COMPLEX_SECTION = 'mark_complex';
+export const AUTONOMY_SECTION = 'agent_autonomy';
+export const COMPLEX_SECTION = 'agent_complex';
 /** Ordem fixa das seções de política (a ordem entra no texto renderizado). */
 export const POLICY_SECTIONS = [AUTONOMY_SECTION, COMPLEX_SECTION];
 
 export const AUTONOMY_POLICY = [
-  'Autonomia do Mark (vale em qualquer modo):',
+  'Autonomia do Agent (vale em qualquer modo):',
   '- Execute o plano até o fim: não peça para continuar nem ofereça o próximo passo.',
   '- Três ou mais leituras/comandos independentes vão em uma única chamada codemode com Promise.allSettled.',
   '- Entre opções razoáveis, decida você e registre a decisão em uma linha no relatório.',

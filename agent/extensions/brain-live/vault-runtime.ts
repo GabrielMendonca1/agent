@@ -42,7 +42,7 @@ export function validatePiVault(root = PI_VAULT_DIR): VaultValidation {
   let skills = 0;
   try {
     for (const entry of readdirSync(skillsDir, { withFileTypes: true })) {
-      // Why: dot-dirs (.mark) are state, not skills; symlinked skills are real skills.
+      // Why: dot-dirs (.agent) are state, not skills; symlinked skills are real skills.
       if (entry.name.startsWith(".")) continue;
       const dir = join(skillsDir, entry.name);
       if (entry.isSymbolicLink() && !existsSync(dir)) {
@@ -68,7 +68,7 @@ export interface PromptDynamics {
   toolSnippets?: Record<string, string>;
   promptGuidelines?: string[];
   cwd?: string;
-  /** Seções nomeadas de extensões (ex.: `mark_workflow`); o template não as conhece. */
+  /** Seções nomeadas de extensões (ex.: `agent_workflow`); o template não as conhece. */
   sections?: Record<string, string>;
 }
 
