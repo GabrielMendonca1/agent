@@ -53,7 +53,7 @@ export function isOptionalPatch(patch) {
 }
 
 /**
- * Camadas opcionais que uma release registrou, lidas da metadata dela (`pi-overlay.json` ou
+ * Camadas opcionais que uma release registrou, lidas da metadata dela (`agent-release.json` ou
  * `active.json`). Releases novas gravam `optionalLayers`; as anteriores a esse campo só têm
  * `patches`, e ali as opcionais são as que o manifesto declara como tal.
  */

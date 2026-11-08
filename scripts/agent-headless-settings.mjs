@@ -1,13 +1,13 @@
 #!/usr/bin/env node
 /**
- * Gera o settings do perfil Mark headless a partir do settings completo do Mark.
- *   node scripts/mark-headless-settings.mjs --from ~/.pi/agent/settings.json --out ~/.pi/agent/settings.headless.json
+ * Gera o settings do perfil Agent headless a partir do settings completo do Agent.
+ *   node scripts/agent-headless-settings.mjs --from ~/.pi/agent/settings.json --out ~/.pi/agent/settings.headless.json
  * Sem --out escreve no stdout. Ativar = o arquivo gerado virar `settings.json` do agent dir do processo
  * (ver deploy/vm/NOTES.md). Não toca no settings de origem.
  */
 import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
-import { headlessSettings } from "./lib/mark-headless.mjs";
+import { headlessSettings } from "./lib/agent-headless.mjs";
 
 const args = process.argv.slice(2);
 const opt = (name) => {
@@ -16,7 +16,7 @@ const opt = (name) => {
 };
 const from = opt("--from");
 if (!from) {
-	process.stderr.write("usage: mark-headless-settings --from <settings.json> [--out <file>]\n");
+	process.stderr.write("usage: agent-headless-settings --from <settings.json> [--out <file>]\n");
 	process.exit(2);
 }
 const text = `${JSON.stringify(headlessSettings(JSON.parse(readFileSync(from, "utf8"))), null, 2)}\n`;

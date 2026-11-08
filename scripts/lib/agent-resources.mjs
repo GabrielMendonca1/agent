@@ -1,12 +1,12 @@
 /**
- * Registros de recursos do MARK II: planejar, aplicar e desfazer a carga das extensões/skills/temas
- * do artefato imutável (`<artifactRoot>/mark`) no `agentDir` real do usuário, **uma única vez**.
+ * Registros de recursos do Agent: planejar, aplicar e desfazer a carga das extensões/skills/temas
+ * do artefato imutável (`<artifactRoot>/agent`) no `agentDir` real do usuário, **uma única vez**.
  *
- * Por que não basta copiar e registrar (o que `syncMarkSetup` faz): a pasta auto-descoberta do
+ * Por que não basta copiar e registrar (o que `syncAgentSetup` faz): a pasta auto-descoberta do
  * usuário (`<agent-dir>/extensions`) tem versões antigas das mesmas extensões. O Pi não deduplica
  * por nome — só por `realpath` (`toResolvedPaths` → `canonicalizePath`) —, então uma cópia nova no
  * artefato e a cópia pessoal antiga carregariam as **duas**, duplicando tools e commands. E o
- * `syncMarkSetup` resolve isso cedendo o nome à cópia pessoal, o que deixa o MARK II desligado.
+ * `syncAgentSetup` resolve isso cedendo o nome à cópia pessoal, o que deixa o Agent desligado.
  *
  * O que este helper faz: registra o caminho do artefato em `settings.extensions` e **desliga a
  * descoberta automática pessoal daquele nome com uma exclusão explícita** — sem renomear, mover ou
@@ -23,7 +23,7 @@
  * de `pi.extensions`), não para a pasta.
  *
  * Skills e temas são tratados de forma conservadora:
- * - skills: `<markRoot>/skills` entra em `settings.skills`. No host clássico uma entrada de settings
+ * - skills: `<agentRoot>/skills` entra em `settings.skills`. No host clássico uma entrada de settings
  *   (rank 2) vence a skill auto-descoberta de mesmo nome (rank 3).
  *   Colisões são relatadas, nunca silenciadas.
  * - temas: só cópia de arquivo ausente para `<agent-dir>/themes` quando essa pasta é real (não
@@ -55,22 +55,22 @@ import {
 	writeFileSync,
 } from "node:fs";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
-import { MARK_TREE, BRAIN_LIVE_TREE, EXTENSIONS_SUBDIR, THEMES_SUBDIR, entryName, extensionsIn, isMarkSetupDisabled, legacyNamesOf, themesIn } from "./mark-setup.mjs";
+import { AGENT_TREE, BRAIN_LIVE_TREE, EXTENSIONS_SUBDIR, THEMES_SUBDIR, entryName, extensionsIn, isAgentSetupDisabled, legacyNamesOf, themesIn } from "./agent-setup.mjs";
 
 export const PLAN_VERSION = 1;
 export const RECEIPT_VERSION = 1;
-export const RECEIPT_NAME = "mark-ii-resources-receipt.json";
+export const RECEIPT_NAME = "agent-resources-receipt.json";
 /** Recursos removidos do artefato cujas cópias pessoais continuam desligadas pelo recibo. */
 export const RETIRED_EXTENSIONS = ["ipython", "read-media"];
 
 /** Chaves de settings que este helper pode escrever. Nada mais é lido para o plano nem gravado. */
 export const MANAGED_SETTINGS_KEYS = ["extensions", "skills"];
-/** Arquivo e keybindings gerenciadas: ação reservada → tecla que o MARK II assume. */
+/** Arquivo e keybindings gerenciadas: ação reservada → tecla que o Agent assume. */
 export const KEYBINDINGS_FILE = "keybindings.json";
 export const MANAGED_SHORTCUTS = { "app.thinking.cycle": "shift+tab" };
 export const MANAGED_KEYBINDINGS = Object.keys(MANAGED_SHORTCUTS);
 /** Compat: primeiro atalho gerenciado (o do modo), mantido para quem já importava o nome. */
-export const MARK_II_SHORTCUT = MANAGED_SHORTCUTS["app.thinking.cycle"];
+export const AGENT_SHORTCUT = MANAGED_SHORTCUTS["app.thinking.cycle"];
 /** Nomes legados migrados pelo SDK (`KEYBINDING_NAME_MIGRATIONS`) para as ações canônicas. */
 const LEGACY_KEYBINDING_NAMES = { "app.thinking.cycle": "cycleThinkingLevel" };
 const KEY_MODIFIERS = new Set(["ctrl", "shift", "alt", "super"]);
@@ -131,14 +131,14 @@ export function autoDiscoveredExtensions(agentDir) {
 }
 
 /**
- * Contrato comum à instalação e ao perfil temporário: as duas árvores do Mark,
- * `mark` primeiro, sem repetir nome. Registrar as fábricas originais preserva
+ * Contrato comum à instalação e ao perfil temporário: as duas árvores do Agent,
+ * `agent` primeiro, sem repetir nome. Registrar as fábricas originais preserva
  * a exposição declarada por cada tool; este planner não cria wrappers.
  */
-export function markIIExtensionCandidates(markRoot) {
+export function agentExtensionCandidates(agentRoot) {
 	const candidates = [
-		...extensionsIn(join(markRoot, EXTENSIONS_SUBDIR, MARK_TREE)),
-		...extensionsIn(join(markRoot, EXTENSIONS_SUBDIR, BRAIN_LIVE_TREE)),
+		...extensionsIn(join(agentRoot, EXTENSIONS_SUBDIR, AGENT_TREE)),
+		...extensionsIn(join(agentRoot, EXTENSIONS_SUBDIR, BRAIN_LIVE_TREE)),
 	];
 	const seen = new Set();
 	const unique = [];
@@ -211,7 +211,7 @@ function planKeybindings({ agentDir, limitations }) {
 		try {
 			parsed = JSON.parse(text);
 		} catch {
-			throw new Error(`${path} não é JSON válido; MARK II não pode suspender ${MANAGED_KEYBINDINGS.join("/")} com segurança`);
+			throw new Error(`${path} não é JSON válido; Agent não pode suspender ${MANAGED_KEYBINDINGS.join("/")} com segurança`);
 		}
 		if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) throw new Error(`${path} não é um objeto JSON`);
 		raw = parsed;
@@ -224,14 +224,14 @@ function planKeybindings({ agentDir, limitations }) {
 		const present = Object.hasOwn(raw, key);
 		const value = raw[key];
 		if (present && typeof value !== "string" && !(Array.isArray(value) && value.every((entry) => typeof entry === "string"))) {
-			// O SDK descarta valor inválido e volta ao default (a tecla do Mark): sem fail closed o atalho
-			// nativo seguiria vencendo com o MARK II achando que resolveu.
-			throw new Error(`${path}: ${key} não é string nem lista de strings; corrija antes de ativar o MARK II`);
+			// O SDK descarta valor inválido e volta ao default (a tecla do Agent): sem fail closed o atalho
+			// nativo seguiria vencendo com o Agent achando que resolveu.
+			throw new Error(`${path}: ${key} não é string nem lista de strings; corrija antes de ativar o Agent`);
 		}
 		const entry = { key, path, keyRemoved: shortcut };
 		let next;
 		if (!present) {
-			// Ausente = default do SDK, que é exatamente a tecla do Mark; lista vazia desliga só essa ação.
+			// Ausente = default do SDK, que é exatamente a tecla do Agent; lista vazia desliga só essa ação.
 			next = [];
 			entry.action = "unbind-default";
 		} else {
@@ -287,14 +287,14 @@ function skillsIn(dir, seen = new Set()) {
 }
 
 /**
- * Plano de registro do MARK II. Só lê (`settings.json`, nomes/symlinks de extensões, skills e
+ * Plano de registro do Agent. Só lê (`settings.json`, nomes/symlinks de extensões, skills e
  * temas); não escreve nada.
  */
-export function planMarkIIResources({ markRoot, agentDir, homeDir }) {
-	const root = assertAbsolute("markRoot", markRoot);
+export function planAgentResources({ agentRoot, agentDir, homeDir }) {
+	const root = assertAbsolute("agentRoot", agentRoot);
 	const agent = assertAbsolute("agentDir", agentDir);
 	const home = assertAbsolute("homeDir", homeDir);
-	if (!existsSync(root)) throw new Error(`markRoot inexistente: ${root}`);
+	if (!existsSync(root)) throw new Error(`agentRoot inexistente: ${root}`);
 	const settingsPath = join(agent, "settings.json");
 	let settings = {};
 	if (existsSync(settingsPath)) {
@@ -303,7 +303,7 @@ export function planMarkIIResources({ markRoot, agentDir, homeDir }) {
 		try {
 			parsed = JSON.parse(text);
 		} catch {
-			throw new Error(`${settingsPath} não é JSON válido; MARK II não pode registrar recursos com segurança`);
+			throw new Error(`${settingsPath} não é JSON válido; Agent não pode registrar recursos com segurança`);
 		}
 		if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) throw new Error(`${settingsPath} não é um objeto JSON`);
 		settings = parsed;
@@ -316,11 +316,11 @@ export function planMarkIIResources({ markRoot, agentDir, homeDir }) {
 	const originalSkills = asList(settings.skills);
 	const rootPrefix = `${root}${sep}`;
 
-	if (isMarkSetupDisabled(settings)) {
+	if (isAgentSetupDisabled(settings)) {
 		return {
 			version: PLAN_VERSION,
 			disabled: true,
-			markRoot: root,
+			agentRoot: root,
 			agentDir: agent,
 			homeDir: home,
 			settingsPath,
@@ -331,7 +331,7 @@ export function planMarkIIResources({ markRoot, agentDir, homeDir }) {
 				themes: [],
 				collisions: [],
 				keybindings: [],
-				limitations: ['"-mark-setup" no settings desliga o setup do Mark; nenhum registro do MARK II planejado'],
+				limitations: ['"-agent-setup" no settings desliga o setup do Agent; nenhum registro do Agent planejado'],
 				blocking: [],
 				settingsKeys: [],
 			},
@@ -350,9 +350,9 @@ export function planMarkIIResources({ markRoot, agentDir, homeDir }) {
 		else activeEntries.push(entry);
 	}
 	const excludedTargets = new Set(exclusionEntries.map((entry) => toPosix(resolveSettingsEntry(entry, { agentDir: agent, homeDir: home }))));
-	// Só o interruptor por nome (`-dup`, `-mark-setup`) desliga uma extensão do Mark. Uma exclusão
+	// Só o interruptor por nome (`-dup`, `-agent-setup`) desliga uma extensão do Agent. Uma exclusão
 	// com caminho (`-extensions/dup/index.ts`) é o filtro que este helper mesmo emite para apagar a
-	// autodescoberta pessoal; tratá-la como interruptor desligaria o MARK II na reaplicação.
+	// autodescoberta pessoal; tratá-la como interruptor desligaria o Agent na reaplicação.
 	const excludedNames = new Set(
 		exclusionEntries
 			.map((entry) => entry.slice(1))
@@ -382,23 +382,23 @@ export function planMarkIIResources({ markRoot, agentDir, homeDir }) {
 	const addExclusions = [];
 	const seenExclusion = new Set(excludedTargets);
 
-	const candidates = markIIExtensionCandidates(root);
+	const candidates = agentExtensionCandidates(root);
 	const installedNames = new Set(candidates.map(({ name }) => name));
 	// Retired resources still suppress personal copies, through the same reversible receipt.
 	const retired = RETIRED_EXTENSIONS.filter((name) => !installedNames.has(name))
-		.map((name) => ({ name, path: join(root, EXTENSIONS_SUBDIR, MARK_TREE, name), entries: [], retired: true }));
+		.map((name) => ({ name, path: join(root, EXTENSIONS_SUBDIR, AGENT_TREE, name), entries: [], retired: true }));
 	for (const candidate of [...candidates, ...retired]) {
-		const markPath = resolve(candidate.path);
-		const item = { name: candidate.name, markPath, action: "register", exclusions: [], personal: [] };
+		const agentPath = resolve(candidate.path);
+		const item = { name: candidate.name, agentPath, action: "register", exclusions: [], personal: [] };
 		if (!candidate.retired && candidate.entries.length === 0) {
 			item.action = "blocked";
 			item.reason = "sem arquivo de entrada (index.ts/js ou pi.extensions) no artefato";
-			blocking.push(`extensão ${candidate.name}: ${item.reason} (${markPath})`);
+			blocking.push(`extensão ${candidate.name}: ${item.reason} (${agentPath})`);
 			extensionsReport.push(item);
 			continue;
 		}
 		const aliases = [candidate.name, ...legacyNamesOf(candidate.name)];
-		if (!candidate.retired && (aliases.some((name) => excludedNames.has(name)) || excludedTargets.has(toPosix(markPath)))) {
+		if (!candidate.retired && (aliases.some((name) => excludedNames.has(name)) || excludedTargets.has(toPosix(agentPath)))) {
 			item.action = "skipped-user-disabled";
 			item.reason = `desligada no settings do usuário por "-${candidate.name}" ou exclusão equivalente`;
 			extensionsReport.push(item);
@@ -421,7 +421,7 @@ export function planMarkIIResources({ markRoot, agentDir, homeDir }) {
 				const pattern = `-${toPosix(relative(agent, entry))}`;
 				if (!seenExclusion.has(toPosix(entry))) item.exclusions.push(pattern);
 			}
-			collisions.push({ name: candidate.name, kind: "auto", personalPath: auto.path, markPath, resolution: "auto-descoberta pessoal desligada por exclusão exata (arquivo intocado)" });
+			collisions.push({ name: candidate.name, kind: "auto", personalPath: auto.path, agentPath, resolution: "auto-descoberta pessoal desligada por exclusão exata (arquivo intocado)" });
 		}
 
 		for (const explicit of aliases.flatMap((name) => explicitByName.get(name) ?? [])) {
@@ -436,7 +436,7 @@ export function planMarkIIResources({ markRoot, agentDir, homeDir }) {
 				const pattern = `-${toPosix(entry)}`;
 				if (!seenExclusion.has(toPosix(entry))) item.exclusions.push(pattern);
 			}
-			collisions.push({ name: candidate.name, kind: "settings", personalPath: explicit.path, markPath, resolution: "entrada pessoal de extensions[] desligada por exclusão exata (entrada preservada na lista)" });
+			collisions.push({ name: candidate.name, kind: "settings", personalPath: explicit.path, agentPath, resolution: "entrada pessoal de extensions[] desligada por exclusão exata (entrada preservada na lista)" });
 		}
 		if (item.action === "blocked") {
 			extensionsReport.push(item);
@@ -446,19 +446,19 @@ export function planMarkIIResources({ markRoot, agentDir, homeDir }) {
 		item.exclusions = [...new Set(item.exclusions)];
 		for (const pattern of item.exclusions) seenExclusion.add(toPosix(resolveSettingsEntry(pattern, { agentDir: agent, homeDir: home })));
 		if (candidate.retired) item.action = "retired";
-		else if (alreadyRegistered.has(markPath)) item.action = item.exclusions.length ? "exclude-only" : "already-registered";
-		else addPaths.push(markPath);
+		else if (alreadyRegistered.has(agentPath)) item.action = item.exclusions.length ? "exclude-only" : "already-registered";
+		else addPaths.push(agentPath);
 		addExclusions.push(...item.exclusions);
 		extensionsReport.push(item);
 	}
 
-	// Entradas pessoais que seguem ativas e não casam por nome com nenhuma extensão do MARK II.
+	// Entradas pessoais que seguem ativas e não casam por nome com nenhuma extensão do Agent.
 	// Colisão aqui só aparece por tool/command no startup do Pi ("Tool X conflicts with …"), porque
 	// este plano compara nomes de recurso (arquivo/pasta), não tools registradas em runtime.
-	const markNames = new Set(extensionsReport.flatMap((item) => [item.name, ...legacyNamesOf(item.name)]));
+	const agentNames = new Set(extensionsReport.flatMap((item) => [item.name, ...legacyNamesOf(item.name)]));
 	const unmatchedPersonal = [];
 	for (const [name, entries] of explicitByName) {
-		if (markNames.has(name)) continue;
+		if (agentNames.has(name)) continue;
 		for (const entry of entries) unmatchedPersonal.push({ name, path: entry.path });
 	}
 	if (unmatchedPersonal.length) {
@@ -470,7 +470,7 @@ export function planMarkIIResources({ markRoot, agentDir, homeDir }) {
 	const skillsRegister = [];
 	const skillCollisions = [];
 	if (existsSync(skillsRoot)) {
-		const markSkills = skillsIn(skillsRoot);
+		const agentSkills = skillsIn(skillsRoot);
 		const personalSkills = new Map();
 		for (const skill of skillsIn(join(agent, "skills"))) personalSkills.set(skill.name, { kind: "auto", path: skill.path });
 		for (const entry of originalSkills) {
@@ -479,15 +479,15 @@ export function planMarkIIResources({ markRoot, agentDir, homeDir }) {
 			if (path === root || path.startsWith(rootPrefix)) continue;
 			for (const skill of skillsIn(path)) if (!personalSkills.has(skill.name)) personalSkills.set(skill.name, { kind: "settings", path: skill.path });
 		}
-		for (const skill of markSkills) {
+		for (const skill of agentSkills) {
 			const personal = personalSkills.get(skill.name);
 			if (!personal) continue;
 			skillCollisions.push({
 				name: skill.name,
-				markPath: skill.path,
+				agentPath: skill.path,
 				personalPath: personal.path,
 				kind: personal.kind,
-				resolution: "host clássico: entrada de settings vence (MARK II)",
+				resolution: "host clássico: entrada de settings vence (Agent)",
 			});
 		}
 		if (skillCollisions.length) {
@@ -497,22 +497,22 @@ export function planMarkIIResources({ markRoot, agentDir, homeDir }) {
 		if (!resolvedSkillEntries.has(skillsRoot)) skillsRegister.push(skillsRoot);
 	}
 
-	// Temas: só cópia de arquivo ausente numa pasta de temas que é do Mark/MARK II (não symlink
+	// Temas: só cópia de arquivo ausente numa pasta de temas que é do Agent/Agent (não symlink
 	// pessoal) e com nome que não é de tema do usuário.
 	const themesReport = [];
 	const copyFiles = [];
-	const markThemes = themesIn(join(root, THEMES_SUBDIR));
-	if (markThemes.length) {
+	const agentThemes = themesIn(join(root, THEMES_SUBDIR));
+	if (agentThemes.length) {
 		const themesDir = join(agent, THEMES_SUBDIR);
 		const personalThemes = new Set(themesIn(themesDir).map((theme) => theme.name));
 		const linked = isSymlink(themesDir);
-		for (const theme of markThemes) {
+		for (const theme of agentThemes) {
 			if (personalThemes.has(theme.name)) {
 				themesReport.push({ name: theme.name, action: "personal-wins", path: join(themesDir, `${theme.name}.json`) });
 				continue;
 			}
 			if (linked) {
-				themesReport.push({ name: theme.name, action: "unavailable", path: themesDir, reason: "pasta de temas do usuário é symlink; MARK II não escreve nela" });
+				themesReport.push({ name: theme.name, action: "unavailable", path: themesDir, reason: "pasta de temas do usuário é symlink; Agent não escreve nela" });
 				limitations.push(`tema ${theme.name} não registrado: ${themesDir} é symlink pessoal (themes[] não vale para o tema inicial, que o Pi resolve antes do registro)`);
 				continue;
 			}
@@ -522,7 +522,7 @@ export function planMarkIIResources({ markRoot, agentDir, homeDir }) {
 		}
 	}
 
-	// Keybindings reservadas que bloqueariam os atalhos do MARK II (duas chaves, reversíveis).
+	// Keybindings reservadas que bloqueariam os atalhos do Agent (duas chaves, reversíveis).
 	const keybindings = planKeybindings({ agentDir: agent, limitations });
 
 	// O wrapper codemode-mode registra o codemode por modelo; o builtin do Pi não pode subir ao lado.
@@ -546,7 +546,7 @@ export function planMarkIIResources({ markRoot, agentDir, homeDir }) {
 	return {
 		version: PLAN_VERSION,
 		disabled: false,
-		markRoot: root,
+		agentRoot: root,
 		agentDir: agent,
 		homeDir: home,
 		settingsPath,
@@ -597,7 +597,7 @@ function casStore(backupDir, value) {
  * Duas fases: (1) preflight de TODAS as chaves (settings, keybindings) contra plano e recibo
  * anterior, só lendo — qualquer CAS violado lança antes de qualquer escrita; (2) escrita.
  */
-export function applyMarkIIResources({ plan, backupDir }) {
+export function applyAgentResources({ plan, backupDir }) {
 	if (!plan || plan.version !== PLAN_VERSION) throw new Error(`plano inválido ou de outra versão: ${plan?.version}`);
 	const backup = assertAbsolute("backupDir", backupDir);
 	if (plan.report.blocking.length > 0) {
@@ -606,7 +606,7 @@ export function applyMarkIIResources({ plan, backupDir }) {
 	const receiptPath = join(backup, RECEIPT_NAME);
 	if (plan.disabled) {
 		mkdirSync(backup, { recursive: true });
-		const receipt = { version: RECEIPT_VERSION, createdAt: new Date().toISOString(), markRoot: plan.markRoot, agentDir: plan.agentDir, settingsPath: plan.settingsPath, keybindingsPath: plan.keybindingsPath ?? null, backupDir: backup, disabled: true, settings: [], keybindings: [], files: [], report: plan.report };
+		const receipt = { version: RECEIPT_VERSION, createdAt: new Date().toISOString(), agentRoot: plan.agentRoot, agentDir: plan.agentDir, settingsPath: plan.settingsPath, keybindingsPath: plan.keybindingsPath ?? null, backupDir: backup, disabled: true, settings: [], keybindings: [], files: [], report: plan.report };
 		writeAtomic(receiptPath, `${JSON.stringify(receipt, null, 2)}\n`, 0o600);
 		return { receiptPath, changed: false, disabled: true, settings: [], keybindings: [], created: [], report: plan.report };
 	}
@@ -769,7 +769,7 @@ export function applyMarkIIResources({ plan, backupDir }) {
 	const receipt = {
 		version: RECEIPT_VERSION,
 		createdAt: new Date().toISOString(),
-		markRoot: plan.markRoot,
+		agentRoot: plan.agentRoot,
 		agentDir: plan.agentDir,
 		settingsPath: plan.settingsPath,
 		keybindingsPath: plan.keybindingsPath ?? null,
@@ -799,10 +799,10 @@ export function applyMarkIIResources({ plan, backupDir }) {
  * (settings, keybindings, arquivos copiados) sem escrever nada; (2) escrita, só se não houve
  * conflito. Qualquer conflito (mudança posterior do usuário, CAS ausente, arquivo ilegível)
  * devolve `conflicts` e deixa o disco intacto — nunca um rollback parcial misturando chaves
- * restauradas com chaves que seguem do MARK II. Repetível depois que o usuário reconcilia.
+ * restauradas com chaves que seguem do Agent. Repetível depois que o usuário reconcilia.
  * Idempotente.
  */
-export function rollbackMarkIIResources({ receiptPath }) {
+export function rollbackAgentResources({ receiptPath }) {
 	const path = assertAbsolute("receiptPath", receiptPath);
 	const receipt = readJson(path);
 	if (receipt.version !== RECEIPT_VERSION) throw new Error(`recibo de outra versão: ${receipt.version}`);

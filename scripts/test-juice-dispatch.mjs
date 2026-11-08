@@ -10,7 +10,7 @@ import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const repo = resolve(dirname(fileURLToPath(import.meta.url)), '..');
-const pkg = join(process.env.PI_OVERLAY_STORE || join(homedir(), '.local/share/pi-overlay'), 'current/lib/node_modules/@earendil-works/pi-coding-agent');
+const pkg = join(process.env.AGENT_STORE || join(homedir(), '.local/share/agent'), 'current/lib/node_modules/@earendil-works/pi-coding-agent');
 if (!existsSync(join(pkg, 'package.json'))) throw new Error('Pi instalado é necessário para verificar o dispatch do piloto.');
 const req = createRequire(join(pkg, 'package.json'));
 const { createJiti } = req('jiti');
@@ -24,8 +24,8 @@ try {
   const jiti = createJiti(import.meta.url, { fsCache: false, moduleCache: true, alias: {
     '@earendil-works/pi-coding-agent': join(pkg, 'dist/index.js'),
   } });
-  const runner = await jiti.import(join(repo, 'mark/extensions/brain-live/subagent/runner.ts'));
-  const jobs = await jiti.import(join(repo, 'mark/extensions/brain-live/subagent/jobs.ts'));
+  const runner = await jiti.import(join(repo, 'agent/extensions/brain-live/subagent/runner.ts'));
+  const jobs = await jiti.import(join(repo, 'agent/extensions/brain-live/subagent/jobs.ts'));
   const defaults = { model: 'test/principal', thinkingLevel: 'low', juice: { statePath: join(root, 'original.json'), supportModel: 'test/economico' } };
   const routed = jobs.resolveJobTaskModels([{ agent: 'scout', task: 'inventário' }, { agent: 'worker', task: 'alteração' }], defaults);
   assert.equal(routed.ok, true);
@@ -92,13 +92,13 @@ try {
     });
     return child;
   };
-  process.env.MARK_JUICE_ENABLED = '1';
-  process.env.MARK_JUICE_STATE = join(root, 'later-parent.json');
+  process.env.AGENT_JUICE_ENABLED = '1';
+  process.env.AGENT_JUICE_STATE = join(root, 'later-parent.json');
   const agent = { name: 'scout', description: 'fixture', systemPrompt: '', tools: ['read'], source: 'user' };
   const result = await runner.runSingleAgent({ defaultCwd: root, dispatchDefaults: defaults, agents: [agent], agentName: 'scout', task: 'fixture', roleModel: { model: 'test/economico', thinking: 'low' }, makeDetails: (results) => ({ mode: 'single', agentScope: 'user', projectAgentsDir: null, results }) });
   assert.equal(result.exitCode, 0);
-  assert.equal(captured.opts.env.MARK_JUICE_STATE, defaults.juice.statePath);
-  assert.equal(captured.opts.env.MARK_JUICE_CHILD, '1');
+  assert.equal(captured.opts.env.AGENT_JUICE_STATE, defaults.juice.statePath);
+  assert.equal(captured.opts.env.AGENT_JUICE_CHILD, '1');
   assert.equal(captured.args[captured.args.indexOf('--model') + 1], 'test/economico');
   assert.ok(!captured.args.includes('--no-skills'));
   checks++; console.log('ok filho compartilha snapshot original de budget e preserva skills');
@@ -116,8 +116,8 @@ try {
   // Regras aprendidas do projeto: vão só na mensagem do filho e só as do cwd EFETIVO dele.
   const project = (name, rules) => {
     const dir = join(root, name);
-    mkdirSync(join(dir, '.mark'), { recursive: true });
-    writeFileSync(join(dir, '.mark/workflow.md'), ['# Receita', '', 'versão: v2', '', '## Regras aprendidas', ...rules.map(r => `- ${r}`), ''].join('\n'));
+    mkdirSync(join(dir, '.agent'), { recursive: true });
+    writeFileSync(join(dir, '.agent/workflow.md'), ['# Receita', '', 'versão: v2', '', '## Regras aprendidas', ...rules.map(r => `- ${r}`), ''].join('\n'));
     return dir;
   };
   const projA = project('proj-a', ['regra exclusiva do projeto A']);
@@ -143,8 +143,8 @@ try {
   checks++; console.log('ok regras do projeto só na mensagem do filho, pelo cwd efetivo; aquecimento intacto');
 
   // Teto do bloco de orientação: nada de receita gigante comendo o contexto do filho.
-  const { RULES_GUIDANCE_CAP, RULES_SOURCE_CAP, projectRules } = await import(join(repo, 'mark/juice/workflow.mjs'));
-  const recipeOf = (dir) => readFileSync(join(dir, '.mark/workflow.md'), 'utf8');
+  const { RULES_GUIDANCE_CAP, RULES_SOURCE_CAP, projectRules } = await import(join(repo, 'agent/juice/workflow.mjs'));
+  const recipeOf = (dir) => readFileSync(join(dir, '.agent/workflow.md'), 'utf8');
   const guidanceRules = (text) => text.split('\n').filter((l) => l.startsWith('- ')).map((l) => l.slice(2));
   const emoji = project('proj-emoji', ['regra com acentuação e emoji 🚀🧪 — cabe inteira', 'segunda regra ção ✓']);
   let guidance = projectRules(emoji);
@@ -168,7 +168,7 @@ try {
   assert.equal(projectRules(crowd), guidance);
   assert.equal(recipeOf(crowd), before, 'receita nunca truncada nem reescrita');
   const over = project('proj-fonte-grande', [`x ${'y'.repeat(RULES_SOURCE_CAP)}`, 'regra curta que não será lida']);
-  assert.ok(readFileSync(join(over, '.mark/workflow.md')).byteLength > RULES_SOURCE_CAP);
+  assert.ok(readFileSync(join(over, '.agent/workflow.md')).byteLength > RULES_SOURCE_CAP);
   assert.equal(projectRules(over), '', 'fonte acima do teto: fail closed, sem injetar');
   const overBefore = recipeOf(over);
   assert.equal(projectRules(over), '');
@@ -176,14 +176,14 @@ try {
   const edge = project('proj-limite-fonte', []);
   const tail = '\n## Regras aprendidas\n- regra inteira no limite\n';
   const edgeText = '#'.repeat(RULES_SOURCE_CAP - Buffer.byteLength(tail, 'utf8')) + tail;
-  const edgeFile = join(edge, '.mark/workflow.md');
+  const edgeFile = join(edge, '.agent/workflow.md');
   writeFileSync(edgeFile, edgeText);
   assert.equal(Buffer.byteLength(edgeText, 'utf8'), RULES_SOURCE_CAP);
   assert.deepEqual(guidanceRules(projectRules(edge)), ['regra inteira no limite'], '64KiB exatos ainda entram');
   writeFileSync(edgeFile, edgeText + 'x');
   assert.equal(projectRules(edge), '', '64KiB+1 não entram');
   const nonRegular = join(root, 'proj-diretorio');
-  mkdirSync(join(nonRegular, '.mark/workflow.md'), { recursive: true });
+  mkdirSync(join(nonRegular, '.agent/workflow.md'), { recursive: true });
   assert.equal(projectRules(nonRegular), '', 'diretório no lugar do arquivo: fail closed');
   assert.equal(projectRules(join(root, 'nao-existe')), '', 'projeto ausente: sem orientação');
   assert.equal(projectRules(undefined), '');
@@ -193,12 +193,12 @@ try {
   assert.deepEqual(guidanceRules(capped), ['regra curta depois da enorme', 'última curta 🧪'], 'mensagem do filho sem regra parcial');
   checks++; console.log('ok orientação limitada a 8KiB UTF-8, regras inteiras, fonte >64KiB não injetada');
 
-  delete process.env.MARK_JUICE_ENABLED;
-  delete process.env.MARK_JUICE_STATE;
+  delete process.env.AGENT_JUICE_ENABLED;
+  delete process.env.AGENT_JUICE_STATE;
   await runner.runSingleAgent({ defaultCwd: root, dispatchDefaults: { model: 'test/principal' }, agents: [agent], agentName: 'scout', task: 'fixture', makeDetails: (results) => ({ mode: 'single', agentScope: 'user', projectAgentsDir: null, results }) });
   // Fora do piloto, só o ambiente do sandbox é acrescentado ao papel somente leitura.
   const sandbox = runner.sandboxForTools(agent.tools);
-  assert.deepEqual(captured.opts.env, { ...process.env, MARK_BASH_SANDBOX: sandbox === 'none' ? '' : sandbox, MARK_SANDBOX_CWD: sandbox === 'none' ? '' : root });
+  assert.deepEqual(captured.opts.env, { ...process.env, AGENT_BASH_SANDBOX: sandbox === 'none' ? '' : sandbox, AGENT_SANDBOX_CWD: sandbox === 'none' ? '' : root });
   assert.ok(captured.args.includes('--no-skills'));
   checks++; console.log('ok dispatch legado permanece inalterado fora do piloto');
 

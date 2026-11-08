@@ -8,8 +8,8 @@ import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSyn
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { hadGreenChecks, runsCheck, applyLearned } from '../mark/juice/learn.mjs';
-import { ensureWorkflow, ignoreWorkflowLocally, projectRules } from '../mark/juice/workflow.mjs';
+import { hadGreenChecks, runsCheck, applyLearned } from '../agent/juice/learn.mjs';
+import { ensureWorkflow, ignoreWorkflowLocally, projectRules } from '../agent/juice/workflow.mjs';
 
 const CHECK = 'node scripts/test-x.mjs';
 let n = 0;
@@ -37,11 +37,11 @@ assert.equal(hadGreenChecks(orphan, [CHECK]), false, 'resultado sem chamada nest
 ok('hadGreenChecks: mascarado, eco, falha declarada e órfão não contam');
 
 // ---- projeto falso ----
-const root = mkdtempSync(join(tmpdir(), 'mark-prove-'));
+const root = mkdtempSync(join(tmpdir(), 'agent-prove-'));
 const cwd = join(root, 'proj');
-mkdirSync(join(cwd, '.mark'), { recursive: true });
-const wf = join(cwd, '.mark/workflow.md');
-const hist = join(cwd, '.mark/history.json');
+mkdirSync(join(cwd, '.agent'), { recursive: true });
+const wf = join(cwd, '.agent/workflow.md');
+const hist = join(cwd, '.agent/history.json');
 const V1 = '# Receita\n\nversão: v1\n\n## Regras aprendidas\n(nenhuma ainda)\n';
 const reset = () => { writeFileSync(wf, V1); rmSync(hist, { force: true }); };
 reset();
@@ -50,7 +50,7 @@ reset();
 {
   reset();
   const { spawn } = await import('node:child_process');
-  const learnUrl = new URL('../mark/juice/learn.mjs', import.meta.url).href;
+  const learnUrl = new URL('../agent/juice/learn.mjs', import.meta.url).href;
   const N = 8;
   const go = (code) => new Promise((done, fail) => {
     const p = spawn(process.execPath, ['--input-type=module', '-e', code], { stdio: ['ignore', 'pipe', 'pipe'] });
@@ -72,8 +72,8 @@ reset();
 {
   const { spawn, spawnSync } = await import('node:child_process');
   const { utimesSync, rmdirSync } = await import('node:fs');
-  const { withWorkflowLock, LOCK_DIR } = await import('../mark/juice/lock.mjs');
-  const lockDir = join(cwd, '.mark', LOCK_DIR);
+  const { withWorkflowLock, LOCK_DIR } = await import('../agent/juice/lock.mjs');
+  const lockDir = join(cwd, '.agent', LOCK_DIR);
   const sleeper = spawn(process.execPath, ['-e', 'setTimeout(() => {}, 30000)'], { stdio: 'ignore' });
   mkdirSync(lockDir); writeFileSync(join(lockDir, `owner.${sleeper.pid}.aaaa`), '');
   const old = (Date.now() - 3600_000) / 1000; utimesSync(lockDir, old, old);
@@ -100,7 +100,7 @@ reset();
   rmSync(lockDir, { recursive: true });
   const dead = spawnSync(process.execPath, ['-e', 'process.stdout.write(String(process.pid))'], { encoding: 'utf8' }).stdout;
   mkdirSync(lockDir); writeFileSync(join(lockDir, `owner.${dead}.bbbb`), '');
-  const lockUrl = new URL('../mark/juice/lock.mjs', import.meta.url).href;
+  const lockUrl = new URL('../agent/juice/lock.mjs', import.meta.url).href;
   const log = join(root, 'excl.log'); rmSync(log, { force: true });
   const at = Date.now() + 400;
   await Promise.all(Array.from({ length: 6 }, (_, i) => new Promise((done, fail) => {
@@ -118,7 +118,7 @@ process.exit(r === 1 ? 0 : 9);`], { stdio: ['ignore', 'ignore', 'pipe'] });
   ok('trava: dono vivo antigo não é roubado; sem owner fail closed; 6 concorrentes sobre dono morto sem sobreposição');
 }
 
-// ---- `.mark` versionado só onde já é: nos outros projetos, exclude LOCAL ----
+// ---- `.agent` versionado só onde já é: nos outros projetos, exclude LOCAL ----
 {
   const { execFileSync, spawn } = await import('node:child_process');
   const git = (d, ...args) => execFileSync('git', ['-C', d, ...args], { encoding: 'utf8' });
@@ -131,30 +131,30 @@ process.exit(r === 1 ? 0 : 9);`], { stdio: ['ignore', 'ignore', 'pipe'] });
     return d;
   };
   const excludeOf = (d) => join(d, '.git/info/exclude');
-  // projeto comum: receita criada e `.mark/` ignorado localmente, sem tocar .gitignore
+  // projeto comum: receita criada e `.agent/` ignorado localmente, sem tocar .gitignore
   const plain = newRepo('repo-plain');
   writeFileSync(excludeOf(plain), '# pessoal\n*.local\n');
   const text = ensureWorkflow(plain);
-  assert.match(text, /^# Receita do Mark — repo-plain$/m);
+  assert.match(text, /^# Receita do Agent — repo-plain$/m);
   const ex1 = readFileSync(excludeOf(plain), 'utf8');
-  assert.match(ex1, /^# pessoal\n\*\.local\n\/\.mark\/\n$/, ex1);
+  assert.match(ex1, /^# pessoal\n\*\.local\n\/\.agent\/\n$/, ex1);
   assert.equal(readFileSync(join(plain, '.gitignore'), 'utf8'), 'node_modules\n', '.gitignore intocado');
-  assert.equal(git(plain, 'status', '--porcelain').includes('.mark'), false, `.mark fora do status: ${git(plain, 'status', '--porcelain')}`);
+  assert.equal(git(plain, 'status', '--porcelain').includes('.agent'), false, `.agent fora do status: ${git(plain, 'status', '--porcelain')}`);
   // idempotente: repetir não duplica linha nem reescreve a receita
-  writeFileSync(join(plain, '.mark/workflow.md'), `${text}\n- editado à mão\n`);
+  writeFileSync(join(plain, '.agent/workflow.md'), `${text}\n- editado à mão\n`);
   assert.equal(ignoreWorkflowLocally(plain), false, 'linha já existe');
   assert.equal(ensureWorkflow(plain), `${text}\n- editado à mão\n`, 'receita existente não é reescrita');
   assert.equal(readFileSync(excludeOf(plain), 'utf8'), ex1, 'exclude inalterado na repetição');
-  // exclude ausente e `.mark` já existente: a linha entra mesmo assim
+  // exclude ausente e `.agent` já existente: a linha entra mesmo assim
   const late = newRepo('repo-late');
-  mkdirSync(join(late, '.mark'), { recursive: true }); writeFileSync(join(late, '.mark/workflow.md'), V1);
+  mkdirSync(join(late, '.agent'), { recursive: true }); writeFileSync(join(late, '.agent/workflow.md'), V1);
   rmSync(excludeOf(late), { force: true });
   assert.equal(ignoreWorkflowLocally(late), true);
-  assert.equal(readFileSync(excludeOf(late), 'utf8'), '/.mark/\n');
+  assert.equal(readFileSync(excludeOf(late), 'utf8'), '/.agent/\n');
   // Filhos iniciando juntos: preservar o exclude pessoal, inclusive sem newline final.
   const concurrent = newRepo('repo-concurrent');
   writeFileSync(excludeOf(concurrent), '# pessoal\n*.local');
-  const source = new URL('../mark/juice/workflow.mjs', import.meta.url).href;
+  const source = new URL('../agent/juice/workflow.mjs', import.meta.url).href;
   await Promise.all(Array.from({ length: 4 }, () => new Promise((resolve, reject) => {
     const child = spawn(process.execPath, ['--input-type=module', '-e',
       `import { ignoreWorkflowLocally } from ${JSON.stringify(source)}; ignoreWorkflowLocally(${JSON.stringify(concurrent)});`],
@@ -165,25 +165,25 @@ process.exit(r === 1 ? 0 : 9);`], { stdio: ['ignore', 'ignore', 'pipe'] });
   })));
   const concurrentExclude = readFileSync(excludeOf(concurrent), 'utf8');
   assert.ok(concurrentExclude.startsWith('# pessoal\n*.local\n'), 'nenhuma exclusão pessoal é truncada');
-  assert.match(concurrentExclude, /^\/\.mark\/$/m);
+  assert.match(concurrentExclude, /^\/\.agent\/$/m);
   assert.equal(ignoreWorkflowLocally(concurrent), false, 'repetição após corrida é idempotente');
   assert.equal(readFileSync(excludeOf(concurrent), 'utf8'), concurrentExclude);
-  // projeto que VERSIONA .mark (como o mark-pi): nada é ignorado
+  // projeto que VERSIONA .agent (como o agent): nada é ignorado
   const tracked = newRepo('repo-tracked');
-  mkdirSync(join(tracked, '.mark'), { recursive: true }); writeFileSync(join(tracked, '.mark/workflow.md'), V1);
-  git(tracked, '-c', 'user.name=t', '-c', 'user.email=t@t', 'add', '.mark');
+  mkdirSync(join(tracked, '.agent'), { recursive: true }); writeFileSync(join(tracked, '.agent/workflow.md'), V1);
+  git(tracked, '-c', 'user.name=t', '-c', 'user.email=t@t', 'add', '.agent');
   git(tracked, '-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '-qm', 'receita');
   const exTracked = readFileSync(excludeOf(tracked), 'utf8');
-  assert.equal(ignoreWorkflowLocally(tracked), false, 'repo que versiona .mark não ignora');
+  assert.equal(ignoreWorkflowLocally(tracked), false, 'repo que versiona .agent não ignora');
   assert.equal(readFileSync(excludeOf(tracked), 'utf8'), exTracked, 'exclude do repo versionado intacto');
   ensureWorkflow(tracked);
   assert.equal(readFileSync(excludeOf(tracked), 'utf8'), exTracked, 'ensureWorkflow também respeita');
-  // o próprio mark-pi (real, .mark rastreado): nenhuma escrita
+  // o próprio agent (real, .agent rastreado): nenhuma escrita
   const selfRepo = join(dirname(fileURLToPath(import.meta.url)), '..');
   const selfExclude = join(selfRepo, '.git/info/exclude');
   const selfBefore = existsSync(selfExclude) ? readFileSync(selfExclude, 'utf8') : null;
-  assert.equal(ignoreWorkflowLocally(selfRepo), false, 'mark-pi versiona .mark');
-  assert.equal(existsSync(selfExclude) ? readFileSync(selfExclude, 'utf8') : null, selfBefore, 'exclude do mark-pi intacto');
+  assert.equal(ignoreWorkflowLocally(selfRepo), false, 'agent versiona .agent');
+  assert.equal(existsSync(selfExclude) ? readFileSync(selfExclude, 'utf8') : null, selfBefore, 'exclude do agent intacto');
   // worktree: `.git` é arquivo; o exclude vem de `rev-parse --git-path` (comum ao repo)
   const main = newRepo('repo-main');
   rmSync(excludeOf(main), { force: true });
@@ -191,28 +191,28 @@ process.exit(r === 1 ? 0 : 9);`], { stdio: ['ignore', 'ignore', 'pipe'] });
   git(main, 'worktree', 'add', '-q', '-b', 'wt', wt);
   assert.ok(!existsSync(join(wt, '.git/HEAD')), 'worktree tem .git arquivo, não diretório');
   assert.equal(ignoreWorkflowLocally(wt), true, 'worktree ganha a linha');
-  assert.equal(readFileSync(excludeOf(main), 'utf8'), '/.mark/\n', 'exclude resolvido pelo git, no diretório comum');
+  assert.equal(readFileSync(excludeOf(main), 'utf8'), '/.agent/\n', 'exclude resolvido pelo git, no diretório comum');
   assert.equal(ignoreWorkflowLocally(wt), false, 'worktree idempotente');
   assert.equal(ignoreWorkflowLocally(main), false, 'linha do worktree vale para o repo principal');
-  assert.match(ensureWorkflow(wt), /^# Receita do Mark — repo-worktree$/m);
-  assert.equal(readFileSync(excludeOf(main), 'utf8'), '/.mark/\n', 'sem duplicar');
+  assert.match(ensureWorkflow(wt), /^# Receita do Agent — repo-worktree$/m);
+  assert.equal(readFileSync(excludeOf(main), 'utf8'), '/.agent/\n', 'sem duplicar');
   // sem git / fora de repo: nunca lança nem cria nada
   const bare = join(root, 'sem-git'); mkdirSync(bare, { recursive: true });
   assert.equal(ignoreWorkflowLocally(bare), false);
   assert.equal(ensureWorkflow(bare), null);
-  assert.equal(existsSync(join(bare, '.mark')), false);
+  assert.equal(existsSync(join(bare, '.agent')), false);
   const broken = join(root, 'git-quebrado'); mkdirSync(broken, { recursive: true });
   writeFileSync(join(broken, '.git'), 'gitdir: /nao/existe\n');
   assert.equal(ignoreWorkflowLocally(broken), false, '.git quebrado não explode');
   // regras como orientação do projeto (o que vai ao filho)
   assert.equal(projectRules(wt), '', 'receita nova (nenhuma regra ainda) não gera orientação');
-  rmSync(join(wt, '.mark'), { recursive: true }); // só a receita criada pela fixture
+  rmSync(join(wt, '.agent'), { recursive: true }); // só a receita criada pela fixture
   git(main, 'worktree', 'remove', wt);
   git(main, 'branch', '-d', 'wt');
   applyLearned(late, ['Regra deste projeto para o filho']);
-  assert.match(projectRules(late), /^## Project notes\n[^\n]*guidance only[^\n]*\n- Regra deste projeto para o filho \[by: Mark; proven: no\]$/);
+  assert.match(projectRules(late), /^## Project notes\n[^\n]*guidance only[^\n]*\n- Regra deste projeto para o filho \[by: Agent; proven: no\]$/);
   assert.equal(projectRules(bare), '');
-  ok('exclude local idempotente (worktree incluída); repo que versiona .mark e .gitignore intactos');
+  ok('exclude local idempotente (worktree incluída); repo que versiona .agent e .gitignore intactos');
 }
 
 rmSync(root, { recursive: true, force: true });

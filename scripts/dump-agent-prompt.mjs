@@ -1,17 +1,17 @@
 #!/usr/bin/env node
-// Prompt completo do MARK II, como o modelo recebe: system prompt + ferramentas,
-// capturados do payload real (before_provider_request) num perfil MARK II
+// Prompt completo do Agent, como o modelo recebe: system prompt + ferramentas,
+// capturados do payload real (before_provider_request) num perfil Agent
 // temporário, nos modos simple e complex, rodando num workspace (padrão: este repo).
 // Grava dois arquivos no Vault (~/Sistema/Pi):
 //   header.md       — resumo: tamanhos, system prompt do complex, o que muda no simple, ferramentas
 //   prompt-tudo.md  — literalmente tudo: os dois modos completos, schemas e o payload bruto
 //
-//   node scripts/dump-mark-prompt.mjs [--workspace <dir>] [--dir <pasta>] [--model provider/id]
+//   node scripts/dump-agent-prompt.mjs [--workspace <dir>] [--dir <pasta>] [--model provider/id]
 //                                     [--pi-root <runtime>] [--system-prompt <arquivo>]
 //                                     → header-proposta.md / prompt-tudo-proposta.md
 //
 // Custo: duas chamadas curtas ao modelo (padrão Haiku). Não toca no perfil `mark2`.
-import { setJuiceMode } from '../mark/juice/client.mjs';
+import { setJuiceMode } from '../agent/juice/client.mjs';
 import { spawnSync } from 'node:child_process';
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { homedir, tmpdir } from 'node:os';
@@ -31,7 +31,7 @@ const outAll = join(outDir, `prompt-tudo${suffix}.md`);
 const model = option('--model', 'anthropic/claude-haiku-5-5');
 
 // 1) Perfil temporário, igual ao do mark2 (mesmo preparador), sem instalar launcher.
-const parent = mkdtempSync(join(tmpdir(), 'mark-prompt-'));
+const parent = mkdtempSync(join(tmpdir(), 'agent-prompt-'));
 const piRoot = option('--pi-root', null);
 const prep = spawnSync(process.execPath, [join(repo, 'scripts/prepare-juice-test.mjs'), '--temp-parent', parent, ...(piRoot ? ['--pi-root', resolve(piRoot)] : []), ...(proposal ? ['--system-prompt', resolve(proposal)] : [])], { encoding: 'utf8', env: { ...process.env, NODE_OPTIONS: '' } });
 if (prep.status !== 0) throw new Error(`prepare falhou: ${prep.stderr}`);
@@ -43,20 +43,20 @@ const capture = join(parent, 'capture.mjs');
 writeFileSync(capture, `import { writeFileSync, existsSync } from 'node:fs';
 export default function (pi) {
   pi.on('before_provider_request', (event) => {
-    const path = process.env.MARK_PROMPT_CAPTURE;
-    if (!path || process.env.MARK_JUICE_CHILD === '1' || existsSync(path)) return;
+    const path = process.env.AGENT_PROMPT_CAPTURE;
+    if (!path || process.env.AGENT_JUICE_CHILD === '1' || existsSync(path)) return;
     writeFileSync(path, JSON.stringify(event.payload));
   });
 }
 `);
 
 function capturePayload(mode) {
-  Object.assign(process.env, { MARK_JUICE_ENABLED: '1', MARK_JUICE_HOME: env.MARK_JUICE_HOME, MARK_JUICE_STATE: env.MARK_JUICE_STATE });
+  Object.assign(process.env, { AGENT_JUICE_ENABLED: '1', AGENT_JUICE_HOME: env.AGENT_JUICE_HOME, AGENT_JUICE_STATE: env.AGENT_JUICE_STATE });
   setJuiceMode(mode);
   const file = join(parent, `payload-${mode}.json`);
   const run = spawnSync(join(profile.root, 'launch.sh'), ['-p', '--no-session', '-e', capture, '--model', model, 'Responda só: ok'], {
     cwd: workspace, encoding: 'utf8', timeout: 180_000,
-    env: { ...process.env, MARK_PROMPT_CAPTURE: file, MARK_LEARN: '0', MARK_DISPATCHER: '0' },
+    env: { ...process.env, AGENT_PROMPT_CAPTURE: file, AGENT_LEARN: '0', AGENT_DISPATCHER: '0' },
   });
   if (!existsSync(file)) throw new Error(`sem payload (${mode}): ${run.stderr?.slice(-800)}`);
   return JSON.parse(readFileSync(file, 'utf8'));
@@ -110,9 +110,9 @@ try {
   const fence = '~~~~';
   const stamp = new Date().toISOString().slice(0, 16).replace('T', ' ');
   const doc = [
-    '# Header — prompt do MARK II',
+    '# Header — prompt do Agent',
     '',
-    `> Gerado por \`node ~/Projects/mark-pi/scripts/dump-mark-prompt.mjs\` em ${stamp}.`,
+    `> Gerado por \`node ~/Projects/agent/scripts/dump-agent-prompt.mjs\` em ${stamp}.`,
     `> Workspace: \`${workspace}\` · capturado do payload real enviado ao modelo (${model}).`,
     '> É o que o agente lê: system prompt + descrições das ferramentas. **Não edite aqui** — a fonte é `system-prompt.md` e `tools.md` (ver [[contexto]]); rode o script de novo para atualizar.',
     '',
@@ -159,7 +159,7 @@ try {
     '',
   ].join('\n');
   const all = [
-    '# Prompt do MARK II — tudo',
+    '# Prompt do Agent — tudo',
     '',
     `> Gerado em ${stamp} · workspace \`${workspace}\` · ${model}. Resumo em [[header${suffix}]].${proposal ? ` Proposta: \`${resolve(proposal)}\`.` : ''}`,
     '> Sem resumo nem diff: o que o modelo recebe em cada modo, inclusive mensagens e parâmetros do request. Único campo alterado: `metadata.user_id` (identificadores de conta), omitido.',

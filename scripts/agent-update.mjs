@@ -36,31 +36,31 @@ import {
 	selectLayers,
 	writeStoreLayers,
 } from "./lib/layers.mjs";
-import { extensionFiles, syncMarkExtensions } from "./lib/extensions.mjs";
-import { markSetupFiles, syncMarkSetup } from "./lib/mark-setup.mjs";
+import { extensionFiles, syncAgentExtensions } from "./lib/extensions.mjs";
+import { agentSetupFiles, syncAgentSetup } from "./lib/agent-setup.mjs";
 import { checkoutInfo, commitsAhead } from "./lib/overlay-stale.mjs";
-import { skillFiles, syncMarkSkills } from "./lib/skills.mjs";
+import { skillFiles, syncAgentSkills } from "./lib/skills.mjs";
 import { pinInternalPackages, verifyInstalledInternalPackages } from "./lib/internal-packages.mjs";
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const manifestPath = join(repoRoot, "overlay", "manifest.json");
 const manifest = JSON.parse(readFileSync(manifestPath, "utf8"));
-const productDisplayName = `${manifest.name}${manifest.mark ? ` Mark ${manifest.mark}` : ""}`;
-const defaultStore = join(homedir(), ".local", "share", "pi-overlay");
-const releaseMetadataFile = "pi-overlay.json";
+const productDisplayName = manifest.name;
+const defaultStore = join(homedir(), ".local", "share", "agent");
+const releaseMetadataFile = "agent-release.json";
 const digestAlgorithm = 3;
 const supportedDigestAlgorithms = new Set([1, 2, 3]);
 const ignoredTreeEntries = new Set([".DS_Store"]);
-// Releases órfãs (nem current/previous, nem preparadas, nem em uso pelo Mark II) mantidas pelo update.
+// Releases órfãs (nem current/previous, nem preparadas, nem em uso pelo Agent) mantidas pelo update.
 const orphanReleaseRetention = 1;
 // Backups de launcher mantidos pelo `overlay-gc`.
 const backupRetention = 5;
-// Nomes que o updater gera em backups/: carimbo ISO (backupLauncher) e carimbo + "-mark-ii-<rótulo>" (captureMarkIIBackup).
-const updaterBackupName = /^\d{4}-\d\d-\d\dT\d\d-\d\d-\d\d-\d{3}Z(?:-mark-ii-([a-z]+))?$/;
+// Nomes que o updater gera em backups/: carimbo ISO (backupLauncher) e carimbo + "-agent-<rótulo>" (captureAgentBackup).
+const updaterBackupName = /^\d{4}-\d\d-\d\dT\d\d-\d\d-\d\d-\d{3}Z(?:-agent-([a-z]+))?$/;
 // Camadas que saíram do overlay; independente do manifesto, que pode já nem listá-las.
 const removedLayers = {
 	"context-windows":
-		"layer context-windows was removed in 2026-10. It was never ported past Pi 0.87. Run without it, or check out an older mark-pi to keep it.",
+		"layer context-windows was removed in 2026-10. It was never ported past Pi 0.87. Run without it, or check out an older agent to keep it.",
 };
 // Receipt v1 additionally hashes raw bytes and file modes; not a runtime digest format.
 const receiptDigestAlgorithm = 0;
@@ -79,24 +79,24 @@ function tarCommand() {
 }
 
 /**
- * Mark II viaja no bundle instalado como três arquivos: o helper de runtime/artefatos, o helper de
+ * Agent viaja no bundle instalado como três arquivos: o helper de runtime/artefatos, o helper de
  * recursos e o CLI de lançamento. O updater não os reimplementa — ele os importa do próprio bundle
  * em que está rodando (`repoRoot`), que é imutável e content-addressed. Um checkout que ainda não
  * carrega esses arquivos continua instalando e atualizando pelo caminho legado.
  */
-const markIIFiles = {
-	runtime: "scripts/lib/mark-ii-runtime.mjs",
-	resources: "scripts/lib/mark-ii-resources.mjs",
-	launch: "scripts/mark-ii-launch.mjs",
+const agentFiles = {
+	runtime: "scripts/lib/agent-runtime.mjs",
+	resources: "scripts/lib/agent-resources.mjs",
+	launch: "scripts/agent-launch.mjs",
 };
-const markIIRuntimeExports = [
-	"prepareMarkIIArtifact",
-	"validateMarkIIArtifact",
-	"readMarkIIConfig",
-	"writeMarkIIConfig",
+const agentRuntimeExports = [
+	"prepareAgentArtifact",
+	"validateAgentArtifact",
+	"readAgentConfig",
+	"writeAgentConfig",
 ];
-const markIIResourceExports = ["planMarkIIResources", "applyMarkIIResources", "rollbackMarkIIResources"];
-const markIIStoreDir = "mark-ii";
+const agentResourceExports = ["planAgentResources", "applyAgentResources", "rollbackAgentResources"];
+const agentStoreDir = "runtime";
 
 // No Windows `npm`/`npx` são scripts .cmd, e desde a correção de CVE-2024-27980 o Node recusa
 // spawná-los sem shell. Rodar por shell significa montar a linha de comando à mão, com quoting
@@ -176,15 +176,15 @@ function parseArgs(argv) {
 		noPrune: false,
 		adoptLauncher: false,
 		vendorModelData: false,
-		markIIEnable: false,
-		markIIDisable: false,
+		agentEnable: false,
+		agentDisable: false,
 		status: false,
 		gc: false,
 		dryRun: false,
 		keep: 1,
 		with: [],
 		without: [],
-		store: process.env.PI_OVERLAY_STORE ? resolve(process.env.PI_OVERLAY_STORE) : defaultStore,
+		store: process.env.AGENT_STORE ? resolve(process.env.AGENT_STORE) : defaultStore,
 	};
 	for (let index = 0; index < args.length; index++) {
 		const arg = args[index];
@@ -206,18 +206,18 @@ function parseArgs(argv) {
 		else if (arg === "--no-prune") parsed.noPrune = true;
 		else if (arg === "--adopt-launcher") parsed.adoptLauncher = true;
 		else if (arg === "--vendor-model-data") parsed.vendorModelData = true;
-		else if (arg === "--mark-ii-enable") parsed.markIIEnable = true;
-		else if (arg === "--mark-ii-disable") parsed.markIIDisable = true;
+		else if (arg === "--agent-enable") parsed.agentEnable = true;
+		else if (arg === "--agent-disable") parsed.agentDisable = true;
 		else if (arg === "--juice-home") parsed.juiceHome = args[++index] ?? fail("--juice-home requires an absolute path");
 		else if (arg === "--with") parsed.with.push(args[++index] ?? fail("--with requires a layer name"));
 		else if (arg === "--without") parsed.without.push(args[++index] ?? fail("--without requires a layer name"));
 		else if (arg === "--ref") parsed.ref = args[++index] ?? fail("--ref requires a value");
 		else if (arg === "--store") parsed.store = resolve(args[++index] ?? fail("--store requires a value"));
-		else fail(`Unknown overlay update option: ${arg}. Usage: pi-overlay-update [--prepare | --promote <releaseId> | --check | --rollback | --mark-ii-enable --juice-home <abs> | --mark-ii-disable | --status | --gc [--dry-run] [--keep <N>]] [--hydrate] [--ref <vX.Y.Z|latest>] [--with <layer>] [--without <layer>] [--rollback] [--force] [--no-prune] [--adopt-launcher] [--vendor-model-data] [--store <path>]`);
+		else fail(`Unknown overlay update option: ${arg}. Usage: agent-update [--prepare | --promote <releaseId> | --check | --rollback | --agent-enable --juice-home <abs> | --agent-disable | --status | --gc [--dry-run] [--keep <N>]] [--hydrate] [--ref <vX.Y.Z|latest>] [--with <layer>] [--without <layer>] [--rollback] [--force] [--no-prune] [--adopt-launcher] [--vendor-model-data] [--store <path>]`);
 	}
-	const modes = [parsed.prepare, parsed.promote !== undefined, parsed.check, parsed.rollback, parsed.markIIEnable, parsed.markIIDisable, parsed.status, parsed.gc].filter(Boolean);
+	const modes = [parsed.prepare, parsed.promote !== undefined, parsed.check, parsed.rollback, parsed.agentEnable, parsed.agentDisable, parsed.status, parsed.gc].filter(Boolean);
 	if (modes.length > 1) {
-		fail("--prepare, --promote, --check, --rollback, --mark-ii-enable, --mark-ii-disable, --status and --gc are mutually exclusive");
+		fail("--prepare, --promote, --check, --rollback, --agent-enable, --agent-disable, --status and --gc are mutually exclusive");
 	}
 	const reject = (flags) => {
 		for (const flag of flags) if (args.includes(flag)) fail(`${flag} is incompatible with this mode`);
@@ -229,16 +229,16 @@ function parseArgs(argv) {
 	if (!parsed.gc && (args.includes("--dry-run") || args.includes("--keep"))) fail("--dry-run and --keep are only valid with --gc");
 	if (parsed.promote !== undefined) reject(["--ref", "--with", "--without", "--hydrate", "--vendor-model-data", "--simulate-conflict"]);
 	if (parsed.prepare) reject(["--adopt-launcher", "--no-prune", "--force"]);
-	// Habilitar/desabilitar Mark II não constrói nem seleciona camadas: ele opera sobre a release que
+	// Habilitar/desabilitar Agent não constrói nem seleciona camadas: ele opera sobre a release que
 	// já está ativa. Aceitar uma flag de build aqui prometeria uma reconstrução que não acontece.
-	if (parsed.markIIEnable || parsed.markIIDisable) {
+	if (parsed.agentEnable || parsed.agentDisable) {
 		reject(["--ref", "--with", "--without", "--hydrate", "--vendor-model-data", "--simulate-conflict", "--no-prune"]);
 	}
-	if (parsed.markIIEnable && parsed.juiceHome === undefined) {
-		fail("--mark-ii-enable requires --juice-home <absolute path>: the Juice home is recorded in the Mark II config");
+	if (parsed.agentEnable && parsed.juiceHome === undefined) {
+		fail("--agent-enable requires --juice-home <absolute path>: the Juice home is recorded in the Agent config");
 	}
 	if (parsed.juiceHome !== undefined) {
-		if (!parsed.markIIEnable) fail("--juice-home is only valid with --mark-ii-enable");
+		if (!parsed.agentEnable) fail("--juice-home is only valid with --agent-enable");
 		if (!isAbsolute(parsed.juiceHome) || parsed.juiceHome.split(/[\\/]/).includes("..")) {
 			fail(`--juice-home requires an absolute path without "..": got ${JSON.stringify(parsed.juiceHome)}`);
 		}
@@ -344,24 +344,24 @@ async function rollback(store, options) {
 		);
 	}
 	// O par do rollback é preparado e validado antes dos ponteiros, igual à ativação: voltar o Pi sem
-	// um artefato Mark II válido para a release antiga deixaria o opt-in apontando para o par errado.
-	const markII = await rollbackMarkIIPair(store, previousTarget, { store, adoptLauncher: options.adoptLauncher });
+	// um artefato Agent válido para a release antiga deixaria o opt-in apontando para o par errado.
+	const agent = await rollbackAgentPair(store, previousTarget, { store, adoptLauncher: options.adoptLauncher });
 	atomicSymlink(previousTarget, current);
 	if (currentTarget) atomicSymlink(currentTarget, previous);
 	const metadata = releaseMetadata(previousTarget) ?? {};
-	let markIIConfig;
+	let agentConfig;
 	try {
-		markIIConfig = markII ? commitMarkIIPair(store, markII) : undefined;
+		agentConfig = agent ? commitAgentPair(store, agent) : undefined;
 	} catch (error) {
 		// Os ponteiros já voltaram: desfazer o par aqui deixaria `current` na release antiga com o par
 		// novo (ou nenhum). Voltar os ponteiros é o que mantém par e runtime coerentes.
-		const markIIRestore = restoreMarkIIPair(store, markII);
+		const agentRestore = restoreAgentPair(store, agent);
 		atomicSymlink(currentTarget ?? previousTarget, current);
 		if (previousTarget) atomicSymlink(previousTarget, previous);
 		error.message =
-			`${error.message}${markIIRestore.note}\nRollback aborted while switching the Mark II pair: current/previous were ` +
+			`${error.message}${agentRestore.note}\nRollback aborted while switching the Agent pair: current/previous were ` +
 			`restored to ${currentTarget ?? "none"}/${previousTarget} and active.json was left untouched.`;
-		if (markIIRestore.unknown || error.markIIResourcesUnknown) error.activationState = "unknown";
+		if (agentRestore.unknown || error.agentResourcesUnknown) error.activationState = "unknown";
 		throw error;
 	}
 	// Rollback troca o par, não o bundle do launcher: o launcher instalado precisa entender
@@ -369,7 +369,7 @@ async function rollback(store, options) {
 	writeActive(store, previousTarget, metadata, launcherRecord(store), {
 		rolledBackAt: new Date().toISOString(),
 		rolledBackFrom: currentTarget ?? null,
-		markII: markIIConfig ? markIIActiveSummary(markIIConfig) : undefined,
+		agent: agentConfig ? agentActiveSummary(agentConfig) : undefined,
 		digestAlgorithm: metadata.treeDigest ? (metadata.digestAlgorithm ?? 1) : undefined,
 		degraded: report.problems.length > 0 ? true : undefined,
 		degradedReasons: report.problems.length > 0 ? report.problems : undefined,
@@ -878,29 +878,29 @@ function installOverlayBundle(store) {
 				.map((name) => `${entry.path}/${name}`),
 		),
 		"overlay/README.md",
-		"scripts/pi-overlay-update.mjs",
+		"scripts/agent-update.mjs",
 		// The updater imports these at module load; a bundle without them cannot run `pi update` at all.
 		"scripts/lib/store-lock.mjs",
 		"scripts/lib/internal-packages.mjs",
 		"scripts/lib/layers.mjs",
 		"scripts/lib/skills.mjs",
 		"scripts/lib/extensions.mjs",
-		"scripts/lib/mark-setup.mjs",
+		"scripts/lib/agent-setup.mjs",
 		"scripts/lib/overlay-stale.mjs",
-		// Skills padrão do Mark: o bundle instalado precisa delas para reinstalar sem checkout.
+		// Skills padrão do Agent: o bundle instalado precisa delas para reinstalar sem checkout.
 		...skillFiles(repoRoot),
 		// Idem a extensão Megamind.
 		...extensionFiles(repoRoot),
-		// Idem o setup do Gabriel (extensões, temas, papéis de subagente) vendorizado em `mark/`.
-		...markSetupFiles(repoRoot),
+		// Idem o setup do Gabriel (extensões, temas, papéis de subagente) vendorizado em `agent/`.
+		...agentSetupFiles(repoRoot),
 		// Os dois launchers viajam sempre: o bundle é o mesmo conteúdo em qualquer plataforma, e um
 		// store copiado de uma máquina para outra continua tendo o wrapper da plataforma que o lê.
-		"scripts/pi-overlay-wrapper.sh",
-		"scripts/pi-overlay-wrapper.cmd",
-		// Mark II: o launcher e os dois helpers precisam viver no bundle imutável, senão `pi` passaria a
-		// depender do checkout. Um checkout anterior ao Mark II não carrega esses arquivos e segue
+		"scripts/agent-wrapper.sh",
+		"scripts/agent-wrapper.cmd",
+		// Agent: o launcher e os dois helpers precisam viver no bundle imutável, senão `pi` passaria a
+		// depender do checkout. Um checkout anterior ao Agent não carrega esses arquivos e segue
 		// instalando pelo caminho legado, em vez de falhar no empacotamento.
-		...Object.values(markIIFiles).filter((relative) => existsSync(join(repoRoot, relative))),
+		...Object.values(agentFiles).filter((relative) => existsSync(join(repoRoot, relative))),
 	];
 	const fingerprint = createHash("sha256");
 	for (const relative of relativeFiles) fingerprint.update(relative).update("\0").update(sha256(join(repoRoot, relative)));
@@ -926,8 +926,8 @@ function installOverlayBundle(store) {
 		mkdirSync(dirname(destination), { recursive: true });
 		copyFileSync(join(repoRoot, relative), destination);
 	}
-	chmodSync(join(temporary, "scripts", "pi-overlay-update.mjs"), 0o755);
-	chmodSync(join(temporary, "scripts", "pi-overlay-wrapper.sh"), 0o755);
+	chmodSync(join(temporary, "scripts", "agent-update.mjs"), 0o755);
+	chmodSync(join(temporary, "scripts", "agent-wrapper.sh"), 0o755);
 	mkdirSync(dirname(bundle), { recursive: true });
 	renameSync(temporary, bundle);
 	return bundle;
@@ -953,17 +953,17 @@ function backupLauncher(store, path) {
 
 /**
  * Windows não tem symlink de arquivo sem privilégio, e o PowerShell dos sócios resolve comandos por
- * PATHEXT: o launcher aqui são dois arquivos de verdade em `~/.local/bin` (`pi.cmd` para cmd e
- * PowerShell, `pi.ps1` para quando o PowerShell prefere o .ps1), ambos encaminhando para o wrapper
+ * PATHEXT: o launcher aqui são dois arquivos de verdade em `~/.local/bin` (`agent.cmd` para cmd e
+ * PowerShell, `agent.ps1` para quando o PowerShell prefere o .ps1), ambos encaminhando para o wrapper
  * do store — que é quem carrega a semântica e é reescrito a cada update.
  */
 function adoptWindowsLauncher(store, wrapper, overlayRepo) {
 	const localBin = join(homedir(), ".local", "bin");
 	mkdirSync(localBin, { recursive: true });
 	const launchers = [
-		{ path: join(localBin, "pi.cmd"), body: `@echo off\r\ncall "${wrapper}" %*\r\nexit /b\r\n` },
+		{ path: join(localBin, "agent.cmd"), body: `@echo off\r\ncall "${wrapper}" %*\r\nexit /b\r\n` },
 		{
-			path: join(localBin, "pi.ps1"),
+			path: join(localBin, "agent.ps1"),
 			body: `#!/usr/bin/env pwsh\r\n& "${wrapper}" @args\r\nexit $LASTEXITCODE\r\n`,
 		},
 	];
@@ -986,7 +986,7 @@ function adoptWindowsLauncher(store, wrapper, overlayRepo) {
 		.some((entry) => entry && resolve(entry).toLowerCase() === localBin.toLowerCase());
 	if (!inPath) {
 		console.warn(
-			`${localBin} não está no PATH; \`pi\` só vai resolver depois de adicioná-lo:\n` +
+			`${localBin} não está no PATH; \`agent\` só vai resolver depois de adicioná-lo:\n` +
 				`  setx PATH "%PATH%;${localBin}"   (abra um terminal novo depois)`,
 		);
 	}
@@ -995,7 +995,7 @@ function adoptWindowsLauncher(store, wrapper, overlayRepo) {
 
 function installWrapper(store, adoptLauncher) {
 	const overlayRepo = installOverlayBundle(store);
-	const templateFile = isWindows ? "pi-overlay-wrapper.cmd" : "pi-overlay-wrapper.sh";
+	const templateFile = isWindows ? "agent-wrapper.cmd" : "agent-wrapper.sh";
 	const template = readFileSync(join(overlayRepo, "scripts", templateFile), "utf8");
 	const rendered = template.replaceAll("__OVERLAY_REPO__", overlayRepo);
 	const wrapper = join(store, "bin", isWindows ? "pi-wrapper.cmd" : "pi-wrapper");
@@ -1011,7 +1011,7 @@ function installWrapper(store, adoptLauncher) {
 	}
 	if (isWindows) return adoptWindowsLauncher(store, wrapper, overlayRepo);
 
-	const localPi = join(homedir(), ".local", "bin", "pi");
+	const localPi = join(homedir(), ".local", "bin", "agent");
 	let currentIsWrapper = false;
 	try {
 		currentIsWrapper = lstatSync(localPi).isSymbolicLink() && realpathSync(localPi) === realpathSync(wrapper);
@@ -1043,12 +1043,12 @@ function checkoutSource() {
 }
 
 /**
- * A origem pertence à RELEASE (gravada em `pi-overlay.json` quando ela é construída) e `active.json`
+ * A origem pertence à RELEASE (gravada em `agent-release.json` quando ela é construída) e `active.json`
  * a herda da metadata da release que passa a valer: rollback/promote descrevem o destino, nunca o
  * HEAD atual nem a release que saiu. Release sem origem (feita por updater antigo) fica sem origem.
- * O Mark II sobrescreve essa origem após instalar seu artefato: ele vem do checkout atual mesmo
+ * O Agent sobrescreve essa origem após instalar seu artefato: ele vem do checkout atual mesmo
  * quando a release Pi é reaproveitada. A metadata imutável da release continua intacta.
- * `inherit` (só o enable do Mark II, que mantém a mesma release) preserva a origem já registrada.
+ * `inherit` (só o enable do Agent, que mantém a mesma release) preserva a origem já registrada.
  */
 function sourceRecord(store, metadata, inherit = false) {
 	if (metadata?.sourceRepo && metadata?.sourceCommit) return { sourceRepo: metadata.sourceRepo, sourceCommit: metadata.sourceCommit };
@@ -1058,7 +1058,7 @@ function sourceRecord(store, metadata, inherit = false) {
 }
 
 // Sem checkout (updater do bundle), não regride a origem de um artefato já instalado sobre o mesmo Pi.
-function markIISource(store, releaseDir) {
+function agentSource(store, releaseDir) {
 	const source = checkoutSource();
 	if (source.sourceCommit) return source;
 	const active = activeRecord(store);
@@ -1111,64 +1111,64 @@ function launcherRecord(store) {
 	};
 }
 
-function markIIFilePath(key) {
-	return join(repoRoot, markIIFiles[key]);
+function agentFilePath(key) {
+	return join(repoRoot, agentFiles[key]);
 }
 
-function requireMarkIIExports(module, names, file) {
+function requireAgentExports(module, names, file) {
 	const missing = names.filter((name) => typeof module[name] !== "function");
 	if (missing.length > 0) {
 		fail(
-			`${file} does not export ${missing.join(", ")}: the Mark II helper contract changed. ` +
-				`The updater speaks the contract in .pi/goals/mark-ii-global-activate-20261013/contracts.md; ` +
+			`${file} does not export ${missing.join(", ")}: the Agent helper contract changed. ` +
+				`The updater speaks the contract in .pi/goals/agent-global-activate-20261013/contracts.md; ` +
 				`nothing was changed.`,
 		);
 	}
 	return module;
 }
 
-async function loadMarkIIRuntime() {
-	const file = markIIFilePath("runtime");
+async function loadAgentRuntime() {
+	const file = agentFilePath("runtime");
 	if (!existsSync(file)) {
-		fail(`Mark II runtime helper is missing: ${file}. This bundle/checkout cannot manage Mark II; nothing was changed.`);
+		fail(`Agent runtime helper is missing: ${file}. This bundle/checkout cannot manage Agent; nothing was changed.`);
 	}
-	return requireMarkIIExports(await import(pathToFileURL(file).href), markIIRuntimeExports, file);
+	return requireAgentExports(await import(pathToFileURL(file).href), agentRuntimeExports, file);
 }
 
-async function loadMarkIIResourceHelper() {
-	const file = markIIFilePath("resources");
+async function loadAgentResourceHelper() {
+	const file = agentFilePath("resources");
 	if (!existsSync(file)) {
-		fail(`Mark II resources helper is missing: ${file}. This bundle/checkout cannot manage Mark II; nothing was changed.`);
+		fail(`Agent resources helper is missing: ${file}. This bundle/checkout cannot manage Agent; nothing was changed.`);
 	}
-	return requireMarkIIExports(await import(pathToFileURL(file).href), markIIResourceExports, file);
+	return requireAgentExports(await import(pathToFileURL(file).href), agentResourceExports, file);
 }
 
 /**
- * Opt-in lido sem helper é opt-in perdido: um bundle anterior ao Mark II não sabe ler a config, e
- * seguir pelo caminho legado em silêncio reinstalaria recursos que o Mark II gerencia. Quando o
- * store tem `mark-ii/` e o helper não está no bundle, o aviso é explícito.
+ * Opt-in lido sem helper é opt-in perdido: um bundle anterior ao Agent não sabe ler a config, e
+ * seguir pelo caminho legado em silêncio reinstalaria recursos que o Agent gerencia. Quando o
+ * store tem `runtime/` e o helper não está no bundle, o aviso é explícito.
  */
-async function readMarkIIState(store) {
-	if (!existsSync(markIIFilePath("runtime"))) {
-		if (existsSync(join(store, markIIStoreDir))) {
+async function readAgentState(store) {
+	if (!existsSync(agentFilePath("runtime"))) {
+		if (existsSync(join(store, agentStoreDir))) {
 			console.warn(
-				`${join(store, markIIStoreDir)} exists but this updater has no ${markIIFiles.runtime}: proceeding on the ` +
-					`legacy path without reading the Mark II opt-in. Run the updater from a bundle/checkout that ships ` +
-					`the Mark II helpers to preserve it.`,
+				`${join(store, agentStoreDir)} exists but this updater has no ${agentFiles.runtime}: proceeding on the ` +
+					`legacy path without reading the Agent opt-in. Run the updater from a bundle/checkout that ships ` +
+					`the Agent helpers to preserve it.`,
 			);
 		}
 		return undefined;
 	}
-	const runtime = await loadMarkIIRuntime();
-	return { runtime, config: runtime.readMarkIIConfig(store) ?? null };
+	const runtime = await loadAgentRuntime();
+	return { runtime, config: runtime.readAgentConfig(store) ?? null };
 }
 
 /**
- * `piRoot` do par Mark II: a cópia instalada do pacote oficial dentro da release, não a raiz da
+ * `piRoot` do par Agent: a cópia instalada do pacote oficial dentro da release, não a raiz da
  * release. Pares novos exigem o host clássico; rollback também aceita um par histórico indexado,
  * sempre no diretório do pacote; `releases/<id>` contém apenas o `bin/pi` e o `lib/node_modules`.
  */
-function markIIPiRoot(releaseDir, runtime, history = {}) {
+function agentPiRoot(releaseDir, runtime, history = {}) {
 	const entry = typeof runtime?.PI_ENTRY === "string" ? runtime.PI_ENTRY : "dist/cli.js";
 	const candidates = findInstalledPackages(releaseDir, manifest.officialPackage)
 		.filter((directory) => history[directory] || existsSync(join(directory, entry)))
@@ -1177,7 +1177,7 @@ function markIIPiRoot(releaseDir, runtime, history = {}) {
 	if (candidates.length === 0) {
 		fail(
 			`No installed copy of ${manifest.officialPackage} under ${releaseDir} ships ${entry}: this release does not ` +
-				`carry the classic host that Mark II pairs with. Update to a release built from the current overlay ` +
+				`carry the classic host that Agent pairs with. Update to a release built from the current overlay ` +
 				`first; nothing was changed.`,
 		);
 	}
@@ -1190,20 +1190,20 @@ function markIIPiRoot(releaseDir, runtime, history = {}) {
  * reaplicação por ele. Um backup novo a cada enable perderia essa cadeia e um opt-out posterior
  * não saberia mais o que devolver. Quando a config já aponta para um recibo, o diretório dele manda.
  */
-function markIIResourceBackupDir(store, config) {
+function agentResourceBackupDir(store, config) {
 	if (config?.resourceReceipt) return dirname(config.resourceReceipt);
-	return join(store, markIIStoreDir, "resources-backup");
+	return join(store, agentStoreDir, "resources-backup");
 }
 
-/** HOME/agent-dir em que os recursos do Mark II são registrados, com a guarda de store isolado. */
-function markIIHostDirs(options) {
+/** HOME/agent-dir em que os recursos do Agent são registrados, com a guarda de store isolado. */
+function agentHostDirs(options) {
 	const homeDir = homedir();
 	const agentDir = process.env.PI_CODING_AGENT_DIR || join(homeDir, ".pi", "agent");
 	// Um store que não é o do usuário não autoriza escrita no perfil real: ou o chamador isola o
 	// agent-dir (fixture, teste), ou ele está operando o store padrão de propósito.
 	if (!options.adoptLauncher && !process.env.PI_CODING_AGENT_DIR) {
 		fail(
-			`Refusing to register Mark II resources from the non-default store ${options.store} into ${agentDir}: ` +
+			`Refusing to register Agent resources from the non-default store ${options.store} into ${agentDir}: ` +
 				`set PI_CODING_AGENT_DIR (and HOME) to an isolated profile, or operate the default store ${defaultStore}.`,
 		);
 	}
@@ -1211,14 +1211,14 @@ function markIIHostDirs(options) {
 }
 
 /**
- * Backup seletivo das coisas que o Mark II troca: `active.json`, o wrapper do store, o ponteiro
- * `~/.local/bin/pi` (como comando de restauração) e a config do Mark II. Nada de settings inteiro,
+ * Backup seletivo das coisas que o Agent troca: `active.json`, o wrapper do store, o ponteiro
+ * `~/.local/bin/agent` (como comando de restauração) e a config do Agent. Nada de settings inteiro,
  * nada de auth/Vault/ledger — o delta de settings é responsabilidade do recibo de recursos, que o
  * helper do B grava dentro de `resources/`.
  */
-function captureMarkIIBackup(store, label, { config, resourcesDir } = {}) {
+function captureAgentBackup(store, label, { config, resourcesDir } = {}) {
 	const stamp = new Date().toISOString().replaceAll(/[:.]/g, "-");
-	const dir = join(store, "backups", `${stamp}-mark-ii-${label}`);
+	const dir = join(store, "backups", `${stamp}-agent-${label}`);
 	mkdirSync(dir, { recursive: true });
 	const restore = [];
 	const active = join(store, "active.json");
@@ -1238,33 +1238,33 @@ function captureMarkIIBackup(store, label, { config, resourcesDir } = {}) {
 		if (target) restore.push(isWindows ? `rem launcher ${localPi} -> ${target}` : `ln -sfn ${target} ${localPi}`);
 	}
 	if (config) {
-		writeFileSync(join(dir, "mark-ii-config.json"), `${JSON.stringify(config, null, 2)}\n`);
+		writeFileSync(join(dir, "agent-config.json"), `${JSON.stringify(config, null, 2)}\n`);
 		restore.push(
 			config.enabled
-				? `# reativar: node ${join(repoRoot, "scripts", "pi-overlay-update.mjs")} --store ${store} --mark-ii-enable --juice-home ${config.juiceHome}`
-				: `# a config salva em ${join(dir, "mark-ii-config.json")} já estava desabilitada`,
+				? `# reativar: node ${join(repoRoot, "scripts", "agent-update.mjs")} --store ${store} --agent-enable --juice-home ${config.juiceHome}`
+				: `# a config salva em ${join(dir, "agent-config.json")} já estava desabilitada`,
 		);
 	}
 	if (resourcesDir) restore.push(`# recursos (delta de settings/registros): recibo e CAS em ${resourcesDir}`);
 	writeFileSync(join(dir, "restore.txt"), `${restore.join("\n")}\n`, "utf8");
-	console.log(`Mark II ${label}: selective backup at ${dir} (restore commands in ${join(dir, "restore.txt")})`);
+	console.log(`Agent ${label}: selective backup at ${dir} (restore commands in ${join(dir, "restore.txt")})`);
 	return { dir, resourcesDir };
 }
 
-/** markRoot do par: o helper do A devolve `markRoot`; o fallback é o layout do contrato. */
-function markIIMarkRoot(artifact) {
-	return artifact.markRoot ?? join(artifact.artifactRoot, "mark");
+/** agentRoot do par: o helper do A devolve `agentRoot`; o fallback é o layout do contrato. */
+function artifactAgentRoot(artifact) {
+	return artifact.agentRoot ?? join(artifact.artifactRoot, "agent");
 }
 
 /**
- * O recibo de recursos é MUTÁVEL: `applyMarkIIResources` reescreve `<backupDir>/<RECEIPT_NAME>`.
+ * O recibo de recursos é MUTÁVEL: `applyAgentResources` reescreve `<backupDir>/<RECEIPT_NAME>`.
  * Antes de desfazer o recibo do par antigo para registrar o do par novo, ele é copiado para um
  * snapshot imutável: assim uma falha no meio da troca ainda tem o registro exato do que valia (o
  * CAS do estado pessoal é endereçado por conteúdo e não é apagado por nenhuma reaplicação).
  */
-function snapshotMarkIIReceipt(store, label, receiptPath) {
+function snapshotAgentReceipt(store, label, receiptPath) {
 	if (!receiptPath || !existsSync(receiptPath)) return undefined;
-	const dir = join(store, markIIStoreDir, "resource-snapshots");
+	const dir = join(store, agentStoreDir, "resource-snapshots");
 	mkdirSync(dir, { recursive: true });
 	const stamp = new Date().toISOString().replaceAll(/[:.]/g, "-");
 	const path = join(dir, `${stamp}-${label}-${basename(receiptPath)}`);
@@ -1272,23 +1272,23 @@ function snapshotMarkIIReceipt(store, label, receiptPath) {
 	return path;
 }
 
-/** Plano com impossibilidade declarada é erro: nada de registrar o Mark II pela metade. */
-function planMarkIIResourcesOrFail(resources, { markRoot, agentDir, homeDir }) {
-	const plan = resources.planMarkIIResources({ markRoot, agentDir, homeDir });
+/** Plano com impossibilidade declarada é erro: nada de registrar o Agent pela metade. */
+function planAgentResourcesOrFail(resources, { agentRoot, agentDir, homeDir }) {
+	const plan = resources.planAgentResources({ agentRoot, agentDir, homeDir });
 	const blocking = plan?.report?.blocking ?? [];
 	if (blocking.length > 0) {
-		throw new Error(`the Mark II resource plan for ${markRoot} has unresolved impossibilities: ${blocking.join("; ")}`);
+		throw new Error(`the Agent resource plan for ${agentRoot} has unresolved impossibilities: ${blocking.join("; ")}`);
 	}
 	return plan;
 }
 
 /** Aplicação sem recibo absoluto é falha: sem recibo não existe rollback nem opt-out. */
-function applyMarkIIResourcesOrFail(resources, plan, backupDir) {
-	const result = resources.applyMarkIIResources({ plan, backupDir });
+function applyAgentResourcesOrFail(resources, plan, backupDir) {
+	const result = resources.applyAgentResources({ plan, backupDir });
 	const receiptPath = result?.receiptPath;
 	if (!receiptPath || !isAbsolute(receiptPath)) {
 		throw new Error(
-			`applyMarkIIResources returned no absolute receiptPath (got ${JSON.stringify(receiptPath)}); whatever it ` +
+			`applyAgentResources returned no absolute receiptPath (got ${JSON.stringify(receiptPath)}); whatever it ` +
 				`registered in ${plan.agentDir ?? "the agent folder"} cannot be undone by the updater`,
 		);
 	}
@@ -1299,36 +1299,36 @@ function applyMarkIIResourcesOrFail(resources, plan, backupDir) {
  * Rollback de recursos que devolve `conflicts` é FALHA, não sucesso: conflito significa que uma
  * mudança posterior do usuário foi preservada e o registro gerenciado ficou de pé.
  */
-function rollbackMarkIIResourcesOrFail(resources, receiptPath) {
-	const result = resources.rollbackMarkIIResources({ receiptPath });
+function rollbackAgentResourcesOrFail(resources, receiptPath) {
+	const result = resources.rollbackAgentResources({ receiptPath });
 	const conflicts = result?.conflicts ?? [];
 	if (conflicts.length > 0) {
 		throw Object.assign(new Error(
-			`Mark II resource rollback refused before writing; resources unchanged (${receiptPath}): ` +
+			`Agent resource rollback refused before writing; resources unchanged (${receiptPath}): ` +
 				conflicts.map((conflict) => `${conflict.key ?? conflict.path ?? "?"}: ${conflict.reason ?? "conflict"}`).join("; "),
-		), { code: "MARK_II_RESOURCE_CONFLICT" });
+		), { code: "AGENT_RESOURCE_CONFLICT" });
 	}
 	return result;
 }
 
-/** Reaplica os registros de um markRoot sobre o estado pessoal (volta ao par anterior). */
-function restoreMarkIIResources({ resources, markRoot, agentDir, homeDir, backupDir, snapshot }) {
+/** Reaplica os registros de um agentRoot sobre o estado pessoal (volta ao par anterior). */
+function restoreAgentResources({ resources, agentRoot, agentDir, homeDir, backupDir, snapshot }) {
 	try {
-		const plan = planMarkIIResourcesOrFail(resources, { markRoot, agentDir, homeDir });
-		const applied = applyMarkIIResourcesOrFail(resources, plan, backupDir);
+		const plan = planAgentResourcesOrFail(resources, { agentRoot, agentDir, homeDir });
+		const applied = applyAgentResourcesOrFail(resources, plan, backupDir);
 		return {
 			restored: true,
 			receiptPath: applied.receiptPath,
-			note: `The previous pair's resource registrations (${markRoot}) were RE-APPLIED; receipt ${applied.receiptPath}.`,
+			note: `The previous pair's resource registrations (${agentRoot}) were RE-APPLIED; receipt ${applied.receiptPath}.`,
 		};
 	} catch (error) {
 		return {
 			restored: false,
 			note:
-				`The previous pair's resource registrations (${markRoot}) could NOT be re-applied (${error.message}): the ` +
+				`The previous pair's resource registrations (${agentRoot}) could NOT be re-applied (${error.message}): the ` +
 				`resource state could not be verified; do not assume registrations were restored` +
-				`${snapshot ? `; the previous receipt was snapshotted at ${snapshot}` : ""}. Run --mark-ii-enable again or ` +
-				`--mark-ii-disable before using pi.`,
+				`${snapshot ? `; the previous receipt was snapshotted at ${snapshot}` : ""}. Run --agent-enable again or ` +
+				`--agent-disable before using pi.`,
 		};
 	}
 }
@@ -1339,29 +1339,29 @@ function restoreMarkIIResources({ resources, markRoot, agentDir, homeDir, backup
  * Só trocar `artifactId`/`piRoot` na config deixaria `settings.extensions` carregando as extensões
  * da release ANTIGA (par misturado, tools duplicadas). Então: desfaz o recibo do artefato antigo —
  * o que devolve o settings ao estado pessoal original, preservado em CAS — e só então planeja e
- * aplica o markRoot novo sobre esse estado. O recibo resultante descreve o estado pessoal como
- * "antes", de modo que um `--mark-ii-disable` posterior devolva os registros genuinamente originais.
+ * aplica o agentRoot novo sobre esse estado. O recibo resultante descreve o estado pessoal como
+ * "antes", de modo que um `--agent-disable` posterior devolva os registros genuinamente originais.
  *
  * Falha depois de desfazer: tenta reaplicar o par antigo e diz exatamente o que ficou de pé.
  */
-function switchMarkIIResources({ store, resources, label, previousReceipt, previousMarkRoot, markRoot, agentDir, homeDir }) {
+function switchAgentResources({ store, resources, label, previousReceipt, previousAgentRoot, agentRoot, agentDir, homeDir }) {
 	const backupDir = dirname(previousReceipt);
-	const snapshot = snapshotMarkIIReceipt(store, label, previousReceipt);
+	const snapshot = snapshotAgentReceipt(store, label, previousReceipt);
 	try {
-		rollbackMarkIIResourcesOrFail(resources, previousReceipt);
-		const plan = planMarkIIResourcesOrFail(resources, { markRoot, agentDir, homeDir });
-		const applied = applyMarkIIResourcesOrFail(resources, plan, backupDir);
+		rollbackAgentResourcesOrFail(resources, previousReceipt);
+		const plan = planAgentResourcesOrFail(resources, { agentRoot, agentDir, homeDir });
+		const applied = applyAgentResourcesOrFail(resources, plan, backupDir);
 		return { receiptPath: applied.receiptPath, snapshot, report: applied.report ?? plan.report };
 	} catch (error) {
-		if (error.code === "MARK_II_RESOURCE_CONFLICT") throw error;
-		const recovery = restoreMarkIIResources({ resources, markRoot: previousMarkRoot, agentDir, homeDir, backupDir, snapshot });
+		if (error.code === "AGENT_RESOURCE_CONFLICT") throw error;
+		const recovery = restoreAgentResources({ resources, agentRoot: previousAgentRoot, agentDir, homeDir, backupDir, snapshot });
 		error.message = `${error.message}\n${recovery.note}`;
-		if (!recovery.restored) error.markIIResourcesUnknown = true;
+		if (!recovery.restored) error.agentResourcesUnknown = true;
 		throw error;
 	}
 }
 
-function markIIActiveSummary(config) {
+function agentActiveSummary(config) {
 	return {
 		enabled: config.enabled === true,
 		artifactId: config.artifactId,
@@ -1372,51 +1372,51 @@ function markIIActiveSummary(config) {
 }
 
 // Additive index: old stores need no migration; a recorded but invalid pair must fail closed.
-function markIIPairHistory(store) {
-	const file = join(store, markIIStoreDir, "pi-artifacts.json");
+function agentPairHistory(store) {
+	const file = join(store, agentStoreDir, "pi-artifacts.json");
 	if (!existsSync(file)) return {};
 	const history = JSON.parse(readFileSync(file, "utf8"));
 	if (!history || typeof history !== "object" || Array.isArray(history) ||
 		Object.values(history).some((id) => typeof id !== "string")) {
-		throw new Error(`Invalid Mark II pair history: ${file}`);
+		throw new Error(`Invalid Agent pair history: ${file}`);
 	}
 	return history;
 }
 
 /**
- * Par Pi+Mark II para uma release que ainda NÃO está ativa (update, promote, rollback).
+ * Par Pi+Agent para uma release que ainda NÃO está ativa (update, promote, rollback).
  *
  * O artefato registrado é revalidado (CAS do par anterior) e o artefato da release nova é
- * preparado e validado antes de qualquer ponteiro mudar: se o Mark II não puder acompanhar a troca,
+ * preparado e validado antes de qualquer ponteiro mudar: se o Agent não puder acompanhar a troca,
  * a troca não acontece, em vez de deixar `pi` apontando para um par inexistente.
  */
-async function prepareMarkIIPair(store, releaseDir, label, options) {
-	const state = await readMarkIIState(store);
+async function prepareAgentPair(store, releaseDir, label, options) {
+	const state = await readAgentState(store);
 	if (!state?.config?.enabled) return undefined;
 	const { runtime, config } = state;
-	const resources = await loadMarkIIResourceHelper();
-	const history = markIIPairHistory(store);
+	const resources = await loadAgentResourceHelper();
+	const history = agentPairHistory(store);
 	// Um par histórico pode declarar o host durável, sem a entrada clássica desta geração.
 	// Só rollback consulta o índice; preparação de artefatos novos continua clássica.
-	const piRoot = markIIPiRoot(releaseDir, runtime, label === "Rollback" ? history : undefined);
+	const piRoot = agentPiRoot(releaseDir, runtime, label === "Rollback" ? history : undefined);
 	let previousArtifact;
 	try {
-		previousArtifact = runtime.validateMarkIIArtifact({ store, artifactId: config.artifactId, piRoot: config.piRoot });
+		previousArtifact = runtime.validateAgentArtifact({ store, artifactId: config.artifactId, piRoot: config.piRoot });
 	} catch (error) {
 		fail(
-			`Mark II is enabled in ${store} but the recorded artifact ${config.artifactId} no longer validates: ` +
-				`${error.message}\n${label} refuses to continue: run --mark-ii-disable (or repair the artifact) first. ` +
+			`Agent is enabled in ${store} but the recorded artifact ${config.artifactId} no longer validates: ` +
+				`${error.message}\n${label} refuses to continue: run --agent-disable (or repair the artifact) first. ` +
 				`The active pi was not changed.`,
 		);
 	}
 	let artifact;
 	try {
 		const recordedId = label === "Rollback" ? history[piRoot] : undefined;
-		const artifactId = recordedId ?? runtime.prepareMarkIIArtifact({ sourceRoot: repoRoot, store, piRoot }).artifactId;
-		artifact = runtime.validateMarkIIArtifact({ store, artifactId, piRoot });
+		const artifactId = recordedId ?? runtime.prepareAgentArtifact({ sourceRoot: repoRoot, store, piRoot }).artifactId;
+		artifact = runtime.validateAgentArtifact({ store, artifactId, piRoot });
 	} catch (error) {
 		fail(
-			`Mark II is enabled in ${store} but no valid artifact could be prepared for ${piRoot}: ${error.message}\n` +
+			`Agent is enabled in ${store} but no valid artifact could be prepared for ${piRoot}: ${error.message}\n` +
 				`${label} refuses to continue so the opt-in is never silently dropped. The active pi was not changed.`,
 		);
 	}
@@ -1425,16 +1425,16 @@ async function prepareMarkIIPair(store, releaseDir, label, options) {
 	const switching = artifact.artifactId !== config.artifactId;
 	if (switching && !(config.resourceReceipt && existsSync(config.resourceReceipt))) {
 		fail(
-			`Mark II is enabled in ${store} with artifact ${config.artifactId} but its resource receipt ` +
+			`Agent is enabled in ${store} with artifact ${config.artifactId} but its resource receipt ` +
 				`${config.resourceReceipt ?? "(none)"} is missing: the registrations of the old pair cannot be swapped for ` +
 				`the new one, and keeping both would load two generations of the same extensions. ${label} refuses to ` +
-				`continue: run --mark-ii-disable and then --mark-ii-enable. The active pi was not changed.`,
+				`continue: run --agent-disable and then --agent-enable. The active pi was not changed.`,
 		);
 	}
-	const { homeDir, agentDir } = markIIHostDirs(options ?? { store, adoptLauncher: true });
+	const { homeDir, agentDir } = agentHostDirs(options ?? { store, adoptLauncher: true });
 	// Save the pair we are leaving, including stores installed before this index existed.
 	// Do this before pointers/resources change; a failed activation leaves a valid association.
-	const historyPath = join(store, markIIStoreDir, "pi-artifacts.json");
+	const historyPath = join(store, agentStoreDir, "pi-artifacts.json");
 	const temporary = `${historyPath}.tmp-${process.pid}`;
 	writeFileSync(temporary, `${JSON.stringify({ ...history, [config.piRoot]: config.artifactId }, null, 2)}\n`);
 	renameSync(temporary, historyPath);
@@ -1445,23 +1445,23 @@ async function prepareMarkIIPair(store, releaseDir, label, options) {
  * Par novo valendo: registros de recursos trocados PRIMEIRO (settings efetivo) e só então a config,
  * que é o que o launcher lê. Opt-in, juiceHome e a cadeia de backup/CAS do B são preservados.
  */
-function commitMarkIIPair(store, pair) {
+function commitAgentPair(store, pair) {
 	let receiptPath = pair.config.resourceReceipt;
 	let switched;
 	if (pair.switching) {
-		switched = switchMarkIIResources({
+		switched = switchAgentResources({
 			store,
 			resources: pair.resources,
 			label: pair.label ?? "switch",
 			previousReceipt: pair.config.resourceReceipt,
-			previousMarkRoot: markIIMarkRoot(pair.previousArtifact),
-			markRoot: markIIMarkRoot(pair.artifact),
+			previousAgentRoot: artifactAgentRoot(pair.previousArtifact),
+			agentRoot: artifactAgentRoot(pair.artifact),
 			agentDir: pair.agentDir,
 			homeDir: pair.homeDir,
 		});
 		receiptPath = switched.receiptPath;
 		console.log(
-			`Mark II: resource registrations switched to ${markIIMarkRoot(pair.artifact)} (receipt ${receiptPath}; the ` +
+			`Agent: resource registrations switched to ${artifactAgentRoot(pair.artifact)} (receipt ${receiptPath}; the ` +
 				`previous pair's registrations were rolled back first, so no extension loads twice)`,
 		);
 	}
@@ -1475,20 +1475,20 @@ function commitMarkIIPair(store, pair) {
 	};
 	pair.committed = { config, switched };
 	try {
-		pair.runtime.writeMarkIIConfig({ store, config });
+		pair.runtime.writeAgentConfig({ store, config });
 	} catch (error) {
 		pair.committed = undefined;
 		if (switched) {
-			const recovery = restoreMarkIIResources({
+			const recovery = restoreAgentResources({
 				resources: pair.resources,
-				markRoot: markIIMarkRoot(pair.previousArtifact),
+				agentRoot: artifactAgentRoot(pair.previousArtifact),
 				agentDir: pair.agentDir,
 				homeDir: pair.homeDir,
 				backupDir: dirname(pair.config.resourceReceipt),
 				snapshot: switched.snapshot,
 			});
 			error.message = `${error.message}\n${recovery.note}`;
-			if (!recovery.restored) error.markIIResourcesUnknown = true;
+			if (!recovery.restored) error.agentResourcesUnknown = true;
 		}
 		throw error;
 	}
@@ -1499,15 +1499,15 @@ function commitMarkIIPair(store, pair) {
  * Desfaz o commit do par (recursos e config) quando uma etapa POSTERIOR falha e os ponteiros voltam:
  * config e registros efetivos têm de descrever o mesmo par que `current`.
  */
-function restoreMarkIIPair(store, pair) {
+function restoreAgentPair(store, pair) {
 	if (!pair?.committed) return { note: "", unknown: false };
 	const { switched } = pair.committed;
 	const notes = [];
 	let unknown = false;
 	if (switched) {
-		const recovery = restoreMarkIIResources({
+		const recovery = restoreAgentResources({
 			resources: pair.resources,
-			markRoot: markIIMarkRoot(pair.previousArtifact),
+			agentRoot: artifactAgentRoot(pair.previousArtifact),
 			agentDir: pair.agentDir,
 			homeDir: pair.homeDir,
 			backupDir: dirname(pair.config.resourceReceipt),
@@ -1517,12 +1517,12 @@ function restoreMarkIIPair(store, pair) {
 		if (!recovery.restored) unknown = true;
 	}
 	try {
-		pair.runtime.writeMarkIIConfig({ store, config: pair.config });
-		notes.push(`The Mark II config was restored to artifact ${pair.config.artifactId} / ${pair.config.piRoot}.`);
+		pair.runtime.writeAgentConfig({ store, config: pair.config });
+		notes.push(`The Agent config was restored to artifact ${pair.config.artifactId} / ${pair.config.piRoot}.`);
 	} catch (error) {
 		notes.push(
-			`The Mark II config still records artifact ${pair.committed.config.artifactId} / ${pair.committed.config.piRoot} ` +
-				`and could NOT be restored (${error.message}): run --mark-ii-enable again or --mark-ii-disable before using pi.`,
+			`The Agent config still records artifact ${pair.committed.config.artifactId} / ${pair.committed.config.piRoot} ` +
+				`and could NOT be restored (${error.message}): run --agent-enable again or --agent-disable before using pi.`,
 		);
 		unknown = true;
 	}
@@ -1530,40 +1530,40 @@ function restoreMarkIIPair(store, pair) {
 	return { note: ` ${notes.join(" ")}`, unknown };
 }
 
-async function markIIStatusReport(store) {
-	if (!existsSync(markIIFilePath("runtime"))) {
-		return `Mark II: helper ${markIIFiles.runtime} absent from this bundle/checkout (legacy mode)`;
+async function agentStatusReport(store) {
+	if (!existsSync(agentFilePath("runtime"))) {
+		return `Agent: helper ${agentFiles.runtime} absent from this bundle/checkout (legacy mode)`;
 	}
 	try {
-		const runtime = await loadMarkIIRuntime();
-		const config = runtime.readMarkIIConfig(store);
-		if (!config) return `Mark II: not configured in ${store}`;
+		const runtime = await loadAgentRuntime();
+		const config = runtime.readAgentConfig(store);
+		if (!config) return `Agent: not configured in ${store}`;
 		let artifactState;
 		try {
-			runtime.validateMarkIIArtifact({ store, artifactId: config.artifactId });
+			runtime.validateAgentArtifact({ store, artifactId: config.artifactId });
 			artifactState = "artifact valid";
 		} catch (error) {
 			artifactState = `artifact INVALID: ${error.message}`;
 		}
 		return (
-			`Mark II: ${config.enabled ? "enabled" : "disabled"} (artifactId ${config.artifactId}, piRoot ${config.piRoot}, ` +
+			`Agent: ${config.enabled ? "enabled" : "disabled"} (artifactId ${config.artifactId}, piRoot ${config.piRoot}, ` +
 			`juiceHome ${config.juiceHome}, ${artifactState}` +
 			`${config.resourceReceipt ? `, resource receipt ${config.resourceReceipt}` : ""})`
 		);
 	} catch (error) {
-		return `Mark II: status unavailable (${error.message})`;
+		return `Agent: status unavailable (${error.message})`;
 	}
 }
 
 /**
- * `--mark-ii-enable --juice-home <abs>`: ativa o Mark II sobre a release que já está ativa.
+ * `--agent-enable --juice-home <abs>`: ativa o Agent sobre a release que já está ativa.
  *
  * Ordem: validar a release ativa → preparar/validar artefato → planejar recursos → backup seletivo
  * → instalar bundle/wrapper novos → aplicar recursos → gravar config → registrar em `active.json`.
  * Artefato e plano antes de tocar launcher, recursos ou config; a config (que é o que o launcher lê)
- * é a última coisa a ligar. Qualquer falha antes dela deixa o Mark II DESLIGADO (falha fechada).
+ * é a última coisa a ligar. Qualquer falha antes dela deixa o Agent DESLIGADO (falha fechada).
  */
-async function markIIEnable(options) {
+async function agentEnable(options) {
 	const { store } = options;
 	// O launcher exige juiceHome existente (exit 70 a cada `pi`): recusar aqui, antes de qualquer escrita.
 	let juiceInfo;
@@ -1573,44 +1573,44 @@ async function markIIEnable(options) {
 		fail(`--juice-home does not exist: ${options.juiceHome} (${error.code ?? error.message}). Create it first; nothing was changed.`);
 	}
 	if (!juiceInfo.isDirectory()) fail(`--juice-home is not a directory: ${options.juiceHome}. Nothing was changed.`);
-	const runtime = await loadMarkIIRuntime();
-	const resources = await loadMarkIIResourceHelper();
-	if (!existsSync(markIIFilePath("launch"))) {
-		fail(`Mark II launcher is missing: ${markIIFilePath("launch")}. Nothing was changed.`);
+	const runtime = await loadAgentRuntime();
+	const resources = await loadAgentResourceHelper();
+	if (!existsSync(agentFilePath("launch"))) {
+		fail(`Agent launcher is missing: ${agentFilePath("launch")}. Nothing was changed.`);
 	}
 	const releaseDir = linkTarget(join(store, "current"));
 	if (!releaseDir) {
-		fail(`No active release under ${join(store, "current")}: install Pi first; Mark II activates over the active pair.`);
+		fail(`No active release under ${join(store, "current")}: install Pi first; Agent activates over the active pair.`);
 	}
 	const report = verifyRelease(releaseDir);
-	for (const warning of report.warnings) console.warn(`Mark II enable warning: ${warning}`);
+	for (const warning of report.warnings) console.warn(`Agent enable warning: ${warning}`);
 	if (report.problems.length > 0 && !options.force) {
 		fail(
-			`Refusing to enable Mark II over ${releaseDir}; the active release does not satisfy the current overlay contract:\n` +
+			`Refusing to enable Agent over ${releaseDir}; the active release does not satisfy the current overlay contract:\n` +
 				report.problems.map((problem) => `  - ${problem}`).join("\n") +
 				`\nNothing was changed. Re-run the updater to rebuild the release, or pass --force to enable anyway.`,
 		);
 	}
 	assertActiveWritable(store);
 	const metadata = assertActivatable(store, releaseDir);
-	const { homeDir, agentDir } = markIIHostDirs(options);
-	const existing = runtime.readMarkIIConfig(store);
+	const { homeDir, agentDir } = agentHostDirs(options);
+	const existing = runtime.readAgentConfig(store);
 	// Religar sobre um opt-in que já vale: o recibo descreve registros que PERTENCEM a ele. Desfazer
-	// o recibo numa falha desta execução tiraria do ar o Mark II que estava funcionando.
+	// o recibo numa falha desta execução tiraria do ar o Agent que estava funcionando.
 	const hadOptIn = existing?.enabled === true;
 	let switched;
 	const undoResources = (receiptPath) => {
 		if (switched) {
-			return restoreMarkIIResources({
+			return restoreAgentResources({
 				resources,
-				markRoot: markIIMarkRoot(switched.previousArtifact),
+				agentRoot: artifactAgentRoot(switched.previousArtifact),
 				agentDir,
 				homeDir,
 				backupDir: dirname(existing.resourceReceipt),
 				snapshot: switched.snapshot,
 			}).note;
 		}
-		if (!receiptPath) return `no receipt was produced, so nothing could be rolled back automatically; inspect ${markIIResourceBackupDir(store, existing)}`;
+		if (!receiptPath) return `no receipt was produced, so nothing could be rolled back automatically; inspect ${agentResourceBackupDir(store, existing)}`;
 		if (hadOptIn) {
 			return (
 				`the resource receipt ${receiptPath} was KEPT: it also describes the registrations of the opt-in that was ` +
@@ -1618,7 +1618,7 @@ async function markIIEnable(options) {
 			);
 		}
 		try {
-			rollbackMarkIIResourcesOrFail(resources, receiptPath);
+			rollbackAgentResourcesOrFail(resources, receiptPath);
 			return `the resources applied in this run were rolled back from ${receiptPath}`;
 		} catch (rollbackError) {
 			return `rolling back ${receiptPath} ALSO failed: ${rollbackError.message}; inspect ${dirname(receiptPath)}`;
@@ -1626,13 +1626,13 @@ async function markIIEnable(options) {
 	};
 
 	// Artefato e plano vêm antes de launcher, recursos e config: uma falha aqui não tocou nada.
-	const piRoot = markIIPiRoot(releaseDir, runtime);
+	const piRoot = agentPiRoot(releaseDir, runtime);
 	let artifact;
 	let plan;
 	let previousArtifact;
 	try {
-		const prepared = runtime.prepareMarkIIArtifact({ sourceRoot: repoRoot, store, piRoot });
-		artifact = runtime.validateMarkIIArtifact({ store, artifactId: prepared.artifactId, piRoot });
+		const prepared = runtime.prepareAgentArtifact({ sourceRoot: repoRoot, store, piRoot });
+		artifact = runtime.validateAgentArtifact({ store, artifactId: prepared.artifactId, piRoot });
 		// Opt-in vivo com OUTRO artefato: é troca de par, não primeira ativação. O plano é replanejado
 		// depois de desfazer os registros do par antigo (senão o novo entraria em cima do antigo), então
 		// aqui só o artefato antigo é validado — ele é o alvo da restauração se a troca falhar.
@@ -1641,50 +1641,50 @@ async function markIIEnable(options) {
 				throw new Error(
 					`the opt-in already enabled (artifact ${existing.artifactId}) has no resource receipt at ` +
 						`${existing.resourceReceipt ?? "(none)"}: its registrations cannot be swapped for the new pair's. ` +
-						`Run --mark-ii-disable first.`,
+						`Run --agent-disable first.`,
 				);
 			}
-			previousArtifact = runtime.validateMarkIIArtifact({ store, artifactId: existing.artifactId });
+			previousArtifact = runtime.validateAgentArtifact({ store, artifactId: existing.artifactId });
 		} else {
-			plan = planMarkIIResourcesOrFail(resources, { markRoot: markIIMarkRoot(artifact), agentDir, homeDir });
+			plan = planAgentResourcesOrFail(resources, { agentRoot: artifactAgentRoot(artifact), agentDir, homeDir });
 		}
 	} catch (error) {
 		error.message =
-			`${error.message}\nMark II was NOT enabled: the artifact/plan for ${piRoot} did not validate, so the ` +
+			`${error.message}\nAgent was NOT enabled: the artifact/plan for ${piRoot} did not validate, so the ` +
 			`launcher, the resources and the config were not touched.`;
 		throw error;
 	}
-	if (plan?.report) console.log(`Mark II resource plan: ${JSON.stringify(plan.report)}`);
+	if (plan?.report) console.log(`Agent resource plan: ${JSON.stringify(plan.report)}`);
 
-	const resourcesDir = markIIResourceBackupDir(store, existing);
-	const backup = captureMarkIIBackup(store, "enable", { config: existing ?? undefined, resourcesDir });
+	const resourcesDir = agentResourceBackupDir(store, existing);
+	const backup = captureAgentBackup(store, "enable", { config: existing ?? undefined, resourcesDir });
 	const launcher = installWrapper(store, options.adoptLauncher);
 
 	let receipt;
 	try {
 		if (previousArtifact) {
-			const result = switchMarkIIResources({
+			const result = switchAgentResources({
 				store,
 				resources,
 				label: "enable",
 				previousReceipt: existing.resourceReceipt,
-				previousMarkRoot: markIIMarkRoot(previousArtifact),
-				markRoot: markIIMarkRoot(artifact),
+				previousAgentRoot: artifactAgentRoot(previousArtifact),
+				agentRoot: artifactAgentRoot(artifact),
 				agentDir,
 				homeDir,
 			});
 			switched = { ...result, previousArtifact };
 			receipt = { receiptPath: result.receiptPath, report: result.report };
-			console.log(`Mark II: resource registrations switched to ${markIIMarkRoot(artifact)} (receipt ${result.receiptPath})`);
+			console.log(`Agent: resource registrations switched to ${artifactAgentRoot(artifact)} (receipt ${result.receiptPath})`);
 		} else {
-			receipt = resources.applyMarkIIResources({ plan, backupDir: resourcesDir });
+			receipt = resources.applyAgentResources({ plan, backupDir: resourcesDir });
 		}
 	} catch (error) {
 		const candidate =
 			error?.receiptPath ?? (typeof resources.RECEIPT_NAME === "string" ? join(resourcesDir, resources.RECEIPT_NAME) : undefined);
 		const recovered = undoResources(candidate && existsSync(candidate) ? candidate : undefined);
 		error.message =
-			`${error.message}\nMark II was NOT enabled by this attempt: no config was written; ` +
+			`${error.message}\nAgent was NOT enabled by this attempt: no config was written; ` +
 			`${hadOptIn ? "the existing opt-in remains configured" : "pi keeps launching the legacy path"}. ` +
 			`${recovered}. The overlay bundle and the wrapper at ${launcher.wrapper} were reinstalled (same content as ` +
 			`before unless this checkout changed them); backup at ${backup.dir}, resource CAS at ${resourcesDir}.`;
@@ -1693,8 +1693,8 @@ async function markIIEnable(options) {
 	const receiptPath = receipt?.receiptPath;
 	if (!receiptPath || !isAbsolute(receiptPath)) {
 		fail(
-			`applyMarkIIResources returned no absolute receiptPath (got ${JSON.stringify(receiptPath)}); without a receipt ` +
-				`--mark-ii-disable could not undo the registrations, so Mark II was NOT enabled (no config was written and ` +
+			`applyAgentResources returned no absolute receiptPath (got ${JSON.stringify(receiptPath)}); without a receipt ` +
+				`--agent-disable could not undo the registrations, so Agent was NOT enabled (no config was written and ` +
 				`pi keeps launching the legacy path).\nThe helper reported the resources as applied: whatever it wrote to ` +
 				`${agentDir} is still there and must be undone by hand using the backup at ${resourcesDir}.`,
 		);
@@ -1709,11 +1709,11 @@ async function markIIEnable(options) {
 		resourceReceipt: receiptPath,
 	};
 	try {
-		runtime.writeMarkIIConfig({ store, config });
+		runtime.writeAgentConfig({ store, config });
 	} catch (error) {
 		const recovered = undoResources(receiptPath);
 		error.message =
-			`${error.message}\nMark II was NOT enabled by this run: the config could not be written, so the store keeps the ` +
+			`${error.message}\nAgent was NOT enabled by this run: the config could not be written, so the store keeps the ` +
 			`${hadOptIn ? "opt-in it already had" : "legacy path"}. ${recovered}. Backup at ${backup.dir}.`;
 		throw error;
 	}
@@ -1721,79 +1721,79 @@ async function markIIEnable(options) {
 	try {
 		writeActive(store, releaseDir, metadata, launcher, {
 			activatedAt: activeRecord(store)?.activatedAt,
-			markII: markIIActiveSummary(config),
-			markIIEnabledAt: new Date().toISOString(),
-			...markIISource(store, releaseDir),
+			agent: agentActiveSummary(config),
+			agentEnabledAt: new Date().toISOString(),
+			...agentSource(store, releaseDir),
 		}, { inheritSource: true });
 	} catch (error) {
 		error.message =
-			`${error.message}\nMark II IS enabled (config and resources are in place) but ${join(store, "active.json")} ` +
-			`could not be updated, so it still records the previous launcher/bundle. Re-run --mark-ii-enable after fixing ` +
-			`the cause, or --mark-ii-disable to opt out. Backup at ${backup.dir}.`;
+			`${error.message}\nAgent IS enabled (config and resources are in place) but ${join(store, "active.json")} ` +
+			`could not be updated, so it still records the previous launcher/bundle. Re-run --agent-enable after fixing ` +
+			`the cause, or --agent-disable to opt out. Backup at ${backup.dir}.`;
 		error.activationState = "partial";
 		throw error;
 	}
 	console.log(
-		`${productDisplayName}: Mark II enabled over ${config.piRoot} (artifact ${artifact.artifactId}, juiceHome ` +
+		`${productDisplayName}: Agent enabled over ${config.piRoot} (artifact ${artifact.artifactId}, juiceHome ` +
 			`${options.juiceHome}, receipt ${receiptPath}; backup ${backup.dir}). Ledger, mark2, SYSTEM/Vault, auth and ` +
 			`model/thinking defaults were not touched.`,
 	);
 }
 
 /**
- * `--mark-ii-disable`: opt-out fecha a feature primeiro e só então devolve o delta de recursos.
+ * `--agent-disable`: opt-out fecha a feature primeiro e só então devolve o delta de recursos.
  *
  * A config é gravada como `enabled:false` antes do rollback dos recursos: se o rollback falhar no
  * meio, `pi` já voltou ao caminho legado (falha fechada) e o recibo continua registrado para a
  * retentativa, em vez de ficar meio ligado. Ledger, mark2 e o artefato não são tocados.
  */
-async function markIIDisable(options) {
+async function agentDisable(options) {
 	const { store } = options;
-	const runtime = await loadMarkIIRuntime();
-	const config = runtime.readMarkIIConfig(store);
+	const runtime = await loadAgentRuntime();
+	const config = runtime.readAgentConfig(store);
 	if (!config) {
-		console.log(`${productDisplayName}: Mark II is not configured in ${store}; nothing to disable.`);
+		console.log(`${productDisplayName}: Agent is not configured in ${store}; nothing to disable.`);
 		return;
 	}
-	const backup = captureMarkIIBackup(store, "disable", { config, resourcesDir: markIIResourceBackupDir(store, config) });
+	const backup = captureAgentBackup(store, "disable", { config, resourcesDir: agentResourceBackupDir(store, config) });
 	const disabled = { ...config, version: 1, enabled: false };
-	runtime.writeMarkIIConfig({ store, config: disabled });
+	runtime.writeAgentConfig({ store, config: disabled });
 	const active = activeRecord(store);
 	if (active?.releaseDir) {
 		try {
 			writeActive(store, active.releaseDir, releaseMetadata(active.releaseDir) ?? {}, launcherRecord(store), {
 				activatedAt: active.activatedAt,
-				markII: markIIActiveSummary(disabled),
-				markIIDisabledAt: new Date().toISOString(),
+				agent: agentActiveSummary(disabled),
+				agentDisabledAt: new Date().toISOString(),
 			});
 		} catch (error) {
-			console.warn(`Mark II is disabled, but ${join(store, "active.json")} still records it as enabled: ${error.message}`);
+			console.warn(`Agent is disabled, but ${join(store, "active.json")} still records it as enabled: ${error.message}`);
 		}
 	}
 	if (!config.resourceReceipt) {
 		console.log(
-			`${productDisplayName}: Mark II disabled in ${store}; the config recorded no resource receipt, so no ` +
+			`${productDisplayName}: Agent disabled in ${store}; the config recorded no resource receipt, so no ` +
 				`registration was rolled back. Backup at ${backup.dir}.`,
 		);
 		return;
 	}
-	const resources = await loadMarkIIResourceHelper();
+	const resources = await loadAgentResourceHelper();
 	try {
 		// Conflito devolvido pelo helper (mudança posterior do usuário preservada) é erro: o opt-out não
 		// pode anunciar "delta devolvido" quando parte do registro gerenciado continua no settings.
-		const result = rollbackMarkIIResourcesOrFail(resources, config.resourceReceipt);
-		if (result?.report) console.log(`Mark II resource rollback: ${JSON.stringify(result.report)}`);
+		const result = rollbackAgentResourcesOrFail(resources, config.resourceReceipt);
+		if (result?.report) console.log(`Agent resource rollback: ${JSON.stringify(result.report)}`);
 	} catch (error) {
 		error.message =
-			`${error.message}\nMark II is already DISABLED (pi launches the legacy path), but rolling back the resource ` +
-			`delta from ${config.resourceReceipt} failed: the registrations may still be in ${markIIHostDirs(options).agentDir}. ` +
-			`Retry with: node ${join(repoRoot, "scripts", "pi-overlay-update.mjs")} --store ${store} --mark-ii-disable ` +
+			`${error.message}\nAgent is already DISABLED (pi launches the legacy path), but rolling back the resource ` +
+			`delta from ${config.resourceReceipt} failed: the registrations may still be in ${agentHostDirs(options).agentDir}. ` +
+			`Retry with: node ${join(repoRoot, "scripts", "agent-update.mjs")} --store ${store} --agent-disable ` +
 			`(idempotent). Backup at ${backup.dir}.`;
 		throw error;
 	}
 	console.log(
-		`${productDisplayName}: Mark II disabled in ${store}; the resource delta from ${config.resourceReceipt} was rolled ` +
-			`back and the opt-in record (artifact ${config.artifactId}) was kept for a future --mark-ii-enable. Ledger, ` +
+		`${productDisplayName}: Agent disabled in ${store}; the resource delta from ${config.resourceReceipt} was rolled ` +
+			`back and the opt-in record (artifact ${config.artifactId}) was kept for a future --agent-enable. Ledger, ` +
 			`mark2 and personal settings were not touched. Backup at ${backup.dir}.`,
 	);
 }
@@ -1809,7 +1809,7 @@ function assertUpdaterGeneration(store, force) {
 	const recorded = record?.updaterGeneration ?? 0;
 	if (recorded <= updaterGeneration) return;
 	const newer = record?.overlayRepo
-		? join(record.overlayRepo, "scripts", "pi-overlay-update.mjs")
+		? join(record.overlayRepo, "scripts", "agent-update.mjs")
 		: "the updater of the bundle recorded in active.json";
 	if (!force) {
 		fail(
@@ -1864,7 +1864,7 @@ function planOrphanReleases(store, activeRelease, keepExtra = [], retention = or
 	const kept = new Set(
 		[activeRelease, linkTarget(join(store, "current")), linkTarget(join(store, "previous"))].filter(Boolean).map(resolvedPath),
 	);
-	// `keepExtra` pode apontar para DENTRO de uma release (o `piRoot` do Mark II é o diretório do
+	// `keepExtra` pode apontar para DENTRO de uma release (o `piRoot` do Agent é o diretório do
 	// pacote instalado): a release que contém o caminho em uso também está em uso.
 	const keptInside = keepExtra.filter(Boolean).map(resolvedPath);
 	const inUse = (dir) => kept.has(dir) || keptInside.some((path) => path === dir || path.startsWith(`${dir}${isWindows ? "\\" : "/"}`));
@@ -1920,7 +1920,7 @@ function collectOverlayBundles(store, keep) {
  *
  * A metadata da release e o tipo de `active.json` eram validados tarde: a release era lida (e podia
  * ser recusada por não ter rótulo) e `active.json` era gravado DEPOIS de `current` já apontar para a
- * release nova. Um `active.json` que não é arquivo regular, ou uma release sem `pi-overlay.json`,
+ * release nova. Um `active.json` que não é arquivo regular, ou uma release sem `agent-release.json`,
  * terminavam com `current` novo e metadata antiga — divergência silenciosa, ainda anunciada como
  * "active pi was not changed". Falhar aqui é a única falha de ativação que realmente não muda nada.
  */
@@ -1955,7 +1955,7 @@ function assertActiveWritable(store) {
  *
  * 1. ponteiros + wrapper: se falhar, `current`/`previous` voltam ao que eram e `active.json` nem é
  *    tocado — nada mudou (o wrapper e o bundle não são transacionais, e a mensagem diz isso).
- * 2. sync de recursos (skills, extensões, setup do Mark): o runtime JÁ está ativo. Não há como
+ * 2. sync de recursos (skills, extensões, setup do Agent): o runtime JÁ está ativo. Não há como
  *    desfazer settings/temas/pasta de papéis aqui, então `active.json` é gravado apontando para a
  *    release nova (ponteiro e metadata consistentes) com `partialActivation`, e o erro diz
  *    "partial activation", não "unchanged".
@@ -1964,9 +1964,9 @@ function assertActiveWritable(store) {
  */
 async function activateRelease(store, releaseDir, adoptLauncher) {
 	const metadata = assertActivatable(store, releaseDir);
-	// Par Pi+Mark II preparado e validado ANTES de qualquer ponteiro: com o opt-in ligado, uma troca
+	// Par Pi+Agent preparado e validado ANTES de qualquer ponteiro: com o opt-in ligado, uma troca
 	// de release sem artefato correspondente deixaria `pi` sem runtime para carregar.
-	const markII = await prepareMarkIIPair(store, releaseDir, "Activation", { store, adoptLauncher });
+	const agent = await prepareAgentPair(store, releaseDir, "Activation", { store, adoptLauncher });
 	const current = join(store, "current");
 	const previous = join(store, "previous");
 	const oldCurrent = linkTarget(current);
@@ -2007,59 +2007,59 @@ async function activateRelease(store, releaseDir, adoptLauncher) {
 		throw error;
 	}
 
-	// Só o store padrão é o Mark do usuário; um store de teste não toca o settings do Pi.
+	// Só o store padrão é o Agent do usuário; um store de teste não toca o settings do Pi.
 	let syncFailure;
 	if (adoptLauncher) {
 		const agentDir = process.env.PI_CODING_AGENT_DIR || join(homedir(), ".pi", "agent");
 		try {
-			// Com o Mark II ligado, extensões, skills e temas são registrados pelo recibo de recursos, com
+			// Com o Agent ligado, extensões, skills e temas são registrados pelo recibo de recursos, com
 			// backup/CAS e rollback. Os syncs legados escrevem `settings.extensions`/`settings.skills` sem
-			// recibo nenhum (e o mark-setup ainda devolve defaults pessoais): rodá-los aqui deixaria
+			// recibo nenhum (e o agent-setup ainda devolve defaults pessoais): rodá-los aqui deixaria
 			// entradas que nem o opt-out nem a troca de par sabem desfazer — exatamente o par misturado.
-			if (markII) {
+			if (agent) {
 				console.log(
-					`Mark II is enabled: skipping the legacy mark-setup/skills/extensions sync; those registrations are ` +
-						`managed by the Mark II resource receipt` +
-						`${markII.config.resourceReceipt ? ` ${markII.config.resourceReceipt}` : ""} and switch with the pair.`,
+					`Agent is enabled: skipping the legacy agent-setup/skills/extensions sync; those registrations are ` +
+						`managed by the Agent resource receipt` +
+						`${agent.config.resourceReceipt ? ` ${agent.config.resourceReceipt}` : ""} and switch with the pair.`,
 				);
 				// Os registros que o usuário já tinha (settings/symlinks) ainda apontam para <store>/skills e
 				// <store>/extensions/megamind: sem atualizar os arquivos, o Megamind e as skills padrão ficam
 				// congelados na última ativação legada. Só o conteúdo de cópias existentes muda; settings não.
-				syncMarkSkills({ sourceRoot: launcher.overlayRepo, store, agentDir, homeDir: homedir(), register: false });
-				syncMarkExtensions({ sourceRoot: launcher.overlayRepo, store, agentDir, register: false });
+				syncAgentSkills({ sourceRoot: launcher.overlayRepo, store, agentDir, homeDir: homedir(), register: false });
+				syncAgentExtensions({ sourceRoot: launcher.overlayRepo, store, agentDir, register: false });
 			} else {
-				syncMarkSkills({ sourceRoot: launcher.overlayRepo, store, agentDir, homeDir: homedir() });
-				syncMarkExtensions({ sourceRoot: launcher.overlayRepo, store, agentDir });
-				syncMarkSetup({ sourceRoot: launcher.overlayRepo, store, agentDir, homeDir: homedir() });
+				syncAgentSkills({ sourceRoot: launcher.overlayRepo, store, agentDir, homeDir: homedir() });
+				syncAgentExtensions({ sourceRoot: launcher.overlayRepo, store, agentDir });
+				syncAgentSetup({ sourceRoot: launcher.overlayRepo, store, agentDir, homeDir: homedir() });
 			}
 		} catch (error) {
 			syncFailure = error;
 		}
 	}
 
-	let markIIConfig;
+	let agentConfig;
 	try {
-		markIIConfig = markII ? commitMarkIIPair(store, markII) : undefined;
+		agentConfig = agent ? commitAgentPair(store, agent) : undefined;
 		writeActive(store, releaseDir, metadata, launcher, {
 			activatedAt: new Date().toISOString(),
-			markII: markIIConfig ? markIIActiveSummary(markIIConfig) : undefined,
-			// O sync legado também instala `mark/` do checkout atual: numa release Pi reaproveitada, a origem
+			agent: agentConfig ? agentActiveSummary(agentConfig) : undefined,
+			// O sync legado também instala `agent/` do checkout atual: numa release Pi reaproveitada, a origem
 			// da metadata dela é antiga e o aviso de "commits ahead" mentiria depois de atualizar.
-			...(markIIConfig || (adoptLauncher && !syncFailure) ? markIISource(store, releaseDir) : {}),
+			...(agentConfig || (adoptLauncher && !syncFailure) ? agentSource(store, releaseDir) : {}),
 			partialActivation: syncFailure ? true : undefined,
 			partialActivationReason: syncFailure ? (syncFailure.message ?? String(syncFailure)) : undefined,
 		});
 	} catch (error) {
-		// O par do Mark II é (artefato, piRoot, registros de recursos): se ele já descreve a release nova
+		// O par do Agent é (artefato, piRoot, registros de recursos): se ele já descreve a release nova
 		// e os ponteiros voltam para a antiga, o launcher carregaria o par errado. Ele volta primeiro.
-		const markIIRestore = restoreMarkIIPair(store, markII);
-		const markIINote = markIIRestore.note;
-		if (markIIRestore.unknown || error.markIIResourcesUnknown) error.activationState = "unknown";
+		const agentRestore = restoreAgentPair(store, agent);
+		const agentNote = agentRestore.note;
+		if (agentRestore.unknown || error.agentResourcesUnknown) error.activationState = "unknown";
 		const restored = restorePointers();
 		if (!restored) error.activationState = "unknown";
 		else if (error.activationState !== "unknown" && (syncFailure || adoptLauncher)) error.activationState = "partial";
 		error.message =
-			`${error.message}${markIINote}\nCould not record the activation in ${join(store, "active.json")}: ${describeRestore(restored)}, ` +
+			`${error.message}${agentNote}\nCould not record the activation in ${join(store, "active.json")}: ${describeRestore(restored)}, ` +
 			`so current and the recorded metadata still agree. The wrapper and any resource already synced to the ` +
 			`agent folder were NOT rolled back.${syncFailure ? ` The resource sync had already failed: ${syncFailure.message}` : ""}`;
 		throw error;
@@ -2068,10 +2068,10 @@ async function activateRelease(store, releaseDir, adoptLauncher) {
 	if (syncFailure) {
 		const error = new Error(
 			`Partial activation: the runtime at ${releaseDir} IS active (current, wrapper and active.json point at it), ` +
-				`but syncing the Mark resources failed: ${syncFailure.message}\n` +
+				`but syncing the Agent resources failed: ${syncFailure.message}\n` +
 				`Settings, themes, skills and the agent folder may hold a mix of the two releases; nothing was rolled back ` +
 				`and active.json records partialActivation. Fix the cause and run the updater again, or roll back with ` +
-				`\`pi overlay-rollback\`.`,
+				`\`agent overlay-rollback\`.`,
 		);
 		error.activationState = "partial";
 		throw error;
@@ -2080,8 +2080,8 @@ async function activateRelease(store, releaseDir, adoptLauncher) {
 }
 
 /** Mesma transação do activate, só para o rollback de release: par validado antes dos ponteiros. */
-async function rollbackMarkIIPair(store, previousTarget, options) {
-	return prepareMarkIIPair(store, previousTarget, "Rollback", options);
+async function rollbackAgentPair(store, previousTarget, options) {
+	return prepareAgentPair(store, previousTarget, "Rollback", options);
 }
 
 // Receipts are local integrity records, not signatures against the store owner.
@@ -2248,14 +2248,14 @@ function directoryNames(dir) {
 }
 
 /**
- * `pi overlay-status`: somente leitura, sem lock e sem rede. Mostra o que está instalado, o par
- * Mark II e quantos commits o checkout de origem tem à frente da instalação (git local).
+ * `agent overlay-status`: somente leitura, sem lock e sem rede. Mostra o que está instalado, o par
+ * Agent e quantos commits o checkout de origem tem à frente da instalação (git local).
  */
 function overlayStatus(store) {
 	const active = activeRecord(store);
 	const lines = [`${productDisplayName} overlay status (${store})`];
 	if (!active) {
-		lines.push("Installed: no active.json; run: node scripts/pi-overlay-update.mjs");
+		lines.push("Installed: no active.json; run: node scripts/agent-update.mjs");
 		console.log(lines.join("\n"));
 		return;
 	}
@@ -2267,13 +2267,13 @@ function overlayStatus(store) {
 		const target = linkTarget(join(store, name));
 		lines.push(`${name === "current" ? "Current:  " : "Previous: "}${target ? basename(target) : "none"}`);
 	}
-	const config = readJsonFile(join(store, markIIStoreDir, "config.json"));
+	const config = readJsonFile(join(store, agentStoreDir, "config.json"));
 	lines.push(
 		config?.enabled === true
-			? `Mark II: on (artifact ${String(config.artifactId).slice(0, 12)})`
+			? `Agent: on (artifact ${String(config.artifactId).slice(0, 12)})`
 			: config
-				? "Mark II: off (configured but disabled)"
-				: "Mark II: off (not configured)",
+				? "Agent: off (configured but disabled)"
+				: "Agent: off (not configured)",
 	);
 	if (!active.sourceRepo || !active.sourceCommit) {
 		lines.push("Checkout: source unknown (installed before the updater recorded it)");
@@ -2287,16 +2287,16 @@ function overlayStatus(store) {
 					? `Checkout: ${where} (diverged: the installed commit is not an ancestor of the checkout HEAD)`
 				: ahead === 0
 					? `Checkout: ${where} (install is up to date)`
-					: `Checkout: ${where} (${ahead} commit${ahead === 1 ? "" : "s"} ahead of the install; run: node ${join(active.sourceRepo, "scripts", "pi-overlay-update.mjs")})`,
+					: `Checkout: ${where} (${ahead} commit${ahead === 1 ? "" : "s"} ahead of the install; run: node ${join(active.sourceRepo, "scripts", "agent-update.mjs")})`,
 		);
 	}
 	// Sem varrer o store inteiro: só o que o gc apagaria (o mesmo plano do --dry-run).
 	const reclaimable = planOverlayGc(store, 1, { sizeReports: false }).filter((item) => item.action === "delete");
-	lines.push(`Reclaimable by gc: ${formatSize(reclaimable.reduce((sum, item) => sum + item.size, 0))} in ${reclaimable.length} item(s) (details: pi overlay-gc --dry-run)`);
+	lines.push(`Reclaimable by gc: ${formatSize(reclaimable.reduce((sum, item) => sum + item.size, 0))} in ${reclaimable.length} item(s) (details: agent overlay-gc --dry-run)`);
 	console.log(lines.join("\n"));
 }
 
-/** Snapshot com PID, argumentos e ambiente (MARK_JUICE_BIN pode ser usado só no próximo
+/** Snapshot com PID, argumentos e ambiente (AGENT_JUICE_BIN pode ser usado só no próximo
  * snapshot do broker). Nunca imprime comandos/ambiente: podem conter segredos.
  * Windows ou inspeção indisponível: undefined, para conservar em vez de presumir desuso.
  */
@@ -2326,14 +2326,14 @@ function commandUsesPath(command, path) {
 /**
  * Plano do `overlay-gc`. Cada item é { kind, path, size, action: "delete" | "report", note }.
  * Só "delete" é apagado; "report" é listado porque não há como provar que está sem uso (ou porque
- * é trabalho do usuário). Nada em uso por current/previous, recibo preparado ou Mark II entra.
+ * é trabalho do usuário). Nada em uso por current/previous, recibo preparado ou Agent entra.
  */
 function planOverlayGc(store, keep = 1, { sizeReports = true, getProcesses = liveProcesses } = {}) {
 	const items = [];
 	const add = (kind, path, action, note) => items.push({ kind, path, size: action === "delete" || sizeReports ? pathSize(path) : 0, action, note });
 	const active = activeRecord(store);
-	const config = readJsonFile(join(store, markIIStoreDir, "config.json"));
-	const markIIPiRoot = config?.piRoot;
+	const config = readJsonFile(join(store, agentStoreDir, "config.json"));
+	const agentPiRoot = config?.piRoot;
 	const processes = getProcesses();
 	const unavailable = "process inspection unavailable: cannot prove unused";
 	const reason = (proc) => proc ? `in use by running process ${proc.pid}` : unavailable;
@@ -2341,7 +2341,7 @@ function planOverlayGc(store, keep = 1, { sizeReports = true, getProcesses = liv
 	const livePaths = new Map();
 	const livePiRoots = [];
 	const processCandidates = [];
-	for (const [kind, parent] of [["release", join(store, "releases")], ["mark-ii artifact", join(store, markIIStoreDir, "releases")]]) {
+	for (const [kind, parent] of [["release", join(store, "releases")], ["agent artifact", join(store, agentStoreDir, "releases")]]) {
 		const names = new Set(directoryNames(parent).map((entry) => entry.name));
 		// Também reporta árvores já removidas por um GC anterior, ainda referidas por kernels vivos.
 		for (const proc of processes ?? []) {
@@ -2376,36 +2376,36 @@ function planOverlayGc(store, keep = 1, { sizeReports = true, getProcesses = liv
 		if (livePaths.has(canonical)) add(kind, dir, "report", livePaths.get(canonical));
 	}
 
-	// Releases: a mesma regra do update (current, previous, preparadas, piRoot do Mark II), com retenção `keep`.
+	// Releases: a mesma regra do update (current, previous, preparadas, piRoot do Agent), com retenção `keep`.
 	const releasesDir = join(store, "releases");
 	if (existsSync(releasesDir)) {
 		// Um recibo só protege a release enquanto o `promote` ainda funciona sem --force: se `current`
 		// mudou desde o prepare, o CAS recusa a promoção e a release preparada está superada.
 		const current = readCurrentTarget(store);
 		const promotable = (id) => readJsonFile(join(store, "prepared", `${id}.json`))?.currentAtPrepare === current;
-		for (const dir of planOrphanReleases(store, active?.releaseDir, [markIIPiRoot, ...livePiRoots.map(({ path }) => path)], keep, promotable).doomed) {
+		for (const dir of planOrphanReleases(store, active?.releaseDir, [agentPiRoot, ...livePiRoots.map(({ path }) => path)], keep, promotable).doomed) {
 			add("release", dir, "delete", "orphan release");
 			const receipt = join(store, "prepared", `${basename(dir)}.json`);
 			if (existsSync(receipt)) add("prepared receipt", receipt, "delete", "superseded: current changed since prepare");
 		}
 	}
 
-	// Artefatos Mark II: ativo (config e active.json) e alvo de rollback (artefato cujo piRoot está
+	// Artefatos Agent: ativo (config e active.json) e alvo de rollback (artefato cujo piRoot está
 	// em current/previous) nunca saem. Manifest ilegível = não dá para provar que está sem uso.
-	const artifactsDir = join(store, markIIStoreDir, "releases");
+	const artifactsDir = join(store, agentStoreDir, "releases");
 	const artifacts = directoryNames(artifactsDir);
 	if (artifacts.length > 0 && !config) {
 		for (const entry of artifacts) {
 			const dir = join(artifactsDir, entry.name);
-			if (!livePaths.has(resolvedPath(dir))) add("mark-ii artifact", dir, "report", "mark-ii/config.json unreadable: cannot tell which artifact is active");
+			if (!livePaths.has(resolvedPath(dir))) add("agent artifact", dir, "report", "runtime/config.json unreadable: cannot tell which artifact is active");
 		}
 	} else if (artifacts.length > 0) {
-		const activeIds = new Set([config.artifactId, active?.markII?.artifactId].filter(Boolean));
+		const activeIds = new Set([config.artifactId, active?.agent?.artifactId].filter(Boolean));
 		const previousRoot = linkTarget(join(store, "previous"));
 		const inPrevious = (piRoot) => previousRoot !== undefined && typeof piRoot === "string" && resolvedPath(piRoot).startsWith(previousRoot);
 		// Keep the exact recorded rollback pair, not just the newest artifact for that Pi.
 		try {
-			for (const [piRoot, id] of Object.entries(markIIPairHistory(store))) {
+			for (const [piRoot, id] of Object.entries(agentPairHistory(store))) {
 				if (inPrevious(piRoot)) activeIds.add(id);
 			}
 		} catch {
@@ -2419,7 +2419,7 @@ function planOverlayGc(store, keep = 1, { sizeReports = true, getProcesses = liv
 			if (livePaths.has(resolvedPath(dir))) continue;
 			const manifestData = readJsonFile(join(dir, "manifest.json"));
 			if (!manifestData) {
-				add("mark-ii artifact", dir, "report", "manifest unreadable: cannot tell whether it is in use");
+				add("agent artifact", dir, "report", "manifest unreadable: cannot tell whether it is in use");
 				continue;
 			}
 			if (activeIds.has(entry.name) || livePaths.has(resolvedPath(dir))) continue;
@@ -2433,7 +2433,7 @@ function planOverlayGc(store, keep = 1, { sizeReports = true, getProcesses = liv
 			}
 		}
 		unused.sort((a, b) => b.mtimeMs - a.mtimeMs);
-		for (const item of unused.slice(keep)) add("mark-ii artifact", item.dir, "delete", "unused artifact (not active, not the rollback target)");
+		for (const item of unused.slice(keep)) add("agent artifact", item.dir, "delete", "unused artifact (not active, not the rollback target)");
 	}
 
 	// Recibos preparados cuja release já não existe: não há o que promover.
@@ -2447,7 +2447,7 @@ function planOverlayGc(store, keep = 1, { sizeReports = true, getProcesses = liv
 
 	// Backups: só os diretórios com o nome que o updater gera entram na retenção; o resto é só reportado.
 	// Nunca saem: o backup de launcher (nome só com o carimbo; guarda o `pi` original movido, com
-	// restore.txt) e o `*-mark-ii-enable` mais antigo (única cópia de active.json/pi-wrapper pré-Mark II).
+	// restore.txt) e o `*-agent-enable` mais antigo (única cópia de active.json/pi-wrapper pré-Agent).
 	const backupsDir = join(store, "backups");
 	const retention = [];
 	let oldestEnable;
@@ -2460,7 +2460,7 @@ function planOverlayGc(store, keep = 1, { sizeReports = true, getProcesses = liv
 			add("backup", dir, "report", "original launcher backup (restore.txt); never deleted by gc");
 		} else if (match[1] === "enable" && !oldestEnable) {
 			oldestEnable = dir;
-			add("backup", dir, "report", "oldest mark-ii-enable backup (pre-Mark II active.json/pi-wrapper); never deleted by gc");
+			add("backup", dir, "report", "oldest agent-enable backup (pre-Agent active.json/pi-wrapper); never deleted by gc");
 		} else {
 			retention.push({ dir, name: entry.name });
 		}
@@ -2468,20 +2468,20 @@ function planOverlayGc(store, keep = 1, { sizeReports = true, getProcesses = liv
 	retention.sort((a, b) => (a.name < b.name ? 1 : -1));
 	for (const backup of retention.slice(backupRetention)) add("backup", backup.dir, "delete", `older than the ${backupRetention} most recent`);
 
-	// O broker é copiado para o artefato, mas sessões antigas podem guardar MARK_JUICE_BIN
+	// O broker é copiado para o artefato, mas sessões antigas podem guardar AGENT_JUICE_BIN
 	// no cache e invocá-lo só no próximo snapshot. Conserva também se qualquer Pi estiver vivo.
-	const buildCache = join(store, markIIStoreDir, "build-cache");
+	const buildCache = join(store, agentStoreDir, "build-cache");
 	if (existsSync(buildCache)) {
 		const proc = using(buildCache) ?? processes?.find((proc) =>
-			/mark-ii-launch\.mjs|MARK_JUICE_ENABLED=1|(?:coding-agent|pi-coding-agent)[/\\]dist[/\\]cli\.js|[/\\]bin[/\\]pi(?:\s|$)/.test(proc.command) ||
+			/agent-launch\.mjs|AGENT_JUICE_ENABLED=1|(?:coding-agent|pi-coding-agent)[/\\]dist[/\\]cli\.js|[/\\]bin[/\\]pi(?:\s|$)/.test(proc.command) ||
 			processCandidates.some(({ dir }) => commandUsesPath(proc.command, dir) || commandUsesPath(proc.command, resolvedPath(dir))));
-		add("mark-ii build-cache", buildCache, proc || processes === undefined ? "report" : "delete",
+		add("agent build-cache", buildCache, proc || processes === undefined ? "report" : "delete",
 			proc || processes === undefined ? reason(proc) : "obsolete native build cache (legacy releases only)");
 	}
 
 	// Só reportados: sem vínculo legível com o que está em uso, ou trabalho do usuário.
-	const snapshots = join(store, markIIStoreDir, "resource-snapshots");
-	if (existsSync(snapshots)) add("mark-ii resource-snapshots", snapshots, "report", "recovery copies of resource receipts; nothing records which are still needed");
+	const snapshots = join(store, agentStoreDir, "resource-snapshots");
+	if (existsSync(snapshots)) add("agent resource-snapshots", snapshots, "report", "recovery copies of resource receipts; nothing records which are still needed");
 	const candidates = join(store, "candidates");
 	if (existsSync(candidates)) add("candidates", candidates, "report", "port workspaces are never deleted by gc; remove by hand when done");
 	return items;
@@ -2510,10 +2510,10 @@ function overlayGc(options) {
 	console.log(`Reclaimed ${formatSize(total)} in ${deletes.length} item(s).`);
 }
 
-/** Rodado de dentro de uma sessão Mark antiga, tira do próprio ambiente o preload do Juice e a curadoria de skills. */
+/** Rodado de dentro de uma sessão Agent antiga, tira do próprio ambiente o preload do Juice e a curadoria de skills. */
 async function sanitizeUpdaterEnv(env = process.env) {
 	try {
-		const { userCommandEnv } = await import(pathToFileURL(join(repoRoot, "mark", "juice", "child-env.mjs")).href);
+		const { userCommandEnv } = await import(pathToFileURL(join(repoRoot, "agent", "juice", "child-env.mjs")).href);
 		const clean = userCommandEnv(env);
 		for (const key of Object.keys(env)) if (!(key in clean)) delete env[key];
 		for (const [key, value] of Object.entries(clean)) if (env[key] !== value) env[key] = value;
@@ -2525,10 +2525,10 @@ async function sanitizeUpdaterEnv(env = process.env) {
  * extensões TypeScript (jiti) e compila o JS do Node do zero — ~1,5 s contra ~0,5 s com cache. Um
  * `pi --offline --list-models` pelo launcher instalado carrega as mesmas extensões sem abrir a TUI
  * nem falar com provider, e deixa o cache pronto. Melhor esforço: falhar aqui não desfaz nada.
- * Só no store padrão (launcher adotado); `MARK_WARM_START=0` desliga.
+ * Só no store padrão (launcher adotado); `AGENT_WARM_START=0` desliga.
  */
 function warmStartCache(options) {
-	if (!options.adoptLauncher || process.env.MARK_WARM_START === "0") return;
+	if (!options.adoptLauncher || process.env.AGENT_WARM_START === "0") return;
 	const launcher = join(options.store, "bin", isWindows ? "pi-wrapper.cmd" : "pi-wrapper");
 	if (!existsSync(launcher)) return;
 	const started = Date.now();
@@ -2549,21 +2549,21 @@ async function main() {
 	assertUpdaterGeneration(options.store, options.force);
 
 	// `--check` constrói em tmp e não promove nada: não disputa o store, não toma o lock. O status do
-	// Mark II sai antes da construção, para ser legível mesmo quando o gate falha depois.
+	// Agent sai antes da construção, para ser legível mesmo quando o gate falha depois.
 	if (options.check) {
-		console.log(await markIIStatusReport(options.store));
+		console.log(await agentStatusReport(options.store));
 		return build(options, null);
 	}
 
-	const holder = options.markIIEnable
-		? "pi-overlay-update --mark-ii-enable"
-		: options.markIIDisable
-			? "pi-overlay-update --mark-ii-disable"
+	const holder = options.agentEnable
+		? "agent-update --agent-enable"
+		: options.agentDisable
+			? "agent-update --agent-disable"
 			: options.gc
-				? "pi-overlay-update --gc"
+				? "agent-update --gc"
 				: options.rollback
-				? "pi-overlay-update --rollback"
-				: "pi-overlay-update";
+				? "agent-update --rollback"
+				: "agent-update";
 	const lock = acquireStoreLock(options.store, { holder });
 	const releaseLock = () => lock.release();
 	process.on("exit", releaseLock);
@@ -2575,8 +2575,8 @@ async function main() {
 	}
 	try {
 		// Fotografia de `current` ANTES da construção: a comparação no fim é contra este valor.
-		if (options.markIIEnable) await markIIEnable(options);
-		else if (options.markIIDisable) await markIIDisable(options);
+		if (options.agentEnable) await agentEnable(options);
+		else if (options.agentDisable) await agentDisable(options);
 		else if (options.gc) await overlayGc(options);
 		else if (options.promote !== undefined) await promote(options);
 		else await build(options, readCurrentTarget(options.store));
@@ -2584,7 +2584,7 @@ async function main() {
 		releaseLock();
 	}
 	// Só depois de ativar algo (não em --prepare, que deixa current intacto, nem em gc/disable).
-	if (options.markIIEnable || options.promote !== undefined || (!options.prepare && !options.gc && !options.markIIDisable)) {
+	if (options.agentEnable || options.promote !== undefined || (!options.prepare && !options.gc && !options.agentDisable)) {
 		warmStartCache(options);
 	}
 }
@@ -2637,7 +2637,7 @@ async function build(options, currentAtStart) {
 			: options.ref === "release"
 				? manifest.overlayRef
 				: options.ref;
-	const stageRoot = mkdtempSync(join(tmpdir(), "pi-overlay-update-"));
+	const stageRoot = mkdtempSync(join(tmpdir(), "agent-update-"));
 	const sourceDir = join(stageRoot, "source");
 	// O staging dentro do store (`releases/.staging-<pid>`) é desta tentativa e de mais ninguém: só ele
 	// é removido no catch, e só pelo caminho que esta execução criou. Varrer `.staging-*` por prefixo
@@ -2824,10 +2824,10 @@ async function build(options, currentAtStart) {
 		if (options.noPrune) {
 			console.log("Preserving all existing releases and overlay bundles (--no-prune)");
 		} else {
-			// A release que a config do Mark II registra como `piRoot` está em uso mesmo quando não é
+			// A release que a config do Agent registra como `piRoot` está em uso mesmo quando não é
 			// `current`/`previous` (opt-out guardado, par preparado): coletar ela quebraria o artefato.
-			const markIIPiRoot = (await readMarkIIState(options.store))?.config?.piRoot;
-			collectOrphanReleases(options.store, releaseDir, markIIPiRoot ? [markIIPiRoot] : []);
+			const agentPiRoot = (await readAgentState(options.store))?.config?.piRoot;
+			collectOrphanReleases(options.store, releaseDir, agentPiRoot ? [agentPiRoot] : []);
 			collectOverlayBundles(options.store, [launcher.overlayRepo, repoRoot]);
 		}
 		console.log(
@@ -2872,7 +2872,7 @@ function discardOwnStaging(installDir) {
 	}
 }
 
-export { overlayStatus, overlayGc, planOverlayGc, parseArgs, digestTree, writePrepared, collectOrphanReleases, allocateReleaseDir, discardOwnStaging, markIIStatusReport };
+export { overlayStatus, overlayGc, planOverlayGc, parseArgs, digestTree, writePrepared, collectOrphanReleases, allocateReleaseDir, discardOwnStaging, agentStatusReport };
 
 if (process.argv[1] && resolvedPath(resolve(process.argv[1])) === resolvedPath(fileURLToPath(import.meta.url))) {
 	try {

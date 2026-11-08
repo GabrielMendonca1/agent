@@ -1,19 +1,19 @@
 #!/bin/bash
 # Experimento: trocar simple/complex no meio da sessão quebra o prompt cache? Cinco turnos curtos
-# (Haiku por padrão; MODEL=provider/id para outro) numa sessão do perfil MARK II temporário.
+# (Haiku por padrão; MODEL=provider/id para outro) numa sessão do perfil Agent temporário.
 # Esperado após a fase C do plano de cache: "read" alto também nas linhas "->".
 
 set -e
-REPO=/Users/biel/Projects/mark-pi
-PARENT=$(mktemp -d /tmp/mark-cache-exp-XXXX)
+REPO=/Users/biel/Projects/agent
+PARENT=$(mktemp -d /tmp/agent-cache-exp-XXXX)
 PROF=$(NODE_OPTIONS= node $REPO/scripts/prepare-juice-test.mjs --temp-parent $PARENT | python3 -c "import sys,json; print(json.load(sys.stdin)['root'])")
 ENVJ=$PROF/environment.json
-JH=$(python3 -c "import json; print(json.load(open('$ENVJ'))['MARK_JUICE_HOME'])")
-JS=$(python3 -c "import json; print(json.load(open('$ENVJ'))['MARK_JUICE_STATE'])")
+JH=$(python3 -c "import json; print(json.load(open('$ENVJ'))['AGENT_JUICE_HOME'])")
+JS=$(python3 -c "import json; print(json.load(open('$ENVJ'))['AGENT_JUICE_STATE'])")
 SID=$(uuidgen | tr A-Z a-z)
 MODEL=${MODEL:-anthropic/claude-haiku-5-5}
-mode() { MARK_JUICE_ENABLED=1 MARK_JUICE_HOME="$JH" MARK_JUICE_STATE="$JS" NODE_OPTIONS= node --input-type=module -e "import { setJuiceMode } from '$REPO/mark/juice/client.mjs'; setJuiceMode(process.argv[1]);" "$1"; }
-turn() { cd $REPO; MARK_LEARN=0 MARK_DISPATCHER=0 $PROF/launch.sh -p --mode json --session-id $SID --model $MODEL "$2" 2>/dev/null \
+mode() { AGENT_JUICE_ENABLED=1 AGENT_JUICE_HOME="$JH" AGENT_JUICE_STATE="$JS" NODE_OPTIONS= node --input-type=module -e "import { setJuiceMode } from '$REPO/agent/juice/client.mjs'; setJuiceMode(process.argv[1]);" "$1"; }
+turn() { cd $REPO; AGENT_LEARN=0 AGENT_DISPATCHER=0 $PROF/launch.sh -p --mode json --session-id $SID --model $MODEL "$2" 2>/dev/null \
   | python3 -c "
 import sys,json
 u=None

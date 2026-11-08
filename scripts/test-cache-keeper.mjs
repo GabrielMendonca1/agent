@@ -5,7 +5,7 @@ import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
 const repo = resolve(dirname(fileURLToPath(import.meta.url)), '..');
-const mod = await import(pathToFileURL(join(repo, 'mark/extensions/brain-live/cache-keeper.ts')).href);
+const mod = await import(pathToFileURL(join(repo, 'agent/extensions/brain-live/cache-keeper.ts')).href);
 const { warmWindow } = mod;
 
 // Poucas pausas registradas → janela padrão de 3 h.
@@ -29,7 +29,7 @@ assert.equal(warmWindow(Array.from({ length: 40 }, () => ({ s: 720 })), 300), 54
 // Registro: guarda o último payload real e não altera requests sem cache_control.
 const handlers = {};
 const pi = { on: (name, fn) => { (handlers[name] ??= []).push(fn); }, registerCommand: () => {} };
-delete process.env.MARK_JUICE_CHILD; delete process.env.MARK_CACHE_KEEPER;
+delete process.env.AGENT_JUICE_CHILD; delete process.env.AGENT_CACHE_KEEPER;
 mod.default(pi);
 for (const name of ['before_provider_request', 'agent_settled', 'agent_start', 'session_shutdown']) assert.ok(handlers[name], name);
 const payload = { system: [{ type: 'text', text: 'x', cache_control: { type: 'ephemeral', ttl: '1h' } }], messages: [{ role: 'user', content: 'oi' }] };
@@ -37,7 +37,7 @@ assert.equal(handlers.before_provider_request[0]({ payload }), undefined);
 assert.equal(handlers.before_provider_request[0]({ payload: { messages: [] } }), undefined);
 
 // ---- cache-policy (backend D/E/F/H/J + aquecimento seguro) ----
-const policy = await import(pathToFileURL(join(repo, 'mark/juice/cache-policy.mjs')).href);
+const policy = await import(pathToFileURL(join(repo, 'agent/juice/cache-policy.mjs')).href);
 const opus = { api: 'anthropic-messages', provider: 'anthropic', id: 'claude-opus-5-5', cost: { input: 5, output: 25, cacheRead: 0.5, cacheWrite: 6.25 } };
 const sonnet = { api: 'anthropic-messages', provider: 'anthropic', id: 'claude-sonnet-5-5', cost: { input: 3, output: 15, cacheRead: 0.3, cacheWrite: 3.75 } };
 const codex = { api: 'openai-codex-responses', provider: 'openai-codex', id: 'gpt-6-sol', cost: { input: 1.25, output: 10, cacheRead: 0.125 } };
@@ -70,7 +70,7 @@ assert.equal(policy.compactionDecision({ reason: 'threshold', warm: true, tokens
 const resp = { model: 'gpt-6-sol', instructions: 'papel X', tools: [{ name: 'read' }], input: [{ role: 'user', content: 'a' }] };
 assert.equal(policy.openaiCacheKey({ ...resp, prompt_cache_key: 'sess-1' }), undefined);
 const k1 = policy.openaiCacheKey(resp);
-assert.match(k1, /^mark-[0-9a-f]{16}$/);
+assert.match(k1, /^agent-[0-9a-f]{16}$/);
 assert.equal(policy.openaiCacheKey({ ...resp, input: [{ role: 'user', content: 'outra tarefa' }], prompt_cache_key: 'sess-2' }, { child: true }), k1, 'filhos do mesmo papel compartilham chave');
 assert.notEqual(policy.openaiCacheKey({ ...resp, instructions: 'papel Y' }), k1);
 assert.equal(policy.openaiCacheKey(payload), undefined, 'Anthropic não muda');
@@ -142,18 +142,18 @@ assert.ok(historyFp.messages.every(hash => /^[0-9a-f]{16}$/.test(hash)), 'only m
     Date.now = () => realNow() + 3601_000;
     assert.equal(policy.sessionCachePolicy(ctx).cacheState().warm, false, 'TTL vencido continua observável');
   } finally { Date.now = realNow; }
-  const preview = globalThis[Symbol.for('mark.cache-keeper.estimateSwitch')](sonnet, { ...ctx, model: opus });
+  const preview = globalThis[Symbol.for('agent.cache-keeper.estimateSwitch')](sonnet, { ...ctx, model: opus });
   assert.ok(preview.rebuildUsd > preview.stayUsd && preview.tokens === 460_000, 'prévia antes da escolha');
   assert.equal(emitted.length, 0, 'prévia não emite nem avisa');
   run('model_select', { source: 'set', previousModel: opus, model: sonnet });
-  assert.equal(emitted[0][0], 'mark:cache-estimate'); assert.equal(emitted[0][1].to, 'anthropic/claude-sonnet-5-5'); assert.ok(emitted[0][1].rebuildUsd > 0);
+  assert.equal(emitted[0][0], 'agent:cache-estimate'); assert.equal(emitted[0][1].to, 'anthropic/claude-sonnet-5-5'); assert.ok(emitted[0][1].rebuildUsd > 0);
   run('model_select', { source: 'restore', previousModel: opus, model: sonnet });
   assert.equal(emitted.length, 1, 'restore não avisa');
-  process.env.MARK_JUICE_CHILD = '1';
+  process.env.AGENT_JUICE_CHILD = '1';
   const hc = {}; mod.default({ on: (n, f) => { (hc[n] ??= []).push(f); }, registerCommand: () => {} });
-  delete process.env.MARK_JUICE_CHILD;
+  delete process.env.AGENT_JUICE_CHILD;
   assert.deepEqual(Object.keys(hc), ['before_provider_request'], 'filho: só a chave OpenAI');
-  assert.match(hc.before_provider_request[0]({ payload: { ...resp, prompt_cache_key: 'sess-9' } }).prompt_cache_key, /^mark-/);
+  assert.match(hc.before_provider_request[0]({ payload: { ...resp, prompt_cache_key: 'sess-9' } }).prompt_cache_key, /^agent-/);
 }
 
 // E — filho de prefetch: 1º request vira aquecimento de tools+system; fora da Anthropic sai.
@@ -161,9 +161,9 @@ assert.ok(historyFp.messages.every(hash => /^[0-9a-f]{16}$/.test(hash)), 'only m
   assert.deepEqual(policy.prefetchPayload({ ...payload, thinking: { type: 'enabled', budget_tokens: 4096 }, max_tokens: 32000 }), { ...payload, max_tokens: 1 });
   assert.equal(policy.prefetchPayload({ messages: [], system: 'sem cache_control' }), undefined);
   assert.equal(policy.prefetchPayload(resp), undefined);
-  Object.assign(process.env, { MARK_JUICE_CHILD: '1', MARK_CACHE_PREFETCH: '1', MARK_CACHE_PREFETCH_NO_EXIT: '1' });
+  Object.assign(process.env, { AGENT_JUICE_CHILD: '1', AGENT_CACHE_PREFETCH: '1', AGENT_CACHE_PREFETCH_NO_EXIT: '1' });
   const h = {}; mod.default({ on: (n, f) => { (h[n] ??= []).push(f); }, registerCommand: () => {} });
-  for (const k of ['MARK_JUICE_CHILD', 'MARK_CACHE_PREFETCH', 'MARK_CACHE_PREFETCH_NO_EXIT']) delete process.env[k];
+  for (const k of ['AGENT_JUICE_CHILD', 'AGENT_CACHE_PREFETCH', 'AGENT_CACHE_PREFETCH_NO_EXIT']) delete process.env[k];
   const send = (p) => h.before_provider_request.map(f => f({ payload: p })).find(r => r !== undefined);
   const first = send({ ...payload, thinking: { type: 'adaptive' }, max_tokens: 32000 });
   assert.equal(first.max_tokens, 1); assert.equal(first.thinking, undefined); assert.deepEqual(first.system, payload.system);
@@ -178,7 +178,7 @@ assert.ok(historyFp.messages.every(hash => /^[0-9a-f]{16}$/.test(hash)), 'only m
   const { createServer } = await import('node:http');
   const { mkdtempSync } = await import('node:fs');
   const { tmpdir } = await import('node:os');
-  const piAi = join(process.env.MARK_JUICE_PI_ROOT || join(process.env.HOME, '.local/share/pi-overlay/current/lib/node_modules/@earendil-works/pi-coding-agent'), 'node_modules/@earendil-works/pi-ai/dist');
+  const piAi = join(process.env.AGENT_JUICE_PI_ROOT || join(process.env.HOME, '.local/share/agent/current/lib/node_modules/@earendil-works/pi-coding-agent'), 'node_modules/@earendil-works/pi-ai/dist');
   const { streamSimpleAnthropic } = await import(pathToFileURL(join(piAi, 'legacy-api-aliases.js')).href);
   const seen = []; const prefixes = new Set();
   const server = createServer((req, res) => {
@@ -204,8 +204,8 @@ assert.ok(historyFp.messages.every(hash => /^[0-9a-f]{16}$/.test(hash)), 'only m
   });
   await new Promise(r => server.listen(0, '127.0.0.1', r));
   const model = { ...opus, id: 'claude-test', name: 'test', baseUrl: `http://127.0.0.1:${server.address().port}`, reasoning: true, input: ['text'], contextWindow: 1_000_000, maxTokens: 64_000 };
-  process.env.MARK_JUICE_HOME = mkdtempSync(join(tmpdir(), 'ck-')); delete process.env.MARK_JUICE_ENABLED;
-  process.env.MARK_CACHE_KEEPER_TEST = '1';
+  process.env.AGENT_JUICE_HOME = mkdtempSync(join(tmpdir(), 'ck-')); delete process.env.AGENT_JUICE_ENABLED;
+  process.env.AGENT_CACHE_KEEPER_TEST = '1';
   const errWrite = process.stderr.write.bind(process.stderr); const lines = [];
   async function scenario(real, tokens, final) {
     const h = {}; const api = { on: (n, f) => { (h[n] ??= []).push(f); }, registerCommand: () => {}, events: { emit() {} } };
@@ -214,7 +214,7 @@ assert.ok(historyFp.messages.every(hash => /^[0-9a-f]{16}$/.test(hash)), 'only m
     const ctx = { sessionManager: {}, cwd: '/tmp/ck-test', hasUI: false, model, getContextUsage: () => ({ tokens, contextWindow: 1_000_000 }),
       modelRegistry: { streamSimple: (m, c, o) => { sent.push(o); return streamSimpleAnthropic(m, c, { ...o, apiKey: 'test' }); } } };
     for (const f of h.before_provider_request) f({ payload: real }, ctx);
-    if (final) globalThis[Symbol.for('mark.cache-keeper.finalPayload')](final);
+    if (final) globalThis[Symbol.for('agent.cache-keeper.finalPayload')](final);
     const before = seen.length;
     process.stderr.write = (s) => { lines.push(String(s)); return true; };
     try { for (const f of h.agent_settled) await f({}, ctx); } finally { process.stderr.write = errWrite; }
@@ -280,7 +280,7 @@ assert.ok(historyFp.messages.every(hash => /^[0-9a-f]{16}$/.test(hash)), 'only m
   const cc = { ...budget, system: [{ type: 'text', text: 'x-anthropic-billing-header: cc_version=2.1.280.abc; cc_entrypoint=sdk-cli; cch=00000;' }, ...budget.system] };
   const cchOf = (b) => JSON.parse(patchClaudeCodeCch(JSON.stringify(b))).system[0].text.match(/cch=([0-9a-f]{5})/)[1];
   assert.equal(cchOf({ ...cc, max_tokens: 2049 }), cchOf(cc), 'cch preservado no ping');
-  delete process.env.MARK_CACHE_KEEPER_TEST;
+  delete process.env.AGENT_CACHE_KEEPER_TEST;
 }
 
 // ---- ledger J de verdade: ledger JSON + runtime Juice + hooks da extensão ----
@@ -288,10 +288,10 @@ assert.ok(historyFp.messages.every(hash => /^[0-9a-f]{16}$/.test(hash)), 'only m
   const { existsSync, mkdtempSync, readFileSync, writeFileSync, readdirSync, rmSync } = await import('node:fs');
   const { createHash } = await import('node:crypto');
   const { tmpdir } = await import('node:os');
-  const runtime = await import(pathToFileURL(join(repo, 'mark/juice/runtime.mjs')).href);
-  const client = await import(pathToFileURL(join(repo, 'mark/juice/client.mjs')).href);
+  const runtime = await import(pathToFileURL(join(repo, 'agent/juice/runtime.mjs')).href);
+  const client = await import(pathToFileURL(join(repo, 'agent/juice/client.mjs')).href);
   const home = mkdtempSync(join(tmpdir(), 'ck-ledger-'));
-  Object.assign(process.env, { MARK_JUICE_ENABLED: '1', MARK_JUICE_HOME: home, MARK_JUICE_STATE: join(home, 'run.json') });
+  Object.assign(process.env, { AGENT_JUICE_ENABLED: '1', AGENT_JUICE_HOME: home, AGENT_JUICE_STATE: join(home, 'run.json') });
   const broker = join(home, 'run.json'), legacyPrefs = join(home, 'preferences.json');
   writeFileSync(broker, JSON.stringify({ version: 2, runId: 'broker', mode: 'simple', calls: { used: 1 }, output: { used: 0, reserved: 100 }, usd: 0, pending: [{ callId: 'legacy-reservation', model: 'legacy/model', kind: 'stream', reservedOutputTokens: 100, status: 'reserved' }], receipts: [], cache: { gaps: [], breaks: {}, warmSkips: {} } }));
   writeFileSync(legacyPrefs, JSON.stringify({ mode: 'complex', supportModel: 'legacy/model' }));
@@ -313,7 +313,7 @@ assert.ok(historyFp.messages.every(hash => /^[0-9a-f]{16}$/.test(hash)), 'only m
   const rt = new FakeRuntime();
   // Runtime entrega ao keeper o corpo final da cadeia onPayload (não nos pings).
   {
-    const got = []; const key = Symbol.for('mark.cache-keeper.finalPayload'); const saved = globalThis[key];
+    const got = []; const key = Symbol.for('agent.cache-keeper.finalPayload'); const saved = globalThis[key];
     globalThis[key] = (p) => got.push(p);
     class Rt2 { async prepareRequest(model, options) { return { model, options, provider: { streamSimple: (_m, _c, o) => {
       const message = { role: 'assistant', stopReason: 'stop', usage: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0, totalTokens: 2 } };
@@ -374,13 +374,13 @@ assert.ok(historyFp.messages.every(hash => /^[0-9a-f]{16}$/.test(hash)), 'only m
   const snap = client.getJuiceSnapshot();
   assert.equal(snap.receipts, undefined, 'resposta sem receipts'); assert.equal(snap.receiptCount, 3);
   rmSync(home, { recursive: true, force: true });
-  for (const k of ['MARK_JUICE_ENABLED', 'MARK_JUICE_BIN', 'MARK_JUICE_STATE']) delete process.env[k];
+  for (const k of ['AGENT_JUICE_ENABLED', 'AGENT_JUICE_BIN', 'AGENT_JUICE_STATE']) delete process.env[k];
 }
 
 // Refresh em voo de um ciclo encerrado não pode aquecer nem contabilizar no novo ciclo.
 {
-  const saved = process.env.MARK_CACHE_KEEPER_TEST;
-  process.env.MARK_CACHE_KEEPER_TEST = '1';
+  const saved = process.env.AGENT_CACHE_KEEPER_TEST;
+  process.env.AGENT_CACHE_KEEPER_TEST = '1';
   const h = {}; const commands = {};
   mod.default({ on: (n, f) => { (h[n] ??= []).push(f); }, registerCommand: (n, c) => { commands[n] = c; } });
   let finish; let signal;
@@ -407,7 +407,7 @@ assert.ok(historyFp.messages.every(hash => /^[0-9a-f]{16}$/.test(hash)), 'only m
   await commands.cache.handler('', ctx);
   assert.match(notes.at(-1), /pings nesta sessão: 0/);
   for (const f of h.session_shutdown) f({}, ctx);
-  if (saved === undefined) delete process.env.MARK_CACHE_KEEPER_TEST; else process.env.MARK_CACHE_KEEPER_TEST = saved;
+  if (saved === undefined) delete process.env.AGENT_CACHE_KEEPER_TEST; else process.env.AGENT_CACHE_KEEPER_TEST = saved;
 }
 
 // I — compactação ociosa (pura): mínimo, instante e decisão no disparo.

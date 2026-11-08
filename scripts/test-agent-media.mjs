@@ -17,7 +17,7 @@
  *    (b) anexo direto (@arquivo) continua chegando ao provider.
  *    Nenhuma chamada sai da máquina; nada fora do diretório temporário é escrito.
  *
- * `node scripts/test-mark-media.mjs`
+ * `node scripts/test-agent-media.mjs`
  */
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
@@ -29,8 +29,8 @@ import { fileURLToPath } from 'node:url';
 import { startFakeAnthropic } from './lib/fake-anthropic.mjs';
 
 // Permite repetir a mesma prova sobre os bytes do artefato instalado, sem usar seu perfil.
-const repo = resolve(process.env.MARK_MEDIA_SOURCE_ROOT || resolve(dirname(fileURLToPath(import.meta.url)), '..'));
-const store = process.env.PI_OVERLAY_STORE ? resolve(process.env.PI_OVERLAY_STORE) : join(homedir(), '.local/share/pi-overlay');
+const repo = resolve(process.env.AGENT_MEDIA_SOURCE_ROOT || resolve(dirname(fileURLToPath(import.meta.url)), '..'));
+const store = process.env.AGENT_STORE ? resolve(process.env.AGENT_STORE) : join(homedir(), '.local/share/agent');
 let checks = 0;
 const ok = (name) => { checks++; console.log(`ok ${name}`); };
 
@@ -41,7 +41,7 @@ const PNG_1X1 = Buffer.from(
 );
 
 function findPiRoot() {
-  if (process.env.MARK_JUICE_PI_ROOT) return realpathSync(process.env.MARK_JUICE_PI_ROOT);
+  if (process.env.AGENT_JUICE_PI_ROOT) return realpathSync(process.env.AGENT_JUICE_PI_ROOT);
   const relative = join('lib/node_modules/@earendil-works/pi-coding-agent');
   const current = join(store, 'current', relative);
   if (existsSync(join(current, 'dist/cli.js'))) return realpathSync(current);
@@ -54,7 +54,7 @@ function findPiRoot() {
 
 // ---- 1) unidade: anúncio dos papéis -----------------------------------------
 async function announcement(piRoot) {
-  const root = mkdtempSync(join(tmpdir(), 'mark-media-ann-'));
+  const root = mkdtempSync(join(tmpdir(), 'agent-media-ann-'));
   const saved = { ...process.env };
   try {
     const agents = join(root, 'agent/agents');
@@ -76,7 +76,7 @@ async function announcement(piRoot) {
       '@earendil-works/pi-tui': dep('@earendil-works/pi-tui'),
       typebox: join(piRoot, 'node_modules/typebox/build/index.mjs'),
     } });
-    const mod = await jiti.import(join(repo, 'mark/extensions/brain-live/subagent/index.ts'));
+    const mod = await jiti.import(join(repo, 'agent/extensions/brain-live/subagent/index.ts'));
     const { describeAgentTools, describeUserAgents } = mod;
 
     assert.equal(describeAgentTools({ tools: ['read', 'grep'] }), 'tools: read, grep');
@@ -139,7 +139,7 @@ const ROLES = [
 ];
 
 async function imageReachesProvider(piRoot) {
-  const root = mkdtempSync(join(tmpdir(), 'mark-media-img-'));
+  const root = mkdtempSync(join(tmpdir(), 'agent-media-img-'));
   try {
     const agentDir = join(root, 'agent');
     const cwd = join(root, 'projeto');
@@ -152,7 +152,7 @@ async function imageReachesProvider(piRoot) {
       const fake = await startFakeAnthropic(script);
       try {
         writeFileSync(join(agentDir, 'models.json'), `${JSON.stringify({
-          providers: { anthropic: { baseUrl: fake.baseUrl, apiKey: 'mark-media-test-not-a-key', compat: { supportsMidConvoSystemMessages: true, supportsMidConvoToolChanges: true } } },
+          providers: { anthropic: { baseUrl: fake.baseUrl, apiKey: 'agent-media-test-not-a-key', compat: { supportsMidConvoSystemMessages: true, supportsMidConvoToolChanges: true } } },
         }, null, 2)}\n`);
         const result = await new Promise((done) => {
           const child = spawn(process.execPath, [
@@ -165,7 +165,7 @@ async function imageReachesProvider(piRoot) {
             cwd, stdio: ['ignore', 'pipe', 'pipe'], timeout: 120_000,
             env: { PATH: process.env.PATH, HOME: root, USERPROFILE: root, PI_CODING_AGENT_DIR: agentDir, NODE_OPTIONS: '',
               PI_DURABLE_HOST: '0',
-              MARK_JUICE_ENABLED: '1', MARK_JUICE_BIN: '/nonexistent-offline-fixture', MARK_JUICE_HOME: join(root, 'juice'), MARK_JUICE_STATE: join(root, 'juice/run.json') },
+              AGENT_JUICE_ENABLED: '1', AGENT_JUICE_BIN: '/nonexistent-offline-fixture', AGENT_JUICE_HOME: join(root, 'juice'), AGENT_JUICE_STATE: join(root, 'juice/run.json') },
           });
           let out = '', err = '';
           child.stdout.on('data', (d) => { out += d; });

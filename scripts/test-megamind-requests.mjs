@@ -6,13 +6,13 @@ import { mkdtempSync, writeFileSync, rmSync, readFileSync, existsSync, realpathS
 import { tmpdir, homedir } from 'node:os';
 import { join, resolve } from 'node:path';
 const repo = resolve(import.meta.dirname, '..');
-const store = process.env.PI_OVERLAY_STORE || join(homedir(), '.local/share/pi-overlay');
-const piRoot = realpathSync(process.env.MARK_JUICE_PI_ROOT || join(store, 'current/lib/node_modules/@earendil-works/pi-coding-agent'));
+const store = process.env.AGENT_STORE || join(homedir(), '.local/share/agent');
+const piRoot = realpathSync(process.env.AGENT_JUICE_PI_ROOT || join(store, 'current/lib/node_modules/@earendil-works/pi-coding-agent'));
 const { createJiti } = createRequire(join(piRoot, 'package.json'))('jiti');
 const jiti = createJiti(import.meta.url, { fsCache: false, moduleCache: false, alias: {
   typebox: join(piRoot, 'node_modules/typebox/build/index.mjs'),
 } });
-const root = mkdtempSync(join(tmpdir(), 'mark-megamind-requests-'));
+const root = mkdtempSync(join(tmpdir(), 'agent-megamind-requests-'));
 const savedConfig = process.env.ARCA_MEGAMIND_CONFIG;
 const savedFetch = globalThis.fetch;
 let checks = 0;
@@ -57,14 +57,14 @@ try {
     assert.equal(parseItem({ id: 'legacy123', kind: 'decision' }), undefined);
   });
   const { Inbox, isAskUserItem } = await jiti.import(join(repo, 'extensions/megamind/messaging.ts'));
-  const registryKey = Symbol.for('mark.askUser.requests');
+  const registryKey = Symbol.for('agent.askUser.requests');
   const savedRegistry = globalThis[registryKey];
   try {
     // O loader real usa Jiti por extensão, mas conserva o global do processo.
     const { loadExtensions } = await import(join(piRoot, 'dist/core/extensions/loader.js'));
     const writer = join(root, 'registry-writer.ts');
     const reader = join(root, 'registry-reader.ts');
-    writeFileSync(writer, `import { registerAskUserRequest } from ${JSON.stringify(join(repo, 'mark/extensions/brain-live/ask-user-requests.mjs'))};\nexport default () => registerAskUserRequest('registered123');`);
+    writeFileSync(writer, `import { registerAskUserRequest } from ${JSON.stringify(join(repo, 'agent/extensions/brain-live/ask-user-requests.mjs'))};\nexport default () => registerAskUserRequest('registered123');`);
     writeFileSync(reader, `import { isAskUserItem } from ${JSON.stringify(join(repo, 'extensions/megamind/messaging.ts'))};\nexport default () => { if (!isAskUserItem({kind:'reply', id:'registered123', from:{}})) throw new Error('global isolado'); };`);
     const loaded = await loadExtensions([writer, reader], root);
     ok('Pi loader shares registry across extensions and host', () => {
@@ -72,7 +72,7 @@ try {
       assert.equal(loaded.extensions.length, 2);
       assert.equal(isAskUserItem({ kind: 'reply', id: 'registered123', from: {} }), true);
     });
-    const { createAskRequest } = await import(join(repo, 'mark/extensions/brain-live/ask-user-megamind.mjs'));
+    const { createAskRequest } = await import(join(repo, 'agent/extensions/brain-live/ask-user-megamind.mjs'));
     globalThis.fetch = async (_url, init) => {
       const rpc = JSON.parse(init.body);
       const name = rpc.params.name;
@@ -141,7 +141,7 @@ try {
   const result = await tools.get('megamind_ask').execute('call', { to: '@handle', title: 'work', body: 'context' });
   ok('tool creates person request and reports its id', () => assert.match(result.content[0].text, /request123/));
   ok('runtime and subagent do not load removed modules', () => {
-    for (const path of ['extensions/megamind/index.ts', 'mark/extensions/brain-live/subagent/runner.ts']) {
+    for (const path of ['extensions/megamind/index.ts', 'agent/extensions/brain-live/subagent/runner.ts']) {
       assert.doesNotMatch(readFileSync(join(repo, path), 'utf8'), /childGate|publishGate|classifyToolCall/);
     }
     assert.equal(existsSync(join(repo, 'extensions/megamind/gate.ts')), false);

@@ -2,7 +2,7 @@
 /**
  * A extensão `sessions` vendorizada não pode apagar histórico sozinha: `/gc` é explícito.
  *
- * Carrega o `sessions.ts` de `mark/` com o próprio loader do Pi instalado (jiti, como na
+ * Carrega o `sessions.ts` de `agent/` com o próprio loader do Pi instalado (jiti, como na
  * distribuição) dentro de uma HOME/agent-dir temporários, com sessões JSONL de mentira — jamais
  * contra sessões reais. Sem Pi instalado o teste pula.
  *
@@ -18,7 +18,7 @@ import { fileURLToPath } from "node:url";
 import { dirname, resolve } from "node:path";
 
 const repo = resolve(dirname(fileURLToPath(import.meta.url)), "..");
-const store = process.env.PI_OVERLAY_STORE || join(homedir(), ".local", "share", "pi-overlay");
+const store = process.env.AGENT_STORE || join(homedir(), ".local", "share", "agent");
 const agentPackage = join(store, "current", "lib", "node_modules", "@earendil-works", "pi-coding-agent");
 const loaderEntry = join(agentPackage, "dist/core/extensions/loader.js");
 if (!existsSync(loaderEntry)) {
@@ -27,7 +27,7 @@ if (!existsSync(loaderEntry)) {
 }
 
 const DAY_MS = 24 * 60 * 60 * 1000;
-const root = mkdtempSync(join(tmpdir(), "mark-sessions-test-"));
+const root = mkdtempSync(join(tmpdir(), "agent-sessions-test-"));
 let checks = 0;
 function test(name, fn) { return Promise.resolve(fn()).then(() => { checks++; console.log(`ok ${name}`); }); }
 
@@ -54,7 +54,7 @@ try {
 	writeSession(current, join(root, "projeto-atual"), 0);
 	writeSession(antiga, join(root, "outro-projeto"), 31);
 
-	const loaded = await loadExtensions([join(repo, "mark", "extensions", "brain-live", "sessions.ts")], root);
+	const loaded = await loadExtensions([join(repo, "agent", "extensions", "brain-live", "sessions.ts")], root);
 	assert.deepEqual(loaded.errors, [], JSON.stringify(loaded.errors));
 	assert.equal(loaded.extensions.length, 1);
 	const extension = loaded.extensions[0];
@@ -88,7 +88,7 @@ try {
 	});
 
 	await test("/cost lê JSONL clássico sem host durável, com ou sem filtro de projeto", async () => {
-		const pack = await loadExtensions([join(repo, "mark/extensions/brain-live/cost.ts")], root);
+		const pack = await loadExtensions([join(repo, "agent/extensions/brain-live/cost.ts")], root);
 		assert.deepEqual(pack.errors, []);
 		const cost = pack.extensions[0].commands.get("cost");
 		assert.ok(cost);

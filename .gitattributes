@@ -1,8 +1,7 @@
 overlay/*.patch -whitespace
 overlay/*.patch -text
-mark-patches/*.patch -whitespace
-mark-patches/*.patch -text
-mark/juice/extensions.patch -whitespace -text
+agent-patches/*.patch -whitespace
+agent-patches/*.patch -text
 .pi/goals/**/*.patch -whitespace -text
 overlay/model-data/** -text
 scripts/*.cmd text eol=crlf

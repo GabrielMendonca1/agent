@@ -6,10 +6,10 @@ import { createRequire } from 'node:module';
 import { homedir, tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { userCommandEnv } from '../mark/juice/child-env.mjs';
+import { userCommandEnv } from '../agent/juice/child-env.mjs';
 
 const repo = resolve(dirname(fileURLToPath(import.meta.url)), '..');
-const rt = '/tmp/x/mark/juice/runtime.mjs';
+const rt = '/tmp/x/agent/juice/runtime.mjs';
 const url = `--import=file://${rt}`;
 
 const run = (env) => userCommandEnv(env);
@@ -18,33 +18,33 @@ assert.equal(run({ NODE_OPTIONS: `--max-old-space-size=64 ${url} --no-warnings` 
 assert.equal(run({ NODE_OPTIONS: `--no-warnings --import ${rt}` }).NODE_OPTIONS, '--no-warnings');
 assert.equal(run({ NODE_OPTIONS: `--import ./other.mjs ${url}` }).NODE_OPTIONS, '--import ./other.mjs');
 assert.equal(run({ PI_AUTOMATIC_SKILLS: 'peers' }).PI_AUTOMATIC_SKILLS, 'peers'); // sem snapshot: intacto
-assert.equal(run({ PI_AUTOMATIC_SKILLS: 'peers', MARK_JUICE_SKILLS_BEFORE: 'null' }).PI_AUTOMATIC_SKILLS, undefined);
-const s = run({ PI_AUTOMATIC_SKILLS: 'peers', MARK_JUICE_SKILLS_BEFORE: '"a,b"', MARK_JUICE_X: '1', KEEP: '1' });
+assert.equal(run({ PI_AUTOMATIC_SKILLS: 'peers', AGENT_JUICE_SKILLS_BEFORE: 'null' }).PI_AUTOMATIC_SKILLS, undefined);
+const s = run({ PI_AUTOMATIC_SKILLS: 'peers', AGENT_JUICE_SKILLS_BEFORE: '"a,b"', AGENT_JUICE_X: '1', KEEP: '1' });
 assert.deepEqual(s, { PI_AUTOMATIC_SKILLS: 'a,b', KEEP: '1' });
-const original = { NODE_OPTIONS: url, MARK_JUICE_SKILLS_BEFORE: 'null', PI_AUTOMATIC_SKILLS: 'peers' };
+const original = { NODE_OPTIONS: url, AGENT_JUICE_SKILLS_BEFORE: 'null', PI_AUTOMATIC_SKILLS: 'peers' };
 run(original);
 assert.equal(original.NODE_OPTIONS, url); // não muta
-assert.deepEqual(run({ MARK_JUICE_SKILLS_BEFORE: '{' , A: '1'}), { MARK_JUICE_SKILLS_BEFORE: '{', A: '1' }); // best-effort
+assert.deepEqual(run({ AGENT_JUICE_SKILLS_BEFORE: '{' , A: '1'}), { AGENT_JUICE_SKILLS_BEFORE: '{', A: '1' }); // best-effort
 console.log('ok userCommandEnv');
 
-const store = process.env.PI_OVERLAY_STORE ? resolve(process.env.PI_OVERLAY_STORE) : join(homedir(), '.local/share/pi-overlay');
+const store = process.env.AGENT_STORE ? resolve(process.env.AGENT_STORE) : join(homedir(), '.local/share/agent');
 const rel = 'lib/node_modules/@earendil-works/pi-coding-agent';
-let piRoot = process.env.MARK_JUICE_PI_ROOT;
+let piRoot = process.env.AGENT_JUICE_PI_ROOT;
 if (!piRoot && existsSync(join(store, 'current', rel, 'dist/index.js'))) piRoot = join(store, 'current', rel);
 if (!piRoot) { console.log('skip: Pi não encontrado'); process.exit(0); }
 piRoot = realpathSync(piRoot);
 
-const root = mkdtempSync(join(tmpdir(), 'mark-child-env-'));
+const root = mkdtempSync(join(tmpdir(), 'agent-child-env-'));
 const saved = { ...process.env };
 try {
-  mkdirSync(join(root, 'mark/juice'), { recursive: true });
-  const fake = join(root, 'mark/juice/runtime.mjs');
+  mkdirSync(join(root, 'agent/juice'), { recursive: true });
+  const fake = join(root, 'agent/juice/runtime.mjs');
   writeFileSync(fake, '');
   process.env.HOME = root;
   process.env.PI_CODING_AGENT_DIR = join(root, 'agent');
   process.env.NODE_OPTIONS = `--no-warnings --import=file://${fake}`;
   process.env.PI_AUTOMATIC_SKILLS = 'peers,megamind,prometheus,tasks';
-  process.env.MARK_JUICE_SKILLS_BEFORE = 'null';
+  process.env.AGENT_JUICE_SKILLS_BEFORE = 'null';
 
   const req = createRequire(join(piRoot, 'package.json'));
   const { createJiti } = req('jiti');
@@ -55,10 +55,10 @@ try {
     '@earendil-works/pi-tui': dep('@earendil-works/pi-tui'),
     typebox: join(piRoot, 'node_modules/typebox/build/index.mjs'),
   } });
-  const shell = await jiti.import(join(repo, 'mark/extensions/brain-live/shell-runtime.ts'));
-  const display = await jiti.import(join(repo, 'mark/extensions/mark/tui/claude-cards.ts'));
+  const shell = await jiti.import(join(repo, 'agent/extensions/brain-live/shell-runtime.ts'));
+  const display = await jiti.import(join(repo, 'agent/extensions/agent/tui/claude-cards.ts'));
 
-  const probe = `node -e 'console.log(JSON.stringify({o:process.env.NODE_OPTIONS??null,s:process.env.PI_AUTOMATIC_SKILLS??null,j:Object.keys(process.env).filter(k=>k.startsWith("MARK_JUICE_"))}))'`;
+  const probe = `node -e 'console.log(JSON.stringify({o:process.env.NODE_OPTIONS??null,s:process.env.PI_AUTOMATIC_SKILLS??null,j:Object.keys(process.env).filter(k=>k.startsWith("AGENT_JUICE_"))}))'`;
   for (const compact of ['1', '0', 'absent']) {
     process.env.GARIME_CLAUDE_STYLE = compact === '0' ? '0' : '1';
     const tools = new Map();

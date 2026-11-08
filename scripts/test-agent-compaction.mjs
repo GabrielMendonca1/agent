@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// Compactação do Mark: motor nativo, modelo separado, preservação e gatilho por limiar.
+// Compactação do Agent: motor nativo, modelo separado, preservação e gatilho por limiar.
 // Hooks públicos com pi/ctx falsos. modelRegistry.streamSimple é um dublê;
 // compact()/serialização/validação são os reais do SDK. Nenhuma inferência externa.
 import assert from 'node:assert/strict';
@@ -12,7 +12,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 const repo = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 // SDK real instalado: as extensões resolvem `@earendil-works/*` contra ele (serializeConversation
 // de verdade), como o host faz. Sem rede e sem modelo.
-const piRoot = process.env.MARK_JUICE_PI_ROOT || join(homedir(), '.local/share/pi-overlay/current/lib/node_modules/@earendil-works/pi-coding-agent');
+const piRoot = process.env.AGENT_JUICE_PI_ROOT || join(homedir(), '.local/share/agent/current/lib/node_modules/@earendil-works/pi-coding-agent');
 assert.ok(existsSync(join(piRoot, 'package.json')), `pi instalado em ${piRoot}`);
 
 // As extensões importam vizinhos sem extensão (`./vault-runtime`), como o bundler do host faz;
@@ -39,7 +39,7 @@ registerHooks({
 
 // Vault temporário: PI_SYSTEM_DIR vence em lib/paths, e PI_VAULT_DIR é const de módulo
 // resolvida no import — por isso o env vem antes do primeiro `import()`.
-const vaultRoot = mkdtempSync(join(tmpdir(), 'mark-compaction-'));
+const vaultRoot = mkdtempSync(join(tmpdir(), 'agent-compaction-'));
 mkdirSync(join(vaultRoot, 'Pi'), { recursive: true });
 process.env.PI_SYSTEM_DIR = vaultRoot;
 const TEMPLATE = 'LEGACY_VAULT_SENTINEL {{CONVERSA}}';
@@ -47,18 +47,18 @@ writeFileSync(join(vaultRoot, 'Pi', 'compactacao.md'), TEMPLATE + '\n');
 
 // Ledger do Juice ligado mas apontado para um bin inexistente: as extensões rodam o caminho
 // real (recordJuiceCacheEvent é best-effort e engole a falha) sem broker nem estado global.
-process.env.MARK_JUICE_ENABLED = '1';
-process.env.MARK_JUICE_BIN = join(vaultRoot, 'bin-inexistente');
-process.env.MARK_JUICE_HOME = vaultRoot;
-process.env.MARK_JUICE_STATE = join(vaultRoot, 'run.json');
-delete process.env.MARK_JUICE_CHILD;
-delete process.env.MARK_CACHE_KEEPER;
+process.env.AGENT_JUICE_ENABLED = '1';
+process.env.AGENT_JUICE_BIN = join(vaultRoot, 'bin-inexistente');
+process.env.AGENT_JUICE_HOME = vaultRoot;
+process.env.AGENT_JUICE_STATE = join(vaultRoot, 'run.json');
+delete process.env.AGENT_JUICE_CHILD;
+delete process.env.AGENT_CACHE_KEEPER;
 
 const load = (rel) => import(pathToFileURL(join(repo, rel)).href);
-const compaction = await load('mark/extensions/brain-live/compaction.ts');
-const cacheKeeper = await load('mark/extensions/brain-live/cache-keeper.ts');
-const juice = await load('mark/extensions/brain-live/juice.ts');
-const policy = await load('mark/juice/cache-policy.mjs');
+const compaction = await load('agent/extensions/brain-live/compaction.ts');
+const cacheKeeper = await load('agent/extensions/brain-live/cache-keeper.ts');
+const juice = await load('agent/extensions/brain-live/juice.ts');
+const policy = await load('agent/juice/cache-policy.mjs');
 
 let checks = 0;
 const falhas = [];
@@ -68,11 +68,11 @@ const test = async (name, fn) => {
   catch (erro) { falhas.push(`${name}: ${erro?.message ?? erro}`); console.log(`not ok ${name}`); }
 };
 
-await test('aprendizado opt-in: só MARK_LEARN=1 no principal com modelo', () => {
-  for (const value of [undefined, '', '0', 'true', 'yes']) assert.equal(juice.learnEligible('provider/model', { MARK_LEARN: value }), false);
-  assert.equal(juice.learnEligible('provider/model', { MARK_LEARN: '1' }), true);
-  assert.equal(juice.learnEligible(null, { MARK_LEARN: '1' }), false);
-  assert.equal(juice.learnEligible('provider/model', { MARK_LEARN: '1', MARK_JUICE_CHILD: '1' }), false);
+await test('aprendizado opt-in: só AGENT_LEARN=1 no principal com modelo', () => {
+  for (const value of [undefined, '', '0', 'true', 'yes']) assert.equal(juice.learnEligible('provider/model', { AGENT_LEARN: value }), false);
+  assert.equal(juice.learnEligible('provider/model', { AGENT_LEARN: '1' }), true);
+  assert.equal(juice.learnEligible(null, { AGENT_LEARN: '1' }), false);
+  assert.equal(juice.learnEligible('provider/model', { AGENT_LEARN: '1', AGENT_JUICE_CHILD: '1' }), false);
 });
 
 // ---------- /next: limites e elegibilidade do handoff ----------
@@ -101,7 +101,7 @@ function fakeCtx({ model = MAIN, tokens = 0, contextWindow = 1_000_000, lunaFoun
   const statuses = [];
   const calls = [];
   const ctx = {
-    sessionManager: { getBranch: () => [{ type: 'custom', customType: 'mark-mode', data: { version: 1, mode: 'simple' } }], getEntries: () => [] },
+    sessionManager: { getBranch: () => [{ type: 'custom', customType: 'agent-mode', data: { version: 1, mode: 'simple' } }], getEntries: () => [] },
     hasUI: true,
     isIdle: () => true,
     cwd: vaultRoot,
@@ -161,7 +161,7 @@ await test('/next: espera handoff antes de trocar; preserva pai e não envia ap�
     assert.equal(options.parentSession, '/parent.jsonl');
     assert.equal(typeof options.setup, 'function');
     await options.setup({ appendCustomEntry: (type, data) => {
-      assert.equal(type, 'mark-next');
+      assert.equal(type, 'agent-next');
       assert.deepEqual(data, { parentSession: '/parent.jsonl' });
     } });
     order.push('new');
@@ -170,8 +170,8 @@ await test('/next: espera handoff antes de trocar; preserva pai e não envia ap�
   const pending = commands.next.handler('corrigir cache', ctx);
   await Promise.resolve();
   assert.deepEqual(order, [], 'não troca enquanto o agente trabalha');
-  mkdirSync(join(vaultRoot, '.mark'), { recursive: true });
-  writeFileSync(join(vaultRoot, '.mark/handoff.md'), 'handoff novo');
+  mkdirSync(join(vaultRoot, '.agent'), { recursive: true });
+  writeFileSync(join(vaultRoot, '.agent/handoff.md'), 'handoff novo');
   for (const fn of handlers.agent_end) await fn({}, ctx);
   await pending;
   assert.deepEqual(order, ['idle', 'new']);
@@ -186,7 +186,7 @@ await test('/next --keep: compacta em vez de trocar sessão', async () => {
   ctx.compact = () => { compacted++; };
   ctx.newSession = () => assert.fail('não deve trocar sessão');
   const pending = commands.next.handler('--keep próximo passo', ctx);
-  writeFileSync(join(vaultRoot, '.mark/handoff.md'), 'handoff keep');
+  writeFileSync(join(vaultRoot, '.agent/handoff.md'), 'handoff keep');
   for (const fn of handlers.agent_end) await fn({}, ctx);
   await pending;
   assert.equal(compacted, 1);
@@ -199,7 +199,7 @@ await test('/next: agente sem novo handoff não encerra a sessão', async () => 
   ctx.waitForIdle = async () => {};
   ctx.sessionManager = { getSessionFile: () => '/parent.jsonl' };
   ctx.newSession = () => assert.fail('handoff anterior não autoriza troca');
-  writeFileSync(join(vaultRoot, '.mark/handoff.md'), 'handoff anterior recente');
+  writeFileSync(join(vaultRoot, '.agent/handoff.md'), 'handoff anterior recente');
   const pending = commands.next.handler('', ctx);
   for (const fn of handlers.agent_end) await fn({}, ctx);
   await pending;
@@ -211,12 +211,12 @@ await test('/next: agent_settled atualiza estado e formatadores de compatibilida
   for (const tokens of [60_001, 60_000]) {
     const ctx = fakeCtx({ tokens });
     await handlers.agent_settled[0]({}, ctx);
-    const state = globalThis[Symbol.for('mark.state')]();
+    const state = globalThis[Symbol.for('agent.state')]();
     assert.equal(state.nextHint, tokens > 60_000);
-    const panel = await load('mark/juice/panel.ts');
+    const panel = await load('agent/juice/panel.ts');
     const theme = { fg: (_c, text) => text };
     assert.equal(panel.footerLine(200, theme, state)[0].includes('· /next encerra a tarefa'), tokens > 60_000);
-    assert.equal(panel.markStatus(theme, state).includes('· /next encerra a tarefa'), tokens > 60_000);
+    assert.equal(panel.agentStatus(theme, state).includes('· /next encerra a tarefa'), tokens > 60_000);
   }
 });
 
@@ -224,13 +224,13 @@ await test('/next: run custom não consome elegibilidade do primeiro run de usu�
   for (const messageType of ['user', undefined]) {
     const { handlers } = register(juice);
     const ctx = fakeCtx();
-    const file = join(vaultRoot, '.mark/handoff.md');
+    const file = join(vaultRoot, '.agent/handoff.md');
     mkdirSync(dirname(file), { recursive: true });
     writeFileSync(file, 'handoff após custom');
     assert.equal(await handlers.before_agent_start[0]({ messageType: 'custom' }, ctx), undefined);
     assert.equal(existsSync(file), true, 'custom não consome arquivo');
     assert.deepEqual(await handlers.before_agent_start[0]({ messageType }, ctx), {
-      message: { customType: 'mark-handoff', content: 'handoff após custom', display: false },
+      message: { customType: 'agent-handoff', content: 'handoff após custom', display: false },
     });
     writeFileSync(file, 'não reinjetar');
     assert.equal(await handlers.before_agent_start[0]({ messageType }, ctx), undefined);
@@ -240,16 +240,16 @@ await test('/next: run custom não consome elegibilidade do primeiro run de usu�
 await test('/next: injeção invisível uma vez e consumo por rename', async () => {
   const { handlers } = register(juice);
   const ctx = fakeCtx();
-  mkdirSync(join(vaultRoot, '.mark'), { recursive: true });
-  writeFileSync(join(vaultRoot, '.mark/handoff.md'), 'DECISÃO do handoff');
+  mkdirSync(join(vaultRoot, '.agent'), { recursive: true });
+  writeFileSync(join(vaultRoot, '.agent/handoff.md'), 'DECISÃO do handoff');
   const invoke = async () => {
     const results = [];
     for (const fn of handlers.before_agent_start) results.push(await fn({ messageType: 'user' }, ctx));
-    return results.filter(r => r?.message?.customType === 'mark-handoff');
+    return results.filter(r => r?.message?.customType === 'agent-handoff');
   };
-  assert.deepEqual(await invoke(), [{ message: { customType: 'mark-handoff', content: 'DECISÃO do handoff', display: false } }]);
-  assert.equal(existsSync(join(vaultRoot, '.mark/handoff.md')), false);
-  assert.equal(readFileSync(join(vaultRoot, '.mark/handoff.consumed.md'), 'utf8'), 'DECISÃO do handoff');
+  assert.deepEqual(await invoke(), [{ message: { customType: 'agent-handoff', content: 'DECISÃO do handoff', display: false } }]);
+  assert.equal(existsSync(join(vaultRoot, '.agent/handoff.md')), false);
+  assert.equal(readFileSync(join(vaultRoot, '.agent/handoff.consumed.md'), 'utf8'), 'DECISÃO do handoff');
   assert.deepEqual(await invoke(), []);
 });
 
@@ -456,8 +456,8 @@ await test('callbacks e eventos do Pi liberam o gatilho; queda de contexto não 
 
 // ---------- 4. contabilidade do adiamento (cache-keeper) ----------
 function keeperWithWarmCache({ tokens = 460_000, contextWindow = 1_000_000 } = {}) {
-  delete process.env.MARK_JUICE_CHILD;
-  delete process.env.MARK_CACHE_KEEPER;
+  delete process.env.AGENT_JUICE_CHILD;
+  delete process.env.AGENT_CACHE_KEEPER;
   const { handlers } = register(cacheKeeper);
   const ctx = fakeCtx({ tokens, contextWindow });
   for (const fn of handlers.session_start ?? []) fn({}, ctx);
@@ -599,7 +599,7 @@ if (!existsSync(loaderEntry)) {
 } else {
   const { loadExtensions, createExtensionRuntime } = await import(pathToFileURL(loaderEntry).href);
   const { createEventBus } = await import(pathToFileURL(join(piRoot, 'dist/core/event-bus.js')).href);
-  const paths = ['cache-keeper.ts', 'compaction.ts'].map((f) => join(repo, 'mark/extensions/brain-live', f));
+  const paths = ['cache-keeper.ts', 'compaction.ts'].map((f) => join(repo, 'agent/extensions/brain-live', f));
   const loaded = await loadExtensions(paths, vaultRoot, createEventBus(), createExtensionRuntime());
   assert.deepEqual(loaded.errors, [], 'extensões carregam no loader real');
   const chain = loaded.extensions.flatMap((ext) => [...(ext.handlers.get('session_before_compact') ?? [])]);

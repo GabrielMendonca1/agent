@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * Perfil Megamind da extensão que o Mark leva: sem `ARCA_MEGAMIND_CONFIG`, quem manda é o
+ * Perfil Megamind da extensão que o Agent leva: sem `ARCA_MEGAMIND_CONFIG`, quem manda é o
  * enrollment que a máquina tem. Numa máquina só Omni (sócio da Omni), uma sessão de terminal
  * apontava para a ARCA e mostrava ARCA — o bug que isto trava. HOME é injetado: nenhuma config
  * real é lida.
@@ -29,7 +29,7 @@ const { chatGroup, eventsUrl, groupAddress, serverProfile } = await import(contr
 );
 const { resetCore, resolveCore } = await import(join(repo, "extensions", "megamind", "core.ts"));
 
-const root = mkdtempSync(join(tmpdir(), "mark-megamind-profile-"));
+const root = mkdtempSync(join(tmpdir(), "agent-megamind-profile-"));
 let checks = 0;
 function test(name, fn) { fn(); checks++; console.log(`ok ${name}`); }
 async function atest(name, fn) { await fn(); checks++; console.log(`ok ${name}`); }

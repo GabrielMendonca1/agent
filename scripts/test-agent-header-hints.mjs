@@ -8,9 +8,9 @@ import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const repo = resolve(dirname(fileURLToPath(import.meta.url)), '..');
-const store = process.env.PI_OVERLAY_STORE ? resolve(process.env.PI_OVERLAY_STORE) : join(homedir(), '.local/share/pi-overlay');
+const store = process.env.AGENT_STORE ? resolve(process.env.AGENT_STORE) : join(homedir(), '.local/share/agent');
 function findPiRoot() {
-  if (process.env.MARK_JUICE_PI_ROOT) return realpathSync(process.env.MARK_JUICE_PI_ROOT);
+  if (process.env.AGENT_JUICE_PI_ROOT) return realpathSync(process.env.AGENT_JUICE_PI_ROOT);
   const relative = 'lib/node_modules/@earendil-works/pi-coding-agent';
   const current = join(store, 'current', relative);
   if (existsSync(join(current, 'dist/index.js'))) return realpathSync(current);
@@ -30,13 +30,13 @@ const jiti = createJiti(import.meta.url, { fsCache: false, moduleCache: false, a
   '@earendil-works/pi-tui': dep('@earendil-works/pi-tui'),
   typebox: join(piRoot, 'node_modules/typebox/build/index.mjs'),
 } });
-const dir = join(repo, 'mark/extensions/mark/tui');
+const dir = join(repo, 'agent/extensions/agent/tui');
 const logo = await jiti.import(join(dir, 'logo.ts'));
 const { visibleWidth } = await jiti.import(dep('@earendil-works/pi-tui'));
 const strip = (s) => s.replace(/\x1b\[[0-9;]*m/g, '');
 const theme = { fg: (_c, t) => t, bold: (t) => t };
 
-const home = mkdtempSync(join(tmpdir(), 'mark-header-'));
+const home = mkdtempSync(join(tmpdir(), 'agent-header-'));
 try {
   const enroll = (d) => { mkdirSync(join(home, '.config', d), { recursive: true }); writeFileSync(join(home, '.config', d, 'config.json'), '{}'); };
   const all = new Set(['skill:arca-ops', 'skill:omni-ops']);
@@ -64,7 +64,7 @@ try {
     const tips = logo.headerTips(theme, opts);
     assert.equal(tips.length, 1);
     const full = logo.headerLines(150, theme, { tips }).map(strip);
-    assert.equal(full[0], '✳ Mark');
+    assert.equal(full[0], '✳ Agent');
     assert.equal(full.length, 2, 'marca e uma dica');
     if (opts.skills.length) for (const name of opts.skills) assert.match(full[1], new RegExp('/skill:' + name));
     else assert.match(full[1], opts.juice ? /shift\+tab/ : /\/hotkeys/);

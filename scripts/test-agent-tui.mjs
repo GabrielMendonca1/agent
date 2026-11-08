@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * Smoke da TUI real no perfil MARK II (host clássico), offline:
+ * Smoke da TUI real no perfil Agent (host clássico), offline:
  * provider Anthropic falso em loopback, terminal via tmux. Confere a montagem aprovada:
  * startup compacto, editor/rodapé nativos, status único, plano abaixo do input,
  * seletor de skills, papéis, thinking manual e modo persistente. --regular valida
@@ -14,7 +14,7 @@ import { existsSync, realpathSync, mkdirSync, mkdtempSync, readFileSync, readdir
 import { homedir, tmpdir } from 'node:os';
 import { pathToFileURL } from 'node:url';
 import { join } from 'node:path';
-import { AUTONOMY_POLICY, COMPLEX_POLICY } from '../mark/juice/policy.mjs';
+import { AUTONOMY_POLICY, COMPLEX_POLICY } from '../agent/juice/policy.mjs';
 import { startFakeAnthropic } from './lib/fake-anthropic.mjs';
 
 const repo = new URL('..', import.meta.url).pathname.replace(/\/$/, '');
@@ -26,18 +26,18 @@ function setFixtureTui(info) {
   // This smoke checks normal startup, not an upgrade from the local profile's
   // last seen changelog. Match the SDK used by this fixture's launcher.
   const env = JSON.parse(readFileSync(join(info.root, 'environment.json'), 'utf8'));
-  settings.lastChangelogVersion = JSON.parse(readFileSync(join(env.MARK_JUICE_PI_ROOT, 'package.json'), 'utf8')).version;
+  settings.lastChangelogVersion = JSON.parse(readFileSync(join(env.AGENT_JUICE_PI_ROOT, 'package.json'), 'utf8')).version;
   writeFileSync(path, JSON.stringify(settings));
 }
 // Execução independe de tmux e de qualquer extensão visual. Loader, resolver e
 // backend de shell são os do Pi real; só HOME, settings e contexto são fixtures.
 async function checkShellRuntime() {
-  const piRoot = realpathSync(process.env.MARK_JUICE_PI_ROOT || join(process.env.PI_OVERLAY_STORE || join(homedir(), '.local/share/pi-overlay'), 'current/lib/node_modules/@earendil-works/pi-coding-agent'));
+  const piRoot = realpathSync(process.env.AGENT_JUICE_PI_ROOT || join(process.env.AGENT_STORE || join(homedir(), '.local/share/agent'), 'current/lib/node_modules/@earendil-works/pi-coding-agent'));
   const load = p => import(pathToFileURL(join(piRoot, p)).href);
   const { loadExtensions, createExtensionRuntime } = await load('dist/core/extensions/loader.js');
   const { ExtensionRunner } = await load('dist/core/extensions/runner.js');
   const { createEventBus } = await load('dist/core/event-bus.js');
-  const root = realpathSync(mkdtempSync(join(tmpdir(), 'mark-shell-')));
+  const root = realpathSync(mkdtempSync(join(tmpdir(), 'agent-shell-')));
   const saved = { ...process.env };
   try {
     const agent = join(root, 'agent'); mkdirSync(agent);
@@ -49,14 +49,14 @@ async function checkShellRuntime() {
     writeFileSync(join(agent, 'settings.json'), JSON.stringify({ shellPath: '/bin/bash', shellCommandPrefix: 'export PREFIX_FIXTURE=global' }));
     settings('project');
     Object.assign(process.env, { HOME: root, PI_CODING_AGENT_DIR: agent,
-      NODE_OPTIONS: '--no-warnings --import=/tmp/mark/juice/runtime.mjs',
-      MARK_JUICE_SKILLS_BEFORE: 'null', PI_AUTOMATIC_SKILLS: 'fixture-curated',
-      MARK_JUICE_SECRET: 'filtered', SHELL_ALLOWED: 'kept' });
+      NODE_OPTIONS: '--no-warnings --import=/tmp/agent/juice/runtime.mjs',
+      AGENT_JUICE_SKILLS_BEFORE: 'null', PI_AUTOMATIC_SKILLS: 'fixture-curated',
+      AGENT_JUICE_SECRET: 'filtered', SHELL_ALLOWED: 'kept' });
     delete process.env.PREFIX_FIXTURE;
     delete process.env.SHELL_FIXTURE;
-    const runtimePath = join(repo, 'mark/extensions/brain-live/shell-runtime.ts');
-    const tui = join(repo, 'mark/extensions/mark/tui');
-    const probe = `node -e 'console.log(JSON.stringify({cwd:process.cwd(),allowed:process.env.SHELL_ALLOWED,pre:process.env.PREFIX_FIXTURE??null,shell:process.env.SHELL_FIXTURE??null,options:process.env.NODE_OPTIONS,skills:process.env.PI_AUTOMATIC_SKILLS??null,juice:Object.keys(process.env).filter(k=>k.startsWith("MARK_JUICE_"))}))'`;
+    const runtimePath = join(repo, 'agent/extensions/brain-live/shell-runtime.ts');
+    const tui = join(repo, 'agent/extensions/agent/tui');
+    const probe = `node -e 'console.log(JSON.stringify({cwd:process.cwd(),allowed:process.env.SHELL_ALLOWED,pre:process.env.PREFIX_FIXTURE??null,shell:process.env.SHELL_FIXTURE??null,options:process.env.NODE_OPTIONS,skills:process.env.PI_AUTOMATIC_SKILLS??null,juice:Object.keys(process.env).filter(k=>k.startsWith("AGENT_JUICE_"))}))'`;
     let baseline;
     for (const mode of ['plain', 'none', 'claude']) {
       process.env.ARCA_COMPACT_TOOLS = mode === 'plain' ? '0' : '1';
@@ -113,8 +113,8 @@ async function checkShellRuntime() {
         assert.match(text.replace(/\x1b\[[0-9;]*m/g, ''), /⏺ Bash/, 'Claude precede compacto na ordem da TUI');
       }
       if (mode !== 'claude') assert.equal(runner.resolveToolRenderers('read', () => base), base, 'compacto preserva renderer das outras tools');
-      assert.ok(process.env.NODE_OPTIONS.includes('/mark/juice/runtime.mjs'), 'env do pai intacto');
-      assert.equal(process.env.MARK_JUICE_SECRET, 'filtered');
+      assert.ok(process.env.NODE_OPTIONS.includes('/agent/juice/runtime.mjs'), 'env do pai intacto');
+      assert.equal(process.env.AGENT_JUICE_SECRET, 'filtered');
       console.log(`ok shell ${mode}: bash/!cmd, cwd, settings, env, stdout/stderr, exit 7 e cancelamento`);
     }
   } finally {
@@ -126,8 +126,8 @@ async function checkShellRuntime() {
 await checkShellRuntime();
 if (spawnSync('tmux', ['-V']).status !== 0) { console.log('skip: tmux ausente'); process.exit(0); }
 const sleep = (ms) => new Promise(r => setTimeout(r, ms));
-const parent = mkdtempSync(join(tmpdir(), 'mark-tui-'));
-const session = `marktui${process.pid}`;
+const parent = mkdtempSync(join(tmpdir(), 'agent-tui-'));
+const session = `agenttui${process.pid}`;
 /** Um socket tmux PRÓPRIO por terminal de teste (-L): nunca toca o tmux do usuário. */
 function terminal(sock) {
   const tmux = (...args) => spawnSync('tmux', ['-L', sock, ...args], { encoding: 'utf8' });
@@ -153,7 +153,7 @@ const { tmux, screen, screenAnsi, waitScreen, waitGone } = terminal(session);
 const ICON = { complex: '\u{F09D1}', simple: '\u{F0241}', code: '\uF121', design: '\u{F03D8}', plan: '\u{F1353}', branch: '\u{F418}', tokens: '\u{F04C5}', fire: '\u{F0238}' };
 // Skills do repo que SÓ o Gabriel invoca (`disable-model-invocation: true`): ficam fora do system
 // e o único caminho até elas é o comando `/skill:<nome>` do editor do Pi (enableSkillCommands).
-const SKILLS_DIR = join(repo, 'mark/skills');
+const SKILLS_DIR = join(repo, 'agent/skills');
 const USER_ONLY_SKILLS = ['design', 'dev', 'plan'].flatMap(category => readdirSync(join(SKILLS_DIR, category), { withFileTypes: true })
   .filter(e => e.isDirectory()).map(e => e.name));
 const PLAN_STEPS = [
@@ -177,12 +177,12 @@ try {
   // linha acima do input ser conferida na tela real.
   // Os status são reescritos algumas vezes porque as extensões reais de peers e
   // megamind publicam as mesmas chaves depois (e limpam quando não há malha).
-  writeFileSync(join(info.agentDir, 'extensions/mark-tui-coordination.ts'), `export default function (pi) {
+  writeFileSync(join(info.agentDir, 'extensions/agent-tui-coordination.ts'), `export default function (pi) {
   pi.on('session_start', async (_event, ctx) => {
     if (!ctx.hasUI) return;
     const publish = () => {
       ctx.ui.setStatus('megamind', '◈ megamind · ARCA');
-      ctx.ui.setStatus('mark-meta-peers', '4 sessões');
+      ctx.ui.setStatus('agent-meta-peers', '4 sessões');
     };
     publish();
     const timer = setInterval(publish, 500); timer.unref?.();
@@ -196,7 +196,7 @@ try {
   mkdirSync(join(info.agentDir, 'skills/arca-ops'), { recursive: true });
   writeFileSync(join(info.agentDir, 'skills/arca-ops/SKILL.md'), '---\nname: arca-ops\ndescription: Fixture offline de dica de operações\n---\nFixture.\n');
   const env = JSON.parse(readFileSync(join(info.root, 'environment.json'), 'utf8'));
-  const exports = Object.entries({ ...env, MARK_LEARN: '0', MARK_DISPATCHER: '0', MARK_CACHE_KEEPER: '0' }).map(([k, v]) => `${k}=${JSON.stringify(v)}`).join(' ');
+  const exports = Object.entries({ ...env, AGENT_LEARN: '0', AGENT_DISPATCHER: '0', AGENT_CACHE_KEEPER: '0' }).map(([k, v]) => `${k}=${JSON.stringify(v)}`).join(' ');
   // Projeto vazio: sem .pi, sem pergunta de confiança. Com git, para o rodapé ter branch.
   const work = join(parent, 'work'); mkdirSync(work);
   const git = (...args) => assert.equal(spawnSync('git', args, { cwd: work, encoding: 'utf8' }).status, 0, `git ${args[0]}`);
@@ -209,9 +209,9 @@ try {
   await waitScreen(new RegExp(`${ICON.simple} simple`), 'modo em status nativo');
   await waitScreen(/4 sessões/u, 'peers no rodapé nativo');
   const startup = tmux('capture-pane', '-p', '-S', '-500', '-t', session).stdout;
-  assert.match(startup, /✳ Mark/, 'marca compacta no startup');
+  assert.match(startup, /✳ Agent/, 'marca compacta no startup');
   assert.match(startup, /Use \/skill:arca-ops para operar o projeto/);
-  assert.doesNotMatch(screen(), /Dicas|┌─|└─|US\$|⠀⠀⠀⢠⣶/u, 'sem palco, caixa ou custo Mark duplicado');
+  assert.doesNotMatch(screen(), /Dicas|┌─|└─|US\$|⠀⠀⠀⢠⣶/u, 'sem palco, caixa ou custo Agent duplicado');
   assert.match(screen(), /work \(main\)/, 'diretório e branch nativos');
   assert.match(screen(), /claude-haiku-5-5/, 'modelo no rodapé nativo');
   for (const width of [200, 85, 150]) {
@@ -303,7 +303,7 @@ try {
 // ---- troca de modo A QUENTE, no MESMO processo, nos dois hosts ---------------
 /**
  * O que é a troca a quente e ONDE acontece: Shift+Tab na TUI real chama o atalho
- * `shift+tab` de mark/extensions/brain-live/juice.ts → setMode() → setJuiceMode()
+ * `shift+tab` de agent/extensions/brain-live/juice.ts → setMode() → setJuiceMode()
  * + applyMode(), e no turno SEGUINTE o handler `before_agent_start` da mesma
  * extensão troca as seções de política do clássico.
  * Nada reinicia o Pi: é o mesmo PID, a mesma sessão e o mesmo painel tmux de ponta a ponta.
@@ -315,8 +315,8 @@ try {
  * processo, sem relançamento escondido.
  */
 async function runHotSwitch(host) {
-  const hotParent = mkdtempSync(join(tmpdir(), `mark-tui-hot-${host}-`));
-  const sock = `markhot${process.pid}${host}`;
+  const hotParent = mkdtempSync(join(tmpdir(), `agent-tui-hot-${host}-`));
+  const sock = `agenthot${process.pid}${host}`;
   const term = terminal(sock);
   const hotFake = await startFakeAnthropic([{ text: 'ok' }]);
   try {
@@ -332,13 +332,13 @@ async function runHotSwitch(host) {
     // Observador: NÃO devolve nada (não altera prompt, mensagens nem tools); só anota
     // PID, um contador local e o system efetivo antes de cada requisição ao provider.
     const observeFile = join(hotParent, 'system.jsonl');
-    writeFileSync(join(info.agentDir, 'extensions', 'mark-observe-system.ts'), [
+    writeFileSync(join(info.agentDir, 'extensions', 'agent-observe-system.ts'), [
       "import { appendFileSync, writeFileSync } from 'node:fs';",
       'export default function (pi: any) {',
       '  let seq = 0;',
-      "  pi.on('session_start', (_event: any, ctx: any) => writeFileSync(process.env.MARK_OBSERVE_SYSTEM + '.session', ctx.sessionManager.getSessionId()));",
+      "  pi.on('session_start', (_event: any, ctx: any) => writeFileSync(process.env.AGENT_OBSERVE_SYSTEM + '.session', ctx.sessionManager.getSessionId()));",
       "  pi.on('before_provider_request', async (_event: any, ctx: any) => {",
-      '    const file = process.env.MARK_OBSERVE_SYSTEM;',
+      '    const file = process.env.AGENT_OBSERVE_SYSTEM;',
       '    if (!file) return;',
       "    appendFileSync(file, JSON.stringify({ pid: process.pid, seq: ++seq, system: ctx.getSystemPrompt() }) + '\\n');",
       '  });',
@@ -346,7 +346,7 @@ async function runHotSwitch(host) {
       '',
     ].join('\n'));
     const env = JSON.parse(readFileSync(join(info.root, 'environment.json'), 'utf8'));
-    const exports = Object.entries({ ...env, MARK_LEARN: '0', MARK_DISPATCHER: '0', MARK_CACHE_KEEPER: '0', MARK_OBSERVE_SYSTEM: observeFile, MARK_LUCID_SSH: '/usr/bin/false' })
+    const exports = Object.entries({ ...env, AGENT_LEARN: '0', AGENT_DISPATCHER: '0', AGENT_CACHE_KEEPER: '0', AGENT_OBSERVE_SYSTEM: observeFile, AGENT_LUCID_SSH: '/usr/bin/false' })
       .map(([k, v]) => `${k}=${JSON.stringify(v)}`).join(' ');
     const work = join(hotParent, 'work'); mkdirSync(work);
     assert.equal(spawnSync('git', ['init', '-b', 'main'], { cwd: work }).status, 0, 'git init');
@@ -386,7 +386,7 @@ async function runHotSwitch(host) {
     await term.waitScreen(new RegExp(`${ICON.simple} simple`), `${host}: TUI subiu em simple`);
 
 
-    // ---- seletor MARK II real: não basta provar o autocomplete nativo ------
+    // ---- seletor Agent real: não basta provar o autocomplete nativo ------
     assert.equal(hotFake.messages().length, 0, `${host}: provedor consultado antes do seletor`);
     assert.ok(USER_ONLY_SKILLS.includes('microcopy'), 'skill manual de referência existe');
     const sessionId = () => readFileSync(observeFile + '.session', 'utf8');
@@ -480,7 +480,7 @@ async function runHotSwitch(host) {
     console.log(`ok roles ${host}: cinco papéis, origem/thinking, picker autorizado; cancelar preserva arquivo e sessão`);
 
     // ---- escolha manual de modelo + thinking (bug relatado) ---------------
-    // `/thinking <nível>` é do Pi; o modo do Mark não pode desfazer nem levar o modelo
+    // `/thinking <nível>` é do Pi; o modo do Agent não pode desfazer nem levar o modelo
     // com ele. O rodapé nativo mostra modelo e nível.
     {
       const footerLine = () => term.screen().split('\n').filter(l => /claude-haiku-5-5/.test(l)).at(-1) ?? '';
@@ -517,8 +517,8 @@ async function runHotSwitch(host) {
     const count = (text, re) => (text.match(re) ?? []).length;
     const body = (policy) => new RegExp(policy.split('\n')[0].replace(/[().*+?^${}|[\]\\]/g, '\\$&'), 'g');
     const counts = (text) => ({
-      autonomy: count(text, /<mark_autonomy>/g),
-      complex: count(text, /<mark_complex>/g),
+      autonomy: count(text, /<agent_autonomy>/g),
+      complex: count(text, /<agent_complex>/g),
       autonomyBody: count(text, body(AUTONOMY_POLICY)),
       complexBody: count(text, body(COMPLEX_POLICY)),
     });
@@ -529,7 +529,7 @@ async function runHotSwitch(host) {
       for (const o of obs) {
         assert.deepEqual(counts(o.system), { autonomy: 1, complex: mode === 'complex' ? 1 : 0, autonomyBody: 1, complexBody: mode === 'complex' ? 1 : 0 },
           `${host}/${label}: observação ${o.seq} deveria ter autonomia 1 e complex ${mode === 'complex' ? 1 : 0}`);
-        assert.equal(count(o.system, /^<\/?mark_workflow>$/gm), 0, `${host}/${label}: receita no system efetivo`);
+        assert.equal(count(o.system, /^<\/?agent_workflow>$/gm), 0, `${host}/${label}: receita no system efetivo`);
         assert.equal(count(o.system, /Receita deste projeto|Regras aprendidas aqui/g), 0, `${host}/${label}: conteúdo da receita no system efetivo`);
         if (mode === 'simple') assert.doesNotMatch(o.system, /Modo complex \(vale só enquanto/, `${host}/${label}: política de complex sobrou em simple`);
       }

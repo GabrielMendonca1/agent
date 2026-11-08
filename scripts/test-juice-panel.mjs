@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import './lib/hermetic-test-env.mjs';
-// Extensão de modo do Mark (juice.ts) com o loader real do Pi e um ledger JSON:
+// Extensão de modo do Agent (juice.ts) com o loader real do Pi e um ledger JSON:
 // simple/complex, Shift+Tab, thinking/modelo intocados pelo modo, `subagent` liberado só em complex, categorias, rodapé
 // nativo com modo e dica /next, estado de equipe e compactação por janela. Sem rede, sem modelo.
 import assert from 'node:assert/strict';
@@ -9,7 +9,7 @@ import { homedir, tmpdir } from 'node:os';
 import { basename, dirname, join, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 const repo = resolve(dirname(fileURLToPath(import.meta.url)), '..');
-const root = join(homedir(), '.local/share/pi-overlay/current/lib/node_modules/@earendil-works/pi-coding-agent');
+const root = join(homedir(), '.local/share/agent/current/lib/node_modules/@earendil-works/pi-coding-agent');
 const load = async p => import(pathToFileURL(p).href);
 const { loadExtensions, createExtensionRuntime } = await load(join(root, 'dist/core/extensions/loader.js'));
 const { createEventBus } = await load(join(root, 'dist/core/event-bus.js'));
@@ -17,10 +17,10 @@ const bus = createEventBus();
 const { initTheme } = await load(join(root, 'dist/modes/interactive/theme/theme.js'));
 initTheme('dark', false);
 const { visibleWidth } = await load(join(root, 'node_modules/@earendil-works/pi-tui/dist/index.js'));
-const dir = mkdtempSync(join(tmpdir(), 'mark-mode-'));
+const dir = mkdtempSync(join(tmpdir(), 'agent-mode-'));
 const saved = { ...process.env };
-const juicePath = join(repo, 'mark/extensions/brain-live/juice.ts');
-let markLineText = () => '';
+const juicePath = join(repo, 'agent/extensions/brain-live/juice.ts');
+let agentLineText = () => '';
 const theme = { fg: (_color, text) => `\x1b[38;5;208m${text}\x1b[0m`, bold: text => text };
 const plain = text => text.replace(/\x1b\[[0-9;]*m/g, '');
 
@@ -46,8 +46,8 @@ const ctx = {
   ui: { setFooter: () => assert.fail('Juice must not replace the native footer'),
     setStatus: (key, value) => { renders++; if (value === undefined) statuses.delete(key); else statuses.set(key, value); }, notify: (text, level) => notices.push({ text, level }), confirm: async () => false },
 };
-const text = () => plain(statuses.get('mark-mode') ?? '');
-const observed = () => globalThis[Symbol.for('mark.state')]();
+const text = () => plain(statuses.get('agent-mode') ?? '');
+const observed = () => globalThis[Symbol.for('agent.state')]();
 let extension;
 async function emit(name, event = {}) { for (const handler of extension.handlers.get(name) || []) await handler(event, ctx); }
 async function emitResult(name, event = {}) { let out; for (const handler of extension.handlers.get(name) || []) out = (await handler(event, ctx)) ?? out; return out; }
@@ -59,7 +59,7 @@ async function waitFor(predicate, what) {
   while (!predicate()) { assert.ok(Date.now() < deadline, what); await new Promise(r => setTimeout(r, 30)); }
 }
 try {
-  delete process.env.MARK_JUICE_ENABLED;
+  delete process.env.AGENT_JUICE_ENABLED;
   let loaded = await loadExtensions([juicePath], dir, bus, runtime);
   assert.deepEqual(loaded.errors, []);
   assert.equal(loaded.extensions[0].handlers.size, 0);
@@ -67,7 +67,7 @@ try {
   assert.equal(loaded.extensions[0].shortcuts.size, 0);
   console.log('ok desligado: sem hooks, comandos ou atalhos');
 
-  Object.assign(process.env, { MARK_JUICE_ENABLED: '1', MARK_JUICE_HOME: dir, MARK_JUICE_STATE: statePath });
+  Object.assign(process.env, { AGENT_JUICE_ENABLED: '1', AGENT_JUICE_HOME: dir, AGENT_JUICE_STATE: statePath });
   save();
   loaded = await loadExtensions([juicePath], dir, bus, runtime);
   assert.deepEqual(loaded.errors, []);
@@ -77,12 +77,12 @@ try {
   assert.ok(!extension.commands.has('juice') && !extension.commands.has('mass'), 'comandos antigos removidos');
 
   await emit('session_start');
-  assert.ok(!existsSync(join(dir, '.mark')), 'sem .git não cria .mark/');
+  assert.ok(!existsSync(join(dir, '.agent')), 'sem .git não cria .agent/');
   mkdirSync(join(dir, '.git'));
   await emit('session_start');
-  const wf = join(dir, '.mark/workflow.md');
-  assert.ok(existsSync(wf), 'repositório git ganha .mark/workflow.md');
-  assert.match(readFileSync(wf, 'utf8'), /^# Receita do Mark — mark-mode-/m);
+  const wf = join(dir, '.agent/workflow.md');
+  assert.ok(existsSync(wf), 'repositório git ganha .agent/workflow.md');
+  assert.match(readFileSync(wf, 'utf8'), /^# Receita do Agent — agent-mode-/m);
   assert.match(readFileSync(wf, 'utf8'), /1\. scout · apoio · /);
   assert.equal(notices.length, 0, 'início silencioso');
   assert.equal(thinking, 'medium', 'modo não escolhe thinking: o nível do humano fica');
@@ -109,27 +109,27 @@ try {
   assert.equal(extension.shortcuts.has('ctrl+t'), false);
   const categoryEvent = { systemPromptOptions: { sections: {}, selectedTools: [], toolSnippets: {}, promptGuidelines: [], cwd: dir } };
   await emitResult('before_agent_start', categoryEvent);
-  assert.match(categoryEvent.systemPromptOptions.sections.mark_skill_categories, /^design: a11y,/);
-  assert.match(categoryEvent.systemPromptOptions.sections.mark_skill_categories, /\ndev: debug, tdd —[^\n]*\nplan: rea —/);
+  assert.match(categoryEvent.systemPromptOptions.sections.agent_skill_categories, /^design: a11y,/);
+  assert.match(categoryEvent.systemPromptOptions.sections.agent_skill_categories, /\ndev: debug, tdd —[^\n]*\nplan: rea —/);
   const again = await emitResult('before_agent_start', categoryEvent);
   assert.equal(again?.message, undefined, 'mesmo modo não repete nota');
 
   // Leitor de compatibilidade ainda expõe observações, mas não instala rodapé.
-  const markLine = globalThis[Symbol.for('mark.footer.line')];
-  markLineText = () => markLine(theme).replace(/\x1b\[[0-9;]*m/g, '');
-  assert.equal(typeof markLine, 'function', 'juice registra a linha do Mark');
+  const agentLine = globalThis[Symbol.for('agent.footer.line')];
+  agentLineText = () => agentLine(theme).replace(/\x1b\[[0-9;]*m/g, '');
+  assert.equal(typeof agentLine, 'function', 'juice registra a linha do Agent');
   const plain = (s) => s.replace(/\x1b\[[0-9;]*m/g, '');
-  const line2 = plain(markLine(theme));
+  const line2 = plain(agentLine(theme));
   assert.match(line2, /^complex · clássico · apoio \S+ · cache — ttl (5m|1h) · API≈US\$ — · learn (on|off) · sob demanda (off|—|\d+\/\d+) · prefetch off$/, line2);
   await emit('message_end', { message: { role: 'assistant', usage: { input: 100, cacheRead: 900, cacheWrite: 0, output: 5 } } });
-  assert.match(plain(markLine(theme)), /cache 90%/, 'hit do último turno');
+  assert.match(plain(agentLine(theme)), /cache 90%/, 'hit do último turno');
   const beforeMode = renders;
   await extension.shortcuts.get('shift+tab').handler(ctx);
   await extension.shortcuts.get('shift+tab').handler(ctx);
   assert.ok(renders >= beforeMode + 2, 'mode changes publish native status');
 
-  // A extensão escuta mark:team pelo pi.events; emitimos pelo mesmo barramento.
-  const emitTeam = (agents, status) => bus.emit('mark:team', { id: 'j1', agents, status });
+  // A extensão escuta agent:team pelo pi.events; emitimos pelo mesmo barramento.
+  const emitTeam = (agents, status) => bus.emit('agent:team', { id: 'j1', agents, status });
   emitTeam(['scout'], 'running');
   assert.ok(observed().team.some(item => item.agent === 'scout' || item.name === 'scout'), 'team remains structured');
   const duringTeam = text();
@@ -156,7 +156,7 @@ try {
   let run = { systemPromptOptions: opts() };
   await emit('before_agent_start', run);
   assert.equal((await emitResult('tool_call', { toolName: 'subagent', input: {} }))?.block, true, 'before_agent_start reaplica o modo');
-  assert.equal(run.systemPromptOptions.sections.mark_workflow, undefined, 'receita é interna: nada no system prompt');
+  assert.equal(run.systemPromptOptions.sections.agent_workflow, undefined, 'receita é interna: nada no system prompt');
   console.log('ok /mode simple|complex|toggle; reaplica antes de cada run');
 
   // Regressão (bug relatado): modelo e thinking são escolha do humano e PERSISTEM em tudo
@@ -193,30 +193,30 @@ try {
   await extension.commands.get('mode').handler('complex', ctx);
   run = { systemPromptOptions: opts() };
   let out = await emitResult('before_agent_start', run);
-  assert.equal(run.systemPromptOptions.sections.mark_workflow, undefined, 'complex também não manda a receita');
+  assert.equal(run.systemPromptOptions.sections.agent_workflow, undefined, 'complex também não manda a receita');
   assert.doesNotMatch(out?.message?.content ?? '', /Receita|workflow\.md|scout|reviewer/, 'receita não vira nota na conversa');
   run = { systemPromptOptions: opts() };
   out = await emitResult('before_agent_start', run);
-  assert.equal(run.systemPromptOptions.sections.mark_workflow, undefined, 'nenhum run reintroduz a seção');
+  assert.equal(run.systemPromptOptions.sections.agent_workflow, undefined, 'nenhum run reintroduz a seção');
   run = { systemPromptOptions: { ...opts(), forceSystemPrompt: 'PROMPT DO VAULT' } };
   const forcedOut = (await emitResult('before_agent_start', run))?.systemPrompt ?? '';
-  assert.doesNotMatch(forcedOut, /mark_workflow|scout|reviewer/, 'prompt forçado do Vault não recebe a receita');
-  assert.match(forcedOut, /^PROMPT DO VAULT\n\n<mark_autonomy>/, 'no prompt forçado só entram as políticas globais');
+  assert.doesNotMatch(forcedOut, /agent_workflow|scout|reviewer/, 'prompt forçado do Vault não recebe a receita');
+  assert.match(forcedOut, /^PROMPT DO VAULT\n\n<agent_autonomy>/, 'no prompt forçado só entram as políticas globais');
   await emit('session_start');
-  writeFileSync(wf, readFileSync(join(repo, '.mark/workflow.md'), 'utf8'));
+  writeFileSync(wf, readFileSync(join(repo, '.agent/workflow.md'), 'utf8'));
   console.log('ok receita fora do modelo principal (seção, nota e prompt forçado)');
   const { createJiti } = await load(join(root, 'node_modules/jiti/lib/jiti.mjs'));
-  const { renderSystemPrompt } = await createJiti(import.meta.url, { moduleCache: false }).import(join(repo, 'mark/extensions/brain-live/vault-runtime.ts'));
+  const { renderSystemPrompt } = await createJiti(import.meta.url, { moduleCache: false }).import(join(repo, 'agent/extensions/brain-live/vault-runtime.ts'));
   const vault = join(dir, 'vault'); mkdirSync(vault, { recursive: true });
   writeFileSync(join(vault, 'system-prompt.md'), 'Vault\nCurrent working directory: {{PI_CWD}}');
-  const rendered = renderSystemPrompt('base', vault, { cwd: '/x', sections: { mark_workflow: 'RECEITA' } });
-  assert.equal(rendered, 'Vault\nCurrent working directory: /x\n\n<mark_workflow>\nRECEITA\n</mark_workflow>', 'vault-runtime não descarta seções de extensões');
+  const rendered = renderSystemPrompt('base', vault, { cwd: '/x', sections: { agent_workflow: 'RECEITA' } });
+  assert.equal(rendered, 'Vault\nCurrent working directory: /x\n\n<agent_workflow>\nRECEITA\n</agent_workflow>', 'vault-runtime não descarta seções de extensões');
   writeFileSync(join(vault, 'system-prompt.md'), 'A\n{{PI_EXTRA_SECTIONS}}\nB');
-  assert.equal(renderSystemPrompt('base', vault, { sections: { mark_workflow: 'R' } }), 'A\n<mark_workflow>\nR\n</mark_workflow>\nB');
+  assert.equal(renderSystemPrompt('base', vault, { sections: { agent_workflow: 'R' } }), 'A\n<agent_workflow>\nR\n</agent_workflow>\nB');
   writeFileSync(join(vault, 'system-prompt.md'), 'Tools:\n{{#PI_TOOL grep}}\n- grep\n{{/PI_TOOL}}\n{{#PI_TOOL read}}\n- read\n{{/PI_TOOL}}\nFim');
   assert.equal(renderSystemPrompt('base', vault, { selectedTools: ['read'] }), 'Tools:\n- read\nFim', 'tool inativa não deixa linha em branco');
   // Prompt estável: descreve todas as tools registradas, ativas ou não.
-  const { stableDynamics } = await createJiti(import.meta.url, { moduleCache: false }).import(join(repo, 'mark/extensions/brain-live/vault-runtime.ts'));
+  const { stableDynamics } = await createJiti(import.meta.url, { moduleCache: false }).import(join(repo, 'agent/extensions/brain-live/vault-runtime.ts'));
   const registry = { getAllTools: () => [
     { name: 'read', description: 'Lê', exposure: 'direct', promptGuidelines: ['g-read'] },
     { name: 'grep', description: 'Busca\nmais', exposure: 'direct', promptGuidelines: ['g-grep'] },
@@ -241,7 +241,7 @@ try {
   // para medir o texto que o modelo vê de fato.
   {
     const { buildSystemPrompt, buildSystemPromptSections, diffSystemPromptSections } = await load(join(root, 'dist/core/system-prompt.js'));
-    const AUT = 'Autonomia do Mark (vale em qualquer modo):';
+    const AUT = 'Autonomia do Agent (vale em qualquer modo):';
     const CPX = 'Modo complex (vale só enquanto o modo for complex):';
     const count = (text, needle) => text.split(needle).length - 1;
     const run = async (mode, extra = {}) => {
@@ -254,14 +254,14 @@ try {
 
     // Clássico (prompt montado por seções).
     const simple = await run('simple');
-    assert.deepEqual(Object.keys(simple.options.sections), ['mark_skill_categories', 'mark_autonomy'], 'simple: só a seção de autonomia');
+    assert.deepEqual(Object.keys(simple.options.sections), ['agent_skill_categories', 'agent_autonomy'], 'simple: só a seção de autonomia');
     assert.equal(count(simple.prompt, AUT), 1, 'simple: autonomia exatamente uma vez');
     assert.equal(count(simple.prompt, CPX), 0, 'simple: nenhuma instrução de complex');
     assert.equal(count(simple.prompt, 'subagent'), 0, 'simple: nada de equipe no system');
     const simpleAgain = await run('simple');
     assert.equal(simpleAgain.prompt, simple.prompt, 'mesmo modo, mesmo texto (prefixo de cache intacto)');
     const complex = await run('complex');
-    assert.deepEqual(Object.keys(complex.options.sections), ['mark_skill_categories', 'mark_autonomy', 'mark_complex'], 'complex: as duas seções');
+    assert.deepEqual(Object.keys(complex.options.sections), ['agent_skill_categories', 'agent_autonomy', 'agent_complex'], 'complex: as duas seções');
     assert.equal(count(complex.prompt, AUT), 1, 'complex: autonomia uma vez');
     assert.equal(count(complex.prompt, CPX), 1, 'complex: política de complex uma vez');
     assert.ok(complex.prompt.startsWith(simple.prompt), 'complex = simple + bloco de complex no fim');
@@ -269,28 +269,28 @@ try {
     const back = await run('simple');
     assert.equal(back.prompt, simple.prompt, 'voltar a simple devolve o texto de simple');
     const patch = diffSystemPromptSections(buildSystemPromptSections(complex.options), buildSystemPromptSections(back.options));
-    assert.equal(patch.mark_complex, null, 'complex→simple remove a seção do system (o Pi manda null)');
+    assert.equal(patch.agent_complex, null, 'complex→simple remove a seção do system (o Pi manda null)');
     assert.equal(Object.keys(patch).length, 1, 'nada mais muda no system ao trocar de modo');
 
     // Prompt forçado (Vault no clássico): as políticas entram no texto, uma vez.
     const forcedComplex = await run('complex', { forceSystemPrompt: 'PROMPT DO VAULT' });
-    assert.match(forcedComplex.prompt, /^PROMPT DO VAULT\n\n<mark_autonomy>\n[\s\S]*\n<\/mark_autonomy>\n\n<mark_complex>\n[\s\S]*\n<\/mark_complex>\n\n<mark_skill_categories>[\s\S]*<\/mark_skill_categories>$/, forcedComplex.prompt);
+    assert.match(forcedComplex.prompt, /^PROMPT DO VAULT\n\n<agent_autonomy>\n[\s\S]*\n<\/agent_autonomy>\n\n<agent_complex>\n[\s\S]*\n<\/agent_complex>\n\n<agent_skill_categories>[\s\S]*<\/agent_skill_categories>$/, forcedComplex.prompt);
     const forcedSimple = await run('simple', { forceSystemPrompt: 'PROMPT DO VAULT' });
-    assert.match(forcedSimple.prompt, /^PROMPT DO VAULT\n\n<mark_autonomy>\n[\s\S]*\n<\/mark_autonomy>\n\n<mark_skill_categories>[\s\S]*<\/mark_skill_categories>$/, forcedSimple.prompt);
+    assert.match(forcedSimple.prompt, /^PROMPT DO VAULT\n\n<agent_autonomy>\n[\s\S]*\n<\/agent_autonomy>\n\n<agent_skill_categories>[\s\S]*<\/agent_skill_categories>$/, forcedSimple.prompt);
     assert.equal(count(forcedSimple.prompt, CPX), 0, 'forçado em simple: sem complex');
 
     // Ordem dos handlers: juice antes OU depois do vault-runtime, no clássico. A
     // política tem de aparecer exatamente uma vez no prompt que sai (risco real de
     // duplicar pela seção + texto forçado, ou de sumir se ninguém a levar).
-    const vaultPath = join(repo, 'mark/extensions/brain-live/vault-runtime.ts');
+    const vaultPath = join(repo, 'agent/extensions/brain-live/vault-runtime.ts');
     // Estes loads extras publicam os mesmos símbolos globais (estado/rodapé); guarde os da
     // sessão real para devolver no fim, senão o resto do teste observa a instância solta.
-    const ownedGlobals = [Symbol.for('mark.state'), Symbol.for('mark.footer.line')].map((key) => [key, globalThis[key]]);
+    const ownedGlobals = [Symbol.for('agent.state'), Symbol.for('agent.footer.line')].map((key) => [key, globalThis[key]]);
     const sistema = join(dir, 'sistema');
     mkdirSync(join(sistema, 'Pi/skills'), { recursive: true });
     writeFileSync(join(sistema, 'Pi/system-prompt.md'), 'PROMPT DO VAULT\n\n{{PI_EXTRA_SECTIONS}}\n\nFIM');
     process.env.PI_SYSTEM_DIR = sistema;
-    writeFileSync(join(dir, '.mark/notes.md'), 'docs/private.md — privado\n');
+    writeFileSync(join(dir, '.agent/notes.md'), 'docs/private.md — privado\n');
     try {
       for (const [first, second] of [[juicePath, vaultPath], [vaultPath, juicePath]]) {
         for (const host of ['clássico']) {
@@ -308,30 +308,30 @@ try {
               const out = await h({ systemPromptOptions: options, systemPrompt: 'BASE' }, ctx);
               if (out?.systemPrompt !== undefined) options.forceSystemPrompt = out.systemPrompt;
             }
-            delete process.env.MARK_JUICE_PI_ENTRY;
+            delete process.env.AGENT_JUICE_PI_ENTRY;
             const prompt = options.forceSystemPrompt ?? buildSystemPrompt(options);
             assert.equal(count(prompt, 'Mapa de notas do projeto'), 1, `notas uma vez — ${where}`);
             assert.doesNotMatch(prompt, /docs\/private.md|privado/, `conteúdo do mapa fora — ${where}`);
             assert.equal(count(prompt, AUT), 1, `autonomia uma vez — ${where}:\n${prompt}`);
             assert.equal(count(prompt, CPX), mode === 'complex' ? 1 : 0, `complex conforme o modo — ${where}:\n${prompt}`);
-            assert.doesNotMatch(prompt, /mark_workflow|Receita do Mark/, `receita fora do principal — ${where}`);
+            assert.doesNotMatch(prompt, /agent_workflow|Receita do Agent/, `receita fora do principal — ${where}`);
             for (const ext of pack.extensions) for (const h of ext.handlers.get('session_shutdown') || []) await h({ reason: 'quit' }, ctx);
           }
         }
       }
     } finally {
       delete process.env.PI_SYSTEM_DIR;
-      rmSync(join(dir, '.mark/notes.md'));
+      rmSync(join(dir, '.agent/notes.md'));
       for (const [key, value] of ownedGlobals) globalThis[key] = value;
     }
 
     // Filho (subagente) não recebe política do principal.
-    process.env.MARK_JUICE_CHILD = '1';
+    process.env.AGENT_JUICE_CHILD = '1';
     try {
       const child = await run('complex', { forceSystemPrompt: 'PROMPT DO FILHO' });
       assert.equal(child.prompt, 'PROMPT DO FILHO', 'filho: prompt intacto');
       assert.deepEqual(Object.keys(child.options.sections), [], 'filho: nenhuma seção de política');
-    } finally { delete process.env.MARK_JUICE_CHILD; }
+    } finally { delete process.env.AGENT_JUICE_CHILD; }
     await extension.commands.get('mode').handler('simple', ctx);
     console.log('ok políticas globais: autonomia nos dois modos, complex só em complex (clássico e forçado)');
   }
@@ -339,28 +339,28 @@ try {
 
   // Mapa de notas: snapshot por sessão nas duas vias; /notes usa arquivos atuais.
   {
-    const { notesSection } = await import('../mark/juice/policy.mjs');
-    const map = join(dir, '.mark/notes.md');
+    const { notesSection } = await import('../agent/juice/policy.mjs');
+    const map = join(dir, '.agent/notes.md');
     writeFileSync(map, 'docs/known.md — CONTEÚDO PRIVADO\n\n');
     await emit('session_start');
     const expected = notesSection({ count: 1, ageDays: 0 });
     const classic = { systemPromptOptions: opts() };
     await emitResult('before_agent_start', classic);
-    assert.equal(classic.systemPromptOptions.sections.mark_notes, expected.slice(12, -13));
+    assert.equal(classic.systemPromptOptions.sections.agent_notes, expected.slice(12, -13));
     writeFileSync(map, 'docs/known.md — alterado\ndocs/new.md — outra\n');
     for (const host of ['classic']) {
-      process.env.MARK_JUICE_PI_ENTRY = host;
+      process.env.AGENT_JUICE_PI_ENTRY = host;
       let base = 'BASE';
       for (let turn = 0; turn < 3; turn++) {
         const out = await emitResult('before_agent_start', { systemPromptOptions: { ...opts(), forceSystemPrompt: base } });
         const delta = out.systemPrompt.slice(base.length);
         assert.ok(delta.endsWith(expected), 'ponteiro congelado e depois das políticas/categorias');
-        assert.equal(delta.split('<mark_notes>').length - 1, 1);
+        assert.equal(delta.split('<agent_notes>').length - 1, 1);
         assert.doesNotMatch(delta, /CONTEÚDO PRIVADO|docs\/known|docs\/new/);
         base = out.systemPrompt;
       }
     }
-    delete process.env.MARK_JUICE_PI_ENTRY;
+    delete process.env.AGENT_JUICE_PI_ENTRY;
     const requests = [];
     runtime.sendUserMessage = (text, options) => requests.push({ text, options });
     mkdirSync(join(dir, 'docs'), { recursive: true });
@@ -377,13 +377,13 @@ try {
     await emit('session_start');
     const empty = { systemPromptOptions: opts() };
     await emitResult('before_agent_start', empty);
-    assert.equal(empty.systemPromptOptions.sections.mark_notes, undefined);
+    assert.equal(empty.systemPromptOptions.sections.agent_notes, undefined);
     rmSync(join(dir, 'docs'), { recursive: true });
     console.log('ok notes: snapshot estável, clássico, sem conteúdo, /notes cria/atualiza mapa');
   }
 
   // Aprender do trabalho real: opt-in, checks verdes e apoio; grava regras e versão.
-  process.env.MARK_LEARN = '1';
+  process.env.AGENT_LEARN = '1';
   writeFileSync(join(dir, 'preferences.v3.json'), JSON.stringify({ mode: 'complex', supportModel: 'fixture/haiku' }));
   mkdirSync(join(dir, '.pi'), { recursive: true });
   writeFileSync(join(dir, '.pi/checks.json'), JSON.stringify({ checks: [{ name: 't', cmd: 'node scripts/test-x.mjs' }] }));
@@ -398,24 +398,24 @@ try {
   await emit('agent_settled');
   assert.equal(completions.length, 0, 'check vermelho não chama modelo');
   branch = runOf('# pass 4\n# fail 0'); answer = '- teste roda com `node scripts/test-x.mjs`\n- código fica em scripts/lib/\n- curta\n- terceira regra válida\n- quarta regra ignorada';
-  delete process.env.MARK_LEARN;
+  delete process.env.AGENT_LEARN;
   const beforeOptIn = readFileSync(wf, 'utf8');
   await emit('agent_settled');
   assert.equal(completions.length, 0, 'default não chama apoio mesmo com check verde');
   assert.equal(readFileSync(wf, 'utf8'), beforeOptIn, 'default preserva receita existente');
-  assert.equal(globalThis[Symbol.for('mark.state')]().learn, false, 'rodapé reflete opt-in ausente');
-  process.env.MARK_LEARN = '1';
+  assert.equal(globalThis[Symbol.for('agent.state')]().learn, false, 'rodapé reflete opt-in ausente');
+  process.env.AGENT_LEARN = '1';
   await emit('agent_settled');
   assert.equal(completions.length, 1, 'check verde chama o apoio uma vez');
   assert.match(completions[0], /Regras existentes: nenhuma/);
   let wtext = readFileSync(wf, 'utf8');
   assert.match(wtext, /^versão: v2$/m);
-  assert.match(wtext.replaceAll(" [by: Mark; proven: no]", ""), /- teste roda com `node scripts\/test-x\.mjs`\n- código fica em scripts\/lib\/\n- terceira regra válida\n/, 'até 3 regras; curta demais é descartada');
+  assert.match(wtext.replaceAll(" [by: Agent; proven: no]", ""), /- teste roda com `node scripts\/test-x\.mjs`\n- código fica em scripts\/lib\/\n- terceira regra válida\n/, 'até 3 regras; curta demais é descartada');
   assert.doesNotMatch(wtext, /nenhuma ainda|quarta regra|- curta/);
   assert.match(notices.at(-1).text, /receita v2: 3 regra/);
-  const hist = JSON.parse(readFileSync(join(dir, '.mark/history.json'), 'utf8'));
+  const hist = JSON.parse(readFileSync(join(dir, '.agent/history.json'), 'utf8'));
   assert.equal(hist[0].proven, 'no');
-  assert.match(wtext, /\[by: Mark; proven: no\]/);
+  assert.match(wtext, /\[by: Agent; proven: no\]/);
   assert.equal(hist.length, 1); assert.equal(hist[0].version, 'v2'); assert.deepEqual(hist[0].added.length, 3);
   branch = runOf('# pass 4\n# fail 0'); answer = '- Teste roda com node scripts/test-x.mjs\n- nova regra';
   await emit('agent_settled');
@@ -435,18 +435,18 @@ try {
 
   // Sessão A → B: o cache da A não aparece na B; não existe mais estado de prova.
   {
-    const line = () => markLineText();
+    const line = () => agentLineText();
     // Custo da sessão continua estruturado; /cost mantém o ledger cumulativo.
-    const markStateFn = globalThis[Symbol.for('mark.state')];
-    assert.equal(typeof markStateFn, 'function', 'juice publica o estado observado para a TUI do Mark');
-    const sessionUsd = () => markStateFn().sessionUsd;
+    const agentStateFn = globalThis[Symbol.for('agent.state')];
+    assert.equal(typeof agentStateFn, 'function', 'juice publica o estado observado para a TUI do Agent');
+    const sessionUsd = () => agentStateFn().sessionUsd;
     const spent = sessionUsd();
     await emit('message_end', { message: { role: 'assistant', usage: { input: 10, cacheRead: 90, cacheWrite: 0, cost: { total: 0.12 } } } });
     await emit('message_end', { message: { role: 'assistant', usage: { input: 10, cacheRead: 90, cacheWrite: 0, cost: { total: 0.03 } } } });
     assert.ok(Math.abs(sessionUsd() - (spent + 0.15)) < 1e-9, `custo da sessão soma os turnos: ${sessionUsd()}`);
     await emit('message_end', { message: { role: 'user', usage: { cost: { total: 9 } } } });
     assert.ok(Math.abs(sessionUsd() - (spent + 0.15)) < 1e-9, 'só mensagem assistant entra no custo da sessão');
-    assert.equal(markStateFn().usd, null, 'ledger stays available via /cost, not duplicate UI reads');
+    assert.equal(agentStateFn().usd, null, 'ledger stays available via /cost, not duplicate UI reads');
     assert.match(line(), /cache 90%/);
     branch = runOf('# pass 4\n# fail 0'); answer = '- regra da sessão A';
     await emit('agent_settled');
@@ -456,7 +456,7 @@ try {
     assert.match(line(), /cache —/);
     assert.doesNotMatch(text(), /prova/, 'prova removida do rodapé');
     assert.doesNotMatch(line(), /prova/);
-    for (const [k, v] of [['MARK_JUICE_CHILD', '1']]) {
+    for (const [k, v] of [['AGENT_JUICE_CHILD', '1']]) {
       process.env[k] = v;
       assert.match(line(), /learn off/, `${k} desliga learn no rodapé (mesma condição do learnFromRun)`);
       delete process.env[k];
@@ -470,24 +470,24 @@ try {
   for (const tokens of [60_001, 60_000, 60_001, 59_999]) {
     usage = { tokens, percent: tokens / 10_000, contextWindow: 1_000_000 };
     await emit('agent_settled');
-    assert.equal(statuses.get('mark-next'), tokens > 60_000 ? '/next encerra a tarefa' : undefined);
+    assert.equal(statuses.get('agent-next'), tokens > 60_000 ? '/next encerra a tarefa' : undefined);
     assert.equal(observed().nextHint, tokens > 60_000);
-    assert.deepEqual([...statuses.keys()].filter(key => key.startsWith('mark-')).sort(), tokens > 60_000 ? ['mark-mode', 'mark-next'] : ['mark-mode']);
+    assert.deepEqual([...statuses.keys()].filter(key => key.startsWith('agent-')).sort(), tokens > 60_000 ? ['agent-mode', 'agent-next'] : ['agent-mode']);
   }
   usage = { tokens: 60_001, percent: 6, contextWindow: 1_000_000 };
   await emit('agent_settled');
   await emit('session_start', { reason: 'reload' });
-  assert.equal(statuses.has('mark-next'), false, 'reload clears the previous hint');
+  assert.equal(statuses.has('agent-next'), false, 'reload clears the previous hint');
   await emit('agent_settled');
-  assert.equal(statuses.get('mark-next'), '/next encerra a tarefa');
+  assert.equal(statuses.get('agent-next'), '/next encerra a tarefa');
   await emit('session_shutdown');
-  assert.equal(statuses.has('mark-mode'), false, 'shutdown clears mode');
-  assert.equal(statuses.has('mark-next'), false, 'shutdown clears active hint');
+  assert.equal(statuses.has('agent-mode'), false, 'shutdown clears mode');
+  assert.equal(statuses.has('agent-next'), false, 'shutdown clears active hint');
   const disposedRenders = renders;
   await emit('tool_result');
   assert.equal(renders, disposedRenders, 'disposed producer cannot republish statuses');
   await emit('session_start');
-  assert.equal(statuses.has('mark-next'), false, 'new session starts without hint');
+  assert.equal(statuses.has('agent-next'), false, 'new session starts without hint');
   console.log('ok native /next status: >60k publishes, <=60k/reload/shutdown clear');
 
   usage = { tokens: 449_000, percent: 45, contextWindow: 1_000_000 };
@@ -505,7 +505,7 @@ try {
   // Real Pi branches: independent sessions, persisted resume, fork and reload.
   {
     const { SessionManager } = await load(join(root, 'dist/core/session-manager.js'));
-    const globals = [Symbol.for('mark.state'), Symbol.for('mark.footer.line')].map(key => [key, globalThis[key]]);
+    const globals = [Symbol.for('agent.state'), Symbol.for('agent.footer.line')].map(key => [key, globalThis[key]]);
     const make = async (manager, start = true) => {
       const context = { ...ctx, sessionManager: manager };
       const rt = createExtensionRuntime();
@@ -523,7 +523,7 @@ try {
       };
       if (start) await fire('session_start', { reason: 'startup' });
       return { context, ext, fire, mode: value => ext.commands.get('mode').handler(value, context),
-        view: globalThis[Symbol.for('mark.state')] };
+        view: globalThis[Symbol.for('agent.state')] };
     };
     const sessions = [];
     try {
@@ -542,7 +542,7 @@ try {
       for (const [session, mode] of [[a, 'complex'], [b, 'simple']]) {
         const event = { systemPromptOptions: opts() };
         await session.fire('before_agent_start', event);
-        assert.equal(!!event.systemPromptOptions.sections.mark_complex, mode === 'complex');
+        assert.equal(!!event.systemPromptOptions.sections.agent_complex, mode === 'complex');
         assert.equal((await session.fire('tool_call', { toolName: 'subagent' }))?.block === true, mode === 'simple');
         assert.equal(session.view().mode, mode);
       }
@@ -563,7 +563,7 @@ try {
       aManager.branch(complexLeaf);
       await a.fire('session_tree');
       assert.equal(a.view().mode, 'complex');
-      aManager.appendCustomEntry('mark-mode', { version: 2, mode: 'complex' });
+      aManager.appendCustomEntry('agent-mode', { version: 2, mode: 'complex' });
       assert.match((await a.fire('tool_call', { toolName: 'subagent' })).reason, /modo da sessão inválido/);
       await a.mode('simple'); // Explicit user change repairs an invalid record.
       const before = bManager.getBranch().length;
@@ -575,7 +575,7 @@ try {
       b.context.sessionManager.getBranch = getBranch;
       // Independent Jiti loaders must use the native ESM guard, including reload.
       const { createJiti } = await load(join(root, 'node_modules/jiti/lib/jiti.mjs'));
-      const modePath = join(repo, 'mark/extensions/brain-live/lib/session-mode.mjs');
+      const modePath = join(repo, 'agent/extensions/brain-live/lib/session-mode.mjs');
       const first = await createJiti(import.meta.url, { moduleCache: false, fsCache: false }).import(modePath);
       const second = await createJiti(import.meta.url, { moduleCache: false, fsCache: false }).import(modePath);
       const native = await load(modePath);
@@ -658,7 +658,7 @@ try {
   const stopped = renders;
   snapshot.usd = 9; save(); await new Promise(r => setTimeout(r, 160));
   assert.equal(renders, stopped, 'shutdown não repinta status após mudança do ledger');
-  assert.equal(statuses.has('mark-mode'), false, 'shutdown clears session status');
+  assert.equal(statuses.has('agent-mode'), false, 'shutdown clears session status');
   console.log('PASS modo (loader real, ledger JSON; sem chamadas de modelo)');
 } finally {
   if (extension) await emit('session_shutdown');

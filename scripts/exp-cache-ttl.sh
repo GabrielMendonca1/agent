@@ -1,12 +1,12 @@
 #!/bin/bash
-REPO=/Users/biel/Projects/mark-pi
-mkdir -p /tmp/mark-ttl; PARENT=$(mktemp -d /tmp/mark-ttl/p-XXXX)
+REPO=/Users/biel/Projects/agent
+mkdir -p /tmp/agent-ttl; PARENT=$(mktemp -d /tmp/agent-ttl/p-XXXX)
 PROF=$(NODE_OPTIONS= node $REPO/scripts/prepare-juice-test.mjs --temp-parent $PARENT | python3 -c "import sys,json; print(json.load(sys.stdin)['root'])")
-SID=$(uuidgen | tr A-Z a-z); LOG=/tmp/mark-ttl/usage.jsonl; : > $LOG
-turn() { cd $REPO; MARK_TTL=$2 MARK_TTL_LOG=$LOG MARK_LEARN=0 MARK_DISPATCHER=0 $PROF/launch.sh -p --session-id $SID -e $REPO/scripts/exp-cache-ttl.ext.mjs --model anthropic/claude-haiku-5-5 "Responda só: $3" >/dev/null 2>&1
+SID=$(uuidgen | tr A-Z a-z); LOG=/tmp/agent-ttl/usage.jsonl; : > $LOG
+turn() { cd $REPO; AGENT_TTL=$2 AGENT_TTL_LOG=$LOG AGENT_LEARN=0 AGENT_DISPATCHER=0 $PROF/launch.sh -p --session-id $SID -e $REPO/scripts/exp-cache-ttl.ext.mjs --model anthropic/claude-haiku-5-5 "Responda só: $3" >/dev/null 2>&1
   python3 - "$1" <<'PY'
 import json,sys
-L=[json.loads(l) for l in open('/tmp/mark-ttl/usage.jsonl')]
+L=[json.loads(l) for l in open('/tmp/agent-ttl/usage.jsonl')]
 u=[x for x in L if x['type']=='message_start'][-1]['u']
 print(sys.argv[1].ljust(34), 'read',u.get('cache_read_input_tokens'),'write',u.get('cache_creation_input_tokens'), 'detalhe', u.get('cache_creation'))
 PY

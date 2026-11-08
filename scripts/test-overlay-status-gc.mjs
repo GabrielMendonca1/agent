@@ -3,7 +3,7 @@
  * Testes de `overlay-status`, do aviso de checkout à frente, do `overlay-gc` e da camada removida.
  *
  * Tudo roda em stores temporários com fixtures sintéticas e num repositório git temporário; nada
- * toca ~/.local/share/pi-overlay nem a rede.
+ * toca ~/.local/share/agent nem a rede.
  */
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
@@ -11,11 +11,11 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync,
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { overlayGc, planOverlayGc } from "./pi-overlay-update.mjs";
+import { overlayGc, planOverlayGc } from "./agent-update.mjs";
 import { maybeStaleNotice, staleAhead, STALE_CACHE_FILE } from "./lib/overlay-stale.mjs";
 
 const here = dirname(fileURLToPath(import.meta.url));
-const updater = join(here, "pi-overlay-update.mjs");
+const updater = join(here, "agent-update.mjs");
 const raiz = realpathSync(mkdtempSync(join(tmpdir(), "overlay-status-gc-")));
 const feito = [];
 function teste(nome, fn) {
@@ -37,7 +37,7 @@ const novoRepo = () => {
 	return { repo, first: commit(repo, "a") };
 };
 const roda = (args, env = {}) =>
-	spawnSync(process.execPath, [updater, ...args], { encoding: "utf8", env: { ...process.env, PI_OVERLAY_STORE: "", ...env } });
+	spawnSync(process.execPath, [updater, ...args], { encoding: "utf8", env: { ...process.env, AGENT_STORE: "", ...env } });
 
 const dia = (n) => new Date(Date.UTC(2026, 9, 1 + n));
 function dir(path, dias) {
@@ -46,12 +46,12 @@ function dir(path, dias) {
 	if (dias !== undefined) utimesSync(path, dia(dias), dia(dias));
 	return path;
 }
-const bk = (i) => `2026-10-0${i + 1}T00-00-00-000Z-mark-ii-disable`;
+const bk = (i) => `2026-10-0${i + 1}T00-00-00-000Z-agent-disable`;
 const launcherBk = "2026-09-14T18-01-10-527Z";
-const enableAntigo = "2026-09-01T00-00-00-001Z-mark-ii-enable";
+const enableAntigo = "2026-09-01T00-00-00-001Z-agent-enable";
 const link = (alvo, caminho) => symlinkSync(alvo, caminho, process.platform === "win32" ? "junction" : undefined);
 
-/** Store sintético: current/previous, órfãs, artefatos Mark II, recibos, backups, candidates. */
+/** Store sintético: current/previous, órfãs, artefatos Agent, recibos, backups, candidates. */
 function novoStore(extra = {}) {
 	const store = mkdtempSync(join(raiz, "store-"));
 	const rel = (nome, dias) => dir(join(store, "releases", nome), dias);
@@ -67,7 +67,7 @@ function novoStore(extra = {}) {
 	writeFileSync(join(store, "prepared", "preparada.json"), JSON.stringify({ currentAtPrepare: cur }));
 	writeFileSync(join(store, "prepared", "sumiu.json"), "{}");
 	const artefato = (id, piRoot, dias) => {
-		const d = dir(join(store, "mark-ii", "releases", id), dias);
+		const d = dir(join(store, "runtime", "releases", id), dias);
 		writeFileSync(join(d, "manifest.json"), JSON.stringify({ artifactId: id, piRoot }));
 		utimesSync(d, dia(dias), dia(dias));
 	};
@@ -76,10 +76,10 @@ function novoStore(extra = {}) {
 	artefato("sobra-nova", join(cur, "pkg"), 7);
 	artefato("sobra-velha", join(cur, "pkg"), 3);
 	artefato("sobra-velha2", join(cur, "pkg"), 4);
-	writeFileSync(join(store, "mark-ii", "config.json"), JSON.stringify({ enabled: true, artifactId: "ativo", piRoot: join(cur, "pkg"), juiceHome: "/segredo" }));
-	dir(join(store, "mark-ii", "build-cache", "release"));
-	dir(join(store, "mark-ii", "resource-snapshots"));
-	dir(join(store, "mark-ii", "resources-backup"));
+	writeFileSync(join(store, "runtime", "config.json"), JSON.stringify({ enabled: true, artifactId: "ativo", piRoot: join(cur, "pkg"), juiceHome: "/segredo" }));
+	dir(join(store, "runtime", "build-cache", "release"));
+	dir(join(store, "runtime", "resource-snapshots"));
+	dir(join(store, "runtime", "resources-backup"));
 	for (let i = 0; i < 7; i++) dir(join(store, "backups", bk(i)), i);
 	// Protegidos: launcher original (com restore.txt), enable mais antigo, e um diretório que não é do updater.
 	for (const nome of [launcherBk, enableAntigo]) {
@@ -90,21 +90,21 @@ function novoStore(extra = {}) {
 	dir(join(store, "candidates", "port"));
 	writeFileSync(
 		join(store, "active.json"),
-		JSON.stringify({ officialVersion: "1.1.0", officialRef: "v1.1.0", officialCommit: "a".repeat(40), patches: { x: "1" }, optionalLayers: [], releaseDir: cur, markII: { artifactId: "ativo" }, updaterGeneration: 4, ...extra }),
+		JSON.stringify({ officialVersion: "1.1.0", officialRef: "v1.1.0", officialCommit: "a".repeat(40), patches: { x: "1" }, optionalLayers: [], releaseDir: cur, agent: { artifactId: "ativo" }, updaterGeneration: 4, ...extra }),
 	);
 	return { store, cur, prev };
 }
 const existe = (store, ...partes) => existsSync(join(store, ...partes));
 
 // --- status ---------------------------------------------------------------------------------
-teste("status sem sourceRepo: 'source unknown', Mark II ligado, sem segredos", () => {
+teste("status sem sourceRepo: 'source unknown', Agent ligado, sem segredos", () => {
 	const { store } = novoStore();
 	const out = roda(["--status", "--store", store]);
 	assert.equal(out.status, 0, out.stderr);
 	assert.match(out.stdout, /Pi: 1\.1\.0/);
 	assert.match(out.stdout, /Current:\s+cur/);
 	assert.match(out.stdout, /Previous: prev/);
-	assert.match(out.stdout, /Mark II: on \(artifact ativo\)/);
+	assert.match(out.stdout, /Agent: on \(artifact ativo\)/);
 	assert.match(out.stdout, /source unknown/);
 	assert.match(out.stdout, /overlay-gc --dry-run/);
 	assert.doesNotMatch(out.stdout, /segredo/);
@@ -144,7 +144,7 @@ teste("aviso de startup: uma linha, cache de 1h, env desliga, modos programátic
 	};
 	const primeiro = chama();
 	assert.equal(primeiro.impresso, true);
-	assert.deepEqual(primeiro.escrito, [`↑ mark-pi: checkout 1 commit ahead of the install · node ${join(repo, "scripts", "pi-overlay-update.mjs")}\n`]);
+	assert.deepEqual(primeiro.escrito, [`↑ agent: checkout 1 commit ahead of the install · node ${join(repo, "scripts", "agent-update.mjs")}\n`]);
 	const cache = JSON.parse(readFileSync(join(store, STALE_CACHE_FILE), "utf8"));
 	assert.equal(cache.ahead, 1);
 	// Dentro de 1h o cache vale, mesmo que o repo mude.
@@ -152,7 +152,7 @@ teste("aviso de startup: uma linha, cache de 1h, env desliga, modos programátic
 	assert.equal(staleAhead(store), 1);
 	// Cache vencido: recalcula.
 	assert.equal(staleAhead(store, { now: Date.now() + 2 * 3600 * 1000 }), 2);
-	assert.equal(chama({ env: { PI_OVERLAY_STALE_NOTICE: "0" } }).impresso, false);
+	assert.equal(chama({ env: { AGENT_STALE_NOTICE: "0" } }).impresso, false);
 	assert.equal(chama({ args: ["-p", "oi"] }).impresso, false);
 	assert.equal(chama({ args: ["--mode", "json"] }).impresso, false);
 	assert.equal(chama({ args: ["--mode=json"] }).impresso, false);
@@ -187,13 +187,13 @@ teste("gc --dry-run lista caminho, tamanho e total e não apaga nada", () => {
 	assert.match(out.stdout, /would delete {2}\S+orf-velho /);
 	assert.match(out.stdout, /Would reclaim \S+ in \d+ item\(s\)/);
 	assert.match(out.stdout, /report only {2}\S+candidates/);
-	for (const alvo of [["releases", "orf-velho"], ["releases", "orf-velho2"], ["mark-ii", "build-cache"], ["backups", bk(0)], ["prepared", "sumiu.json"], ["mark-ii", "releases", "sobra-velha"]]) {
+	for (const alvo of [["releases", "orf-velho"], ["releases", "orf-velho2"], ["runtime", "build-cache"], ["backups", bk(0)], ["prepared", "sumiu.json"], ["runtime", "releases", "sobra-velha"]]) {
 		assert.ok(existe(store, ...alvo), `dry-run apagou ${alvo.join("/")}`);
 	}
 	assert.ok(!existe(store, ".update.lock"));
 });
 
-teste("gc real respeita current/previous/preparada/Mark II ativo+rollback/keep=1 e só reporta candidates", () => {
+teste("gc real respeita current/previous/preparada/Agent ativo+rollback/keep=1 e só reporta candidates", () => {
 	const { store } = novoStore();
 	const out = roda(["--gc", "--store", store]);
 	assert.equal(out.status, 0, out.stderr);
@@ -201,8 +201,8 @@ teste("gc real respeita current/previous/preparada/Mark II ativo+rollback/keep=1
 	for (const nome of ["cur", "prev", "preparada", "orf-novo"]) assert.ok(existe(store, "releases", nome), nome);
 	for (const nome of ["orf-velho", "orf-velho2"]) assert.ok(!existe(store, "releases", nome), nome);
 	// Artefatos: ativo e alvo de rollback ficam, mais 1 sobra (a mais nova).
-	for (const id of ["ativo", "rollback", "sobra-nova"]) assert.ok(existe(store, "mark-ii", "releases", id), id);
-	for (const id of ["sobra-velha", "sobra-velha2"]) assert.ok(!existe(store, "mark-ii", "releases", id), id);
+	for (const id of ["ativo", "rollback", "sobra-nova"]) assert.ok(existe(store, "runtime", "releases", id), id);
+	for (const id of ["sobra-velha", "sobra-velha2"]) assert.ok(!existe(store, "runtime", "releases", id), id);
 	// Recibos: o da release preparada fica; o de release inexistente sai.
 	assert.ok(existe(store, "prepared", "preparada.json"));
 	assert.ok(!existe(store, "prepared", "sumiu.json"));
@@ -213,9 +213,9 @@ teste("gc real respeita current/previous/preparada/Mark II ativo+rollback/keep=1
 	for (const nome of [launcherBk, enableAntigo, "local-audited-x573ukc0"]) assert.ok(existe(store, "backups", nome), nome);
 	assert.ok(existe(store, "backups", launcherBk, "restore.txt"));
 	// build-cache só sai sem sessão Pi viva na máquina que executa o check.
-	const cacheReport = out.stdout.split("\n").some((line) => line.includes("report only") && line.includes(join(store, "mark-ii", "build-cache")));
-	assert.equal(existe(store, "mark-ii", "build-cache"), cacheReport);
-	for (const alvo of [["mark-ii", "resource-snapshots"], ["mark-ii", "resources-backup"], ["candidates", "port"], ["active.json"], ["mark-ii", "config.json"]]) {
+	const cacheReport = out.stdout.split("\n").some((line) => line.includes("report only") && line.includes(join(store, "runtime", "build-cache")));
+	assert.equal(existe(store, "runtime", "build-cache"), cacheReport);
+	for (const alvo of [["runtime", "resource-snapshots"], ["runtime", "resources-backup"], ["candidates", "port"], ["active.json"], ["runtime", "config.json"]]) {
 		assert.ok(existe(store, ...alvo), alvo.join("/"));
 	}
 	assert.match(out.stdout, /report only {2}\S+candidates/);
@@ -229,8 +229,8 @@ teste("gc: recibo cujo current mudou desde o prepare não protege a release; --k
 	for (const nome of ["preparada", "orf-novo", "orf-velho", "orf-velho2"]) assert.ok(!existe(store, "releases", nome), nome);
 	assert.ok(!existe(store, "prepared", "preparada.json"));
 	for (const nome of ["cur", "prev"]) assert.ok(existe(store, "releases", nome), nome);
-	for (const id of ["ativo", "rollback"]) assert.ok(existe(store, "mark-ii", "releases", id), id);
-	for (const id of ["sobra-nova", "sobra-velha", "sobra-velha2"]) assert.ok(!existe(store, "mark-ii", "releases", id), id);
+	for (const id of ["ativo", "rollback"]) assert.ok(existe(store, "runtime", "releases", id), id);
+	for (const id of ["sobra-nova", "sobra-velha", "sobra-velha2"]) assert.ok(!existe(store, "runtime", "releases", id), id);
 	const { store: dois } = novoStore();
 	roda(["--gc", "--keep", "2", "--store", dois]);
 	assert.ok(existe(dois, "releases", "orf-novo") && existe(dois, "releases", "orf-velho2") && !existe(dois, "releases", "orf-velho"));
@@ -239,25 +239,25 @@ teste("gc: recibo cujo current mudou desde o prepare não protege a release; --k
 teste("gc preserves the recorded rollback artifact even when a newer artifact has the same Pi root", () => {
 	const { store, prev } = novoStore();
 	const piRoot = join(prev, "pkg");
-	const old = join(store, "mark-ii", "releases", "recorded-old");
+	const old = join(store, "runtime", "releases", "recorded-old");
 	dir(old, 0);
 	writeFileSync(join(old, "manifest.json"), JSON.stringify({ artifactId: "recorded-old", piRoot }));
 	utimesSync(old, dia(0), dia(0));
-	writeFileSync(join(store, "mark-ii", "pi-artifacts.json"), JSON.stringify({ [piRoot]: "recorded-old" }));
+	writeFileSync(join(store, "runtime", "pi-artifacts.json"), JSON.stringify({ [piRoot]: "recorded-old" }));
 	const plan = planOverlayGc(store, 0, { getProcesses: () => [] });
 	assert.ok(!plan.some((item) => item.path === old && item.action === "delete"));
-	rmSync(join(store, "mark-ii", "pi-artifacts.json"));
+	rmSync(join(store, "runtime", "pi-artifacts.json"));
 	assert.ok(planOverlayGc(store, 0, { getProcesses: () => [] }).some((item) => item.path === old && item.action === "delete"));
 });
 
 teste("gc: processo fake protege artefato, sua release Pi e build-cache com PID", () => {
 	const { store } = novoStore();
-	const artifact = join(store, "mark-ii", "releases", "sobra-velha");
+	const artifact = join(store, "runtime", "releases", "sobra-velha");
 	const release = join(store, "releases", "orf-velho");
 	writeFileSync(join(artifact, "manifest.json"), JSON.stringify({ piRoot: join(release, "pkg") }));
-	const getProcesses = () => [{ pid: 424242, command: `node --extension ${artifact}/mark/extension.mjs` }];
+	const getProcesses = () => [{ pid: 424242, command: `node --extension ${artifact}/agent/extension.mjs` }];
 	const plan = planOverlayGc(store, 0, { getProcesses });
-	for (const path of [artifact, release, join(store, "mark-ii", "build-cache")]) {
+	for (const path of [artifact, release, join(store, "runtime", "build-cache")]) {
 		const item = plan.find((item) => item.path === path);
 		assert.equal(item?.action, "report", `fake process: gc apagaria ${path}`);
 		assert.equal(item.note, "in use by running process 424242");
@@ -269,15 +269,15 @@ teste("gc: processo fake protege artefato, sua release Pi e build-cache com PID"
 	} finally { console.log = log; }
 	assert.ok(existsSync(artifact));
 	assert.ok(existsSync(release));
-	assert.ok(existe(store, "mark-ii", "build-cache"));
-	assert.ok(!existe(store, "mark-ii", "releases", "sobra-velha2"));
+	assert.ok(existe(store, "runtime", "build-cache"));
+	assert.ok(!existe(store, "runtime", "releases", "sobra-velha2"));
 });
 
 teste("gc: snapshot injetado cobre cache direto, launcher, release e inspeção indisponível", () => {
 	const { store } = novoStore();
-	const cache = join(store, "mark-ii", "build-cache");
+	const cache = join(store, "runtime", "build-cache");
 	const release = join(store, "releases", "orf-velho");
-	for (const command of [`${cache}/release/juice --state /tmp/state`, `node mark-ii-launch.mjs --store ${store}`, `node ${release}/pkg/dist/cli.js`]) {
+	for (const command of [`${cache}/release/juice --state /tmp/state`, `node agent-launch.mjs --store ${store}`, `node ${release}/pkg/dist/cli.js`]) {
 		const plan = planOverlayGc(store, 0, { getProcesses: () => [{ pid: 123, command }] });
 		assert.equal(plan.find((item) => item.path === cache)?.note, "in use by running process 123");
 		assert.ok(!plan.some((item) => item.path === cache && item.action === "delete"));
@@ -286,7 +286,7 @@ teste("gc: snapshot injetado cobre cache direto, launcher, release e inspeção 
 	const empty = planOverlayGc(store, 0, { getProcesses: () => [] });
 	assert.equal(empty.find((item) => item.path === cache)?.action, "delete");
 	const unknown = planOverlayGc(store, 0, { getProcesses: () => undefined });
-	assert.ok(!unknown.some((item) => ["release", "mark-ii artifact", "mark-ii build-cache"].includes(item.kind) && item.action === "delete"));
+	assert.ok(!unknown.some((item) => ["release", "agent artifact", "agent build-cache"].includes(item.kind) && item.action === "delete"));
 });
 
 teste("gc preserva releases em argumentos e ambiente de processos vivos, inclusive via symlink", () => {
@@ -297,7 +297,7 @@ teste("gc preserva releases em argumentos e ambiente de processos vivos, inclusi
 	const ready = join(raiz, "process-ready");
 	const child = spawn(process.execPath, ["-e", `require('node:fs').writeFileSync(${JSON.stringify(ready)}, 'ready'); setInterval(() => {}, 1000)`, join(store, "releases", "orf-velho", "extensions", "old.mjs")], {
 		stdio: "ignore",
-		env: { ...process.env, NODE_OPTIONS: "", MARK_JUICE_BIN: join(atalho, "mark-ii", "releases", "sobra-velha", "bin", "juice") },
+		env: { ...process.env, NODE_OPTIONS: "", AGENT_JUICE_BIN: join(atalho, "runtime", "releases", "sobra-velha", "bin", "juice") },
 	});
 	try {
 		const deadline = Date.now() + 5000;
@@ -306,13 +306,13 @@ teste("gc preserva releases em argumentos e ambiente de processos vivos, inclusi
 		for (const flags of [["--dry-run"], []]) {
 			const out = roda(["--gc", "--keep", "0", "--store", atalho, ...flags]);
 			assert.equal(out.status, 0, out.stderr);
-			for (const path of [join(atalho, "releases", "orf-velho"), join(atalho, "mark-ii", "releases", "sobra-velha")]) {
+			for (const path of [join(atalho, "releases", "orf-velho"), join(atalho, "runtime", "releases", "sobra-velha")]) {
 				assert.ok(existsSync(path), `gc apagou release em uso: ${path}`);
 				assert.ok(out.stdout.split("\n").some((line) => line.includes(path) && line.includes(`in use by running process ${child.pid}`)), out.stdout);
 			}
 		}
 		assert.ok(!existe(store, "releases", "orf-velho2"), "prefixo parecido não deve proteger outra release");
-		assert.ok(!existe(store, "mark-ii", "releases", "sobra-velha2"));
+		assert.ok(!existe(store, "runtime", "releases", "sobra-velha2"));
 	} finally {
 		child.kill();
 	}
@@ -324,15 +324,15 @@ teste("gc conserva releases e reporta em uso se a inspeção de processos falhar
 	assert.equal(out.status, 0, out.stderr);
 	assert.match(out.stdout, /process inspection unavailable: cannot prove unused/);
 	for (const name of ["orf-velho", "orf-velho2"]) assert.ok(existe(store, "releases", name));
-	for (const name of ["sobra-velha", "sobra-velha2"]) assert.ok(existe(store, "mark-ii", "releases", name));
-	assert.ok(existe(store, "mark-ii", "build-cache"), "sem inspeção de processos o build-cache também fica: o broker do Juice pode estar usando");
+	for (const name of ["sobra-velha", "sobra-velha2"]) assert.ok(existe(store, "runtime", "releases", name));
+	assert.ok(existe(store, "runtime", "build-cache"), "sem inspeção de processos o build-cache também fica: o broker do Juice pode estar usando");
 });
 
-teste("gc sem config do Mark II só reporta artefatos, não apaga", () => {
+teste("gc sem config do Agent só reporta artefatos, não apaga", () => {
 	const { store } = novoStore();
-	rmSync(join(store, "mark-ii", "config.json"));
+	rmSync(join(store, "runtime", "config.json"));
 	assert.equal(roda(["--gc", "--store", store]).status, 0);
-	for (const id of ["ativo", "rollback", "sobra-nova", "sobra-velha", "sobra-velha2"]) assert.ok(existe(store, "mark-ii", "releases", id), id);
+	for (const id of ["ativo", "rollback", "sobra-nova", "sobra-velha", "sobra-velha2"]) assert.ok(existe(store, "runtime", "releases", id), id);
 });
 
 teste("gc: opções inválidas são recusadas", () => {
@@ -350,9 +350,9 @@ teste("gc --dry-run: launcher original, enable mais antigo e diretório estranho
 		assert.match(out, new RegExp(`report only {2}\\S*${nome}`), nome);
 	}
 	// O segundo enable (não o mais antigo) entra na retenção normal.
-	dir(join(store, "backups", "2026-09-20T00-00-00-000Z-mark-ii-enable"), -20);
+	dir(join(store, "backups", "2026-09-20T00-00-00-000Z-agent-enable"), -20);
 	const depois = roda(["--gc", "--dry-run", "--store", store]).stdout;
-	assert.match(depois, /would delete {2}\S*2026-09-20T00-00-00-000Z-mark-ii-enable/);
+	assert.match(depois, /would delete {2}\S*2026-09-20T00-00-00-000Z-agent-enable/);
 	assert.match(depois, new RegExp(`report only {2}\\S*${enableAntigo}`));
 });
 
@@ -374,7 +374,7 @@ teste("rollback grava a origem da release de destino, ou nenhuma se ela não tem
 		const meta = (v, extra = {}) => ({ officialRef: `v${v}`, officialCommit: "x", officialVersion: v, patches: {}, optionalLayers: [], ...extra });
 		for (const [nome, m] of [["a", meta("1", origemAntiga)], ["b", meta("2", { sourceRepo: "/r/novo", sourceCommit: "bbbbbbb" })]]) {
 			mkdirSync(join(store, "releases", nome), { recursive: true });
-			writeFileSync(join(store, "releases", nome, "pi-overlay.json"), JSON.stringify(m));
+			writeFileSync(join(store, "releases", nome, "agent-release.json"), JSON.stringify(m));
 		}
 		link(join(store, "releases", "b"), join(store, "current"));
 		link(join(store, "releases", "a"), join(store, "previous"));
@@ -428,7 +428,7 @@ teste("--with context-windows é erro com a mensagem da camada removida", () => 
 	const { store } = novoStore();
 	const out = roda(["--with", "context-windows", "--store", store]);
 	assert.notEqual(out.status, 0);
-	assert.match(out.stderr, /layer context-windows was removed in 2026-10\. It was never ported past Pi 0\.87\. Run without it, or check out an older mark-pi to keep it\./);
+	assert.match(out.stderr, /layer context-windows was removed in 2026-10\. It was never ported past Pi 0\.87\. Run without it, or check out an older agent to keep it\./);
 	assert.notEqual(roda(["--check", "--with", "a,context-windows", "--store", store]).status, 0);
 });
 

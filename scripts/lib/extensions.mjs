@@ -1,5 +1,5 @@
 /**
- * Extensões padrão do Mark.
+ * Extensões padrão do Agent.
  *
  * Hoje é só o Megamind (`extensions/megamind/`, mesma extensão que morava em
  * `~/ARCA/arca/extensions/arca-megamind`). Ela viaja no bundle; a cada ativação no store padrão o
@@ -53,7 +53,7 @@ export function extensionFiles(repoRoot) {
  * Copia o Megamind para `<store>/extensions/megamind` e registra o caminho no settings do Pi.
  * Devolve `{ installed, disabled, settingsUpdated, removed }`.
  */
-export function syncMarkExtensions({
+export function syncAgentExtensions({
 	sourceRoot,
 	store,
 	agentDir,
@@ -65,15 +65,15 @@ export function syncMarkExtensions({
 	const target = resolve(join(store, EXTENSIONS_DIR, MEGAMIND_DIR));
 	const settingsFile = join(agentDir, "settings.json");
 	if (isMegamindDisabled(settingsFile, warn)) {
-		log("Megamind do Mark desligado por \"-megamind\" no settings do Pi; nada instalado");
+		log("Megamind do Agent desligado por \"-megamind\" no settings do Pi; nada instalado");
 		return { installed: false, disabled: true, settingsUpdated: false, removed: [] };
 	}
 	if (!existsSync(source)) {
-		warn(`Megamind do Mark não encontrado em ${source}; nada instalado`);
+		warn(`Megamind do Agent não encontrado em ${source}; nada instalado`);
 		return { installed: false, disabled: false, settingsUpdated: false, removed: [] };
 	}
 
-	// `register: false` (Mark II): só atualiza uma cópia que já existe; o registro é do recibo de recursos.
+	// `register: false` (Agent): só atualiza uma cópia que já existe; o registro é do recibo de recursos.
 	if (!register && !existsSync(target)) return { installed: false, disabled: false, settingsUpdated: false, removed: [] };
 	const temporary = `${target}.tmp-${process.pid}`;
 	rmSync(temporary, { recursive: true, force: true });
@@ -91,7 +91,7 @@ export function syncMarkExtensions({
 	const { settingsUpdated, removed } = register
 		? ensureExtensionEntry(settingsFile, target, warn)
 		: { settingsUpdated: false, removed: [] };
-	log(`Megamind do Mark: ${target}`);
+	log(`Megamind do Agent: ${target}`);
 	return { installed: true, disabled: false, settingsUpdated, removed };
 }
 

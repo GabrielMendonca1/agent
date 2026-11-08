@@ -178,11 +178,10 @@ teste("rollback deriva as camadas opcionais da metadata da release de destino", 
 teste("o manifesto real declara a base clássica e nenhuma camada opcional (context-windows foi removida)", () => {
 	const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 	const manifest = JSON.parse(readFileSync(join(repoRoot, "overlay", "manifest.json"), "utf8"));
-	assert.equal(manifest.name, "mark-pi");
-	assert.equal(manifest.mark, "II");
+	assert.equal(manifest.name, "agent");
 	assert.deepEqual(
 		selectLayers(manifest.patches, {}).selected.map((patch) => patch.name),
-		["pi-black", "garime-frame", "pi-account-env", "transcript-feedback", "stream-markdown", "mark-skill-curation", "codemode-typed-results", "codemode-background", "tool-load-append", "cc-hidden-tool-names"],
+		["pi-black", "garime-frame", "pi-account-env", "transcript-feedback", "stream-markdown", "agent-skill-curation", "codemode-typed-results", "codemode-background", "tool-load-append", "cc-hidden-tool-names"],
 	);
 	assert.deepEqual(selectLayers(manifest.patches, {}).available, []);
 	for (const marker of manifest.compatibility.bundleMarkers) {

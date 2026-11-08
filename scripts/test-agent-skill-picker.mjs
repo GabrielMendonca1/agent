@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 /**
- * Seletor minimalista de `/skill:` (MARK II) — API pública do módulo real
- * `mark/extensions/mark/tui/skill-picker.ts`, sem rede, sem provedor e
+ * Seletor minimalista de `/skill:` (Agent) — API pública do módulo real
+ * `agent/extensions/agent/tui/skill-picker.ts`, sem rede, sem provedor e
  * sem ler o disco: catálogo vem de `pi.getCommands()` (comandos REAIS, aqui
  * injetados) cruzado com `loadSkillCategories()` (lido do módulo real do repo).
  *
@@ -12,8 +12,8 @@
  */
 import assert from 'node:assert/strict';
 
-import { AUTOMATIC_GLOBAL_SKILLS, isAutomaticSkill } from '../mark/juice/skill-policy.mjs';
-import { loadSkillCategories } from '../mark/juice/skill-categories.mjs';
+import { AUTOMATIC_GLOBAL_SKILLS, isAutomaticSkill } from '../agent/juice/skill-policy.mjs';
+import { loadSkillCategories } from '../agent/juice/skill-categories.mjs';
 const COMMON_SKILLS = [...AUTOMATIC_GLOBAL_SKILLS, 'personal'];
 import {
   AUTOMATIC_MARK,
@@ -27,7 +27,7 @@ import {
   shortDescription,
   visibleEntries,
   withQuery,
-} from '../mark/extensions/mark/tui/skill-picker.ts';
+} from '../agent/extensions/agent/tui/skill-picker.ts';
 
 const categories = loadSkillCategories();
 assert.ok(categories.length === 4, `categorias do repo carregadas (${categories.length})`);

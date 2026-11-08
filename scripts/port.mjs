@@ -333,7 +333,7 @@ function exportSeries(options) {
 	}
 	console.log(`overlayBase = ${state.baseCommit} (${state.ref})`);
 	console.log(
-		`Agora rode o gate: node ${join(repoRoot, "scripts", "pi-overlay-update.mjs")} --check --hydrate --ref ${state.ref} --vendor-model-data`,
+		`Agora rode o gate: node ${join(repoRoot, "scripts", "agent-update.mjs")} --check --hydrate --ref ${state.ref} --vendor-model-data`,
 	);
 }
 

@@ -1,9 +1,8 @@
 /**
- * Setup do Mark: as extensões, os temas e os papéis de subagente que o Gabriel usa.
+ * Setup do Agent: as extensões, os temas e os papéis de subagente que o Gabriel usa.
  *
- * `mark/` é a cópia vendorizada das pastas vivas dele (atualizada por
- * scripts/vendor-gabriel-setup.mjs). A cada ativação no store padrão o updater copia a árvore para
- * `<store>/mark/…` e registra no `settings.json` do Pi: cada extensão em `extensions[]`, os temas
+ * `agent/` é a cópia vendorizada das pastas vivas dele. A cada ativação no store padrão o updater copia a árvore para
+ * `<store>/agent/…` e registra no `settings.json` do Pi: cada extensão em `extensions[]`, os temas
  * em `themes[]` e os papéis em `<agent-dir>/agents` — que é o único lugar onde a extensão
  * `subagent` procura papéis de usuário (`getAgentDir()/agents`; não há chave de settings para
  * isso). Também preenche os defaults do Gabriel (modelo, tema, tuiMode…) **apenas** nas chaves que
@@ -11,17 +10,17 @@
  *
  * Nada carrega duas vezes. O Pi descobre extensões sozinho em `<agent-dir>/extensions` e carrega
  * as de `extensions[]`; os caminhos são diferentes, então o Pi não deduplica por nome e as mesmas
- * tools/comandos entrariam duas vezes. Por isso uma extensão do Mark cujo nome já exista na pasta
+ * tools/comandos entrariam duas vezes. Por isso uma extensão do Agent cujo nome já exista na pasta
  * auto-carregada do usuário ou numa entrada de `extensions[]` **não** é registrada. Na máquina do
  * Gabriel isso significa nenhuma entrada nova: a pasta dele já tem todas, e `accounts`, `peers`,
  * `whimsical` e `garime-tui` (hoje `tui`) já estão no settings apontando para `~/ARCA/arca/extensions`. O mesmo
  * vale para temas (nome duplicado é colisão de recurso no Pi) e para a pasta de papéis.
  *
- * Duas árvores de extensão: `brain-live/` e `mark/` têm um `lib/` cada, com arquivos de mesmo nome
+ * Duas árvores de extensão: `brain-live/` e `agent/` têm um `lib/` cada, com arquivos de mesmo nome
  * e conteúdo diferente, e cada extensão resolve `../lib` pela sua árvore.
  *
- * Desligar tudo: `"-mark-setup"` em `extensions[]`. Desligar uma extensão: `"-<nome>"`, como em
- * qualquer entrada do Pi — o Mark não registra o que está desligado.
+ * Desligar tudo: `"-agent-setup"` em `extensions[]`. Desligar uma extensão: `"-<nome>"`, como em
+ * qualquer entrada do Pi — o Agent não registra o que está desligado.
  */
 import {
 	appendFileSync,
@@ -38,47 +37,47 @@ import {
 import { homedir } from "node:os";
 import { basename, join, resolve, sep } from "node:path";
 
-export const MARK_DIR = "mark";
+export const AGENT_DIR = "agent";
 export const EXTENSIONS_SUBDIR = "extensions";
 export const THEMES_SUBDIR = "themes";
 /**
- * Marcador da pasta de temas: diz quais `.json` são do Mark e podem ser atualizados. Sem sufixo
+ * Marcador da pasta de temas: diz quais `.json` são do Agent e podem ser atualizados. Sem sufixo
  * `.json` de propósito — o Pi carrega *todo* `*.json` de `<agent-dir>/themes`, inclusive oculto, e
  * um marcador `.json` virava `Invalid theme ...: expected an object with a "colors" map.` no
  * startup e no `/reload` (docs/themes.md: "Pi reports invalid theme files during startup").
  */
-export const THEMES_MARKER = ".mark-themes";
+export const THEMES_MARKER = ".agent-themes";
 /** Marcador antigo (`.json`), migrado para `THEMES_MARKER` sem perder a propriedade dos temas. */
-export const THEMES_MARKER_LEGACY = ".mark-themes.json";
+export const THEMES_MARKER_LEGACY = ".agent-themes.json";
 export const AGENTS_SUBDIR = "agents";
 /** Cópia de `~/Garime/brain-live/extensions` (a pasta auto-carregada do Gabriel). */
 export const BRAIN_LIVE_TREE = "brain-live";
-/** Cópia das extensões do Mark (antes `~/ARCA/arca/extensions`; hoje `mark/extensions/mark`). */
-export const MARK_TREE = "mark";
+/** Cópia das extensões do Agent (antes `~/ARCA/arca/extensions`; hoje `agent/extensions/agent`). */
+export const AGENT_TREE = "agent";
 /**
- * Nomes antigos de extensões renomeadas no Mark. A cópia pessoal do usuário (ainda `garime-tui`)
+ * Nomes antigos de extensões renomeadas no Agent. A cópia pessoal do usuário (ainda `garime-tui`)
  * é a mesma extensão que `tui`: tratar como nome distinto carregaria as duas.
  */
 export const LEGACY_EXTENSION_NAMES = { tui: ["garime-tui"] };
 export const legacyNamesOf = (name) => LEGACY_EXTENSION_NAMES[name] ?? [];
-/** Marcador da pasta de papéis: diz quais `.md` são do Mark e podem ser atualizados. */
-export const AGENTS_MARKER = ".mark-agents.json";
+/** Marcador da pasta de papéis: diz quais `.md` são do Agent e podem ser atualizados. */
+export const AGENTS_MARKER = ".agent-agents.json";
 /** Linha de PATH; o marcador é o que torna a escrita no rc idempotente. */
-export const PATH_MARKER = "# mark-pi: pi em ~/.local/bin";
+export const PATH_MARKER = "# agent: pi em ~/.local/bin";
 const PATH_LINE = `case ":$PATH:" in *":$HOME/.local/bin:"*) ;; *) export PATH="$HOME/.local/bin:$PATH" ;; esac`;
 
 /** Defaults do Gabriel; escritos só onde o usuário não tem a chave. */
-export const MARK_SETTINGS_DEFAULTS = {
+export const AGENT_SETTINGS_DEFAULTS = {
 	defaultProvider: "anthropic",
 	defaultModel: "claude-opus-5-5",
 	defaultThinkingLevel: "medium",
-	theme: "grayscale-baimin-claude-cc-mark-light/grayscale-baimin-claude-cc-mark",
+	theme: "grayscale-baimin-claude-cc-agent-light/grayscale-baimin-claude-cc-agent",
 	tuiMode: "fullscreen",
 	quietStartup: false,
 	hideThinkingBlock: false,
 };
 
-// Local build products never travel in the Mark setup bundle.
+// Local build products never travel in the Agent setup bundle.
 const ignored = new Set([".DS_Store", "node_modules", "__pycache__", "target"]);
 const EXTENSION_SUFFIXES = [".ts", ".js", ".mjs", ".cjs"];
 const DISABLED = /^[-!]/;
@@ -102,8 +101,8 @@ export function treeFiles(root) {
 }
 
 /** Arquivos (relativos à raiz do repo) que viajam no bundle do overlay. */
-export function markSetupFiles(repoRoot) {
-	return treeFiles(join(repoRoot, MARK_DIR)).map((file) => `${MARK_DIR}/${file}`);
+export function agentSetupFiles(repoRoot) {
+	return treeFiles(join(repoRoot, AGENT_DIR)).map((file) => `${AGENT_DIR}/${file}`);
 }
 
 /** Nome de recurso de uma entrada de `extensions[]`/`themes[]`: basename sem extensão. */
@@ -168,7 +167,7 @@ export function themesIn(dir) {
 		.sort((a, b) => a.name.localeCompare(b.name));
 }
 
-/** Nomes que o usuário já carrega por uma lista de settings, ignorando o que o Mark instalou. */
+/** Nomes que o usuário já carrega por uma lista de settings, ignorando o que o Agent instalou. */
 function namesFromSettings(entries, ownRoot) {
 	const names = new Set();
 	for (const entry of entries) {
@@ -198,11 +197,11 @@ function readSettings(file, warn) {
 	try {
 		settings = JSON.parse(readFileSync(file, "utf8"));
 	} catch {
-		warn(`${file} não é JSON válido; o setup do Mark não foi registrado`);
+		warn(`${file} não é JSON válido; o setup do Agent não foi registrado`);
 		return null;
 	}
 	if (!settings || typeof settings !== "object" || Array.isArray(settings)) {
-		warn(`${file} não é um objeto JSON; o setup do Mark não foi registrado`);
+		warn(`${file} não é um objeto JSON; o setup do Agent não foi registrado`);
 		return null;
 	}
 	return settings;
@@ -225,15 +224,15 @@ function replaceTree(source, target) {
 	renameSync(temporary, target);
 }
 
-/** `true` se o settings desliga o setup inteiro (`-mark-setup`). */
-export function isMarkSetupDisabled(settings) {
-	return disabledNames(asList(settings?.extensions)).has("mark-setup");
+/** `true` se o settings desliga o setup inteiro (`-agent-setup`). */
+export function isAgentSetupDisabled(settings) {
+	return disabledNames(asList(settings?.extensions)).has("agent-setup");
 }
 
-/** Preenche em `settings` os defaults do Mark que faltam; devolve as chaves escritas. */
+/** Preenche em `settings` os defaults do Agent que faltam; devolve as chaves escritas. */
 export function applyDefaults(settings) {
 	const written = [];
-	for (const [key, value] of Object.entries(MARK_SETTINGS_DEFAULTS)) {
+	for (const [key, value] of Object.entries(AGENT_SETTINGS_DEFAULTS)) {
 		if (key in settings) continue;
 		settings[key] = value;
 		written.push(key);
@@ -268,13 +267,13 @@ export function ensureLocalBinOnPath({ homeDir, log = console.log, warn = consol
 
 /**
  * Instala os papéis de subagente em `<agent-dir>/agents`, o único lugar onde a extensão `subagent`
- * procura papéis de usuário. Uma pasta que já existe e não é do Mark (a do Gabriel é um link para
+ * procura papéis de usuário. Uma pasta que já existe e não é do Agent (a do Gabriel é um link para
  * `~/Sistema/Pi/agents`) fica intocada.
  */
 /**
- * Copia os temas do Mark para `<agent-dir>/themes`, sem tocar em tema que a pessoa já tem (por
+ * Copia os temas do Agent para `<agent-dir>/themes`, sem tocar em tema que a pessoa já tem (por
  * nome, na pasta ou em `themes[]`) nem numa pasta que é symlink dela. Um marcador lembra quais
- * arquivos são do Mark para atualizá-los e retirar os que saíram do Mark.
+ * arquivos são do Agent para atualizá-los e retirar os que saíram do Agent.
  */
 export function installThemes({ source, agentDir, settingsThemes = [], homeDir = homedir(), log = console.log }) {
 	const vendored = themesIn(source);
@@ -289,11 +288,11 @@ export function installThemes({ source, agentDir, settingsThemes = [], homeDir =
 		isLink = false;
 	}
 	if (isLink) {
-		log(`Temas do Mark não instalados: ${target} já é seu`);
+		log(`Temas do Agent não instalados: ${target} já é seu`);
 		return { installed: [], skipped: vendored.map((theme) => theme.name) };
 	}
 	// O marcador antigo valia como propriedade: ler dele quando o novo ainda não existe mantém os
-	// temas já instalados sob controle do Mark (em vez de virarem "pessoais" e congelarem).
+	// temas já instalados sob controle do Agent (em vez de virarem "pessoais" e congelarem).
 	const markerFile = existsSync(marker) ? marker : existsSync(legacyMarker) ? legacyMarker : undefined;
 	const previous = (markerFile ? asList(readSettings(markerFile, () => {})?.themes) : [])
 		.filter((name) => typeof name === "string" && basename(name) === name);
@@ -302,8 +301,8 @@ export function installThemes({ source, agentDir, settingsThemes = [], homeDir =
 		...settingsThemes.filter((entry) => typeof entry === "string" && !DISABLED.test(entry))
 			.flatMap((entry) => {
 				const path = entry.startsWith("~/") ? join(homeDir, entry.slice(2)) : resolve(agentDir, entry.replace(/^\+/, ""));
-				// A própria pasta de instalação em `themes[]` não torna os temas do Mark "pessoais": seria
-				// uma colisão do Mark com ele mesmo, instalando e tirando a cada ativação.
+				// A própria pasta de instalação em `themes[]` não torna os temas do Agent "pessoais": seria
+				// uma colisão do Agent com ele mesmo, instalando e tirando a cada ativação.
 				if (path === target || path.startsWith(`${target}${sep}`)) return [];
 				try {
 					return lstatSync(path).isDirectory() || lstatSync(path).isSymbolicLink()
@@ -322,7 +321,7 @@ export function installThemes({ source, agentDir, settingsThemes = [], homeDir =
 	for (const theme of vendored) {
 		if (taken.has(theme.name)) {
 			skipped.push(theme.name);
-			// A cópia que o marcador prova ser do Mark cede o nome ao tema da pessoa: dois arquivos com
+			// A cópia que o marcador prova ser do Agent cede o nome ao tema da pessoa: dois arquivos com
 			// o mesmo nome seriam colisão de recurso no Pi, e deixá-la fora do marcador a congelaria
 			// para sempre. Tirado o tema pessoal, a próxima ativação instala de novo e atualizada.
 			// Tema que não está no marcador é da pessoa e não se toca.
@@ -333,7 +332,7 @@ export function installThemes({ source, agentDir, settingsThemes = [], homeDir =
 		installed.push(theme.name);
 	}
 	writeJsonFile(marker, { themes: installed });
-	// Só depois do marcador novo gravado: o antigo é do Mark (nome próprio) e o Pi tentava carregá-lo
+	// Só depois do marcador novo gravado: o antigo é do Agent (nome próprio) e o Pi tentava carregá-lo
 	// como tema.
 	if (existsSync(legacyMarker)) rmSync(legacyMarker, { force: true });
 	return { installed, skipped };
@@ -351,7 +350,7 @@ export function installAgents({ source, agentDir, log = console.log }) {
 		exists = false;
 	}
 	if (exists && (lstatSync(target).isSymbolicLink() || !existsSync(marker))) {
-		log(`Papéis de subagente do Mark não instalados: ${target} já é seu (${names.join(", ")} ficam em <store>/mark/agents)`);
+		log(`Papéis de subagente do Agent não instalados: ${target} já é seu (${names.join(", ")} ficam em <store>/agent/agents)`);
 		return { installed: [], skipped: true };
 	}
 	const previous = (existsSync(marker) ? asList(readSettings(marker, () => {})?.agents) : [])
@@ -367,16 +366,16 @@ export function installAgents({ source, agentDir, log = console.log }) {
 		installed.push(name);
 	}
 	writeJsonFile(marker, { agents: installed });
-	log(`Papéis de subagente do Mark: ${names.join(", ")} (${target})`);
+	log(`Papéis de subagente do Agent: ${names.join(", ")} (${target})`);
 	return { installed, skipped: false };
 }
 
 /**
- * Copia `mark/` para `<store>/mark`, registra extensões e temas em `settings.json` sem duplicar o
+ * Copia `agent/` para `<store>/agent`, registra extensões e temas em `settings.json` sem duplicar o
  * que o usuário já carrega, instala os papéis de subagente, preenche os defaults que faltam e
  * garante `~/.local/bin` no PATH.
  */
-export function syncMarkSetup({ sourceRoot, store, agentDir, homeDir, log = console.log, warn = console.warn }) {
+export function syncAgentSetup({ sourceRoot, store, agentDir, homeDir, log = console.log, warn = console.warn }) {
 	const empty = {
 		installed: false,
 		disabled: false,
@@ -389,27 +388,27 @@ export function syncMarkSetup({ sourceRoot, store, agentDir, homeDir, log = cons
 		pathFiles: [],
 		settingsUpdated: false,
 	};
-	const source = join(sourceRoot, MARK_DIR);
+	const source = join(sourceRoot, AGENT_DIR);
 	const settingsFile = join(agentDir, "settings.json");
 	const settings = readSettings(settingsFile, warn);
 	if (!settings) return empty;
-	if (isMarkSetupDisabled(settings)) {
-		log('Setup do Mark desligado por "-mark-setup" no settings do Pi; nada instalado');
+	if (isAgentSetupDisabled(settings)) {
+		log('Setup do Agent desligado por "-agent-setup" no settings do Pi; nada instalado');
 		return { ...empty, disabled: true };
 	}
 	if (!existsSync(source)) {
-		warn(`Setup do Mark não encontrado em ${source}; nada instalado`);
+		warn(`Setup do Agent não encontrado em ${source}; nada instalado`);
 		return empty;
 	}
 
-	const target = resolve(join(store, MARK_DIR));
+	const target = resolve(join(store, AGENT_DIR));
 	replaceTree(source, target);
 	const ownRoot = `${target}${sep}`;
 
 	// Extensões: candidatas das duas árvores, menos as que o usuário já carrega ou desligou.
 	// Web viaja no bundle, mas só carrega por -e explícito.
 	const candidates = [
-		...extensionsIn(join(target, EXTENSIONS_SUBDIR, MARK_TREE)).filter((extension) => extension.name !== "web"),
+		...extensionsIn(join(target, EXTENSIONS_SUBDIR, AGENT_TREE)).filter((extension) => extension.name !== "web"),
 		...extensionsIn(join(target, EXTENSIONS_SUBDIR, BRAIN_LIVE_TREE)),
 	];
 	const originalExtensions = asList(settings.extensions);
@@ -444,7 +443,7 @@ export function syncMarkSetup({ sourceRoot, store, agentDir, homeDir, log = cons
 
 	const before = JSON.stringify(settings);
 	const nextExtensions = [...settingsExtensions, ...extensions.map((e) => e.path)];
-	// The Mark wrapper owns codemode; never load the stock registration beside it.
+	// The Agent wrapper owns codemode; never load the stock registration beside it.
 	if (!disabledNames(settingsExtensions).has("codemode-mode") &&
 		(extensions.some((e) => e.name === "codemode-mode") || taken.has("codemode-mode"))) {
 		for (let i = nextExtensions.length - 1; i >= 0; i--) {
@@ -464,14 +463,14 @@ export function syncMarkSetup({ sourceRoot, store, agentDir, homeDir, log = cons
 	const agents = installAgents({ source: join(target, AGENTS_SUBDIR), agentDir, log });
 	const pathFiles = ensureLocalBinOnPath({ homeDir, log, warn });
 
-	if (extensions.length) log(`Extensões do Mark registradas: ${extensions.map((e) => e.name).join(", ")}`);
+	if (extensions.length) log(`Extensões do Agent registradas: ${extensions.map((e) => e.name).join(", ")}`);
 	if (skippedExtensions.length) {
-		log(`Extensões do Mark não registradas porque você já as carrega: ${skippedExtensions.join(", ")}`);
+		log(`Extensões do Agent não registradas porque você já as carrega: ${skippedExtensions.join(", ")}`);
 	}
-	if (newThemeEntries.length) log(`Temas do Mark: ${newThemeEntries.join(", ")} (${join(agentDir, THEMES_SUBDIR)})`);
-	if (skippedThemes.length) log(`Temas do Mark não instalados porque você já os tem: ${skippedThemes.join(", ")}`);
-	if (defaults.length) log(`Defaults do Mark escritos (chaves que você não tinha): ${defaults.join(", ")}`);
-	log(`Setup do Mark: ${target}`);
+	if (newThemeEntries.length) log(`Temas do Agent: ${newThemeEntries.join(", ")} (${join(agentDir, THEMES_SUBDIR)})`);
+	if (skippedThemes.length) log(`Temas do Agent não instalados porque você já os tem: ${skippedThemes.join(", ")}`);
+	if (defaults.length) log(`Defaults do Agent escritos (chaves que você não tinha): ${defaults.join(", ")}`);
+	log(`Setup do Agent: ${target}`);
 	return {
 		installed: true,
 		disabled: false,

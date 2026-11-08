@@ -1,13 +1,13 @@
 #!/usr/bin/env node
 /**
- * Regressão offline do perfil MARK II: Pi real + provider Anthropic roteirizado em
+ * Regressão offline do perfil Agent: Pi real + provider Anthropic roteirizado em
  * loopback (scripts/lib/fake-anthropic.mjs). Nenhuma chamada sai da máquina, nada
  * fora de um diretório temporário é escrito.
  *
  * Compara recursos temporários e instalados, schemas no payload, exposição,
  * políticas simple/complex, bloqueio de subagent e ledger. Fixtures sem auth.
  *
- * `node scripts/test-mark-host.mjs [classic]`
+ * `node scripts/test-agent-host.mjs [classic]`
  */
 import assert from 'node:assert/strict';
 import { spawn, spawnSync } from 'node:child_process';
@@ -15,12 +15,12 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync,
 import { homedir, tmpdir } from 'node:os';
 import { createRequire } from 'node:module';
 import { join } from 'node:path';
-import { categoryPrompt } from '../mark/juice/skill-categories.mjs';
-import { AUTONOMY_POLICY, COMPLEX_POLICY } from '../mark/juice/policy.mjs';
-import { applyMarkIIResources, planMarkIIResources, rollbackMarkIIResources } from './lib/mark-ii-resources.mjs';
+import { categoryPrompt } from '../agent/juice/skill-categories.mjs';
+import { AUTONOMY_POLICY, COMPLEX_POLICY } from '../agent/juice/policy.mjs';
+import { applyAgentResources, planAgentResources, rollbackAgentResources } from './lib/agent-resources.mjs';
 import { startFakeAnthropic } from './lib/fake-anthropic.mjs';
 
-const piRoot = process.env.MARK_JUICE_PI_ROOT || join(homedir(), '.local/share/pi-overlay/current/lib/node_modules/@earendil-works/pi-coding-agent');
+const piRoot = process.env.AGENT_JUICE_PI_ROOT || join(homedir(), '.local/share/agent/current/lib/node_modules/@earendil-works/pi-coding-agent');
 const repo = new URL('..', import.meta.url).pathname.replace(/\/$/, '');
 
 // ---- diagnóstico: registry realista, sem sessão, I/O ou inferência ---------
@@ -33,21 +33,21 @@ const repo = new URL('..', import.meta.url).pathname.replace(/\/$/, '');
     '@earendil-works/pi-tui': join(root, 'node_modules/@earendil-works/pi-tui'),
     typebox: join(root, 'node_modules/typebox/build/index.mjs'),
   } });
-  const { default: register, buildMarkDoctorReport } = await load.import(join(repo, 'mark/extensions/brain-live/project-operator/index.ts'));
+  const { default: register, buildAgentDoctorReport } = await load.import(join(repo, 'agent/extensions/brain-live/project-operator/index.ts'));
   const source = path => ({ path, source: 'fixture', scope: 'user', origin: 'top-level' });
   const tools = [
     { name: 'read', exposure: 'direct', sourceInfo: source('builtin:read') },
-    { name: 'subagent', exposure: 'direct', sourceInfo: source('/fixture/mark/extensions/brain-live/subagent/index.ts') },
+    { name: 'subagent', exposure: 'direct', sourceInfo: source('/fixture/agent/extensions/brain-live/subagent/index.ts') },
     { name: 'remote', exposure: 'deferred', sourceInfo: source('/fixture/external.ts') },
     { name: 'off', exposure: 'hidden', sourceInfo: source('/fixture/off.ts') },
     { name: 'programmatic', exposure: 'codemode', sourceInfo: source('/fixture/programmatic.ts') },
   ];
   const commands = [{ name: 'skill:demo', source: 'skill', sourceInfo: source('/fixture/demo/SKILL.md') }];
   const input = { tools, commands, activeTools: ['read', 'subagent'], mode: 'simple',
-    settings: { cacheWarming: 'idle', privateToken: 'DO_NOT_PRINT_THIS_SECRET' }, markExtensionsRoot: '/fixture/mark/extensions' };
-  const report = buildMarkDoctorReport(input);
+    settings: { cacheWarming: 'idle', privateToken: 'DO_NOT_PRINT_THIS_SECRET' }, agentExtensionsRoot: '/fixture/agent/extensions' };
+  const report = buildAgentDoctorReport(input);
   assert.match(report, /Pi nativo · builtin:read/);
-  assert.match(report, /Mark · brain-live\/subagent\/index.ts/);
+  assert.match(report, /Agent · brain-live\/subagent\/index.ts/);
   assert.match(report, /remote · não declarada · exposição: deferred/);
   assert.match(report, /off · não declarada · exposição: hidden/);
   assert.match(report, /programmatic · não declarada · exposição: codemode/);
@@ -55,11 +55,11 @@ const repo = new URL('..', import.meta.url).pathname.replace(/\/$/, '');
   assert.match(report, /SKILLS COM COMANDO OBSERVADO: 1/);
   assert.match(report, /Cache nativo: idle/);
   assert.doesNotMatch(report, /DO_NOT_PRINT_THIS_SECRET|privateToken/);
-  const override = buildMarkDoctorReport({ ...input, tools: [{ ...tools[0], sourceInfo: source('/fixture/custom-read.ts') }] });
+  const override = buildAgentDoctorReport({ ...input, tools: [{ ...tools[0], sourceInfo: source('/fixture/custom-read.ts') }] });
   assert.match(override, /extensão\/integração · \/fixture\/custom-read.ts/);
   assert.doesNotMatch(override, /Pi nativo ·/);
-  const native = buildMarkDoctorReport({ ...input, settings: {}, mode: null });
-  assert.match(native, /Modo Mark: não observado/);
+  const native = buildAgentDoctorReport({ ...input, settings: {}, mode: null });
+  assert.match(native, /Modo Agent: não observado/);
   assert.match(native, /Cache nativo: streaming \(padrão/);
   const handlers = new Map();
   const forbidden = () => { throw new Error('diagnóstico tentou efeito colateral'); };
@@ -70,20 +70,20 @@ const repo = new URL('..', import.meta.url).pathname.replace(/\/$/, '');
     exec: forbidden, sendMessage: forbidden, sendUserMessage: forbidden, appendEntry: forbidden,
   });
   let shown;
-  await handlers.get('mark-doctor').handler('', {
+  await handlers.get('agent-doctor').handler('', {
     mode: 'tui', hasUI: true,
-    sessionManager: { getBranch: () => [{ type: 'custom', customType: 'mark-mode', data: { version: 1, mode: 'simple' } }] },
+    sessionManager: { getBranch: () => [{ type: 'custom', customType: 'agent-mode', data: { version: 1, mode: 'simple' } }] },
     modelRegistry: { streamSimple: forbidden },
     ui: { editor: async (_title, text) => { shown = text; return 'texto alterado pelo usuário: não salvar'; } },
   });
   assert.match(shown, /DIAGNÓSTICO DA SESSÃO/);
   assert.doesNotMatch(shown, /DO_NOT_PRINT_THIS_SECRET/);
-  console.log('ok mark-doctor: origem real, exposição, modo, skills e settings filtrados; sem turno nem escrita de sessão');
+  console.log('ok agent-doctor: origem real, exposição, modo, skills e settings filtrados; sem turno nem escrita de sessão');
 }
 
 // ---- vínculo ARCA: só com --install/--link-arca, e com HOME fictício aqui -----
 {
-  const parent = mkdtempSync(join(tmpdir(), 'mark-arca-'));
+  const parent = mkdtempSync(join(tmpdir(), 'agent-arca-'));
   try {
     const fakeHome = join(parent, 'fake-home');
     for (const d of ['.config/arca-projects', '.cache/arca-projects', '.pi/mesh']) mkdirSync(join(fakeHome, d), { recursive: true });
@@ -100,7 +100,7 @@ const repo = new URL('..', import.meta.url).pathname.replace(/\/$/, '');
       const env = JSON.parse(readFileSync(join(JSON.parse(r.stdout).root, 'environment.json'), 'utf8'));
       assert.equal(typeof env, 'object');
       const settings = JSON.parse(readFileSync(join(env.PI_CODING_AGENT_DIR, 'settings.json'), 'utf8'));
-      for (const name of ['cache-keeper.ts', 'plan.ts']) assert.ok(settings.extensions.includes(join(repo, 'mark/extensions/brain-live', name)));
+      for (const name of ['cache-keeper.ts', 'plan.ts']) assert.ok(settings.extensions.includes(join(repo, 'agent/extensions/brain-live', name)));
       assert.ok(!settings.extensions.some(path => /(?:^|\/)jev(?:\.ts|\/)/.test(path)), 'JEV não entra no perfil');
       assert.ok(!existsSync(join(env.PI_CODING_AGENT_DIR, 'auth.json')));
       return env;
@@ -120,7 +120,7 @@ const repo = new URL('..', import.meta.url).pathname.replace(/\/$/, '');
 
 // ---- integração: Pi real + provider falso ------------------------------------
 async function runHost(host) {
-  const parent = mkdtempSync(join(tmpdir(), 'mark-host-'));
+  const parent = mkdtempSync(join(tmpdir(), 'agent-host-'));
   try {
     const seed = join(parent, 'seed'); mkdirSync(seed);
     const vault = join(parent, 'vault'); mkdirSync(vault);
@@ -162,12 +162,12 @@ async function runHost(host) {
       // políticas aplicadas), anexa `ctx.getSystemPrompt()` a um arquivo. Não devolve nada —
       // não altera prompt, mensagens nem tools. É o único jeito de ler o prompt efetivo no
       // host (incluindo handlers que forçam o system).
-      writeFileSync(join(info.agentDir, 'extensions', 'mark-observe-system.ts'), [
+      writeFileSync(join(info.agentDir, 'extensions', 'agent-observe-system.ts'), [
         "import { appendFileSync } from 'node:fs';",
         'export default function (pi: any) {',
         "  pi.on('before_provider_request', async (_event: any, ctx: any) => {",
         "    if (pi.getCommands().some(c => c.name === 'jev')) throw new Error('JEV entrou no loader');",
-        '    const file = process.env.MARK_OBSERVE_SYSTEM;',
+        '    const file = process.env.AGENT_OBSERVE_SYSTEM;',
         '    if (!file) return;',
         "    appendFileSync(file, JSON.stringify({ system: ctx.getSystemPrompt(), tools: pi.getAllTools().map(t => ({ name: t.name, exposure: t.exposure ?? 'direct' })).sort((a, b) => a.name.localeCompare(b.name)) }) + '\\n');",
         '  });',
@@ -181,7 +181,7 @@ async function runHost(host) {
         const child = spawn(join(info.root, 'launch.sh'), ['--session', session, '-p', '--mode', 'json', '--model', 'anthropic/claude-haiku-5-5', prompt], {
           // O artefato fica fora do projeto, como na instalação real (trust do Pi 1.3).
           cwd: parent, stdio: ['ignore', 'pipe', 'pipe'], timeout: 120_000,
-          env: { PATH: process.env.PATH, ...env, MARK_LEARN: '0', MARK_DISPATCHER: '0', MARK_OBSERVE_SYSTEM: observeFile },
+          env: { PATH: process.env.PATH, ...env, AGENT_LEARN: '0', AGENT_DISPATCHER: '0', AGENT_OBSERVE_SYSTEM: observeFile },
         });
         let out = '', err = '';
         child.stdout.on('data', d => { out += d; });
@@ -196,16 +196,16 @@ async function runHost(host) {
       });
       // Comando real: o relatório consulta o registry sem enviar prompt ao provider.
       const beforeDoctor = fake.messages().length;
-      const doctor = await runPi('/mark-doctor', 'doctor');
+      const doctor = await runPi('/agent-doctor', 'doctor');
       assert.equal(doctor.code, 0, doctor.err);
-      assert.equal(fake.messages().length, beforeDoctor, 'mark-doctor não pode chamar o provider');
-      const doctorEvent = doctor.err.split('\n').map(line => { try { return JSON.parse(line); } catch { return {}; } }).find(event => event.type === 'mark_doctor');
+      assert.equal(fake.messages().length, beforeDoctor, 'agent-doctor não pode chamar o provider');
+      const doctorEvent = doctor.err.split('\n').map(line => { try { return JSON.parse(line); } catch { return {}; } }).find(event => event.type === 'agent_doctor');
       assert.ok(doctorEvent, `comando JSON emite diagnóstico em stderr\nstdout: ${doctor.out}\nstderr: ${doctor.err}`);
-      assert.doesNotMatch(doctor.out, /mark_doctor/, 'diagnóstico não altera protocolo JSONL oficial');
+      assert.doesNotMatch(doctor.out, /agent_doctor/, 'diagnóstico não altera protocolo JSONL oficial');
       assert.match(doctorEvent.report, /Pi nativo · builtin:read/);
       assert.match(doctorEvent.report, /Modo simple bloqueia subagent/);
       assert.doesNotMatch(doctorEvent.report, /read-media\.ts/);
-      console.log('ok mark-doctor no Pi real: read nativo, simple bloqueado, zero chamadas ao provider');
+      console.log('ok agent-doctor no Pi real: read nativo, simple bloqueado, zero chamadas ao provider');
       // Troca pelo comando real: o modo salvo da sessão vence preferences no resume.
       const setMode = async (mode) => {
         const result = await runPi(`/mode ${mode}`, `set-${mode}`);
@@ -229,20 +229,20 @@ async function runHost(host) {
       const count = (text, re) => (text.match(re) ?? []).length;
       const sys0 = system(0);
       assert.equal(count(sys0, /You are an expert coding assistant/g), 1, `${host}: preamble uma vez`);
-      assert.equal(count(sys0, /<mark_autonomy>/g), 1, `${host}: autonomia uma vez no system real`);
-      assert.equal(count(sys0, /<mark_skill_categories>/g), 1, `${host}: categorias uma vez no system real`);
+      assert.equal(count(sys0, /<agent_autonomy>/g), 1, `${host}: autonomia uma vez no system real`);
+      assert.equal(count(sys0, /<agent_skill_categories>/g), 1, `${host}: categorias uma vez no system real`);
       assert.ok(sys0.includes(categoryPrompt()), `${host}: uma linha determinística por pasta não-system`);
-      assert.equal(count(sys0, /<mark_complex>/g), 0, `${host}: simple sem política complex`);
+      assert.equal(count(sys0, /<agent_complex>/g), 0, `${host}: simple sem política complex`);
       assert.doesNotMatch(sys0, /Complex mode: delegate by role|Delegate independent reading and recon in parallel|Use structured briefs with objective, context/, `${host}: diretrizes da tool não vazam complex no system simple`);
       // Receita do projeto é interna: o modelo principal não vê o bloco nem as etapas.
-      assert.equal(count(sys0, /^<\/?mark_workflow>$/gm), 0, `${host}: receita fora do system prompt`);
-      assert.equal(count(sys0, /Receita deste projeto|Regras aprendidas aqui|Projeto mark-pi, receita/g), 0, `${host}: nada do conteúdo da receita no system prompt`);
+      assert.equal(count(sys0, /^<\/?agent_workflow>$/gm), 0, `${host}: receita fora do system prompt`);
+      assert.equal(count(sys0, /Receita deste projeto|Regras aprendidas aqui|Projeto agent, receita/g), 0, `${host}: nada do conteúdo da receita no system prompt`);
       assert.equal(count(sys0, /<available_skills>/g), 1, `${host}: skills uma vez`);
       assert.deepEqual([...sys0.matchAll(/<name>([^<]+)<\/name>/g)].map(m => m[1]).sort(),
         ['arca-ops', 'cua', 'diagram', 'handoff', 'html-plan', 'megamind', 'omni-ops', 'peers', 'pr', 'prometheus', 'sources'], `${host}: curadoria real no provider, inclusive skills pessoais`);
       for (const name of policyNames) assert.equal(readFileSync(join(info.agentDir, 'skills', name, 'SKILL.md'), 'utf8'),
         `---\nname: ${name}\ndescription: Fixture ${name}\n---\n`, `${host}: SKILL.md intacto`);
-      assert.equal(count(sys0, /^Available tools:$/gm), 1, `${host}: lista de tools do Mark`);
+      assert.equal(count(sys0, /^Available tools:$/gm), 1, `${host}: lista de tools do Agent`);
       assert.equal(count(sys0, /<tools>|<rules>/g), 0, `${host}: sem tools/rules nativos`);
       for (let i = 1; i < requests.length; i++) assert.equal(system(i), sys0, `${host}: system fixo na sessão`);
       // O que a extensão de observação vê é o system EFETIVO de verdade (ctx.getSystemPrompt()),
@@ -251,8 +251,8 @@ async function runHost(host) {
       assert.equal(result.observed[0], sys0, `${host}: ctx.getSystemPrompt() == system da 1ª requisição (observação não finge)`);
       // Políticas no system efetivo, requisição por requisição, em cada modo.
       const policyCounts = (text) => ({
-        autonomy: count(text, /<mark_autonomy>/g),
-        complex: count(text, /<mark_complex>/g),
+        autonomy: count(text, /<agent_autonomy>/g),
+        complex: count(text, /<agent_complex>/g),
         autonomyBody: count(text, new RegExp(AUTONOMY_POLICY.split('\n')[0].replace(/[().*+?^${}|[\]\\]/g, '\\$&'), 'g')),
         complexBody: count(text, new RegExp(COMPLEX_POLICY.split('\n')[0].replace(/[().*+?^${}|[\]\\]/g, '\\$&'), 'g')),
       });
@@ -265,7 +265,7 @@ async function runHost(host) {
           assert.deepEqual(c, { autonomy: 1, complex: mode === 'complex' ? 1 : 0, autonomyBody: 1, complexBody: mode === 'complex' ? 1 : 0 },
             `${host}/${label}: requisição ${i} deveria ter autonomia 1 e complex ${mode === 'complex' ? 1 : 0} (sem acumular blocos)`);
           // Nem receita nem regras aprendidas chegam ao principal, em nenhum modo.
-          assert.equal(count(text, /^<\/?mark_workflow>$/gm), 0, `${host}/${label}: receita fora do system efetivo`);
+          assert.equal(count(text, /^<\/?agent_workflow>$/gm), 0, `${host}/${label}: receita fora do system efetivo`);
           assert.equal(count(text, /Receita deste projeto|Regras aprendidas aqui/g), 0, `${host}/${label}: conteúdo de receita no system efetivo`);
           if (mode === 'simple') assert.doesNotMatch(text, /Modo complex \(vale só enquanto/, `${host}/${label}: política de complex ficou no system simple`);
         }
@@ -298,9 +298,9 @@ async function runHost(host) {
       assert.equal(back.observed.at(-1), result.observed.at(-1), `${host}: complex sai de verdade (system efetivo volta ao de simple)`);
       // Volta à semente e aplica o contrato de instalação no mesmo HOME isolado.
       // Sem normalizar schemas: descrições e defaults também têm de ser iguais.
-      assert.deepEqual(rollbackMarkIIResources({ receiptPath: info.resourceReceipt }).conflicts, []);
-      const installed = applyMarkIIResources({
-        plan: planMarkIIResources({ markRoot: join(repo, 'mark'), agentDir: info.agentDir, homeDir: env.HOME }),
+      assert.deepEqual(rollbackAgentResources({ receiptPath: info.resourceReceipt }).conflicts, []);
+      const installed = applyAgentResources({
+        plan: planAgentResources({ agentRoot: join(repo, 'agent'), agentDir: info.agentDir, homeDir: env.HOME }),
         backupDir: join(parent, 'installed-backup'),
       });
       const beforeInstalled = fake.messages().length;
@@ -311,8 +311,8 @@ async function runHost(host) {
       assert.deepEqual(installedResult.tools, result.tools, 'exposição igual para todas as tools');
       for (const name of ['generate_image', 'project_overview']) assert.equal(result.tools.find(t => t.name === name)?.exposure, 'deferred');
       console.log(`ok equivalência offline: ${result.tools.length} tools; system ${sys0.length} chars; schemas ${JSON.stringify(requests[0].tools).length} chars (não tokens)`);
-      assert.deepEqual(rollbackMarkIIResources({ receiptPath: installed.receiptPath }).conflicts, []);
-      const ledger = JSON.parse(readFileSync(join(env.MARK_JUICE_HOME, 'run.v3.json'), 'utf8'));
+      assert.deepEqual(rollbackAgentResources({ receiptPath: installed.receiptPath }).conflicts, []);
+      const ledger = JSON.parse(readFileSync(join(env.AGENT_JUICE_HOME, 'run.v3.json'), 'utf8'));
       assert.equal(ledger.calls.used, fake.messages().length, `${host}: ledger conta toda requisição (sem gate = falso ativo)`);
       assert.ok(ledger.receipts.every(r => r.status === 'settled'), `${host}: recibos fechados`);
       console.log(`ok ${host}: prompt único (${sys0.length} chars), tools diretas, bloqueios, resume, ledger ${ledger.calls.used}/${fake.messages().length}`);

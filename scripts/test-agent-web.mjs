@@ -6,12 +6,12 @@ import { createRequire } from 'node:module';
 import { tmpdir, homedir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { markSetupFiles, syncMarkSetup } from './lib/mark-setup.mjs';
+import { agentSetupFiles, syncAgentSetup } from './lib/agent-setup.mjs';
 
 const repo = fileURLToPath(new URL('../', import.meta.url));
-const store = process.env.PI_OVERLAY_STORE || join(homedir(), '.local/share/pi-overlay');
+const store = process.env.AGENT_STORE || join(homedir(), '.local/share/agent');
 const suffix = 'lib/node_modules/@earendil-works/pi-coding-agent';
-const piRoot = process.env.MARK_JUICE_PI_ROOT || [join(store, 'current', suffix),
+const piRoot = process.env.AGENT_JUICE_PI_ROOT || [join(store, 'current', suffix),
   ...readdirSync(join(store, 'releases')).sort().reverse().map(n => join(store, 'releases', n, suffix))]
   .find(p => existsSync(join(p, 'dist/index.js')));
 assert.ok(piRoot, 'Pi instalado necessário para carregar a extensão real');
@@ -22,9 +22,9 @@ const jiti = createJiti(import.meta.url, { fsCache: false, moduleCache: false, a
   '@earendil-works/pi-coding-agent': join(root, 'dist/index.js'),
   'typebox': require.resolve('typebox'),
 } });
-const { createWeb, publicIP } = await jiti.import(join(repo, 'mark/extensions/mark/web/core.ts'));
-const extension = (await jiti.import(join(repo, 'mark/extensions/mark/web/index.ts'))).default;
-const dir = mkdtempSync(join(tmpdir(), 'mark-web-'));
+const { createWeb, publicIP } = await jiti.import(join(repo, 'agent/extensions/agent/web/core.ts'));
+const extension = (await jiti.import(join(repo, 'agent/extensions/agent/web/index.ts'))).default;
+const dir = mkdtempSync(join(tmpdir(), 'agent-web-'));
 let failGoogle = false, redirectRouter = false, googleCalls = 0, routerCalls = 0, gets = 0;
 const server = createServer(async (req, res) => {
   if (req.method === 'POST') {
@@ -70,7 +70,7 @@ await new Promise(resolve => server.once('listening', resolve));
 const port = server.address().port;
 const base = `http://127.0.0.1:${port}`;
 writeFileSync(join(dir, 'auth.json'), JSON.stringify({ google: { type: 'api_key', key: 'fake-google' }, openrouter: { type: 'api_key', key: 'fake-router' } }));
-const env = { NODE_ENV: 'test', PI_CODING_AGENT_DIR: dir, MARK_WEB_GOOGLE_BASE_URL: base, MARK_WEB_OPENROUTER_BASE_URL: base };
+const env = { NODE_ENV: 'test', PI_CODING_AGENT_DIR: dir, AGENT_WEB_GOOGLE_BASE_URL: base, AGENT_WEB_OPENROUTER_BASE_URL: base };
 // A validação enxerga DNS público; só o transporte substituído chega no servidor local.
 let pinned = 0;
 const options = { env, lookup: async host => host === 'private.example' ? [{ address: '10.0.0.1', family: 4 }] : [{ address: '93.184.216.34', family: 4 }],
@@ -154,18 +154,18 @@ try {
     await assert.rejects(createWeb(options).search({ query: 'redirect' }));
     assert.equal(gets, before);
     redirectRouter = false;
-    for (const override of [{ NODE_ENV: 'production' }, { MARK_WEB_OPENROUTER_BASE_URL: 'https://example.org' }]) {
+    for (const override of [{ NODE_ENV: 'production' }, { AGENT_WEB_OPENROUTER_BASE_URL: 'https://example.org' }]) {
       await assert.rejects(createWeb({ env: { ...env, ...override } }).search({ query: 'endpoint inválido' }), /Base de teste/);
     }
   });
   await test('limites de chamadas incluem falhas; zero desabilita; configuração inválida', async () => {
-    const web = createWeb({ ...options, env: { ...env, MARK_WEB_MAX_SEARCHES: '1', MARK_WEB_MAX_FETCHES: '1' } });
+    const web = createWeb({ ...options, env: { ...env, AGENT_WEB_MAX_SEARCHES: '1', AGENT_WEB_MAX_FETCHES: '1' } });
     await web.search({ query: 'teste' }); await assert.rejects(web.search({ query: 'teste' }), /Limite de web_search/);
     await assert.rejects(web.fetchPage({ url: 'http://127.0.0.1' }), /bloqueado/);
     await assert.rejects(web.fetchPage({ url: 'http://public.example/html' }), /Limite de web_fetch/);
-    const zero = createWeb({ env: { MARK_WEB_MAX_SEARCHES: '0', MARK_WEB_MAX_FETCHES: '0' } });
+    const zero = createWeb({ env: { AGENT_WEB_MAX_SEARCHES: '0', AGENT_WEB_MAX_FETCHES: '0' } });
     await assert.rejects(zero.search({ query: 'teste' }), /Limite/); await assert.rejects(zero.fetchPage({ url: base }), /Limite/);
-    assert.throws(() => createWeb({ env: { MARK_WEB_MAX_FETCHES: '-1' } }), /inválido/);
+    assert.throws(() => createWeb({ env: { AGENT_WEB_MAX_FETCHES: '-1' } }), /inválido/);
   });
   await test('registro real das tools e isolamento opt-in no bundle/settings', async () => {
     const tools = [], handlers = {};
@@ -175,16 +175,16 @@ try {
     const controller = new AbortController(); controller.abort();
     await assert.rejects(tools[1].execute('id', { url: 'http://127.0.0.1' }, controller.signal));
     assert.ok(handlers.session_start);
-    assert.ok(markSetupFiles(repo).includes('mark/extensions/mark/web/index.ts'));
+    assert.ok(agentSetupFiles(repo).includes('agent/extensions/agent/web/index.ts'));
     const settingsDir = join(dir, 'agent');
-    syncMarkSetup({ sourceRoot: repo, store: join(dir, 'store'), agentDir: settingsDir, homeDir: dir, log() {}, warn() {} });
+    syncAgentSetup({ sourceRoot: repo, store: join(dir, 'store'), agentDir: settingsDir, homeDir: dir, log() {}, warn() {} });
     const settings = JSON.parse(readFileSync(join(settingsDir, 'settings.json'), 'utf8'));
     assert.ok(!settings.extensions.some(p => /\/web(?:\/|$)/.test(p)));
-    assert.ok(existsSync(join(dir, 'store/mark/extensions/mark/web/index.ts')));
-    const headless = readFileSync(join(repo, 'scripts/lib/mark-headless.mjs'), 'utf8');
+    assert.ok(existsSync(join(dir, 'store/agent/extensions/agent/web/index.ts')));
+    const headless = readFileSync(join(repo, 'scripts/lib/agent-headless.mjs'), 'utf8');
     assert.doesNotMatch(headless, /web\/index/);
   });
-  console.log(`\n${checks}/${checks} mark-web checks passed (APIs falsas; nenhuma chamada externa)`);
+  console.log(`\n${checks}/${checks} agent-web checks passed (APIs falsas; nenhuma chamada externa)`);
 } finally {
   server.closeAllConnections(); await new Promise(resolve => server.close(resolve));
   rmSync(dir, { recursive: true, force: true });
