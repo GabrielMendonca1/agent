@@ -15,7 +15,7 @@ import * as path from "node:path";
 import { fileURLToPath } from "node:url";
 import type { AgentToolResult, ThinkingLevel } from "@earendil-works/pi-agent-core";
 import type { Message } from "@earendil-works/pi-ai";
-import { SessionManager, withFileMutationQueue } from "@earendil-works/pi-coding-agent";
+import { getPackageDir, SessionManager, withFileMutationQueue } from "@earendil-works/pi-coding-agent";
 import { resolveModelRef } from "../lib/tiers.ts";
 import { projectRules } from "../../../juice/workflow.mjs";
 import { readHostFreePercent, waitForHostMemory } from "./host-memory.ts";
@@ -351,6 +351,65 @@ async function writePromptToTempFile(
 	return { dir: tmpDir, filePath };
 }
 
+const PI_PACKAGE_NAME = "@earendil-works/pi-coding-agent";
+
+function realpathOrNull(file: string): string | null {
+	try {
+		return fs.realpathSync(file);
+	} catch {
+		return null;
+	}
+}
+
+/** CLI entries declared by a Pi package dir (`bin.pi` and the classic `dist/cli.js`), as real paths. */
+function piCliEntries(packageDir: string): string[] {
+	try {
+		const pkg = JSON.parse(fs.readFileSync(path.join(packageDir, "package.json"), "utf-8"));
+		if (pkg?.name !== PI_PACKAGE_NAME) return [];
+		const bin = typeof pkg.bin === "string" ? pkg.bin : pkg.bin?.pi;
+		const entries = [bin, "dist/cli.js"].filter((e): e is string => typeof e === "string" && e.length > 0);
+		return entries.map((e) => realpathOrNull(path.join(packageDir, e))).filter((e): e is string => !!e);
+	} catch {
+		return [];
+	}
+}
+
+/** Pi package loaded in this process (public SDK API); null when unavailable. */
+function loadedPiPackageDir(): string | null {
+	try {
+		return getPackageDir();
+	} catch {
+		return null;
+	}
+}
+
+/**
+ * True only for a real Pi CLI entry: the file must be a declared CLI of the
+ * loaded Pi package or of the Pi package that contains it. A host script that
+ * embeds the SDK (e.g. an SDK consumer's script in argv[1]) is never accepted.
+ */
+function isPiCliScript(script: string): boolean {
+	const real = realpathOrNull(script);
+	if (!real) return false;
+	const dirs = new Set<string>();
+	const loaded = loadedPiPackageDir();
+	if (loaded) dirs.add(loaded);
+	for (let dir = path.dirname(real); dir !== path.dirname(dir); dir = path.dirname(dir)) {
+		if (fs.existsSync(path.join(dir, "package.json"))) {
+			dirs.add(dir);
+			break;
+		}
+	}
+	for (const dir of dirs) if (piCliEntries(dir).includes(real)) return true;
+	return false;
+}
+
+/** CLI of the Pi package loaded in this process, for hosts whose argv[1] is not Pi. */
+function loadedPiCli(): string | null {
+	const dir = loadedPiPackageDir();
+	return dir ? (piCliEntries(dir)[0] ?? null) : null;
+}
+
 export function getPiInvocation(args: string[]): { command: string; args: string[] } {
 	const currentScript = process.argv[1];
 	const execName = path.basename(process.execPath).toLowerCase();
@@ -359,8 +418,13 @@ export function getPiInvocation(args: string[]): { command: string; args: string
 	const executableExists = fs.existsSync(process.execPath);
 	const command = executableExists ? process.execPath : isGenericRuntime ? execName : "pi";
 	const isBunVirtualScript = currentScript?.startsWith("/$bunfs/root/");
-	if (currentScript && !isBunVirtualScript && fs.existsSync(currentScript) && (executableExists || isGenericRuntime)) {
-		return { command, args: [currentScript, ...args] };
+	if (currentScript && !isBunVirtualScript && (executableExists || isGenericRuntime)) {
+		if (isPiCliScript(currentScript)) return { command, args: [currentScript, ...args] };
+		// SDK host: argv[1] is the host's script, not Pi. Run the loaded Pi package's CLI.
+		if (isGenericRuntime) {
+			const cli = loadedPiCli();
+			if (cli) return { command, args: [cli, ...args] };
+		}
 	}
 
 	if (!isGenericRuntime) {

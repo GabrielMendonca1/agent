@@ -2,8 +2,9 @@
 // Concrete regression: queued children must inherit the ORIGINAL run, not a later
 // parent's budget; pilot routing must not read/write global model tiers.
 import assert from 'node:assert/strict';
+import { spawnSync } from 'node:child_process';
 import { EventEmitter } from 'node:events';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { homedir, tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
@@ -201,6 +202,59 @@ try {
   assert.deepEqual(captured.opts.env, { ...process.env, AGENT_BASH_SANDBOX: sandbox === 'none' ? '' : sandbox, AGENT_SANDBOX_CWD: sandbox === 'none' ? '' : root });
   assert.ok(captured.args.includes('--no-skills'));
   checks++; console.log('ok dispatch legado permanece inalterado fora do piloto');
+
+  // Launcher: argv[1] só vale se for CLI declarado do pacote Pi; host do SDK cai no CLI do Pi carregado.
+  const piPkg = JSON.parse(readFileSync(join(pkg, 'package.json'), 'utf8'));
+  const bundleCli = realpathSync(join(pkg, piPkg.bin.pi));
+  const savedArgv1 = process.argv[1];
+  try {
+    for (const accepted of [join(pkg, piPkg.bin.pi), join(pkg, 'dist/cli.js'), join(pkg, '../../../bin/pi')].filter((p) => existsSync(p))) {
+      process.argv[1] = accepted;
+      assert.deepEqual(runner.getPiInvocation(['-p']), { command: process.execPath, args: [accepted, '-p'] }, `CLI Pi aceito: ${accepted}`);
+    }
+    const fakeCli = join(root, 'other/dist/cli.js');
+    mkdirSync(dirname(fakeCli), { recursive: true });
+    writeFileSync(join(root, 'other/package.json'), JSON.stringify({ name: 'other', bin: { pi: 'dist/cli.js' } }));
+    writeFileSync(fakeCli, '');
+    for (const host of [fakeCli, savedArgv1]) {
+      process.argv[1] = host;
+      assert.deepEqual(runner.getPiInvocation(['-p']), { command: process.execPath, args: [bundleCli, '-p'] }, `script de host rejeitado: ${host}`);
+    }
+  } finally {
+    process.argv[1] = savedArgv1;
+  }
+  // Processo Node real cujo argv[1] é o host: --version deve vir do Pi, nunca reexecutar o host.
+  const hostDir = join(root, 'host/scripts');
+  mkdirSync(hostDir, { recursive: true });
+  const marker = join(root, 'host-ran');
+  const host = join(hostDir, 'superagent.mjs');
+  writeFileSync(host, `
+import { appendFileSync } from 'node:fs';
+import { spawnSync } from 'node:child_process';
+import { createRequire } from 'node:module';
+if (process.argv.length > 2) { appendFileSync(${JSON.stringify(marker)}, process.argv.slice(2).join(' ') + '\\n'); console.log('Usage: superagent'); process.exit(2); }
+const { createJiti } = createRequire(${JSON.stringify(join(pkg, 'package.json'))})('jiti');
+const jiti = createJiti(import.meta.url, { fsCache: false, alias: { '@earendil-works/pi-coding-agent': ${JSON.stringify(join(pkg, 'dist/index.js'))} } });
+const runner = await jiti.import(${JSON.stringify(join(repo, 'agent/extensions/brain-live/subagent/runner.ts'))});
+const out = {};
+for (const flag of ['--version', '--help']) {
+  const inv = runner.getPiInvocation([flag]);
+  const r = spawnSync(inv.command, inv.args, { encoding: 'utf8', timeout: 30000 });
+  out[flag] = { inv, status: r.status, stdout: r.stdout };
+}
+console.log(JSON.stringify(out));
+`);
+  const hostRun = spawnSync(process.execPath, [host], { encoding: 'utf8', timeout: 90000 });
+  assert.equal(hostRun.status, 0, hostRun.stderr);
+  const hostOut = JSON.parse(hostRun.stdout.trim().split('\n').pop());
+  assert.deepEqual(hostOut['--version'].inv, { command: process.execPath, args: [bundleCli, '--version'] });
+  assert.equal(hostOut['--version'].status, 0);
+  assert.equal(hostOut['--version'].stdout.trim(), piPkg.version, 'versão do Pi, não do host');
+  assert.equal(hostOut['--help'].status, 0);
+  assert.match(hostOut['--help'].stdout, /\bpi\b/);
+  assert.doesNotMatch(hostOut['--help'].stdout, /superagent/);
+  assert.ok(!existsSync(marker), 'host não pode ser executado como CLI do Pi');
+  checks++; console.log('ok launcher rejeita script de host do SDK e usa o CLI do Pi carregado');
 
   console.log(`${checks} checks passed`);
 } finally {
