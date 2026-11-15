@@ -19,7 +19,7 @@ function findPiRoot() {
   return c.length ? realpathSync(c.sort().at(-1)) : null;
 }
 const piRoot = findPiRoot();
-if (!piRoot) { console.log('skip: Pi não encontrado no store do overlay'); process.exit(0); }
+assert.ok(piRoot, 'Pi não encontrado no store do overlay');
 
 const req = createRequire(join(piRoot, 'package.json'));
 const { createJiti } = req('jiti');
@@ -62,12 +62,13 @@ try {
     { skills: [], juice: false },
   ]) {
     const tips = logo.headerTips(theme, opts);
+    assert.doesNotMatch(tips.join(' '), /shift\+tab|simple|complex/i);
     assert.equal(tips.length, 1);
     const full = logo.headerLines(150, theme, { tips }).map(strip);
     assert.equal(full[0], '✳ Agent');
     assert.equal(full.length, 2, 'marca e uma dica');
     if (opts.skills.length) for (const name of opts.skills) assert.match(full[1], new RegExp('/skill:' + name));
-    else assert.match(full[1], opts.juice ? /shift\+tab/ : /\/hotkeys/);
+    else assert.match(full[1], opts.juice ? /\/subagents on/ : /\/hotkeys/);
     for (const w of [0, 1, 5, 20, 40, 100]) for (const line of logo.headerLines(w, theme, { tips })) assert.ok(visibleWidth(line) <= w);
   }
   const handlers = new Map();

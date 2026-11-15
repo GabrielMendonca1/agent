@@ -1,11 +1,11 @@
 #!/usr/bin/env node
 /**
  * Perfil Agent headless (scripts/lib/agent-headless.mjs): `pi -p --mode json` com provider falso numa HOME
- * temporária. Prova que o perfil carrega Juice + subagent e respeita simple/complex vindos de
- * $AGENT_JUICE_HOME/preferences.v3.json, que nada de TUI/peers/megamind/brain-live entra, e
+ * temporária. Prova política estável com subagentes opt-in, sem ledger,
+ * que nada de TUI/peers/megamind/brain-live extra entra, e
  * que o prompt de sistema é menor que o do perfil completo (bytes impressos).
  *
- * Usa o Pi do store (`<store>/current`); sem ele o teste pula. Nenhuma chamada de rede real.
+ * Usa o Pi do store (`<store>/current`); sua ausência é erro. Nenhuma chamada de rede real.
  */
 import './lib/hermetic-test-env.mjs';
 import assert from 'node:assert/strict';
@@ -24,7 +24,7 @@ const repo = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const store = process.env.AGENT_STORE || join(homedir(), '.local', 'share', 'agent');
 const pi = join(store, 'current', 'bin', 'pi');
 const piRoot = join(store, 'current', 'lib', 'node_modules', '@earendil-works', 'pi-coding-agent');
-if (!existsSync(pi)) { console.log(`sem Pi instalado em ${store}/current; teste pulado`); process.exit(0); }
+assert.ok(existsSync(pi), `sem Pi instalado em ${store}/current`);
 
 const root = mkdtempSync(join(tmpdir(), 'agent-headless-test-'));
 const home = join(root, 'home');
@@ -63,10 +63,10 @@ function spawnAsync(cmd, args, options) {
 const preload = pathToFileURL(join(repo, 'agent/juice/runtime.mjs')).href;
 
 /** `pi -p --mode json` com Juice ligado; devolve o payload enviado ao provider. */
-async function run(agent, mode, label) {
+async function run(agent, enabled, label) {
 	const juiceHome = join(root, `juice-${label}`);
 	mkdirSync(juiceHome, { recursive: true, mode: 0o700 });
-	writeFileSync(join(juiceHome, 'preferences.v3.json'), `${JSON.stringify({ mode, supportModel: null })}\n`);
+	writeFileSync(join(juiceHome, 'preferences.v3.json'), `${JSON.stringify({ mode: 'complex', supportModel: null })}\n`);
 	const before = fake.messages().length;
 	const h = join(home, label.split('-')[0]);
 	const result = await spawnAsync(pi, ['-p', '--mode', 'json', '--no-session', '--model', 'anthropic/claude-sonnet-4-5', 'oi'], {
@@ -74,20 +74,21 @@ async function run(agent, mode, label) {
 		env: {
 			PATH: process.env.PATH, HOME: h, USERPROFILE: h, TMPDIR: root, XDG_CONFIG_HOME: join(h, '.config'),
 			PI_CODING_AGENT_DIR: agent.agentDir, PI_ACCOUNTS_MIRROR: '0', ORCA_BACKGROUND_LAUNCH: '1',
-			AGENT_JUICE_ENABLED: '1', AGENT_JUICE_HOME: juiceHome,
-			AGENT_JUICE_STATE: join(juiceHome, 'run.v3.json'), AGENT_JUICE_PI_ROOT: piRoot,
+			AGENT_RUNTIME_ENABLED: '1', AGENT_PI_ROOT: piRoot, AGENT_CHILD: '0',
+			AGENT_SUBAGENTS: enabled ? '1' : '0',
 			NODE_OPTIONS: `--import=${preload}`,
 		},
 	});
 	const output = result.output;
 	assert.ok(!/Failed to load extension|does not export a valid factory|Extension error|ENOENT/.test(output), `${label}: ${output.slice(0, 2000)}`);
 	const sent = fake.messages().slice(before);
-	assert.ok(sent.length >= 1, `${label}: nenhuma chamada ao provider (status ${result.status} ${result.signal}; urls ${JSON.stringify(fake.requests.map((r) => r.url))}):\n${output.slice(-600)}`);
+	assert.equal(result.status, 0, output);
+	assert.ok(sent.length === 1, `${label}: nenhuma chamada ao provider (status ${result.status} ${result.signal}; urls ${JSON.stringify(fake.requests.map((r) => r.url))}):\n${output.slice(-600)}`);
 	const payload = sent[0];
 	const system = typeof payload.system === 'string' ? payload.system : JSON.stringify(payload.system);
 	const tools = (payload.tools ?? []).map((t) => t.name);
-	const ledger = JSON.parse(readFileSync(join(juiceHome, 'run.v3.json'), 'utf8'));
-	return { system, tools, bytes: Buffer.byteLength(system), toolBytes: Buffer.byteLength(JSON.stringify(payload.tools ?? [])), ledger, output };
+	assert.ok(!existsSync(join(juiceHome, 'run.v3.json')), 'runtime não cria ledger');
+	return { system, tools, bytes: Buffer.byteLength(system), toolBytes: Buffer.byteLength(JSON.stringify(payload.tools ?? [])), output };
 }
 
 try {
@@ -112,28 +113,26 @@ try {
 	assert.equal(headless.settings.theme, undefined);
 	ok('settings headless: só juice e subagent; tui/peers/megamind fora');
 
-	const fullRun = await run(full, 'complex', 'full-complex');
-	const complex = await run(headless, 'complex', 'headless-complex');
-	const simple = await run(headless, 'simple', 'headless-simple');
+	const fullRun = await run(full, false, 'full-off');
+	const enabled = await run(headless, true, 'headless-on');
+	const disabled = await run(headless, false, 'headless-off');
 
-	for (const r of [complex, simple]) {
+	for (const r of [enabled, disabled]) {
 		assert.ok(r.tools.includes('subagent'), `subagent ausente: ${r.tools}`);
 		for (const t of r.tools) assert.ok(!/^(peers_|megamind_|ask_user|plan$|todo|checks$|project_)/.test(t), `tool fora do perfil: ${t}`);
 		assert.ok(!/megamind|peers_list/i.test(r.system), 'prompt cita megamind/peers');
 	}
 	assert.ok(fullRun.tools.includes('tool_search'), `perfil completo deveria ter tool_search para as tools deferred: ${fullRun.tools}`);
 	assert.ok(!fullRun.tools.some((t) => /^peers_|^megamind_(?!read$)/.test(t)), `peers/megamind deveriam estar deferred: ${fullRun.tools}`);
-	ok(`tools headless: ${complex.tools.join(', ')}`);
+	ok(`tools headless: ${enabled.tools.join(', ')}`);
 
-	assert.equal(complex.ledger.mode, 'complex');
-	assert.equal(simple.ledger.mode, 'simple');
-	ok('ledger do Juice abre no modo de preferences.v3.json (complex/simple)');
-	assert.notEqual(complex.system, simple.system, 'o modo não mudou o prompt');
-	assert.ok(complex.bytes > simple.bytes, `política de complex deveria aumentar o prompt (${complex.bytes} vs ${simple.bytes})`);
-	ok(`prompt muda com o modo: complex ${complex.bytes} B > simple ${simple.bytes} B`);
-
-	assert.ok(complex.bytes < fullRun.bytes, `headless (${complex.bytes}) não é menor que o completo (${fullRun.bytes})`);
-	ok(`prompt de sistema: completo ${fullRun.bytes} B, headless complex ${complex.bytes} B, headless simple ${simple.bytes} B; schemas de tools: completo ${fullRun.toolBytes} B, headless ${complex.toolBytes} B`);
+	assert.equal(enabled.system, disabled.system, 'opt-in não obriga delegação nem muda a política');
+	assert.deepEqual(enabled.tools, disabled.tools, 'schema estável ao mudar opt-in');
+	assert.doesNotMatch(enabled.system, /<agent_complex>|Modo complex/);
+	assert.match(enabled.system, /Quem decide é o seu usuário/);
+	ok('política de autoridade preservada, sem modos nem inferência extra');
+	assert.ok(enabled.bytes < fullRun.bytes, `headless (${enabled.bytes}) não é menor que o completo (${fullRun.bytes})`);
+	ok(`prompt: completo ${fullRun.bytes} B, headless ${enabled.bytes} B; schemas: completo ${fullRun.toolBytes} B, headless ${enabled.toolBytes} B`);
 	console.log(`${checks} checks passed`);
 } finally {
 	await fake.close();

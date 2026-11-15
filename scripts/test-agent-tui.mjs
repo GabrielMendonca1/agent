@@ -3,8 +3,8 @@
  * Smoke da TUI real no perfil Agent (host clássico), offline:
  * provider Anthropic falso em loopback, terminal via tmux. Confere a montagem aprovada:
  * startup compacto, editor/rodapé nativos, status único, plano abaixo do input,
- * seletor de skills, papéis, thinking manual e modo persistente. --regular valida
- * também o modo scrollback do terminal; sem flag usa fullscreen. Sem tmux, pula.
+ * seletor de skills, papéis, thinking manual e subagentes opt-in. --regular valida
+ * também o modo scrollback do terminal; sem flag usa fullscreen. Requer tmux.
  * Nada fora de um diretório temporário.
  */
 import './lib/hermetic-test-env.mjs';
@@ -14,10 +14,11 @@ import { existsSync, realpathSync, mkdirSync, mkdtempSync, readFileSync, readdir
 import { homedir, tmpdir } from 'node:os';
 import { pathToFileURL } from 'node:url';
 import { join } from 'node:path';
-import { AUTONOMY_POLICY, COMPLEX_POLICY } from '../agent/juice/policy.mjs';
+import { AUTONOMY_POLICY } from '../agent/juice/policy.mjs';
 import { startFakeAnthropic } from './lib/fake-anthropic.mjs';
 
 const repo = new URL('..', import.meta.url).pathname.replace(/\/$/, '');
+const fixturePiRoot = join(process.env.AGENT_STORE || join(homedir(), '.local/share/agent'), 'current/lib/node_modules/@earendil-works/pi-coding-agent');
 const tuiMode = process.argv.includes('--regular') ? 'regular' : 'fullscreen';
 function setFixtureTui(info) {
   const path = join(info.agentDir, 'settings.json');
@@ -26,13 +27,13 @@ function setFixtureTui(info) {
   // This smoke checks normal startup, not an upgrade from the local profile's
   // last seen changelog. Match the SDK used by this fixture's launcher.
   const env = JSON.parse(readFileSync(join(info.root, 'environment.json'), 'utf8'));
-  settings.lastChangelogVersion = JSON.parse(readFileSync(join(env.AGENT_JUICE_PI_ROOT, 'package.json'), 'utf8')).version;
+  settings.lastChangelogVersion = JSON.parse(readFileSync(join(env.AGENT_PI_ROOT, 'package.json'), 'utf8')).version;
   writeFileSync(path, JSON.stringify(settings));
 }
 // Execução independe de tmux e de qualquer extensão visual. Loader, resolver e
 // backend de shell são os do Pi real; só HOME, settings e contexto são fixtures.
 async function checkShellRuntime() {
-  const piRoot = realpathSync(process.env.AGENT_JUICE_PI_ROOT || join(process.env.AGENT_STORE || join(homedir(), '.local/share/agent'), 'current/lib/node_modules/@earendil-works/pi-coding-agent'));
+  const piRoot = realpathSync(process.env.AGENT_PI_ROOT || join(process.env.AGENT_STORE || join(homedir(), '.local/share/agent'), 'current/lib/node_modules/@earendil-works/pi-coding-agent'));
   const load = p => import(pathToFileURL(join(piRoot, p)).href);
   const { loadExtensions, createExtensionRuntime } = await load('dist/core/extensions/loader.js');
   const { ExtensionRunner } = await load('dist/core/extensions/runner.js');
@@ -124,7 +125,7 @@ async function checkShellRuntime() {
   }
 }
 await checkShellRuntime();
-if (spawnSync('tmux', ['-V']).status !== 0) { console.log('skip: tmux ausente'); process.exit(0); }
+assert.equal(spawnSync('tmux', ['-V']).status, 0, 'tmux necessário');
 const sleep = (ms) => new Promise(r => setTimeout(r, ms));
 const parent = mkdtempSync(join(tmpdir(), 'agent-tui-'));
 const session = `agenttui${process.pid}`;
@@ -149,8 +150,6 @@ function terminal(sock) {
 }
 const { tmux, screen, screenAnsi, waitScreen, waitGone } = terminal(session);
 
-// Ícones de modo publicados em status padrão.
-const ICON = { complex: '\u{F09D1}', simple: '\u{F0241}', code: '\uF121', design: '\u{F03D8}', plan: '\u{F1353}', branch: '\u{F418}', tokens: '\u{F04C5}', fire: '\u{F0238}' };
 // Skills do repo que SÓ o Gabriel invoca (`disable-model-invocation: true`): ficam fora do system
 // e o único caminho até elas é o comando `/skill:<nome>` do editor do Pi (enableSkillCommands).
 const SKILLS_DIR = join(repo, 'agent/skills');
@@ -166,8 +165,9 @@ const fake = await startFakeAnthropic([
   { text: 'ok', usage: { input: 100, cacheRead: 900, output: 3 } },
 ]);
 try {
-  const prep = spawnSync(process.execPath, [join(repo, 'scripts/prepare-juice-test.mjs'), '--temp-parent', parent], { encoding: 'utf8', env: { ...process.env, NODE_OPTIONS: '' } });
-  if (prep.status !== 0) { if (/compiled Rust binary missing/.test(prep.stderr)) { console.log('skip: binário Rust ausente'); process.exit(0); } throw new Error(prep.stderr); }
+  const seed = join(parent, 'seed'); mkdirSync(seed);
+  const prep = spawnSync(process.execPath, [join(repo, 'scripts/prepare-juice-test.mjs'), '--temp-parent', parent, '--agent-dir', seed, '--pi-root', fixturePiRoot], { encoding: 'utf8', env: { ...process.env, NODE_OPTIONS: '' } });
+  assert.equal(prep.status, 0, prep.stderr);
   const info = JSON.parse(prep.stdout);
   setFixtureTui(info);
   rmSync(join(info.agentDir, 'auth.json'), { force: true });
@@ -206,7 +206,8 @@ try {
   assert.equal(tmux('new-session', '-d', '-s', session, '-x', '150', '-y', '200', cmd).status, 0, 'tmux abriu');
 
   // Compact startup + native editor/footer; statuses each have one producer.
-  await waitScreen(new RegExp(`${ICON.simple} simple`), 'modo em status nativo');
+  await waitScreen(/claude-haiku-5-5/, 'modelo no status nativo');
+  assert.doesNotMatch(screen(), /simple|complex/, 'sem modos legados');
   await waitScreen(/4 sessões/u, 'peers no rodapé nativo');
   const startup = tmux('capture-pane', '-p', '-S', '-500', '-t', session).stdout;
   assert.match(startup, /✳ Agent/, 'marca compacta no startup');
@@ -221,8 +222,9 @@ try {
     assert.doesNotMatch(screen(), /┌─|└─|Dicas/);
   }
   assert.equal(fake.messages().length, 0, 'startup não consulta modelo');
-  tmux('send-keys', '-t', session, 'BTab');
-  await waitScreen(new RegExp(`${ICON.complex} complex`), 'Shift+Tab → complex');
+  tmux('send-keys', '-t', session, '-l', '/subagents on');
+  tmux('send-keys', '-t', session, 'Enter');
+  await waitScreen(/(?<!\/)subagents on/, 'opt-in no rodapé');
   tmux('send-keys', '-t', session, '-l', 'oi');
   await waitScreen(/oi/, 'texto no editor nativo');
   tmux('send-keys', '-t', session, 'Enter');
@@ -300,29 +302,18 @@ try {
   rmSync(parent, { recursive: true, force: true });
 }
 
-// ---- troca de modo A QUENTE, no MESMO processo, nos dois hosts ---------------
-/**
- * O que é a troca a quente e ONDE acontece: Shift+Tab na TUI real chama o atalho
- * `shift+tab` de agent/extensions/brain-live/juice.ts → setMode() → setJuiceMode()
- * + applyMode(), e no turno SEGUINTE o handler `before_agent_start` da mesma
- * extensão troca as seções de política do clássico.
- * Nada reinicia o Pi: é o mesmo PID, a mesma sessão e o mesmo painel tmux de ponta a ponta.
- *
- * O que se mede: `ctx.getSystemPrompt()` dentro de `before_provider_request` (system
- * EFETIVO do host, incluindo mudanças de política no meio da
- * conversa já aplicados; `payload.system` sozinho não serviria). A extensão registra
- * `process.pid` e um contador próprio: PID igual + contador sem reiniciar = um único
- * processo, sem relançamento escondido.
- */
+// ---- opt-in a quente no MESMO processo -----------------------------------
+// ctx.getSystemPrompt() mede o prompt efetivo em before_provider_request.
+// PID e contador sequencial provam que o processo não reinicia durante a troca.
 async function runHotSwitch(host) {
   const hotParent = mkdtempSync(join(tmpdir(), `agent-tui-hot-${host}-`));
   const sock = `agenthot${process.pid}${host}`;
   const term = terminal(sock);
   const hotFake = await startFakeAnthropic([{ text: 'ok' }]);
   try {
-    const prep = spawnSync(process.execPath, [join(repo, 'scripts/prepare-juice-test.mjs'), '--temp-parent', hotParent, '--host', host], { encoding: 'utf8', env: { ...process.env, NODE_OPTIONS: '' } });
+    const seed = join(hotParent, 'seed'); mkdirSync(seed);
+    const prep = spawnSync(process.execPath, [join(repo, 'scripts/prepare-juice-test.mjs'), '--temp-parent', hotParent, '--host', host, '--agent-dir', seed, '--pi-root', fixturePiRoot], { encoding: 'utf8', env: { ...process.env, NODE_OPTIONS: '' } });
     if (prep.status !== 0) {
-      if (/compiled Rust binary missing|needs the published bundle/.test(prep.stderr)) { console.log(`skip hot ${host}: ${prep.stderr.trim().split('\n').at(-1)}`); return; }
       throw new Error(prep.stderr);
     }
     const info = JSON.parse(prep.stdout);
@@ -345,6 +336,7 @@ async function runHotSwitch(host) {
       '}',
       '',
     ].join('\n'));
+    writeFileSync(join(info.agentDir, 'agent-models.json'), JSON.stringify({ tiers: {}, roleModels: Object.fromEntries(['scout', 'worker', 'planner', 'reviewer', 'visual'].map(role => [role, [{ model: 'anthropic/claude-haiku-5-5', thinking: 'medium' }]])) }));
     const env = JSON.parse(readFileSync(join(info.root, 'environment.json'), 'utf8'));
     const exports = Object.entries({ ...env, AGENT_LEARN: '0', AGENT_DISPATCHER: '0', AGENT_CACHE_KEEPER: '0', AGENT_OBSERVE_SYSTEM: observeFile, AGENT_LUCID_SSH: '/usr/bin/false' })
       .map(([k, v]) => `${k}=${JSON.stringify(v)}`).join(' ');
@@ -379,11 +371,14 @@ async function runHotSwitch(host) {
       return observed().slice(before);
     };
     const toggle = async (to) => {
-      term.keys('BTab');
-      await term.waitScreen(new RegExp(`${ICON[to]} ${to}`), `${host}: Shift+Tab → ${to}`);
+      const on = to === 'on';
+      term.keys('-l', `/subagents ${to}`); term.keys('Enter');
+      await term.waitGone(/^\s*\/subagents (on|off)\s*$/m, `${host}: comando consumido`);
+      if (on) await term.waitScreen(/(?<!\/)subagents on/, `${host}: opt-in`);
+      else await term.waitGone(/(?<!\/)subagents on/, `${host}: opt-out`);
     };
 
-    await term.waitScreen(new RegExp(`${ICON.simple} simple`), `${host}: TUI subiu em simple`);
+    await term.waitScreen(/claude-haiku-5-5/, `${host}: TUI subiu`);
 
 
     // ---- seletor Agent real: não basta provar o autocomplete nativo ------
@@ -416,7 +411,7 @@ async function runHotSwitch(host) {
     term.keys('Tab');
     picker = await term.waitScreen(/skills · dev/, `${host}: Tab em /skill visita dev`, 5_000);
     assert.match(picker, /^\s*▸ debug\s+ /m, `${host}: debug sob demanda`);
-    assert.match(picker, new RegExp(`${ICON.simple} simple`), 'Tab preserva o modo');
+    assert.doesNotMatch(picker, /simple|complex|(?<!\/)subagents on/, 'Tab não ativa equipe nem modo');
     assert.equal(sessionId(), originalSession, 'Tab não troca sessão');
     term.keys('Tab');
     picker = await term.waitScreen(/skills · plan/, `${host}: Tab visita plan`);
@@ -456,7 +451,7 @@ async function runHotSwitch(host) {
     console.log(`ok skill-picker ${host}: filtro, ◆, setas, Tab visita sem trocar sessão, Enter insere, Esc fecha; zero requests`);
 
     // ---- /models real: papéis visíveis e abrir/cancelar não grava ----------
-    const rolesFile = join(env.PI_SYSTEM_DIR, 'Pi/models.json');
+    const rolesFile = join(info.agentDir, 'agent-models.json');
     const rolesBefore = readFileSync(rolesFile, 'utf8');
     const sessionModel = () => /claude-haiku-5-5 [•·] \w+/.exec(term.screen())?.[0];
     const modelBeforePanel = sessionModel();
@@ -480,7 +475,7 @@ async function runHotSwitch(host) {
     console.log(`ok roles ${host}: cinco papéis, origem/thinking, picker autorizado; cancelar preserva arquivo e sessão`);
 
     // ---- escolha manual de modelo + thinking (bug relatado) ---------------
-    // `/thinking <nível>` é do Pi; o modo do Agent não pode desfazer nem levar o modelo
+    // `/thinking <nível>` é do Pi; o opt-in do Agent não pode desfazer nem levar o modelo
     // com ele. O rodapé nativo mostra modelo e nível.
     {
       const footerLine = () => term.screen().split('\n').filter(l => /claude-haiku-5-5/.test(l)).at(-1) ?? '';
@@ -490,22 +485,22 @@ async function runHotSwitch(host) {
       // (níveis de thinking): insiste até o comando sair do input.
       for (let i = 0; i < 6 && /\/thinking/.test(term.screen()); i++) { term.keys('Enter'); await sleep(500); }
       await term.waitScreen(/claude-haiku-5-5.*high/, `${host}: /thinking high aplicado no rodapé`);
-      await toggle('complex');
-      assert.match(footerLine(), /claude-haiku-5-5.*high/, `${host}: Shift+Tab mexeu no thinking/modelo escolhidos:\n${footerLine()}`);
-      await toggle('simple');
-      assert.match(footerLine(), /claude-haiku-5-5.*high/, `${host}: voltar de modo mexeu no thinking/modelo escolhidos:\n${footerLine()}`);
-      console.log(`ok manual ${host}: /thinking high persiste e o modelo não troca em simple⇄complex`);
+      await toggle('on');
+      assert.match(footerLine(), /claude-haiku-5-5.*high/, `${host}: Opt-in mexeu no thinking/modelo escolhidos:\n${footerLine()}`);
+      await toggle('off');
+      assert.match(footerLine(), /claude-haiku-5-5.*high/, `${host}: Opt-out mexeu no thinking/modelo escolhidos:\n${footerLine()}`);
+      console.log(`ok manual ${host}: /thinking high persiste e o modelo não troca em off⇄on`);
     }
 
     const phases = [];
-    phases.push({ label: 'turno1-simple', mode: 'simple', obs: await turn('oi', 'turno1-simple') });
-    // Troca A QUENTE: Shift+Tab real no mesmo painel, sem reiniciar nada.
-    await toggle('complex');
-    phases.push({ label: 'turno2-complex', mode: 'complex', obs: await turn('com a equipe', 'turno2-complex') });
-    // Segundo turno no MESMO modo: sem acumular bloco e com o mesmo prefixo.
-    phases.push({ label: 'turno3-complex', mode: 'complex', obs: await turn('continue', 'turno3-complex') });
-    await toggle('simple');
-    phases.push({ label: 'turno4-simple', mode: 'simple', obs: await turn('sozinho de novo', 'turno4-simple') });
+    phases.push({ label: 'turno1-off', obs: await turn('oi', 'turno1-off') });
+    // Troca A QUENTE: /subagents real no mesmo painel, sem reiniciar nada.
+    await toggle('on');
+    phases.push({ label: 'turno2-on', obs: await turn('com a equipe', 'turno2-on') });
+    // Segundo turno com o MESMO opt-in: sem acumular bloco e com o mesmo prefixo.
+    phases.push({ label: 'turno3-on', obs: await turn('continue', 'turno3-on') });
+    await toggle('off');
+    phases.push({ label: 'turno4-off', obs: await turn('sozinho de novo', 'turno4-off') });
 
     // MESMO PROCESSO: um único PID e um contador que nunca reinicia (relançar zeraria os dois).
     const all = observed();
@@ -520,18 +515,17 @@ async function runHotSwitch(host) {
       autonomy: count(text, /<agent_autonomy>/g),
       complex: count(text, /<agent_complex>/g),
       autonomyBody: count(text, body(AUTONOMY_POLICY)),
-      complexBody: count(text, body(COMPLEX_POLICY)),
     });
     // Autonomia é exatamente 1 em TODA observação (inclusive fora dos turnos): nada acumula.
     for (const o of all) assert.equal(counts(o.system).autonomy, 1, `${host}: observação ${o.seq} com autonomia ${counts(o.system).autonomy}`);
-    for (const { label, mode, obs } of phases) {
+    for (const { label, obs } of phases) {
       assert.ok(obs.length > 0, `${host}/${label}: turno sem requisição observada`);
       for (const o of obs) {
-        assert.deepEqual(counts(o.system), { autonomy: 1, complex: mode === 'complex' ? 1 : 0, autonomyBody: 1, complexBody: mode === 'complex' ? 1 : 0 },
-          `${host}/${label}: observação ${o.seq} deveria ter autonomia 1 e complex ${mode === 'complex' ? 1 : 0}`);
+        assert.deepEqual(counts(o.system), { autonomy: 1, complex: 0, autonomyBody: 1 },
+          `${host}/${label}: observação ${o.seq} deveria ter autonomia 1 e complex 0`);
         assert.equal(count(o.system, /^<\/?agent_workflow>$/gm), 0, `${host}/${label}: receita no system efetivo`);
         assert.equal(count(o.system, /Receita deste projeto|Regras aprendidas aqui/g), 0, `${host}/${label}: conteúdo da receita no system efetivo`);
-        if (mode === 'simple') assert.doesNotMatch(o.system, /Modo complex \(vale só enquanto/, `${host}/${label}: política de complex sobrou em simple`);
+        assert.doesNotMatch(o.system, /Modo complex \(vale só enquanto/, `${host}/${label}: delegação obrigatória no prompt`);
       }
     }
     // Ancoragem: na 1ª requisição da sessão nova o observado é o system que foi pela rede
@@ -539,10 +533,12 @@ async function runHotSwitch(host) {
     const wire = hotFake.messages()[0].system;
     assert.equal(all[0].system, Array.isArray(wire) ? wire.map(b => b.text).join('\n') : wire, `${host}: observado == system da 1ª requisição`);
     const [p1, p2, p3, p4] = phases;
-    assert.equal(p3.obs.at(-1).system, p2.obs.at(-1).system, `${host}: dois turnos complex seguidos mandam o mesmo system efetivo (sem acúmulo)`);
-    assert.equal(p4.obs.at(-1).system, p1.obs.at(-1).system, `${host}: voltar a simple a quente devolve o system efetivo inicial`);
-    assert.notEqual(p2.obs.at(-1).system, p1.obs.at(-1).system, `${host}: Shift+Tab a quente não mudou o system efetivo`);
-    console.log(`ok hot ${host}: Shift+Tab ao vivo (PID ${pids[0]}, ${all.length} observações seq 1..${all.length}) simple→complex→complex→simple — autonomia 1 sempre, complex 1 só em complex, volta ao system inicial`);
+    assert.equal(p3.obs.at(-1).system, p2.obs.at(-1).system, `${host}: dois turnos on seguidos mandam o mesmo system efetivo (sem acúmulo)`);
+    assert.equal(p4.obs.at(-1).system, p1.obs.at(-1).system, `${host}: opt-out a quente preserva o system efetivo inicial`);
+    assert.equal(p2.obs.at(-1).system, p1.obs.at(-1).system, `${host}: opt-in preserva o system efetivo`);
+    assert.match(p1.obs[0].system, /Quem decide é o seu usuário/);
+    assert.equal(hotFake.messages().length, 4, `quatro turnos, sem inferência auxiliar: ${JSON.stringify(hotFake.messages().map(p => ({ model: p.model, max_tokens: p.max_tokens })))}`);
+    console.log(`ok hot ${host}: /subagents ao vivo (PID ${pids[0]}, ${all.length} observações seq 1..${all.length}) off→on→on→off — autoridade estável, sem delegação obrigatória ou inferência extra`);
   } finally {
     term.tmux('kill-server');
     await hotFake.close();

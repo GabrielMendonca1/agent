@@ -5,8 +5,13 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'nod
 import { homedir, tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
-import * as policy from '../agent/juice/skill-policy.mjs';
-const root = process.env.AGENT_JUICE_PI_ROOT || join(homedir(), '.local/share/agent/current/lib/node_modules/@earendil-works/pi-coding-agent');
+const root = process.env.AGENT_PI_ROOT || process.env.AGENT_JUICE_PI_ROOT || join(process.env.AGENT_STORE || join(homedir(), '.local/share/agent'), 'current/lib/node_modules/@earendil-works/pi-coding-agent');
+const enrollmentHome = mkdtempSync(join(tmpdir(), 'agent-skill-enrollment-'));
+const originalHome = process.env.HOME;
+const originalConfig = process.env.ARCA_MEGAMIND_CONFIG;
+process.env.HOME = enrollmentHome;
+process.env.ARCA_MEGAMIND_CONFIG = 'none';
+const policy = await import('../agent/juice/skill-policy.mjs');
 const dir = mkdtempSync(join(tmpdir(), 'agent-skill-policy-'));
 const savedEnv = { ...process.env };
 const names = ['peers', 'megamind', 'prometheus', 'tasks', 'diagram', 'arca-ops', 'omni-ops', 'goal', 'grill', 'cua', 'debug', 'tdd', 'pr', 'handoff', 'sources', 'html-plan', 'ui-review', 'pessoal'];
@@ -42,7 +47,8 @@ try {
     delete process.env.PI_AUTOMATIC_SKILLS;
     console.log(`ok ${entry}: pessoais e system automáticas, catálogo inteiro, fonte intacta e reload`);
   }
-  assert.deepEqual(policy.automaticSkillNames(), ['peers', 'megamind', 'prometheus', 'cua', 'diagram', 'arca-ops', 'omni-ops', 'handoff', 'html-plan', 'pr', 'sources']);
+  assert.deepEqual(policy.automaticSkillNames(), ['peers', 'megamind', 'prometheus', 'cua', 'diagram', 'handoff', 'html-plan', 'pr', 'sources']);
+  for (const name of ['arca-ops', 'omni-ops', 'pessoal']) assert.equal(policy.isAutomaticSkill(name), false, `${name}: sem enrollment não é automática`);
   assert.equal(policy.isAutomaticSkill('debug'), false);
   assert.equal(policy.isAutomaticSkill('review'), false);
   assert.equal(policy.isAutomaticSkill('peers'), true);
@@ -52,4 +58,7 @@ try {
     if (Object.hasOwn(savedEnv, key)) process.env[key] = savedEnv[key]; else delete process.env[key];
   }
   rmSync(dir, { recursive: true, force: true });
+  rmSync(enrollmentHome, { recursive: true, force: true });
+  if (originalHome === undefined) delete process.env.HOME; else process.env.HOME = originalHome;
+  if (originalConfig === undefined) delete process.env.ARCA_MEGAMIND_CONFIG; else process.env.ARCA_MEGAMIND_CONFIG = originalConfig;
 }

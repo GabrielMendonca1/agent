@@ -5,10 +5,11 @@
  * fora de um diretório temporário é escrito.
  *
  * Compara recursos temporários e instalados, schemas no payload, exposição,
- * políticas simple/complex, bloqueio de subagent e ledger. Fixtures sem auth.
+ * política estável, bloqueio opt-in de subagent e ausência de ledger. Fixtures sem auth.
  *
  * `node scripts/test-agent-host.mjs [classic]`
  */
+import './lib/hermetic-test-env.mjs';
 import assert from 'node:assert/strict';
 import { spawn, spawnSync } from 'node:child_process';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
@@ -16,11 +17,11 @@ import { homedir, tmpdir } from 'node:os';
 import { createRequire } from 'node:module';
 import { join } from 'node:path';
 import { categoryPrompt } from '../agent/juice/skill-categories.mjs';
-import { AUTONOMY_POLICY, COMPLEX_POLICY } from '../agent/juice/policy.mjs';
+import { AUTONOMY_POLICY } from '../agent/juice/policy.mjs';
 import { applyAgentResources, planAgentResources, rollbackAgentResources } from './lib/agent-resources.mjs';
 import { startFakeAnthropic } from './lib/fake-anthropic.mjs';
 
-const piRoot = process.env.AGENT_JUICE_PI_ROOT || join(homedir(), '.local/share/agent/current/lib/node_modules/@earendil-works/pi-coding-agent');
+const piRoot = join(process.env.AGENT_STORE || join(homedir(), '.local/share/agent'), 'current/lib/node_modules/@earendil-works/pi-coding-agent');
 const repo = new URL('..', import.meta.url).pathname.replace(/\/$/, '');
 
 // ---- diagnóstico: registry realista, sem sessão, I/O ou inferência ---------
@@ -43,7 +44,7 @@ const repo = new URL('..', import.meta.url).pathname.replace(/\/$/, '');
     { name: 'programmatic', exposure: 'codemode', sourceInfo: source('/fixture/programmatic.ts') },
   ];
   const commands = [{ name: 'skill:demo', source: 'skill', sourceInfo: source('/fixture/demo/SKILL.md') }];
-  const input = { tools, commands, activeTools: ['read', 'subagent'], mode: 'simple',
+  const input = { tools, commands, activeTools: ['read', 'subagent'], mode: null,
     settings: { cacheWarming: 'idle', privateToken: 'DO_NOT_PRINT_THIS_SECRET' }, agentExtensionsRoot: '/fixture/agent/extensions' };
   const report = buildAgentDoctorReport(input);
   assert.match(report, /Pi nativo · builtin:read/);
@@ -51,7 +52,8 @@ const repo = new URL('..', import.meta.url).pathname.replace(/\/$/, '');
   assert.match(report, /remote · não declarada · exposição: deferred/);
   assert.match(report, /off · não declarada · exposição: hidden/);
   assert.match(report, /programmatic · não declarada · exposição: codemode/);
-  assert.match(report, /Modo simple bloqueia subagent/);
+  assert.match(report, /Modo Agent: não observado/);
+  assert.doesNotMatch(report, /Modo sem opt-in bloqueia subagent/);
   assert.match(report, /SKILLS COM COMANDO OBSERVADO: 1/);
   assert.match(report, /Cache nativo: idle/);
   assert.doesNotMatch(report, /DO_NOT_PRINT_THIS_SECRET|privateToken/);
@@ -93,9 +95,6 @@ const repo = new URL('..', import.meta.url).pathname.replace(/\/$/, '');
     const prep = (...extra) => {
       const out = join(parent, `p${extra.length}`); mkdirSync(out);
       const r = spawnSync(process.execPath, [join(repo, 'scripts/prepare-juice-test.mjs'), '--pi-root', piRoot, '--temp-parent', out, '--agent-dir', seed, '--vault-pi', vault, ...extra], { encoding: 'utf8', env: { PATH: process.env.PATH, HOME: fakeHome, USERPROFILE: fakeHome } });
-      // Só pula pelo mesmo pré-requisito explícito do runHost (binário Rust / bundle ausentes);
-      // qualquer outra falha do prepare é regressão e quebra o teste.
-      if (r.status !== 0 && /compiled Rust binary missing|needs the published bundle/.test(r.stderr)) return null;
       assert.equal(r.status, 0, `prepare ${extra.join(' ') || '(sem flag)'} falhou: ${(r.stderr.split('\n').find(l => /Error/.test(l)) ?? r.stderr.trim().split('\n').at(-1))?.replaceAll(process.env.HOME ?? '\0', '~')}`);
       const env = JSON.parse(readFileSync(join(JSON.parse(r.stdout).root, 'environment.json'), 'utf8'));
       assert.equal(typeof env, 'object');
@@ -114,7 +113,7 @@ const repo = new URL('..', import.meta.url).pathname.replace(/\/$/, '');
       assert.equal(linked.ARCA_MEGAMIND_CACHE, join(fakeHome, '.cache/arca-projects'));
       assert.equal(linked.PI_MESH_DIR, join(fakeHome, '.pi/mesh'));
       console.log('ok vínculo ARCA: isolado sem flag; --link-arca aponta Megamind/peers (HOME fictício, sem rede)');
-    } else console.log('skip vínculo ARCA: binário Juice ausente');
+    }
   } finally { rmSync(parent, { recursive: true, force: true }); }
 }
 
@@ -127,7 +126,6 @@ async function runHost(host) {
     writeFileSync(join(vault, 'system-prompt.md'), 'You are an expert coding assistant.\n\nAvailable tools:\n{{PI_EXTRA_TOOLS}}\n\n{{PI_SKILLS}}\n{{PI_PROJECT_CONTEXT}}\n');
     const prep = spawnSync(process.execPath, [join(repo, 'scripts/prepare-juice-test.mjs'), '--pi-root', piRoot, '--temp-parent', parent, '--host', host, '--agent-dir', seed, '--vault-pi', vault], { encoding: 'utf8', env: { PATH: process.env.PATH, HOME: parent, USERPROFILE: parent } });
     if (prep.status !== 0) {
-      if (/compiled Rust binary missing|needs the published bundle/.test(prep.stderr)) { console.log(`skip ${host}: ${prep.stderr.trim().split('\n').at(-1)}`); return; }
       throw new Error(prep.stderr);
     }
     const info = JSON.parse(prep.stdout);
@@ -137,6 +135,10 @@ async function runHost(host) {
       { tool: { name: 'subagent', input: { agent: 'scout', task: 'x' } } },
       { tool: { name: 'codemode', input: { code: 'const r = await tools.subagent({agent: "scout", task: "x"}); console.log(JSON.stringify(r));' } } },
       { text: 'feito' },
+      { text: 'resumed' },
+      { tool: { name: 'subagent', input: { agent: 'missing-fixture-role', task: 'x' } } },
+      { tool: { name: 'codemode', input: { code: 'const r = await tools.subagent({agent: "missing-fixture-role", task: "x"}); console.log(JSON.stringify(r));' } } },
+      { text: 'opt-in checked' },
     ]);
     try {
       rmSync(join(info.agentDir, 'auth.json'), { force: true });
@@ -176,12 +178,12 @@ async function runHost(host) {
       ].join('\n'));
       const session = join(parent, 'session.jsonl');
       // launch.sh real do perfil clássico; mesma sessão duas vezes = resume.
-      const runPi = (prompt, label) => new Promise((resolve) => {
+      const runPi = (prompt, label, flags = {}) => new Promise((resolve) => {
         const observeFile = join(parent, `system-${label}.jsonl`);
-        const child = spawn(join(info.root, 'launch.sh'), ['--session', session, '-p', '--mode', 'json', '--model', 'anthropic/claude-haiku-5-5', prompt], {
+        const child = spawn(Object.keys(flags).length ? process.execPath : join(info.root, 'launch.sh'), [...(Object.keys(flags).length ? [join(piRoot, 'dist/cli.js')] : []), '--session', session, '-p', '--mode', 'json', '--model', 'anthropic/claude-haiku-5-5', prompt], {
           // O artefato fica fora do projeto, como na instalação real (trust do Pi 1.3).
           cwd: parent, stdio: ['ignore', 'pipe', 'pipe'], timeout: 120_000,
-          env: { PATH: process.env.PATH, ...env, AGENT_LEARN: '0', AGENT_DISPATCHER: '0', AGENT_OBSERVE_SYSTEM: observeFile },
+          env: { PATH: process.env.PATH, ...env, AGENT_LEARN: '0', AGENT_DISPATCHER: '0', AGENT_OBSERVE_SYSTEM: observeFile, ...flags },
         });
         let out = '', err = '';
         child.stdout.on('data', d => { out += d; });
@@ -203,15 +205,10 @@ async function runHost(host) {
       assert.ok(doctorEvent, `comando JSON emite diagnóstico em stderr\nstdout: ${doctor.out}\nstderr: ${doctor.err}`);
       assert.doesNotMatch(doctor.out, /agent_doctor/, 'diagnóstico não altera protocolo JSONL oficial');
       assert.match(doctorEvent.report, /Pi nativo · builtin:read/);
-      assert.match(doctorEvent.report, /Modo simple bloqueia subagent/);
+      assert.match(doctorEvent.report, /Modo Agent: não observado/);
       assert.doesNotMatch(doctorEvent.report, /read-media\.ts/);
-      console.log('ok agent-doctor no Pi real: read nativo, simple bloqueado, zero chamadas ao provider');
-      // Troca pelo comando real: o modo salvo da sessão vence preferences no resume.
-      const setMode = async (mode) => {
-        const result = await runPi(`/mode ${mode}`, `set-${mode}`);
-        assert.equal(result.code, 0, result.err);
-      };
-      const result = await runPi('oi', 'run1-simple');
+      console.log('ok agent-doctor no Pi real: read nativo, sem modo legado, zero chamadas ao provider');
+      const result = await runPi('oi', 'run1-off');
       assert.equal(result.code, 0, `${host}: Pi saiu com ${result.code}\n${result.err.slice(0, 2000)}`);
       const requests = fake.messages();
       assert.equal(requests.length, 3, `${host}: 3 requisições ao provider`);
@@ -221,9 +218,9 @@ async function runHost(host) {
       const events = result.out.split('\n').filter(Boolean).map(l => { try { return JSON.parse(l); } catch { return {}; } });
       const ends = events.filter(e => e.type === 'tool_execution_end');
       const text = (e) => JSON.stringify(e?.result?.content ?? '');
-      assert.match(text(ends.find(e => e.toolName === 'subagent')), /Modo simple/, `${host}: simple bloqueia subagent`);
+      assert.match(text(ends.find(e => e.toolName === 'subagent')), /Subagents disabled/, `${host}: sem opt-in bloqueia subagent`);
       assert.ok(!names(1).includes('generate_image'), 'classic: imagem continua deferred');
-      assert.match(text(ends.find(e => e.toolName === 'codemode')), /Modo simple/, 'classic codemode: nested subagent is blocked');
+      assert.match(text(ends.find(e => e.toolName === 'codemode')), /Subagents disabled/, 'classic codemode: nested subagent sem opt-in é bloqueado');
       // Prompt único: preamble e skills uma vez só; sem seções nativas de tools/rules.
       const system = (i) => fake.messages()[i].system.map(b => b.text).join('\n');
       const count = (text, re) => (text.match(re) ?? []).length;
@@ -232,14 +229,14 @@ async function runHost(host) {
       assert.equal(count(sys0, /<agent_autonomy>/g), 1, `${host}: autonomia uma vez no system real`);
       assert.equal(count(sys0, /<agent_skill_categories>/g), 1, `${host}: categorias uma vez no system real`);
       assert.ok(sys0.includes(categoryPrompt()), `${host}: uma linha determinística por pasta não-system`);
-      assert.equal(count(sys0, /<agent_complex>/g), 0, `${host}: simple sem política complex`);
-      assert.doesNotMatch(sys0, /Complex mode: delegate by role|Delegate independent reading and recon in parallel|Use structured briefs with objective, context/, `${host}: diretrizes da tool não vazam complex no system simple`);
+      assert.equal(count(sys0, /<agent_complex>/g), 0, `${host}: sem política complex`);
+      assert.doesNotMatch(sys0, /Complex mode: delegate by role|Delegate independent reading and recon in parallel|Use structured briefs with objective, context/, `${host}: descrição da tool não impõe delegação`);
       // Receita do projeto é interna: o modelo principal não vê o bloco nem as etapas.
       assert.equal(count(sys0, /^<\/?agent_workflow>$/gm), 0, `${host}: receita fora do system prompt`);
       assert.equal(count(sys0, /Receita deste projeto|Regras aprendidas aqui|Projeto agent, receita/g), 0, `${host}: nada do conteúdo da receita no system prompt`);
       assert.equal(count(sys0, /<available_skills>/g), 1, `${host}: skills uma vez`);
       assert.deepEqual([...sys0.matchAll(/<name>([^<]+)<\/name>/g)].map(m => m[1]).sort(),
-        ['arca-ops', 'cua', 'diagram', 'handoff', 'html-plan', 'megamind', 'omni-ops', 'peers', 'pr', 'prometheus', 'sources'], `${host}: curadoria real no provider, inclusive skills pessoais`);
+        ['cua', 'diagram', 'handoff', 'html-plan', 'megamind', 'peers', 'pr', 'prometheus', 'sources'], `${host}: curadoria real no provider, inclusive skills pessoais`);
       for (const name of policyNames) assert.equal(readFileSync(join(info.agentDir, 'skills', name, 'SKILL.md'), 'utf8'),
         `---\nname: ${name}\ndescription: Fixture ${name}\n---\n`, `${host}: SKILL.md intacto`);
       assert.equal(count(sys0, /^Available tools:$/gm), 1, `${host}: lista de tools do Agent`);
@@ -249,53 +246,50 @@ async function runHost(host) {
       // não uma reconstrução: na 1ª requisição de uma sessão nova ele é idêntico ao que foi pela rede.
       assert.equal(result.observed.length, requests.length, `${host}: uma observação por requisição`);
       assert.equal(result.observed[0], sys0, `${host}: ctx.getSystemPrompt() == system da 1ª requisição (observação não finge)`);
-      // Políticas no system efetivo, requisição por requisição, em cada modo.
+      // Políticas no system efetivo, requisição por requisição, com e sem opt-in.
       const policyCounts = (text) => ({
         autonomy: count(text, /<agent_autonomy>/g),
         complex: count(text, /<agent_complex>/g),
         autonomyBody: count(text, new RegExp(AUTONOMY_POLICY.split('\n')[0].replace(/[().*+?^${}|[\]\\]/g, '\\$&'), 'g')),
-        complexBody: count(text, new RegExp(COMPLEX_POLICY.split('\n')[0].replace(/[().*+?^${}|[\]\\]/g, '\\$&'), 'g')),
       });
-      // Corpo efetivo de um modo: o que o modelo lê, sem a parte volátil (nada aqui) —
-      // serve para provar que dois turnos no MESMO modo mandam exatamente o mesmo prefixo.
-      const checkPhase = (label, mode, observed) => {
+      // Corpo efetivo da política: o que o modelo lê, sem a parte volátil (nada aqui) —
+      // serve para provar que dois turnos com o MESMO opt-in mandam exatamente o mesmo prefixo.
+      const checkPhase = (label, observed) => {
         assert.ok(observed.length > 0, `${host}/${label}: nenhuma requisição observada`);
         for (const [i, text] of observed.entries()) {
           const c = policyCounts(text);
-          assert.deepEqual(c, { autonomy: 1, complex: mode === 'complex' ? 1 : 0, autonomyBody: 1, complexBody: mode === 'complex' ? 1 : 0 },
-            `${host}/${label}: requisição ${i} deveria ter autonomia 1 e complex ${mode === 'complex' ? 1 : 0} (sem acumular blocos)`);
-          // Nem receita nem regras aprendidas chegam ao principal, em nenhum modo.
+          assert.deepEqual(c, { autonomy: 1, complex: 0, autonomyBody: 1 },
+            `${host}/${label}: requisição ${i} deveria ter autonomia 1 e complex 0 (sem acumular blocos)`);
+          // Nem receita nem regras aprendidas chegam ao principal, com ou sem opt-in.
           assert.equal(count(text, /^<\/?agent_workflow>$/gm), 0, `${host}/${label}: receita fora do system efetivo`);
           assert.equal(count(text, /Receita deste projeto|Regras aprendidas aqui/g), 0, `${host}/${label}: conteúdo de receita no system efetivo`);
-          if (mode === 'simple') assert.doesNotMatch(text, /Modo complex \(vale só enquanto/, `${host}/${label}: política de complex ficou no system simple`);
+          assert.doesNotMatch(text, /Modo complex \(vale só enquanto/, `${host}/${label}: política de delegação obrigatória no system`);
         }
         return observed;
       };
-      checkPhase('run1-simple', 'simple', result.observed);
+      checkPhase('run1-off', result.observed);
       // Resume: segundo prompt na mesma sessão mantém system e tools (prefixo em cache).
       const before = requests.length;
-      const resumed = await runPi('de novo', 'run2-simple');
+      const resumed = await runPi('de novo', 'run2-off');
       assert.equal(resumed.code, 0, `${host}: resume saiu com ${resumed.code}\n${resumed.err.slice(0, 2000)}`);
       assert.ok(fake.messages().length > before, `${host}: resume chamou o provider`);
       assert.equal(system(before), sys0, `${host}: resume mantém o system`);
-      checkPhase('run2-simple', 'simple', resumed.observed);
-      assert.equal(resumed.observed.at(-1), result.observed.at(-1), `${host}: resume no mesmo modo repete o system efetivo (prefixo estável)`);
-      // Troca pelo comando /mode: complex entra…
-      await setMode('complex');
-      const complex1 = await runPi('agora com a equipe', 'run3-complex');
-      assert.equal(complex1.code, 0, `${host}: complex saiu com ${complex1.code}\n${complex1.err.slice(0, 2000)}`);
-      checkPhase('run3-complex', 'complex', complex1.observed);
-      // …segue sem acumular num segundo run complex, com o mesmo corpo efetivo…
-      const complex2 = await runPi('continue', 'run4-complex');
-      assert.equal(complex2.code, 0, `${host}: complex resume saiu com ${complex2.code}\n${complex2.err.slice(0, 2000)}`);
-      checkPhase('run4-complex', 'complex', complex2.observed);
-      assert.equal(complex2.observed.at(-1), complex1.observed.at(-1), `${host}: dois runs complex mandam o mesmo system efetivo`);
-      // …e SAI ao voltar para simple, deixando o system efetivo igual ao de antes da troca.
-      await setMode('simple');
-      const back = await runPi('sozinho de novo', 'run5-simple');
-      assert.equal(back.code, 0, `${host}: volta a simple saiu com ${back.code}\n${back.err.slice(0, 2000)}`);
-      checkPhase('run5-simple', 'simple', back.observed);
-      assert.equal(back.observed.at(-1), result.observed.at(-1), `${host}: complex sai de verdade (system efetivo volta ao de simple)`);
+      checkPhase('run2-off', resumed.observed);
+      assert.equal(resumed.observed.at(-1), result.observed.at(-1), `${host}: resume sem mudança de opt-in repete o system efetivo (prefixo estável)`);
+      // O opt-in não remove políticas de autoridade nem muda o prefixo de cache.
+      // Mesmo ambiente preparado, só a flag documentada muda; não roda child real.
+      const opted = await runPi('equipe opcional', 'opt-in', { AGENT_SUBAGENTS: '1' });
+      assert.equal(opted.code, 0, opted.err);
+      checkPhase('opt-in', opted.observed);
+      const optedEnds = opted.out.split('\n').flatMap(line => { try { const event = JSON.parse(line); return event.type === 'tool_execution_end' ? [event] : []; } catch { return []; } });
+      for (const toolName of ['subagent', 'codemode']) {
+        const content = text(optedEnds.find(event => event.toolName === toolName));
+        assert.match(content, /Unknown agent\(s\): missing-fixture-role/, `${toolName}: opt-in chega ao dispatcher sem lançar child`);
+        assert.doesNotMatch(content, /Subagents disabled/);
+      }
+      assert.equal(opted.observed[0], sys0, 'opt-in preserva o prompt sem impor delegação');
+      assert.match(sys0, /Quem decide é o seu usuário/);
+      assert.match(sys0, /push, merge, deploy, ação destrutiva ou efeito em terceiros/);
       // Volta à semente e aplica o contrato de instalação no mesmo HOME isolado.
       // Sem normalizar schemas: descrições e defaults também têm de ser iguais.
       assert.deepEqual(rollbackAgentResources({ receiptPath: info.resourceReceipt }).conflicts, []);
@@ -304,7 +298,7 @@ async function runHost(host) {
         backupDir: join(parent, 'installed-backup'),
       });
       const beforeInstalled = fake.messages().length;
-      const installedResult = await runPi('perfil instalado', 'installed-simple');
+      const installedResult = await runPi('perfil instalado', 'installed-off');
       assert.equal(installedResult.code, 0, installedResult.err);
       assert.deepEqual(fake.messages()[beforeInstalled].tools, requests[0].tools, 'payload: nomes e schemas iguais');
       assert.equal(system(beforeInstalled), sys0, 'payload: system e políticas iguais');
@@ -312,11 +306,11 @@ async function runHost(host) {
       for (const name of ['generate_image', 'project_overview']) assert.equal(result.tools.find(t => t.name === name)?.exposure, 'deferred');
       console.log(`ok equivalência offline: ${result.tools.length} tools; system ${sys0.length} chars; schemas ${JSON.stringify(requests[0].tools).length} chars (não tokens)`);
       assert.deepEqual(rollbackAgentResources({ receiptPath: installed.receiptPath }).conflicts, []);
-      const ledger = JSON.parse(readFileSync(join(env.AGENT_JUICE_HOME, 'run.v3.json'), 'utf8'));
-      assert.equal(ledger.calls.used, fake.messages().length, `${host}: ledger conta toda requisição (sem gate = falso ativo)`);
-      assert.ok(ledger.receipts.every(r => r.status === 'settled'), `${host}: recibos fechados`);
-      console.log(`ok ${host}: prompt único (${sys0.length} chars), tools diretas, bloqueios, resume, ledger ${ledger.calls.used}/${fake.messages().length}`);
-      console.log(`ok ${host}: system EFETIVO (ctx.getSystemPrompt) simple→complex→complex→simple — autonomia 1 sempre, complex ${complex1.observed.length + complex2.observed.length} em complex e 0 em simple`);
+      assert.equal(existsSync(join(info.root, 'run.v3.json')), false);
+      assert.equal(env.AGENT_JUICE_HOME, undefined);
+      assert.equal(env.AGENT_JUICE_STATE, undefined);
+      assert.equal(fake.messages().length, 8, '3 bloqueadas + resume + 3 opt-in + instalado; sem inferência extra');
+      console.log(`ok ${host}: prompt único (${sys0.length} chars), bloqueio direto/codemode, resume, opt-in, autoridade e zero inferência extra`);
     } finally { await fake.close(); }
   } finally { rmSync(parent, { recursive: true, force: true }); }
 }

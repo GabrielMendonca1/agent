@@ -123,9 +123,12 @@ teste("status com sourceRepo conta commits à frente num repo git temporário", 
 
 teste("status é somente leitura", () => {
 	const { store } = novoStore();
-	const antes = roda(["--gc", "--dry-run", "--store", store]).stdout;
-	roda(["--status", "--store", store]);
-	assert.equal(roda(["--gc", "--dry-run", "--store", store]).stdout, antes);
+	// O snapshot vazio controla só esta comparação; fixtures abaixo provam keep-active real e injetado.
+	const dryPlan = () => planOverlayGc(store, 1, { getProcesses: () => [] });
+	const antes = dryPlan();
+	const status = roda(["--status", "--store", store]);
+	assert.equal(status.status, 0, status.stderr);
+	assert.deepEqual(dryPlan(), antes, "status não muda nenhum item, tamanho ou retenção do plano");
 	assert.ok(!existe(store, ".update.lock"));
 	assert.ok(!existe(store, STALE_CACHE_FILE));
 });

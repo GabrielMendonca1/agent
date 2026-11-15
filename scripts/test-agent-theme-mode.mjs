@@ -5,8 +5,8 @@
  * O que prova, na TUI real (Pi de verdade, tmux próprio com `-L`, provider
  * Anthropic falso em loopback, zero rede):
  *
- *  1) O par de temas do settings GLOBAL (`<light>/<dark>`, nesta ordem, conforme
- *     docs/themes.md) é aplicado por `--use-theme` sem mexer em nenhum settings.
+ *  1) O par de temas da fixture (`<light>/<dark>`, nesta ordem, conforme
+ *     docs/themes.md) é aplicado por `--use-theme` sem ler settings pessoais.
  *  2) A escolha do lado do par vem do TERMINAL, não do macOS: num tmux destacado
  *     ninguém responde a consulta de cores, então vale o fallback documentado
  *     (notificação → `COLORFGBG` → dark). `COLORFGBG=0;15` (fundo claro) tem de
@@ -32,15 +32,15 @@
  *
  * Nada fora de diretórios temporários próprios e de um socket tmux próprio.
  */
+import './lib/hermetic-test-env.mjs';
 import { spawnSync } from 'node:child_process';
 import { cpSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { homedir, tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { createHash } from 'node:crypto';
 import { startFakeAnthropic } from './lib/fake-anthropic.mjs';
 
 const repo = new URL('..', import.meta.url).pathname.replace(/\/$/, '');
-if (spawnSync('tmux', ['-V']).status !== 0) { console.log('skip: tmux ausente'); process.exit(0); }
+if (spawnSync('tmux', ['-V']).status !== 0) throw new Error('tmux ausente');
 const sleep = (ms) => new Promise(r => setTimeout(r, ms));
 const KEEP = process.env.KEEP === '1';
 /**
@@ -53,27 +53,11 @@ const KEEP = process.env.KEEP === '1';
  */
 const TUI_SRC = process.env.AGENT_THEME_TUI_SRC ? join(process.env.AGENT_THEME_TUI_SRC) : '';
 
-// ---- par de temas: o MESMO do settings global, lido sem escrever nada --------
-const GLOBAL_SETTINGS = join(homedir(), '.pi/agent/settings.json');
-let globalPair = '';
-try { globalPair = JSON.parse(readFileSync(GLOBAL_SETTINGS, 'utf8')).theme ?? ''; } catch { /* sem settings global */ }
-// Fixture determinística: é o par global confirmado nesta entrega, não um contrato
-// dependente de futuras escolhas pessoais em ~/.pi/agent/settings.json.
+// Fixture do par do Agent; não lê settings nem temas pessoais.
 const PAIR = 'grayscale-baimin-claude-cc-agent-light/grayscale-baimin-claude-cc-agent';
 const [LIGHT_THEME, DARK_THEME] = PAIR.split('/');
-
-// Temas do REPO são a fonte do teste; diferenças com os pessoais ficam registadas.
 const REPO_THEMES = join(repo, 'agent/themes');
-const sha = (file) => createHash('sha256').update(readFileSync(file)).digest('hex').slice(0, 12);
-const themeDiffs = [];
-for (const name of [LIGHT_THEME, DARK_THEME]) {
-  const mine = join(REPO_THEMES, `${name}.json`);
-  const global = join(homedir(), '.pi/agent/themes', `${name}.json`);
-  let globalSha = 'ausente';
-  try { globalSha = sha(global); } catch { /* ok */ }
-  const repoSha = sha(mine);
-  if (repoSha !== globalSha) themeDiffs.push(`${name}: repo ${repoSha} != global ${globalSha}`);
-}
+const piRoot = join(process.env.AGENT_STORE || join(homedir(), '.local/share/agent'), 'current/lib/node_modules/@earendil-works/pi-coding-agent');
 
 // ---- cor: ANSI truecolor lido da tela + contraste WCAG ----------------------
 const SGR = /\x1b\[([0-9;]*)m/g;
@@ -134,11 +118,6 @@ function check(ok, id, detail) {
   console.log(`${ok ? 'ok  ' : 'FAIL'} ${id} — ${detail}`);
 }
 
-const ICON = { complex: '\u{F09D1}', simple: '\u{F0241}' };
-// Alvos declarados na produção (editor.ts / status-line.ts / footer.ts).
-const COMPLEX_PURPLE = '#B19AFF';
-const DARK_SUCCESS = '#4EBA65';   // claude-style CC_DARK.success
-const LIGHT_SUCCESS = '#2E7D46';  // claude-style CC_LIGHT.success (== var `green` do tema claro)
 // Cores dos tokens do tema, inclusive nos novos quadros do welcome.
 function tokenColor(name, token) {
   const theme = JSON.parse(readFileSync(join(REPO_THEMES, `${name}.json`), 'utf8'));
@@ -210,9 +189,10 @@ async function run({ label, colorfgbg, expectTheme, bg, swapTo }) {
   try {
     // O prepare separa os registros gerenciados da seed por CAS, somente na cópia.
     // Deferred permanece ligado: desligá-lo esconderia colisões com a release global.
-    const prep = spawnSync(process.execPath, [join(repo, 'scripts/prepare-juice-test.mjs'), '--temp-parent', parent], { encoding: 'utf8', env: { ...process.env, NODE_OPTIONS: '' } });
+    const seed = join(parent, 'seed'); mkdirSync(seed);
+    writeFileSync(join(seed, 'settings.json'), JSON.stringify({ theme: PAIR, lastChangelogVersion: JSON.parse(readFileSync(join(piRoot, 'package.json'), 'utf8')).version }));
+    const prep = spawnSync(process.execPath, [join(repo, 'scripts/prepare-juice-test.mjs'), '--temp-parent', parent, '--agent-dir', seed, '--pi-root', piRoot], { encoding: 'utf8', env: { ...process.env, NODE_OPTIONS: '' } });
     if (prep.status !== 0) {
-      if (/compiled Rust binary missing/.test(prep.stderr)) { console.log('skip: binário Rust ausente'); process.exit(0); }
       throw new Error(prep.stderr);
     }
     const info = JSON.parse(prep.stdout);
@@ -260,7 +240,7 @@ async function run({ label, colorfgbg, expectTheme, bg, swapTo }) {
       let raw = ''; try { raw = readFileSync(probeLog, 'utf8'); } catch { return []; }
       return raw.split('\n').filter(Boolean).map(l => JSON.parse(l));
     };
-    await term.waitScreen(new RegExp(`${ICON.simple} simple`), `${label}: TUI subiu`);
+    await term.waitScreen(/claude-haiku-5-5/, `${label}: TUI subiu`);
     const deadline = Date.now() + 20_000;
     while (observed().length === 0 && Date.now() < deadline) await sleep(250);
     const first = observed()[0];
@@ -280,16 +260,17 @@ async function run({ label, colorfgbg, expectTheme, bg, swapTo }) {
     const checkNative = (name, id) => {
       check(!/┌─|└─|Dicas/.test(term.screen()), `${id}/native-layout`, 'sem moldura, palco ou painel Agent');
       check(eq(borderOf(), tokenColor(name, 'thinkingMedium')), `${id}/native-border`, `borda nativa: ${borderOf()}`);
-      check(/simple|complex/.test(term.screen()), `${id}/native-mode`, 'modo publicado no rodapé');
+      check(!/simple|complex/.test(term.screen()), `${id}/no-legacy-mode`, 'sem modos legados no rodapé');
     };
     checkNative(first.name, label);
     // The native editor border represents thinking, not Agent authorization mode.
     const beforeMode = borderOf();
-    term.keys('BTab');
-    await term.waitScreen(new RegExp(`${ICON.complex} complex`), `${label}: complex`);
-    check(eq(borderOf(), beforeMode), `${label}/mode-preserves-native-border`, 'Shift+Tab não redesenha o editor');
-    term.keys('BTab');
-    await term.waitScreen(new RegExp(`${ICON.simple} simple`), `${label}: simple`);
+    term.keys('-l', '/subagents on'); term.keys('Enter');
+    await term.waitScreen(/(?<!\/)subagents on/, `${label}: opt-in`);
+    check(eq(borderOf(), beforeMode), `${label}/opt-in-preserves-native-border`, '/subagents não redesenha o editor');
+    term.keys('-l', '/subagents off'); term.keys('Enter');
+    await sleep(750);
+    check(!/(?<!\/)subagents on/.test(term.screen()), `${label}/opt-out`, 'equipe opcional desativada');
     term.keys('-l', 'oi');
     await term.waitScreen(/oi/, `${label}: texto no editor`);
     term.keys('Enter');
@@ -338,8 +319,7 @@ async function run({ label, colorfgbg, expectTheme, bg, swapTo }) {
 const dirty = spawnSync('git', ['status', '--short', '--', 'agent/extensions/agent/tui'], { cwd: repo, encoding: 'utf8' }).stdout.trim();
 console.log(`árvore medida: ${spawnSync('git', ['rev-parse', '--short', 'HEAD'], { cwd: repo, encoding: 'utf8' }).stdout.trim()}${dirty ? ` + não commitado:\n${dirty}` : ' (limpa)'}`);
 if (TUI_SRC) console.log(`Agent TUI medido: ${TUI_SRC} (override AGENT_THEME_TUI_SRC)`);
-console.log(`par testado: ${PAIR} (light=${LIGHT_THEME}, dark=${DARK_THEME}); global coincide: ${globalPair === PAIR}`);
-console.log(themeDiffs.length ? `temas repo != pessoais: ${themeDiffs.join('; ')}` : 'temas do repo idênticos aos pessoais (sha256/12)');
+console.log(`par testado: ${PAIR} (fixture, temas do repo)`);
 
 await run({ label: 'dark', colorfgbg: '15;0', expectTheme: DARK_THEME, bg: '#000000', swapTo: LIGHT_THEME });
 await run({ label: 'light', colorfgbg: '0;15', expectTheme: LIGHT_THEME, bg: '#ffffff', swapTo: DARK_THEME });
