@@ -579,10 +579,10 @@ index 36be8963b12dd250eeec8739fcdac989c4d98c40..fd64e53f0f25ca2527e4e0cf3028972a
  			this.ui.terminal.setProgress(false);
 diff --git a/packages/coding-agent/src/modes/interactive/run-feedback.ts b/packages/coding-agent/src/modes/interactive/run-feedback.ts
 new file mode 100644
-index 0000000000000000000000000000000000000000..868812919f5a598d674e8eaaed3d452cf1df8e14
+index 0000000000000000000000000000000000000000..89486313a52612e02c15ffa9a6f7991751277ce7
 --- /dev/null
 +++ b/packages/coding-agent/src/modes/interactive/run-feedback.ts
-@@ -0,0 +1,686 @@
+@@ -0,0 +1,681 @@
 +import { randomUUID } from "node:crypto";
 +import type { AgentSessionEvent } from "../../core/agent-session.ts";
 +import type { ModelRuntime } from "../../core/model-runtime.ts";
@@ -1010,7 +1010,6 @@ index 0000000000000000000000000000000000000000..868812919f5a598d674e8eaaed3d452c
 +	);
 +}
 +
-+
 +/** TUI-owned observer. No tool, custom message, agent prompt or model-context entry. */
 +export class RunFeedback {
 +	private enabled = process.env.PI_TUI_FEEDBACK !== "0";
@@ -1033,7 +1032,6 @@ index 0000000000000000000000000000000000000000..868812919f5a598d674e8eaaed3d452c
 +	private resultsAtObservation = 0;
 +	private lastObservation = 0;
 +	private pending?: AbortController;
-+	private generation = 0;
 +	get isActive(): boolean {
 +		return this.active;
 +	}
@@ -1067,7 +1065,6 @@ index 0000000000000000000000000000000000000000..868812919f5a598d674e8eaaed3d452c
 +		}
 +	}
 +	reset(): void {
-+		this.generation++;
 +		this.pending?.abort();
 +		this.pending = undefined;
 +		this.active = false;
@@ -1084,7 +1081,6 @@ index 0000000000000000000000000000000000000000..868812919f5a598d674e8eaaed3d452c
 +	interrupt(): void {
 +		if (!this.active && !this.pending) return;
 +		this.interrupted = true;
-+		this.generation++;
 +		this.pending?.abort();
 +	}
 +	private rememberCommand(id: string, tool: string, args: unknown): void {
@@ -1194,11 +1190,10 @@ index 0000000000000000000000000000000000000000..868812919f5a598d674e8eaaed3d452c
 +		if (event.type === "agent_settled") {
 +			this.interrupted ||= event.aborted || this.lastAssistantFailed;
 +			this.active = false;
-+			this.generation++;
 +			this.pending?.abort();
 +			const at = Date.now();
 +			const completion = { elapsedMs: at - this.startedAt, at, interrupted: this.interrupted };
-+			// Immediate factual fallback; the asynchronous recap replaces the same transcript slot.
++			// Local factual recap; never schedules auxiliary inference.
 +			const card = this.local(completion);
 +			this.publish(card, "local");
 +			void this.observe("recap", completion);
@@ -1608,10 +1603,10 @@ index ffb9e1aedc609022045ab98cda311aee423523f4..55dcd473e7e55359785b394c14c64289
 +);
 diff --git a/packages/coding-agent/test/run-feedback.test.ts b/packages/coding-agent/test/run-feedback.test.ts
 new file mode 100644
-index 0000000000000000000000000000000000000000..486e00aab130dd37c424c70f4b2cd501963ded2b
+index 0000000000000000000000000000000000000000..b5a914256d8642eda288c9bab6dc2ee34cc91b20
 --- /dev/null
 +++ b/packages/coding-agent/test/run-feedback.test.ts
-@@ -0,0 +1,913 @@
+@@ -0,0 +1,766 @@
 +import { stripVTControlCharacters } from "node:util";
 +import { fauxAssistantMessage, fauxText } from "@earendil-works/pi-ai";
 +import { visibleWidth } from "@earendil-works/pi-tui";
@@ -1681,22 +1676,22 @@ index 0000000000000000000000000000000000000000..486e00aab130dd37c424c70f4b2cd501
 +	for (const id of ["trigger-1", "trigger-2", "trigger-3"]) f.event(result(id));
 +	await settle();
 +}
-+it("default requests one recap; on additionally enables notices", async () => {
-+	vi.stubEnv("PI_TUI_FEEDBACK", "");
-+	const { f, cards, complete } = setup(undefined, false);
-+	f.event({ type: "agent_start" });
-+	await triggerNotice(f);
-+	f.event({ type: "agent_settled", aborted: false });
-+	expect(complete).toHaveBeenCalledOnce();
-+	expect(cards.at(-1)?.evidence).toContain("3 tools encerradas");
-+	f.action("on");
-+	f.event({ type: "agent_start" });
-+	await triggerNotice(f);
-+	expect(complete).toHaveBeenCalledTimes(2);
-+	f.event({ type: "agent_settled", aborted: false });
-+	await settle();
-+	expect(complete).toHaveBeenCalledTimes(4);
-+	expect(cards.at(-1)?.details).toContain("fallback");
++it.each(["", "1"])("recaps locally without inference with PI_TUI_FEEDBACK=%s", async (value) => {
++	vi.stubEnv("PI_TUI_FEEDBACK", value);
++	const { f, cards, records, complete, host } = setup(undefined, false);
++	for (const optIn of [false, true]) {
++		if (optIn) f.action("on");
++		f.event({ type: "agent_start" });
++		await triggerNotice(f);
++		expect(cards.filter((card) => card.kind === "notice")).toEqual([]);
++		f.event({ type: "agent_settled", aborted: false });
++		await settle();
++		expect(cards.at(-1)?.evidence).toContain("3 tools encerradas");
++		expect(records.at(-1)?.model).toBe("local");
++	}
++	expect(complete).not.toHaveBeenCalled();
++	expect(host.runtime.getModel).not.toHaveBeenCalled();
++	expect(cards).toHaveLength(2);
 +});
 +afterEach(() => {
 +	vi.useRealTimers();
@@ -1714,231 +1709,84 @@ index 0000000000000000000000000000000000000000..486e00aab130dd37c424c70f4b2cd501
 +		Object.assign(process.env, saved);
 +	}
 +}
-+it("quota advances for notices; recap tries Haiku and Luna and retains local fallback", async () => {
-+	const complete = vi.fn().mockRejectedValueOnce(new Error("quota")).mockResolvedValueOnce(response("notice"));
-+	const { f, records, cards } = setup(complete);
-+	f.event({ type: "agent_start" });
-+	f.event(result("a", true));
-+	f.event(result("a", true));
-+	await triggerNotice(f);
-+	f.event({ type: "agent_settled", aborted: false });
-+	await settle();
-+	expect(complete).toHaveBeenCalledTimes(4);
-+	expect(records[0].model).toBe("anthropic/claude-haiku-4-5");
-+	expect(cards[0].kind).toBe("notice");
-+	complete.mockReset().mockRejectedValue(new Error("auth missing"));
-+	f.event({ type: "agent_start" });
-+	f.event(result("b", true));
-+	await triggerNotice(f);
-+	f.event({ type: "agent_settled", aborted: false });
-+	await settle();
-+	expect(complete).toHaveBeenCalledTimes(5);
-+	expect(records.at(-1)?.model).toBe("local");
-+	expect(cards.at(-1)?.evidence).toContain("4 tools encerradas; 1 com erro");
-+});
-+it.each(["not JSON", "null", JSON.stringify({ ...payload("recap"), evidence: " " })])(
-+	"discards invalid JSON %s",
-+	async (text) => {
-+		const { f, cards, complete } = setup(vi.fn(async () => fauxAssistantMessage([fauxText(text)])));
-+		f.event({ type: "agent_start" });
-+		await triggerNotice(f);
-+		expect(cards).toEqual([]);
-+		expect(complete).toHaveBeenCalledOnce();
-+	},
-+);
-+it("limits default notices to three attempts, requiring new results and 45 seconds each time", async () => {
-+	vi.useFakeTimers();
-+	vi.setSystemTime(0);
-+	let count = 0;
-+	const complete = vi.fn(async () =>
-+		fauxAssistantMessage([fauxText(JSON.stringify({ ...payload(), summary: `Aviso ${++count}` }))]),
++it("counts unique tool failures locally and resets them between runs", async () => {
++	const { f, records, cards, complete } = setup(
++		vi.fn(() => {
++			throw new Error("auth must not be used");
++		}),
 +	);
-+	const { f, cards } = setup(complete);
 +	f.event({ type: "agent_start" });
-+	f.event(result("a"));
++	f.event(result("a", true));
++	f.event(result("a", true));
++	await triggerNotice(f);
++	f.event({ type: "agent_settled", aborted: false });
++	await settle();
++	expect(cards).toHaveLength(1);
++	expect(cards[0].evidence).toContain("4 tools encerradas; 1 com erro");
++	expect(cards[0].summary).toContain("erros nas ferramentas");
++	f.event({ type: "agent_start" });
 +	f.event(result("b"));
-+	vi.advanceTimersByTime(45000);
++	f.event({ type: "agent_settled", aborted: false });
++	await settle();
++	expect(cards[1].evidence).toContain("1 tools encerradas; 0 com erro");
++	expect(cards[1].summary).toContain("não foi confirmado");
++	expect(records.every((record) => record.model === "local")).toBe(true);
 +	expect(complete).not.toHaveBeenCalled();
-+	f.event(result("c"));
-+	await settle();
-+	expect(complete).toHaveBeenCalledTimes(1);
-+	// Duplicate tool ids and elapsed time alone are not new evidence.
-+	vi.advanceTimersByTime(45000);
-+	f.event(result("c"));
-+	f.event(result("d"));
-+	f.event(result("e"));
-+	expect(complete).toHaveBeenCalledTimes(1);
-+	f.event(result("f"));
-+	await settle();
-+	for (const id of ["g", "h", "i"]) f.event(result(id));
-+	vi.advanceTimersByTime(44999);
-+	f.event(result("j"));
-+	expect(complete).toHaveBeenCalledTimes(2);
-+	vi.advanceTimersByTime(1);
-+	f.event(result("k"));
-+	await settle();
-+	vi.advanceTimersByTime(45000);
-+	for (let i = 0; i < 6; i++) f.event(result(`capped${i}`));
-+	await settle();
-+	expect(complete).toHaveBeenCalledTimes(3);
-+	expect(cards.map((c) => c.summary)).toEqual(["Aviso 1", "Aviso 2", "Aviso 3"]);
-+	complete.mockImplementation(async () => response("recap"));
-+	f.event({ type: "agent_settled", aborted: false });
-+	await settle();
-+	expect(cards.at(-1)?.kind).toBe("recap");
-+	// A new run resets the budget, time and evidence baselines, even at epoch zero.
-+	f.event({ type: "agent_start" });
-+	complete.mockImplementation(async () => response("notice"));
-+	vi.advanceTimersByTime(45000);
-+	for (const id of ["a", "b", "c"]) f.event(result(id));
-+	await settle();
-+	expect(complete).toHaveBeenCalledTimes(6);
 +});
-+it.each([
-+	["0", 0],
-+	["1", 1],
-+	["10", 10],
-+	["99", 10],
-+	["-1", 3],
-+	["bad", 3],
-+	["1.5", 3],
-+	["", 3],
-+])("bounds MAX_NOTICES=%s to %i attempts without disabling recap", async (value, expected) => {
-+	vi.useFakeTimers();
-+	vi.stubEnv("PI_TUI_FEEDBACK_MAX_NOTICES", value);
-+	vi.stubEnv("PI_TUI_FEEDBACK_MIN_MS", "1");
-+	vi.stubEnv("PI_TUI_FEEDBACK_TOOL_RESULTS", "1");
-+	const { f, complete, cards } = setup(vi.fn(async () => response("notice")));
-+	f.event({ type: "agent_start" });
-+	for (let i = 0; i < 12; i++) {
-+		vi.advanceTimersByTime(1);
-+		f.event(result(String(i)));
-+		await settle();
-+	}
-+	expect(complete).toHaveBeenCalledTimes(expected);
-+	// Repeated summaries still consume attempts, but are displayed only once.
-+	expect(cards).toHaveLength(expected ? 1 : 0);
-+	complete.mockImplementation(async () => response("recap"));
-+	f.event({ type: "agent_settled", aborted: false });
-+	await settle();
-+	expect(cards.at(-1)?.kind).toBe("recap");
-+});
-+it("does not start concurrent notice observations or spend their budget", async () => {
-+	vi.useFakeTimers();
-+	vi.stubEnv("PI_TUI_FEEDBACK_MIN_MS", "1");
-+	vi.stubEnv("PI_TUI_FEEDBACK_TOOL_RESULTS", "1");
-+	vi.stubEnv("PI_TUI_FEEDBACK_TIMEOUT_MS", "1000000");
-+	let finish!: (value: ReturnType<typeof response>) => void;
-+	const complete = vi.fn(
-+		() =>
-+			new Promise<ReturnType<typeof response>>((resolve) => {
-+				finish = resolve;
-+			}),
-+	);
-+	const { f } = setup(complete);
-+	f.event({ type: "agent_start" });
-+	vi.advanceTimersByTime(1);
-+	f.event(result("first"));
-+	vi.advanceTimersByTime(100);
-+	for (let i = 0; i < 5; i++) f.event(result(String(i)));
-+	expect(complete).toHaveBeenCalledOnce();
-+	finish(response("notice"));
-+	await settle();
-+	f.event(result("next"));
-+	expect(complete).toHaveBeenCalledTimes(2);
-+	finish(response("notice"));
-+	await settle();
-+});
-+it.each(["util", "nao-util", "dispensar"])(
-+	"replaces the visible notice and rates only the replacement via %s",
-+	async (rating) => {
++it.each(["0", "1", "10", "99", "-1", "bad", "1.5", ""])(
++	"notice settings never enable inference or suppress local recap: %s",
++	async (value) => {
 +		vi.useFakeTimers();
++		vi.stubEnv("PI_TUI_FEEDBACK_MAX_NOTICES", value);
 +		vi.stubEnv("PI_TUI_FEEDBACK_MIN_MS", "1");
 +		vi.stubEnv("PI_TUI_FEEDBACK_TOOL_RESULTS", "1");
-+		const complete = vi
-+			.fn()
-+			.mockResolvedValueOnce(response("notice"))
-+			.mockResolvedValueOnce(
-+				fauxAssistantMessage([fauxText(JSON.stringify({ ...payload(), summary: "Outro aviso." }))]),
-+			);
-+		const { f, host, cards, records } = setup(complete);
-+		for (const id of ["first", "second"]) {
-+			if (id === "first") f.event({ type: "agent_start" });
-+			vi.advanceTimersByTime(1);
-+			f.event(result(id));
++		const { f, complete, cards } = setup();
++		f.event({ type: "agent_start" });
++		for (let i = 0; i < 12; i++) {
++			vi.advanceTimersByTime(45000);
++			f.event(result(String(i)));
 +			await settle();
 +		}
-+		expect(cards.map((c) => c.summary)).toEqual([payload().summary, "Outro aviso."]);
-+		f.action(rating);
-+		expect(records.at(-1)).toMatchObject({ id: records[1].id, rating });
-+		cards.length = 0;
-+		f.configure(host, records);
-+		expect(cards).toHaveLength(0); // Neither the rated replacement nor the superseded notice returns.
++		expect(cards).toEqual([]);
++		f.event({ type: "agent_settled", aborted: false });
++		await settle();
++		expect(cards).toHaveLength(1);
++		expect(cards[0].kind).toBe("recap");
++		expect(complete).not.toHaveBeenCalled();
 +	},
 +);
-+it("ignores cancelled notice results on completion and session switch", async () => {
-+	vi.useFakeTimers();
-+	vi.stubEnv("PI_TUI_FEEDBACK_MIN_MS", "1");
-+	vi.stubEnv("PI_TUI_FEEDBACK_TOOL_RESULTS", "1");
-+	let finish!: (value: ReturnType<typeof response>) => void;
-+	const complete = vi
-+		.fn()
-+		.mockImplementationOnce(
-+			() =>
-+				new Promise((resolve) => {
-+					finish = resolve;
-+				}),
-+		)
-+		.mockResolvedValueOnce(response("recap"));
-+	const { f, cards, host } = setup(complete);
++it.each(["util", "nao-util", "dispensar"])("rates only the latest restored notice via %s", (rating) => {
++	const { f, host, records, cards, complete } = setup();
++	const saved: FeedbackRecord[] = ["first", "second"].map((id) => ({
++		session: host.session,
++		run: "saved-run",
++		id,
++		model: "legacy",
++		timestamp: 1,
++		card: { ...payload(), summary: id, actions: "" },
++	}));
++	f.configure(host, saved);
++	expect(cards.map((card) => card.summary)).toEqual(["second"]);
++	f.action(rating);
++	expect(records.at(-1)).toMatchObject({ id: "second", rating });
++	cards.length = 0;
++	f.configure(host, [...saved, ...records]);
++	expect(cards).toEqual([]);
++	expect(complete).not.toHaveBeenCalled();
++});
++it("session switch discards the old run without scheduling inference", async () => {
++	const { f, host, cards, complete } = setup();
 +	f.event({ type: "agent_start" });
-+	vi.advanceTimersByTime(1);
-+	f.event(result("x"));
-+	const signal = complete.mock.calls[0][2].signal as AbortSignal;
-+	f.event({ type: "agent_settled", aborted: false });
-+	expect(signal.aborted).toBe(true);
-+	finish(response("notice"));
-+	await settle();
-+	expect(cards.map((c) => c.kind)).toEqual(["recap"]);
-+	complete.mockImplementation(
-+		() =>
-+			new Promise((resolve) => {
-+				finish = resolve;
-+			}),
-+	);
-+	f.event({ type: "agent_start" });
-+	vi.advanceTimersByTime(1);
-+	f.event(result("new-notice"));
++	await triggerNotice(f);
 +	f.configure({ ...host, session: "other" });
-+	finish(response("notice"));
-+	await settle();
-+	expect(cards).toHaveLength(1);
-+});
-+it("timeout advances even when the provider ignores cancellation", async () => {
-+	vi.useFakeTimers();
-+	vi.stubEnv("PI_TUI_FEEDBACK_TIMEOUT_MS", "10");
-+	const complete = vi
-+		.fn()
-+		.mockImplementationOnce(() => new Promise(() => {}))
-+		.mockResolvedValueOnce(response("notice"));
-+	const { f, cards } = setup(complete);
-+	f.event({ type: "agent_start" });
-+	await triggerNotice(f);
-+	await vi.advanceTimersByTimeAsync(10);
-+	await settle();
-+	expect(complete).toHaveBeenCalledTimes(2);
-+	expect(cards).toHaveLength(1);
-+});
-+it("provider cancellation does not spend the rest of the fallback chain", async () => {
-+	const complete = vi.fn(async () => fauxAssistantMessage([], { stopReason: "aborted" }));
-+	const { f, cards } = setup(complete);
-+	f.event({ type: "agent_start" });
-+	await triggerNotice(f);
 +	f.event({ type: "agent_settled", aborted: false });
 +	await settle();
-+	expect(complete).toHaveBeenCalledTimes(2); // Provider abort stops both independent observations before fallback.
++	expect(cards).toEqual([]);
++	f.event({ type: "agent_start" });
++	f.event({ type: "agent_settled", aborted: false });
++	await settle();
 +	expect(cards).toHaveLength(1);
-+	expect(cards[0].details).toContain("fallback");
++	expect(complete).not.toHaveBeenCalled();
 +});
 +it.each(["command", "env"])("off via %s prevents calls, including on override", async (how) => {
 +	if (how === "env") vi.stubEnv("PI_TUI_FEEDBACK", "0");
@@ -1968,8 +1816,8 @@ index 0000000000000000000000000000000000000000..486e00aab130dd37c424c70f4b2cd501
 +	for (let i = 0; i < 30; i++) f.message({ role: "user", content: "x".repeat(10000) });
 +	await triggerNotice(f);
 +	await settle();
-+	const args = complete.mock.calls as unknown as [unknown, { messages: { content: string }[] }][];
-+	const sent = args[0][1].messages[0].content;
++	expect(complete).not.toHaveBeenCalled();
++	const sent = (f as unknown as { excerpt: string[] }).excerpt.join("\n");
 +	expect(sent).not.toMatch(/supersecret|PRIVATE THOUGHT/);
 +	expect(sent.length).toBeLessThan(13000);
 +});
@@ -2080,8 +1928,8 @@ index 0000000000000000000000000000000000000000..486e00aab130dd37c424c70f4b2cd501
 +		},
 +	} as AgentSessionEvent);
 +	await triggerNotice(f);
-+	const sent = (complete.mock.calls as unknown as [unknown, { messages: { content: string }[] }][])[0][1].messages[0]
-+		.content;
++	expect(complete).not.toHaveBeenCalled();
++	const sent = (f as unknown as { excerpt: string[] }).excerpt.join("\n");
 +	for (const secret of ["quotedsecret", "plainsecret", "jsonsecret", "headersecret", "urlsecret"])
 +		expect(sent).not.toContain(secret);
 +	expect(redactFeedback('API_KEY="quotedsecret"')).not.toContain("quotedsecret");
@@ -2113,8 +1961,8 @@ index 0000000000000000000000000000000000000000..486e00aab130dd37c424c70f4b2cd501
 +		result: { content: [{ type: "text", text: "ADMIN_PASSWORD=hunter2\nSTRIPE=sk_live_nakedvalue" }] },
 +	} as AgentSessionEvent);
 +	await triggerNotice(f);
-+	const sent = (complete.mock.calls as unknown as [unknown, { messages: { content: string }[] }][])[0][1].messages[0]
-+		.content;
++	expect(complete).not.toHaveBeenCalled();
++	const sent = (f as unknown as { excerpt: string[] }).excerpt.join("\n");
 +	expect(sent).not.toContain("hunter2");
 +	expect(sent).not.toContain("sk_live_nakedvalue");
 +	expect(sent).toContain("resultado omitido");
@@ -2138,8 +1986,8 @@ index 0000000000000000000000000000000000000000..486e00aab130dd37c424c70f4b2cd501
 +		result: { role: "toolResult", toolCallId: "call-1", content: [{ type: "text", text: "PRIVATE_KEY_BODY" }] },
 +	} as unknown as AgentSessionEvent);
 +	await triggerNotice(f);
-+	const sent = (complete.mock.calls as unknown as [unknown, { messages: { content: string }[] }][])[0][1].messages[0]
-+		.content;
++	expect(complete).not.toHaveBeenCalled();
++	const sent = (f as unknown as { excerpt: string[] }).excerpt.join("\n");
 +	expect(sent).not.toContain("PRIVATE_KEY_BODY");
 +	expect(sent).toContain("resultado omitido");
 +});

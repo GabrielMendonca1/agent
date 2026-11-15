@@ -38,7 +38,7 @@
 		{
 			"name": "transcript-feedback",
 			"path": "overlay/transcript-feedback.patch",
-			"sha256": "5565e7ecba094ecc3b3fa7396b8e1f461db8ae2a5fcfc34f362f8d713703a8a6",
+			"sha256": "06ded099fb11def86737a64328a731efbb292ac6c60d2a82fc1dad5fd7f12be7",
 			"description": "Transcript rendering, masking and local recap only. No auxiliary inference for recaps or notices.",
 			"tests": [
 				"packages/coding-agent/test/run-feedback.test.ts",
@@ -101,7 +101,7 @@
 				"packages/coding-agent/test/suite/agent-session-prompt.test.ts",
 				"packages/coding-agent/test/suite/agent-session-mcp.test.ts"
 			],
-			"sha256": "adc3a8b07f9e2cef7d16e39fc4878570a1d7422941d7806a353b707c2a2bb94e"
+			"sha256": "0380c1a9af3b4d6d2defd63fe58c861e8f689d1f0b9772dbcb4bd0b071261cff"
 		},
 		{
 			"name": "cc-hidden-tool-names",

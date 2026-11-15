@@ -127,14 +127,6 @@ index 868812919f5a598d674e8eaaed3d452cf1df8e14..887e4f156fae6abab60d97fd5e621256
  				!this.pending &&
  				!this.interrupted &&
  				this.results.size - this.resultsAtObservation >= numberEnv("PI_TUI_FEEDBACK_TOOL_RESULTS", 3) &&
-@@ -744,7 +745,6 @@ export class RunFeedback {
- 				if (this.pending === controller) this.pending = undefined;
- 			}
- 		}
--
- 	}
- 	action(action: string): string {
- 		if (action === "off") {
 diff --git a/packages/coding-agent/test/garime-frame.test.ts b/packages/coding-agent/test/garime-frame.test.ts
 index b8ea046374583f4e43e04b72a7ccc3adb05787f8..5e3dc348613ec6b41a094ccae3b011a04bb833ae 100644
 --- a/packages/coding-agent/test/garime-frame.test.ts
