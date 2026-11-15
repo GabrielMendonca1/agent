@@ -12,7 +12,7 @@ import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
 const repo = resolve(dirname(fileURLToPath(import.meta.url)), '..');
-const root = process.env.AGENT_JUICE_PI_ROOT || join(homedir(), '.local/share/agent/current/lib/node_modules/@earendil-works/pi-coding-agent');
+const root = process.env.AGENT_PI_ROOT || process.env.AGENT_JUICE_PI_ROOT || join(homedir(), '.local/share/agent/current/lib/node_modules/@earendil-works/pi-coding-agent');
 const load = async p => import(pathToFileURL(p).href);
 const { loadExtensions, createExtensionRuntime } = await load(join(root, 'dist/core/extensions/loader.js'));
 const { createEventBus } = await load(join(root, 'dist/core/event-bus.js'));
@@ -22,8 +22,8 @@ initTheme('dark', false);
 const dir = mkdtempSync(join(tmpdir(), 'agent-model-roles-'));
 const savedEnv = { ...process.env };
 const modelsPath = join(repo, 'agent/extensions/brain-live/models.ts');
-const vault = join(dir, 'Sistema/Pi');
-const file = join(vault, 'models.json');
+const vault = join(dir, '.agent');
+const file = join(vault, 'agent-models.json');
 const tier = (label, model, thinking) => ({ label, description: 'd', model, thinking });
 const fixture = () => ({
   tiers: {
@@ -104,13 +104,11 @@ let checks = 0;
 try {
   mkdirSync(vault, { recursive: true });
   writeFixture();
-  process.env.PI_SYSTEM_DIR = join(dir, 'Sistema');
-  process.env.AGENT_JUICE_ENABLED = '1';
-  process.env.AGENT_JUICE_BIN = join(dir, 'broker');
-  process.env.AGENT_JUICE_HOME = join(dir, 'juice');
-  process.env.AGENT_JUICE_STATE = join(dir, 'juice/state.json');
-  mkdirSync(process.env.AGENT_JUICE_HOME, { recursive: true });
-  writeFileSync(join(process.env.AGENT_JUICE_HOME, 'preferences.json'), JSON.stringify({ mode: 'complex', supportModel: 'test/haiku' }));
+  process.env.HOME = dir;
+  process.env.PI_CODING_AGENT_DIR = vault;
+  process.env.AGENT_RUNTIME_ENABLED = '1';
+  delete process.env.AGENT_JUICE_ENABLED;
+  writeFileSync(join(vault, 'agent-preferences.json'), JSON.stringify({ supportModel: 'test/haiku' }));
 
   const loaded = await loadExtensions([modelsPath], dir, createEventBus(), runtime);
   assert.deepEqual(loaded.errors, []);
@@ -228,7 +226,7 @@ try {
   checks++; console.log('ok config inválida: erro explícito no painel, Enter recusa, arquivo intocado');
 
   // 7. Legado (sem piloto): Default + tiers seguem funcionando, com os papéis visíveis.
-  delete process.env.AGENT_JUICE_ENABLED;
+  delete process.env.AGENT_RUNTIME_ENABLED;
   writeFixture();
   const legacy = await loadExtensions([modelsPath], dir, createEventBus(), runtime);
   assert.deepEqual(legacy.errors, []);

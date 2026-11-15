@@ -6,7 +6,7 @@ import { createRequire } from 'node:module';
 import { homedir, tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { userCommandEnv } from '../agent/juice/child-env.mjs';
+import { userCommandEnv, subagentEnv } from '../agent/juice/child-env.mjs';
 
 const repo = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const rt = '/tmp/x/agent/juice/runtime.mjs';
@@ -24,12 +24,32 @@ assert.deepEqual(s, { PI_AUTOMATIC_SKILLS: 'a,b', KEEP: '1' });
 const original = { NODE_OPTIONS: url, AGENT_JUICE_SKILLS_BEFORE: 'null', PI_AUTOMATIC_SKILLS: 'peers' };
 run(original);
 assert.equal(original.NODE_OPTIONS, url); // não muta
-assert.deepEqual(run({ AGENT_JUICE_SKILLS_BEFORE: '{' , A: '1'}), { AGENT_JUICE_SKILLS_BEFORE: '{', A: '1' }); // best-effort
+for (const snapshot of ['{', '{}', '1', 'true']) {
+  const env = { AGENT_JUICE_SKILLS_BEFORE: snapshot, PI_AUTOMATIC_SKILLS: 'unsafe', A: '1' };
+  assert.throws(() => run(env), snapshot === '{' ? SyntaxError : /snapshot de curadoria inválido/);
+  assert.equal(env.PI_AUTOMATIC_SKILLS, 'unsafe', 'failed restoration does not mutate parent');
+}
+const parent = {
+  NODE_OPTIONS: url, AGENT_RUNTIME_ENABLED: '1', AGENT_PI_ROOT: '/pi',
+  AGENT_SUBAGENTS: '1', AGENT_CACHE_PREFETCH: '1', AGENT_JUICE_STATE: '/legacy',
+  AGENT_JUICE_SKILLS_BEFORE: 'null', PI_AUTOMATIC_SKILLS: 'peers', KEEP: 'yes',
+};
+assert.deepEqual(run({ ...parent, AGENT_CHILD: '1' }), { KEEP: 'yes' });
+const child = subagentEnv(parent);
+assert.equal(child.NODE_OPTIONS, url, 'Agent child retains preload');
+assert.equal(child.AGENT_CHILD, '1');
+assert.equal(child.AGENT_SUBAGENTS, '0', 'no recursive delegation');
+assert.equal(child.AGENT_RUNTIME_ENABLED, '1');
+assert.equal(child.AGENT_PI_ROOT, '/pi');
+assert.equal(child.PI_AUTOMATIC_SKILLS, 'peers', 'Agent child retains skill policy');
+assert.equal(child.AGENT_JUICE_STATE, undefined, 'no accounting env');
+assert.equal(child.AGENT_JUICE_SKILLS_BEFORE, 'null');
+assert.equal(parent.AGENT_SUBAGENTS, '1', 'parent opt-in remains intact');
 console.log('ok userCommandEnv');
 
 const store = process.env.AGENT_STORE ? resolve(process.env.AGENT_STORE) : join(homedir(), '.local/share/agent');
 const rel = 'lib/node_modules/@earendil-works/pi-coding-agent';
-let piRoot = process.env.AGENT_JUICE_PI_ROOT;
+let piRoot = process.env.AGENT_PI_ROOT || process.env.AGENT_JUICE_PI_ROOT;
 if (!piRoot && existsSync(join(store, 'current', rel, 'dist/index.js'))) piRoot = join(store, 'current', rel);
 if (!piRoot) { console.log('skip: Pi não encontrado'); process.exit(0); }
 piRoot = realpathSync(piRoot);
@@ -45,6 +65,11 @@ try {
   process.env.NODE_OPTIONS = `--no-warnings --import=file://${fake}`;
   process.env.PI_AUTOMATIC_SKILLS = 'peers,megamind,prometheus,tasks';
   process.env.AGENT_JUICE_SKILLS_BEFORE = 'null';
+  process.env.AGENT_RUNTIME_ENABLED = '1';
+  process.env.AGENT_PI_ROOT = piRoot;
+  process.env.AGENT_SUBAGENTS = '1';
+  process.env.AGENT_CHILD = '1';
+  process.env.AGENT_CACHE_PREFETCH = '1';
 
   const req = createRequire(join(piRoot, 'package.json'));
   const { createJiti } = req('jiti');
@@ -58,7 +83,7 @@ try {
   const shell = await jiti.import(join(repo, 'agent/extensions/brain-live/shell-runtime.ts'));
   const display = await jiti.import(join(repo, 'agent/extensions/agent/tui/claude-cards.ts'));
 
-  const probe = `node -e 'console.log(JSON.stringify({o:process.env.NODE_OPTIONS??null,s:process.env.PI_AUTOMATIC_SKILLS??null,j:Object.keys(process.env).filter(k=>k.startsWith("AGENT_JUICE_"))}))'`;
+  const probe = `node -e 'console.log(JSON.stringify({o:process.env.NODE_OPTIONS??null,s:process.env.PI_AUTOMATIC_SKILLS??null,j:Object.keys(process.env).filter(k=>k.startsWith("AGENT_JUICE_")||["AGENT_RUNTIME_ENABLED","AGENT_PI_ROOT","AGENT_CHILD","AGENT_SUBAGENTS","AGENT_CACHE_PREFETCH"].includes(k))}))'`;
   for (const compact of ['1', '0', 'absent']) {
     process.env.GARIME_CLAUDE_STYLE = compact === '0' ? '0' : '1';
     const tools = new Map();
