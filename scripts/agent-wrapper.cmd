@@ -38,19 +38,18 @@ if /i "%~1"=="overlay-gc" goto :overlay_gc
 if /i "%~1"=="update" goto :update
 goto :normal
 
-rem Caminho normal, depois do dispatch de manutencao: o Agent entra aqui e somente com opt-in
-rem explicito (o arquivo de configuracao do store). AGENT_DISABLED=1 e o escape documentado;
-rem quem valida artefato/broker/config e falha fechado e o launcher, nunca este .cmd.
 :normal
-if defined AGENT_DISABLED (if /i "%AGENT_DISABLED%"=="1" goto :delegate)
-if not exist "%AGENT_CONFIG%" goto :delegate
-if not exist "%AGENT_LAUNCHER%" goto :agent_missing
+rem O helper tambem limpa os preloads herdados no opt-out e sem config.
+if exist "%AGENT_LAUNCHER%" goto :agent_launch
+if exist "%AGENT_CONFIG%" goto :agent_missing
+goto :delegate
+:agent_launch
 node "%AGENT_LAUNCHER%" --store "%STORE%" -- %*
 exit /b
 
 :agent_missing
 echo Agent esta habilitado em "%AGENT_CONFIG%", mas "%AGENT_LAUNCHER%" nao existe neste bundle. 1>&2
-echo Reinstale o overlay (node "%UPDATER%") ou rode sem Agent: set AGENT_DISABLED=1 1>&2
+echo Reinstale o bundle com o launcher correspondente. 1>&2
 exit /b 1
 
 :overlay_update
@@ -112,11 +111,11 @@ goto :update_scan
 :update_done
 if /i "%MODE%"=="delegate" goto :delegate
 if /i "%MODE%"=="all" goto :update_all
-node "%UPDATER%"
+node "%UPDATER%" --install-artifact latest
 exit /b
 
 :update_all
-node "%UPDATER%"
+node "%UPDATER%" --install-artifact latest
 if errorlevel 1 exit /b
 if not exist "%ACTIVE_PI%" goto :missing
 call "%ACTIVE_PI%" update %EXTRA%

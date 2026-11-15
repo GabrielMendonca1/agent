@@ -3,12 +3,12 @@
  * Launcher gerenciado do Agent. O wrapper do overlay chama este script no caminho normal (nunca
  * nas rotas de manutenção) e ele decide, uma única vez por processo, o que executar:
  *
- *   pi <args>  ->  node <release física>/dist/bundle/cli.js <args>  com AGENT_JUICE_* do artefato
+ *   pi <args>  ->  node <release física>/dist/cli.js <args> com AGENT_RUNTIME_ENABLED/AGENT_PI_ROOT (v3)
  *   opt-out    ->  <store>/current/bin/pi <args>                    sem nenhuma AGENT_JUICE_*
  *
  * Não existe fallback silencioso: configuração inválida, artefato alterado, broker de outra
  * arquitetura ou `piRoot` mutável abortam com diagnóstico e código 70. Um `pi` que anuncia
- * contabilização e roda sem ela é pior do que um `pi` que não abre.
+ * runtime e roda sem ele é pior do que um `pi` que não abre.
  *
  * O filho recebe o ambiente REAL (HOME, agent dir, modelos, thinking, NODE_OPTIONS do usuário
  * preservados), herda stdio e os sinais do terminal; o código de saída é propagado tal e qual.

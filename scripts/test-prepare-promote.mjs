@@ -57,7 +57,7 @@ export function prepareAgentArtifact({ sourceRoot, store, piRoot }) {
 		writeFileSync(join(ipython, "index.ts"), "// old ipython extension\\n");
 	}
 	const manifestPath = join(artifactRoot, "manifest.json");
-	writeFileSync(manifestPath, JSON.stringify({ artifactId, piRoot: resolve(piRoot), platform: process.platform }, null, 2));
+	writeFileSync(manifestPath, JSON.stringify({ version: 3, artifactId, piRoot: resolve(piRoot), platform: process.platform }, null, 2));
 	return { artifactId, artifactRoot, piRoot: resolve(piRoot), manifestPath };
 }
 export function validateAgentArtifact({ store, artifactId, piRoot }) {
@@ -73,7 +73,7 @@ export function readAgentConfig(store) {
 	const file = configFile(store);
 	if (!existsSync(file)) return null;
 	const config = JSON.parse(readFileSync(file, "utf8"));
-	if (config.version !== 1) throw new Error("stub: unsupported config version");
+	if (![1,2].includes(config.version)) throw new Error("stub: unsupported config version");
 	return config;
 }
 export function writeAgentConfig({ store, config }) {
@@ -212,7 +212,7 @@ export function rollbackAgentResources({ receiptPath }) {
 		const f = make(true);
 		json(join(f.store, "layers.json"), { optional: [] });
 		const promoted = cli(f.store, ["--promote", f.id]);
-		assert.match(promoted.stdout, /agent Agent: promoted prepared release/);
+		assert.match(promoted.stdout, /agent: promoted prepared release/);
 		assert.equal(realpathSync(join(f.store, "current")), f.release);
 		assert.equal(api.digestTree(f.release), f.metadata.treeDigest);
 		assert.deepEqual(load(join(f.store, "layers.json")).optional, ["optional"]);
@@ -411,23 +411,24 @@ export function rollbackAgentResources({ receiptPath }) {
 	test("agent enable installs the helpers in the bundle, validates the artifact first and records the opt-in", () => {
 		const f = promoted();
 		const h = host("enable");
-		const result = cliWith(f.store, ["--agent-enable", "--juice-home", h.juice], h.env);
+		const result = cliWith(f.store, ["--agent-enable", "--juice-home", join(h.home, "does-not-exist")], h.env);
+		assert.match(result.stderr, /deprecated and ignored/);
 		assert.match(result.stdout, /Agent enabled over/);
 		const active = load(join(f.store, "active.json"));
 		for (const relative of ["scripts/lib/agent-runtime.mjs", "scripts/lib/agent-resources.mjs", "scripts/agent-launch.mjs"]) {
 			assert.ok(existsSync(join(active.overlayRepo, relative)), `${relative} is missing from the installed bundle`);
 		}
 		const config = agentConfig(f.store);
-		assert.equal(config.version, 1);
+		assert.equal(config.version, 2);
 		assert.equal(config.enabled, true);
 		// O paré com o host clássico (pacote instalado), não com a raiz da release.
 		assert.equal(config.piRoot, f.pkg);
-		assert.equal(config.juiceHome, h.juice);
+		assert.equal(config.juiceHome, undefined);
 		assert.ok(isAbsolute(config.resourceReceipt));
 		assert.ok(existsSync(config.resourceReceipt));
 		assert.ok(existsSync(join(f.store, "runtime", "releases", config.artifactId, "agent")));
 		assert.ok(existsSync(registryOf(h.home)));
-		assert.deepEqual(active.agent, { enabled: true, artifactId: config.artifactId, piRoot: config.piRoot, juiceHome: h.juice, resourceReceipt: config.resourceReceipt });
+		assert.deepEqual(active.agent, { enabled: true, artifactId: config.artifactId, piRoot: config.piRoot, resourceReceipt: config.resourceReceipt });
 		assert.equal(active.releaseDir, f.release);
 		// Backup seletivo: launcher/active/config e o diretório do recibo; nada de settings inteiro.
 		const backups = readdirSync(join(f.store, "backups")).filter((name) => name.includes("agent-enable"));
@@ -547,7 +548,7 @@ export function rollbackAgentResources({ receiptPath }) {
 		assert.ok(existsSync(registryOf(h.home)));
 	});
 	test("agent CLI shape: exclusive modes, absolute --juice-home, no build flags", () => {
-		assert.throws(() => api.parseArgs(["--agent-enable"]), /--juice-home/);
+		assert.doesNotThrow(() => api.parseArgs(["--agent-enable"]));
 		assert.throws(() => api.parseArgs(["--agent-enable", "--juice-home", "relative/juice"]), /absolute/);
 		assert.throws(() => api.parseArgs(["--agent-enable", "--juice-home", "/tmp/a/../b"]), /absolute/);
 		assert.throws(() => api.parseArgs(["--juice-home", "/tmp/juice"]), /only valid with --agent-enable/);
@@ -587,7 +588,7 @@ export function rollbackAgentResources({ receiptPath }) {
 		assert.match(ok.stdout, /skipping the legacy agent-setup\/skills\/extensions sync/);
 		const after = agentConfig(f.store);
 		assert.equal(after.enabled, true);
-		assert.equal(after.juiceHome, h.juice);
+		assert.equal(after.juiceHome, undefined);
 		assert.equal(after.resourceReceipt, first.resourceReceipt);
 		assert.equal(after.piRoot, join(realpathSync(next), "lib", "node_modules", "fixture-pi"));
 		assert.notEqual(after.artifactId, first.artifactId);
@@ -756,7 +757,7 @@ export function rollbackAgentResources({ receiptPath }) {
 		const disabled = agentConfig(f.store);
 		assert.equal(disabled.enabled, false);
 		assert.equal(disabled.artifactId, config.artifactId);
-		assert.equal(disabled.juiceHome, h.juice);
+		assert.equal(disabled.juiceHome, undefined);
 		assert.ok(existsSync(join(f.store, "runtime", "releases", config.artifactId, "agent")), "opt-out must not delete the artifact");
 		cliWith(f.store, ["--agent-disable"], h.env);
 		assert.equal(load(join(f.store, "active.json")).agent.enabled, false);
@@ -794,7 +795,7 @@ export function rollbackAgentResources({ receiptPath }) {
 		const status = await api.agentStatusReport(f.store);
 		assert.match(status, /Agent: enabled/);
 		assert.match(status, /artifact valid/);
-		assert.match(status, new RegExp(h.juice.replaceAll("/", "\\/")));
+		assert.match(status, /contract v2/);
 		const config = agentConfig(f.store);
 		rmSync(join(f.store, "runtime", "releases", config.artifactId), { recursive: true, force: true });
 		assert.match(await api.agentStatusReport(f.store), /artifact INVALID/);

@@ -139,6 +139,7 @@ export function agentExtensionCandidates(agentRoot) {
 	const candidates = [
 		...extensionsIn(join(agentRoot, EXTENSIONS_SUBDIR, AGENT_TREE)),
 		...extensionsIn(join(agentRoot, EXTENSIONS_SUBDIR, BRAIN_LIVE_TREE)),
+		...extensionsIn(join(agentRoot, EXTENSIONS_SUBDIR, "standard")),
 	];
 	const seen = new Set();
 	const unique = [];
@@ -523,7 +524,9 @@ export function planAgentResources({ agentRoot, agentDir, homeDir }) {
 	}
 
 	// Keybindings reservadas que bloqueariam os atalhos do Agent (duas chaves, reversíveis).
-	const keybindings = planKeybindings({ agentDir: agent, limitations });
+	let lean = false;
+	try { lean = JSON.parse(readFileSync(join(root, "..", "manifest.json"), "utf8")).version >= 3; } catch {}
+	const keybindings = lean ? { path: join(agent, KEYBINDINGS_FILE), report: [], changes: [], cas: [] } : planKeybindings({ agentDir: agent, limitations });
 
 	// O wrapper codemode-mode registra o codemode por modelo; o builtin do Pi não pode subir ao lado.
 	if (extensionsReport.some((item) => item.name === "codemode-mode" && ["register", "already-registered", "exclude-only"].includes(item.action))

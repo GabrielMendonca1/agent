@@ -15,7 +15,7 @@ A coluna "Hoje" descreve o que o Superagent lê agora, numa instalação feita c
 | Extensões de worker | `<raiz>/extensions/brain-live/…` | `<raiz>/extensions/brain-live/…` (na árvore: `agent/extensions/brain-live`) |
 | Skills da release | `<raiz>/skills` | `<raiz>/skills` |
 | Raiz do Pi (SDK) | `<store>/current/lib/node_modules/@earendil-works/pi-coding-agent` | igual, com o store novo |
-| Override da raiz do Pi | `MARK_JUICE_PI_ROOT` | `AGENT_JUICE_PI_ROOT` |
+| Override da raiz do Pi | `MARK_JUICE_PI_ROOT` | `AGENT_PI_ROOT` (v3); `AGENT_JUICE_PI_ROOT` somente legado |
 | Tools exigidas | `checks`, `plan`, `subagent`, `jobs` | inalteradas |
 
 ## Configuração do runtime
@@ -25,7 +25,7 @@ A coluna "Hoje" descreve o que o Superagent lê agora, numa instalação feita c
 - `enabled`: `false` significa runtime desligado; o consumidor falha fechado.
 - `artifactId`: string `^[\w.-]+$`; nomeia o diretório em `releases/`.
 
-Outros campos (`piRoot`, `juiceHome`, `resourceReceipt`) pertencem ao updater e não fazem parte do contrato.
+Configs v2 acompanham artefatos internos v3: não têm `juiceHome`. Configs v1 e artefatos v1/v2 são históricos e preservam o contrato Juice para rollback. `piRoot` e `resourceReceipt` pertencem ao updater; o consumidor não deve editá-los. O preload segue em `agent/juice/runtime.mjs`, mas v3 usa `AGENT_RUNTIME_ENABLED=1` e `AGENT_PI_ROOT` absoluto, sem accounting. Filhos usam `AGENT_CHILD=1`; `AGENT_SUBAGENTS=1` é opt-in. Preferências ficam em `PI_CODING_AGENT_DIR` (default `~/.agent`).
 
 ## Extensões de worker
 
@@ -45,7 +45,7 @@ Depois do carregamento, as tools `checks`, `plan`, `subagent` e `jobs` precisam 
 
 1. Caminho da configuração: `~/.local/share/agent/runtime/config.json`.
 2. Diretório de releases: `~/.local/share/agent/runtime/releases`, subdiretório `agent` em vez do antigo.
-3. Raiz do Pi padrão: `~/.local/share/agent/current/lib/node_modules/@earendil-works/pi-coding-agent`; variável `AGENT_JUICE_PI_ROOT`.
+3. Raiz do Pi padrão: `~/.local/share/agent/current/lib/node_modules/@earendil-works/pi-coding-agent`; variável `AGENT_PI_ROOT` (v3); `AGENT_JUICE_PI_ROOT` somente legado.
 4. Variáveis próprias do consumidor (por exemplo `MARK_SUPERAGENT_MARK_ROOT`) pertencem a ele; o Agent não as define nem lê.
 
 Os stores são diferentes e não há migração automática entre eles. Um consumidor que aceite os dois durante a transição deve escolher um de forma explícita, sem misturar config de um com releases do outro.

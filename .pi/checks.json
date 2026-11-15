@@ -258,6 +258,12 @@
         "juice",
         "fast"
       ]
+    },
+    {
+      "name": "agent-distribution",
+      "cmd": "node scripts/test-install-artifact.mjs",
+      "tags": ["integration", "agent"],
+      "timeoutMs": 180000
     }
   ]
 }

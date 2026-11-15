@@ -1,101 +1,83 @@
-# Setup distribuído do Agent
+# Setup do Agent
 
-`agent/` leva extensões de brain-live e do próprio Agent (`agent/extensions/agent`: accounts, peers, tui, web, whimsical, lib), 7 temas e os papéis planner, reviewer, scout, visual e worker. Não exige checkout de ARCA, Garime ou Sistema. Megamind e skills vêm do mesmo instalador.
+## Instalação privada por artefato
 
-## Instalar no Mac
+O pipeline está implementado, mas **não há release publicada por esta mudança**. Os comandos remotos abaixo só funcionarão depois da publicação aprovada e dos checks de cada plataforma.
 
-Pré-requisitos: Git e Node >= 22.19 (recomendado Node 24), npm no PATH. Com Homebrew já instalado:
+Pré-requisitos: Node externo >=22.19 (recomendado Node 24), Bash em macOS/Linux e GitHub CLI (`gh`) autenticado com acesso a `GabrielMendonca1/agent`. Não precisa de Git, npm, clone ou build na máquina do consumidor. Windows não foi validado; não há bootstrap Windows distribuído.
+
+Após existir uma release aprovada, obtenha `install.sh` pelo canal privado e execute:
 
 ```sh
-brew install git node@24
-export PATH="$(brew --prefix node@24)/bin:$PATH"
-git clone https://github.com/GabrielMendonca1/agent.git "$HOME/agent"
-cd "$HOME/agent"
-node scripts/agent-update.mjs
+gh release download -R GabrielMendonca1/agent -p install.sh -O ./install.sh
+bash ./install.sh
 export PATH="$HOME/.local/bin:$PATH"
 agent
+# Na conversa: /login — sua própria conta do provider
 ```
 
-O updater constrói/testa a release antes de ativar e instala em `~/.local/share/agent`, com o comando `agent` em `~/.local/bin`. O perfil do Agent (settings, auth, sessões, extensões) fica em `~/.agent` (`PI_CODING_AGENT_DIR`, fixado pelo wrapper): rode o updater com `PI_CODING_AGENT_DIR="$HOME/.agent"` para registrar os recursos nesse perfil e não no `~/.pi/agent` de um Pi/Mark já instalado. Abra `/login` para autenticar sua própria conta. Nenhuma credencial vem no bundle. O PATH do Node também precisa estar configurado para terminais futuros (siga as instruções do Homebrew).
+Use `AGENT_VERSION=<tag>` para fixar uma release e `AGENT_RELEASE_REPO=owner/repo` para escolher explicitamente outro canal privado confiável. Não use um mirror não confiável: SHA256SUMS detecta corrupção, **não é assinatura**. O transporte autenticado do `gh` é a origem de confiança. Nenhum download usa HTTP público nem copia auth do Mark. Busca web e Megamind podem exigir configuração própria; não são autenticação do chat.
 
-`agent overlay-update` roda o updater do bundle instalado e não baixa commits novos do checkout; para isso rode `node scripts/agent-update.mjs` no checkout. Para preparar sem ativar: `node scripts/agent-update.mjs --prepare`; depois promover o ID impresso com `node scripts/agent-update.mjs --promote <ID>`.
-
-Para importar conversas do host durável no `/resume` do Pi clássico: no checkout, rode `node scripts/import-durable-sessions.mjs --dry-run`, depois `node scripts/import-durable-sessions.mjs --limit 1`; valide uma cópia temporária do JSONL com `agent --session <copia.jsonl> -p 'resuma em 1 linha o que conversamos'` (para não alterar o importado), e então rode `node scripts/import-durable-sessions.mjs`. O script lê cópias SQLite/WAL/SHM, recupera o cwd original e nunca substitui JSONLs; IDs existentes, sessões vazias e artefatos `.lock` são pulados com motivo. Cwds antigos inexistentes continuam preservados: o Pi interativo pede confirmação para usar outro diretório. O relatório conta entradas sem equivalente; timestamps ausentes usam o anterior e `tokensBefore` indisponível vira zero.
-
-## Contrato da ativação
-
-- O bundle autocontido inclui `agent/` e `scripts/lib/agent-setup.mjs`. A ativação com adoção do launcher copia os recursos para `<store>/agent`.
-- Registra cada extensão em `settings.extensions`; nomes já auto-carregados em `<agent-dir>/extensions` (inclusive links) ou registrados pelo usuário prevalecem. Entradas próprias obsoletas saem; entradas pessoais nunca são removidas.
-- `tui` (antes `garime-tui`) é registrado da árvore `agent/extensions/agent`; a cópia pessoal `garime-tui` é tratada como a mesma extensão e cede/é excluída.
-- `settings.themes` aceita diretórios/arquivos segundo a documentação do Pi. Temas pessoais prevalecem pelo nome declarado no JSON. Os temas do Agent vão para `<agent-dir>/themes` com o marcador `.agent-themes` (sem sufixo `.json`, que o Pi leria como tema e reportaria inválido).
-- Colisão de nome com tema pessoal: a cópia que o marcador prova ser do Agent sai de cena (um nome, um arquivo — dois seriam colisão de recurso no Pi) e nenhum tema fora do marcador é tocado. Retirado o tema pessoal, a próxima ativação reinstala e volta a atualizar o do Agent.
-- A extensão subagent procura papéis em `getAgentDir()/agents`, não em uma chave de settings. O instalador copia ali e usa `.agent-agents.json` para atualizações. Diretório pessoal preexistente ou symlink fica intocado; os papéis distribuídos continuam disponíveis no store.
-- Defaults somente para chaves de primeiro nível ausentes: Anthropic / `claude-opus-5-5`, thinking `medium`, tema `grayscale-baimin-claude-cc-agent-light/grayscale-baimin-claude-cc-agent`, `tuiMode=fullscreen`, `quietStartup=false`, `hideThinkingBlock=false`. Um `contextWindows` já presente no settings do usuário não é tocado; nada o lê.
-- Acrescenta um bloco marcado/idempotente para `~/.local/bin` em `.zshrc` e `.bashrc`, criando ambos quando ausentes. Reconhece configurações PATH equivalentes com `$HOME`, `${HOME}` ou `~`.
-- `-agent-setup` impede a sincronização inteira; não desinstala registros de uma ativação anterior. `-nome`/`!nome` impede o registro daquela extensão.
-- Windows: o updater já fornece seu launcher nativo; este módulo não altera rc nem PATH do Windows. Verificado no macOS, não certificado no Windows.
-
-## Runtime do Agent no updater (opt-in persistente)
-
-O updater instala o runtime do Agent como opt-in do store, em `<store>/runtime/` (`config.json` e `releases/<id>/agent`). Ele não muda modelo, thinking, papéis, HOME, `PI_CODING_AGENT_DIR`, SYSTEM/Vault nem OAuth.
+Padrões: store `~/.local/share/agent`, comando `~/.local/bin/agent`, perfil `~/.agent`. `AGENT_STORE` e `PI_CODING_AGENT_DIR` explícitos prevalecem. Não existe migração de `~/.pi/agent` ou do store Mark. O bootstrap não altera shell rc; configure o PATH também para o Node em terminais novos. Um store alternativo só adota `~/.local/bin/agent` com `--adopt-launcher` explícito.
 
 ```sh
-# Para um perfil novo; para preservar contabilidade, use o diretório Juice já existente.
-mkdir -p -m 700 "$HOME/.agent-juice"
-# ligar sobre a release que já está ativa (não reconstrói nem promove nada)
-node scripts/agent-update.mjs --agent-enable --juice-home "$HOME/.agent-juice"
-
-# informa o status e também roda a verificação/build do overlay (pode demorar)
-node scripts/agent-update.mjs --check
-
-# desligar (volta o delta de recursos e mantém o artefato para religar)
-node scripts/agent-update.mjs --agent-disable
+agent update                 # canal privado, sem build; erro de acesso preserva a instalação
+agent overlay-rollback       # revalida o par anterior antes de trocar
+agent overlay-status
+node scripts/agent-update.mjs --install-artifact /caminho/agent-<id>-<os>-<arch>.tar.gz
+# O arquivo SHA256SUMS deve estar no mesmo diretório do archive local.
 ```
 
-`--agent-enable` exige `--juice-home <caminho absoluto>` apontando para um diretório existente; a validação acontece antes de qualquer escrita. `--juice-home` só vale com ele. Os modos `--prepare`, `--promote`, `--check`, `--rollback`, `--agent-enable` e `--agent-disable` são mutuamente exclusivos, e os dois modos do runtime recusam flags de build (`--ref`, `--with`, `--without`, `--hydrate`, `--simulate-conflict`, `--no-prune`, `--vendor-model-data`): eles operam sobre o par já instalado. `--store`, `--force` e `--adopt-launcher` continuam valendo.
+`agent update --extensions` e outras opções nativas de atualização de pacotes continuam delegadas ao Pi. `agent update --all` instala o artefato e depois atualiza as extensões pelo Pi. Print/JSON/RPC, SDK e códigos de saída pertencem ao Pi; o launcher não reescreve stdout.
 
-Ordem do `--agent-enable` (artefatos antes de launcher, recursos e configuração):
+## Validação e ativação
 
-1. a release de `current` é verificada contra o contrato do overlay (`--force` aceita uma release degradada de propósito);
-2. o artefato é preparado e validado para a release — o `piRoot` do par é a cópia instalada do pacote oficial (`<release>/lib/node_modules/<pacote>`, que tem `dist/bundle/cli.js`), não a raiz da release;
-3. o registro de recursos é planejado (nada é escrito nesta fase);
-4. backup seletivo em `<store>/backups/<timestamp>-agent-enable/` com `active.json`, o wrapper do store, o comando de restauração do launcher e a config anterior — sem settings inteiro, sem auth/Vault/ledger;
-5. bundle + wrapper novos (o bundle instalado passa a levar `scripts/agent-launch.mjs`, `scripts/lib/agent-runtime.mjs` e `scripts/lib/agent-resources.mjs`);
-6. os recursos são aplicados com backup/CAS/recibo no caminho estável `<store>/runtime/resources-backup/`;
-7. a configuração (`enabled:true`, `artifactId`, `piRoot`, `juiceHome`, `resourceReceipt`) é o último passo, e só então `active.json` registra o resumo.
+- O bootstrap verifica SHA256SUMS, interpreta todos os headers ustar e recusa travessia, entradas duplicadas, tipos especiais, links absolutos/externos/encadeados e arquivos sob symlinks **antes de extrair**. Só então verifica o inventário integral antes de executar o updater do bundle.
+- O manifesto de distribuição (`artifact.json`, schema 1, `runtimeContract:3`) fixa commit, plataforma/arquitetura, Node mínimo, perfil, hash do manifesto overlay e inventário de arquivos/modos/links. O digest cobre release e bundle; o releaseId inclui o digest portátil para distinguir atualizações só do Agent, mesmo com Pi idêntico. Nenhum recibo host-bound de `--prepare` é aceito como prova portátil.
+- Antes de ativar, o updater revalida pacote/entrypoint, seleção, hashes dos patches, fingerprint, tree digest, markers e `pi --version`. O inventário portátil substitui a prova de conteúdo do recibo local, não a verificação da release. `--force` não dispensa isso.
+- Sob lock do store, copia em stage e renomeia a release, prepara o par físico Pi+Agent e o plano de recursos, troca current/previous e escreve recursos/config/active. Falhas verificadas restauram o par anterior, os registros e o recibo. Diretórios candidatos não ativos podem permanecer para diagnóstico; auth e sessões nunca fazem parte da transação. Falha de recuperação é reportada, não declarada sucesso.
+- Uma desativação explícita é preservada nas atualizações por artefato. O runtime registra extensões core, Megamind e skills padrão pelo mesmo recibo/CAS em `runtime/resources-backup`. Cópias pessoais são preservadas, colisões recebem exclusões reversíveis; `-megamind`/`-nome` e `-agent-setup` são respeitados. Temas pessoais e settings de modelo/thinking não são substituídos. O caminho novo não roda os syncs legados sem recibo nem reserva Shift+Tab.
 
-`--agent-enable` sobre um opt-in que já vale com **outro** artefato é troca de par, não primeira ativação: em vez do passo 6, roda a mesma sequência de troca descrita abaixo (snapshot do recibo → rollback do par antigo → replanejar/aplicar o novo). Religar o **mesmo** artefato continua idempotente.
+## Contrato do runtime novo e rollback histórico
 
-Qualquer falha antes do passo 7 deixa o runtime **desligado**: nenhuma configuração é escrita, `agent` continua no caminho legado (Pi do overlay sem o runtime) e o que já tinha sido aplicado é desfeito pelo recibo (quando o helper devolve um). Se o helper aplicar recursos sem devolver recibo, o updater recusa a ativação e diz exatamente o que ficou para trás — não declara limpeza que não fez.
+Novos artefatos internos têm manifesto **v3**, config **v2** e preload `agent/juice/runtime.mjs`. O nome do arquivo foi mantido por compatibilidade; não implica contabilidade. O launcher exporta `AGENT_RUNTIME_ENABLED=1` e `AGENT_PI_ROOT` físico/absoluto. Filhos usam `AGENT_CHILD=1`; subagentes são opt-in com `AGENT_SUBAGENTS=1`, sem modo complex obrigatório. Preferências pertencem ao perfil `PI_CODING_AGENT_DIR`, não a Juice.
 
-`--agent-disable` fecha o opt-out primeiro (config `enabled:false`) e só depois devolve o delta de recursos: se o rollback falhar, `agent` já voltou ao legado e o comando pode ser repetido (é idempotente). O artefato, o ledger e os arquivos pessoais não são removidos. Depois do opt-out, a ativação volta a rodar o sync legado de `agent/`.
+Não há `juiceHome`, ledger, runId nem `AGENT_JUICE_HOME/STATE` no contrato novo. `--agent-enable` liga o runtime sobre a release ativa sem build; `--juice-home <absoluto>` ainda é aceito com aviso, mas é ignorado e não acessado para artefatos novos. `--agent-disable` fecha o opt-in e desfaz os recursos por recibo. `AGENT_DISABLED=1` é um escape por processo. Preloads herdados do Agent são removidos de NODE_OPTIONS (inclusive forma separada e com aspas); opções alheias são preservadas.
 
-Com o runtime ligado, `update`/`--promote`/`--rollback` preparam e validam o **par novo** (Pi + artefato) antes de trocar qualquer ponteiro e preservam `enabled` e `juiceHome`; se o par não puder ser preparado, a troca é recusada e nada muda. A release que a configuração aponta como `piRoot` nunca é coletada pela poda.
+Artefatos históricos **v1/v2** continuam imutáveis e usam config **v1**, com `juiceHome` e seu preload/entrada/broker declarados. O índice de pares guarda a config anterior para rollback. Voltar a eles pode religar contabilidade Juice; o updater avisa antes de ativar e recusa o rollback se o contrato antigo não puder ser recuperado. Não reescreve manifests, digests ou dados históricos.
 
-Trocar o par troca também os **registros efetivos** de recursos, não só `artifactId`/`piRoot`: depois de os ponteiros já valerem e antes de a configuração nova ser escrita, o updater
+## Produzir e verificar sem instalar no host
 
-1. copia o recibo do par antigo (que é reescrito pela aplicação) para `<store>/runtime/resource-snapshots/`;
-2. desfaz o recibo antigo — o settings volta ao estado **pessoal original** guardado em CAS;
-3. replaneja e aplica a árvore `agent/` do artefato novo sobre esse estado (mesmo `backupDir`).
+```sh
+# Mantenedor: pipeline padrão --prepare em HOME/store temporários.
+node scripts/agent-dist.mjs --out dist
+# Alternativa readonly: empacotar candidato já preparado/instalado e revalidá-lo.
+node scripts/agent-dist.mjs --release /caminho/fisico/releases/<id> --out dist
 
-Assim nunca ficam as extensões de duas gerações carregadas ao mesmo tempo (par misturado, tools duplicadas), e o recibo resultante continua descrevendo o estado pessoal como “antes” — por isso um `--agent-disable` posterior devolve os registros genuinamente originais, e não o estado intermediário de uma geração anterior. Um rollback de recursos que devolve `conflicts` (mudança posterior do usuário preservada) é tratado como **erro**, nunca como sucesso.
+# Gate offline, HOME/store isolados internamente; não usa provider real nem gh real.
+node scripts/test-install-artifact.mjs
+node scripts/test-agent-runtime.mjs
+node scripts/test-prepare-promote.mjs
 
-Falha no meio da troca: o updater reaplica os registros do par anterior, volta a configuração e os ponteiros, e diz exatamente o que ficou de pé; se nem a reaplicação funcionar, o relatório diz que o settings está no estado pessoal (sem o runtime) e aponta o snapshot do recibo — em vez de alegar “nada mudou”. Um opt-in cujo `resourceReceipt` desapareceu faz a atualização ser **recusada antes dos ponteiros** (sem recibo não há como desfazer o par antigo).
+# Instalação manual exclusivamente temporária do pacote real:
+H=$(mktemp -d)
+HOME="$H" USERPROFILE="$H" PI_CODING_AGENT_DIR="$H/.agent" \
+  AGENT_STORE="$H/store" AGENT_RELEASE_DIR="$PWD/dist" AGENT_WARM_START=0 \
+  bash dist/install.sh --adopt-launcher
+HOME="$H" PI_CODING_AGENT_DIR="$H/.agent" AGENT_STORE="$H/store" \
+  "$H/.local/bin/agent" --version
+```
 
-Nesse modo os syncs legados (setup — settings/temas/papéis e blocos de `.zshrc`/`.bashrc` —, skills e extensões) não rodam na ativação: todos escrevem `settings.extensions`/`settings.skills` **sem recibo**, ou seja, entradas que nem o opt-out nem a troca de par saberiam desfazer. Consequência conhecida: com o runtime ligado, as cópias de `<store>/skills` e `<store>/extensions/megamind` deixam de ser atualizadas pela ativação (o Megamind não está no plano de recursos, que cobre `agent/extensions/agent`, `agent/extensions/brain-live`, `agent/skills` e temas). Com `--agent-disable`, a ativação volta a rodar os três syncs legados.
+A saída é um ustar gzip determinístico para os mesmos bytes de entrada, mais `install.sh`, bootstrap independente e SHA256SUMS. O build normal ainda depende das fontes/dependências upstream fixadas; timestamps de builds distintos podem diferir. O pack remove `sourceRepo` da metadata e faz scan de arquivos de estado/chaves e paths pessoais em metadata. Isso não substitui revisão humana de segredos nem prova suporte a outro SO. Cada pacote declara apenas o par SO/arquitetura do build; rode startup real com provider falso e o gate completo nesse par antes de publicar. Esta implementação não publica, cria release, faz push ou migra o host.
 
-Restaurar à mão, se preciso: cada backup traz `restore.txt` com os comandos (`cp .../active.json <store>/active.json`, `cp -p .../pi-wrapper <store>/bin/pi-wrapper`, `ln -sfn <alvo> ~/.local/bin/agent`) e aponta o diretório do recibo/CAS dos recursos. Um store que não é o padrão só registra recursos com `PI_CODING_AGENT_DIR` definido: fixtures e testes não escrevem no perfil real.
+## Desenvolvimento por checkout (legado)
 
-### Atalhos
-
-- `Shift+Tab`: modo simple/complex; `Ctrl+T`: thinking nativo do Pi.
-- O helper suspende somente Shift+Tab em `app.thinking.cycle`, com recibo/CAS e rollback. Não altera nível/visibilidade do thinking nem modelo; mantém outros atalhos canônicos personalizados. Nomes legados são conservados e reportados como limitação (o SDK prioriza a chave canônica).
-- É preciso abrir um novo `agent` para carregar a atualização; sessões existentes não são reiniciadas.
+Requer Git, npm e Node >=22.19. `node scripts/agent-update.mjs --prepare` constrói/testa sem ativar; `--promote <ID>` exige o recibo local host-bound intacto. `node scripts/agent-update.mjs` constrói e ativa; `--agent-enable` liga o runtime novo. O caminho legado sem runtime ainda pode copiar recursos e defaults ausentes e editar `.zshrc`/`.bashrc`; não o use como teste de distribuição no HOME real.
 
 ### Skills, papéis e mídia
 
 - As skills pessoais `peers`, `megamind`, `prometheus`, `tasks` e as de `agent/skills/system/` são automáticas. `design/` e `plan/` ficam sob demanda e geram uma linha curta por categoria no system prompt. A curadoria usa o formatter compartilhado entre os hosts.
-- `/skill` ou `/skill:` abre o catálogo agrupado por categoria. `◆` indica skill automática. `Tab` visita categorias; filtro por nome/descrição, setas para escolher, `Enter` insere sem enviar e `Esc` fecha. Não muda simple/complex.
+- `/skill` ou `/skill:` abre o catálogo agrupado por categoria; o runtime novo não exige modos simple/complex.
 - `/models` separa slots de execução e escolhas por papel e preserva as escolhas pessoais. O picker de um papel lista primeiro os pares autorizados e depois todo modelo disponível; escolher um novo o autoriza naquele papel com o thinking da preferência atual. `Esc Esc` abre só a lista de fork. Falha de quota/503 não troca modelo silenciosamente.
 - `read` é o nativo do Pi clássico: imagens, texto, offset/limit e cancelamento. O loadout controla quais papéis recebem `read`. Principal, scout e visual precisam de modelo capaz de receber imagens; anexos diretos continuam suportados.
 - `scout` continua read-only (`read, grep, find, ls`). Transcrição que exija `ffmpeg`, Whisper ou outro executável deve ir para um papel com `bash`, não para o scout. Não se promete leitura/transcrição nativa de qualquer formato binário.
@@ -113,7 +95,7 @@ agent overlay-gc                # apaga, guardando 1 item sem uso de cada tipo
 
 Defaults de inferência auxiliar no checkout: aprendizado automático exige `AGENT_LEARN=1` (receitas existentes permanecem intactas). O recap da TUI publica fallback local imediato e tenta Haiku (`PI_TUI_RECAP_MODEL`) → Luna, deduplicados, com até duas tentativas. Resumo em terceira pessoa, até 240 caracteres, sem hint. Erro terminal ou cancelamento não chamam modelo; retry recuperado permite resumo. Avisos semânticos exigem `PI_TUI_FEEDBACK=1` ou `/heads-up on`. `PI_TUI_FEEDBACK=0` e `/heads-up off` desativam também os cards. Cache-keeper e compatibilidade de imagens históricas permanecem.
 
-Publicar o repo não atualiza ninguém: com o runtime ligado, o Agent avisa ao abrir quando o checkout de origem tem commits não instalados; atualize com `node <checkout>/scripts/agent-update.mjs`. Detalhes em [overlay/README.md](../overlay/README.md#estado-e-limpeza-do-store--overlay-status-overlay-gc).
+Instalações por artefato atualizam com `agent update`, não com commits do checkout. `agent overlay-update` continua sendo o caminho de desenvolvimento que reconstrói a release.
 
 ## Dependências pessoais / degradação
 

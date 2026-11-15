@@ -1,6 +1,6 @@
 /**
  * Agent: artefato imutável, configuração declarativa e lançamento da release física.
- * v2 empacota somente agent/ (sem runtime nativo).
+ * v3 usa runtime lean; v1/v2 mantêm accounting declarado para rollback.
  * v1 continua validando seu broker e lançando o preload/entrada que declara para rollback.
  * O digest vincula conteúdo, plataforma e par Pi; nunca segue current durante a sessão.
  */
@@ -32,7 +32,7 @@ export const MANIFEST_FILE = "manifest.json";
 export const AGENT_SUBDIR = "agent";
 const LEGACY_NATIVE_DIR = "broker";
 const LEGACY_NATIVE_NAME = process.platform === "win32" ? "mark-juice.exe" : "mark-juice";
-/** Preload do gate de contabilização, relativo a `agentRoot`. */
+/** Preload estável do runtime, relativo a `agentRoot` (accounting só nos históricos). */
 export const RUNTIME_PRELOAD = "juice/runtime.mjs";
 /** Classic CLI and its shared ModelRuntime module. */
 export const PI_ENTRY = "dist/cli.js";
@@ -41,11 +41,14 @@ const DURABLE_PI_ENTRY = "dist/bundle/cli.js";
 const OFFICIAL_PACKAGE = "@earendil-works/pi-coding-agent";
 export const PI_RUNTIME_MODULE = "dist/core/model-runtime.js";
 export const LEDGER_FILE = "run.v3.json";
-export const CONFIG_VERSION = 1;
-export const ARTIFACT_VERSION = 2;
+export const CONFIG_VERSION = 2;
+export const ARTIFACT_VERSION = 3;
 export const DISABLE_ENV = "AGENT_DISABLED";
 /** Chaves que o launcher escreve. Qualquer outra do ambiente real passa intacta. */
 export const MANAGED_ENV_KEYS = [
+	"AGENT_RUNTIME_ENABLED",
+	"AGENT_PI_ROOT",
+	"AGENT_CHILD",
 	"AGENT_JUICE_ENABLED",
 	"AGENT_JUICE_BIN",
 	"AGENT_JUICE_HOME",
@@ -191,12 +194,12 @@ function sha256File(path) {
 }
 
 /** Arquivos da árvore `agent/` do artefato: `{ "juice/runtime.mjs": "x<sha>" | "-<sha>" }`. */
-function hashTree(root) {
+function hashTree(root, { strict = false } = {}) {
 	const files = {};
 	const walk = (relative) => {
 		const directory = relative ? join(root, relative) : root;
 		for (const entry of readdirSync(directory, { withFileTypes: true }).sort((a, b) => (a.name < b.name ? -1 : 1))) {
-			if (ignoredTreeEntries.has(entry.name)) continue;
+			if (!strict && ignoredTreeEntries.has(entry.name)) continue;
 			const child = relative ? `${relative}/${entry.name}` : entry.name;
 			const full = join(directory, entry.name);
 			if (entry.isSymbolicLink()) fail(`o artefato não pode conter links simbólicos: ${full}`);
@@ -252,7 +255,7 @@ export function prepareAgentArtifact({ sourceRoot, store, piRoot, log = console.
 	const source = requireDirectory(typeof sourceRoot === "string" ? resolve(sourceRoot) : sourceRoot, "sourceRoot");
 	const agentSource = requireDirectory(join(source, AGENT_SUBDIR), "árvore agent/ de origem");
 	if (!existsSync(join(agentSource, RUNTIME_PRELOAD))) {
-		fail(`a árvore de origem não tem ${AGENT_SUBDIR}/${RUNTIME_PRELOAD}; sem o preload não há contabilização`);
+		fail(`a árvore de origem não tem ${AGENT_SUBDIR}/${RUNTIME_PRELOAD}; sem o preload não há runtime`);
 	}
 	const root = storeRoot(store);
 	const pi = requirePiRoot(piRoot);
@@ -268,7 +271,13 @@ export function prepareAgentArtifact({ sourceRoot, store, piRoot, log = console.
 			dereference: true,
 			filter: (path) => !ignoredTreeEntries.has(basename(path)),
 		});
-		const files = hashTree(join(stage, AGENT_SUBDIR));
+		// Standard integrations travel with the immutable resource receipt, not a mutable store sync.
+		for (const [from, to] of [["extensions", "extensions/standard"], ["skills", "skills/standard"]]) {
+			if (existsSync(join(source, from))) cpSync(join(source, from), join(stage, AGENT_SUBDIR, to), {
+				recursive: true, dereference: true, filter: path => !ignoredTreeEntries.has(basename(path)),
+			});
+		}
+		const files = hashTree(join(stage, AGENT_SUBDIR), { strict: true });
 		const artifactId = artifactDigest({ files, piRoot: pi, piEntry: PI_ENTRY });
 		const artifactRoot = join(releasesDir, artifactId);
 
@@ -338,7 +347,7 @@ export function validateAgentArtifact({ store, artifactId, piRoot } = {}) {
 		return fail(`manifesto ilegível em ${manifestPath}: ${error.message}`);
 	}
 	if (!manifest || typeof manifest !== "object" || Array.isArray(manifest)) fail(`manifesto não é um objeto JSON: ${manifestPath}`);
-	if (![1, ARTIFACT_VERSION].includes(manifest.version)) fail(`manifesto versão ${manifest.version} não suportada (esperado ${ARTIFACT_VERSION}): ${manifestPath}`);
+	if (![1, 2, ARTIFACT_VERSION].includes(manifest.version)) fail(`manifesto versão ${manifest.version} não suportada (esperado ${ARTIFACT_VERSION}): ${manifestPath}`);
 	if (manifest.artifactId !== artifactId) fail(`manifesto declara artifactId ${manifest.artifactId}, mas está em ${artifactId}`);
 	if (manifest.platform !== process.platform || manifest.arch !== process.arch) {
 		fail(`artefato ${artifactId.slice(0, 12)} foi preparado para ${manifest.platform}/${manifest.arch}; esta máquina é ${process.platform}/${process.arch}`);
@@ -367,7 +376,7 @@ export function validateAgentArtifact({ store, artifactId, piRoot } = {}) {
 
 	} else if (manifest.broker !== undefined) fail("new artifacts cannot declare a native runtime");
 
-	const files = hashTree(agentRoot);
+	const files = hashTree(agentRoot, { strict: manifest.version >= 3 });
 	const declared = manifest.files;
 	if (!declared || typeof declared !== "object" || Array.isArray(declared)) fail(`manifesto sem mapa de arquivos: ${manifestPath}`);
 	for (const [relative, value] of Object.entries(files)) {
@@ -409,18 +418,19 @@ function validateConfig(config, where) {
 			fail(`chave desconhecida "${key}" na configuração (${where}); o schema é fechado e não aceita preferências pessoais como modelo ou thinking`);
 		}
 	}
-	if (config.version !== CONFIG_VERSION) fail(`configuração versão ${JSON.stringify(config.version)} não suportada (esperado ${CONFIG_VERSION}; ${where})`);
+	if (![1, CONFIG_VERSION].includes(config.version)) fail(`configuração versão ${JSON.stringify(config.version)} não suportada (esperado ${CONFIG_VERSION}; ${where})`);
 	if (typeof config.enabled !== "boolean") fail(`"enabled" tem de ser booleano (${where})`);
 	if (typeof config.artifactId !== "string" || !ARTIFACT_ID.test(config.artifactId)) fail(`"artifactId" inválido (${where}): ${JSON.stringify(config.artifactId)}`);
 	requirePlainAbsolute(config.piRoot, `"piRoot" (${where})`);
-	requirePlainAbsolute(config.juiceHome, `"juiceHome" (${where})`);
+	if (config.version === 1) requirePlainAbsolute(config.juiceHome, `"juiceHome" (${where})`);
+	else if (config.juiceHome !== undefined) fail("config v2 não aceita juiceHome");
 	if (config.resourceReceipt !== undefined) requirePlainAbsolute(config.resourceReceipt, `"resourceReceipt" (${where})`);
 	const normalized = {
-		version: CONFIG_VERSION,
+		version: config.version,
 		enabled: config.enabled,
 		artifactId: config.artifactId,
 		piRoot: config.piRoot,
-		juiceHome: config.juiceHome,
+		...(config.version === 1 ? { juiceHome: config.juiceHome } : {}),
 	};
 	if (config.resourceReceipt !== undefined) normalized.resourceReceipt = config.resourceReceipt;
 	return normalized;
@@ -492,24 +502,7 @@ export function legacyPiCommand(store) {
  * gate, de outra versão, no mesmo processo: ele sai da lista e isso é relatado em `warnings`.
  */
 function mergeNodeOptions(value, preload, warnings) {
-	const tokens = typeof value === "string" ? value.split(/\s+/).filter(Boolean) : [];
-	const kept = [];
-	let present = false;
-	for (const token of tokens) {
-		if (token === preload) {
-			if (present) continue;
-			present = true;
-			kept.push(token);
-			continue;
-		}
-		if (/^--(?:import|require|experimental-loader|loader)=.*juice[\\/]runtime\.mjs/.test(token)) {
-			warnings.push(`NODE_OPTIONS: preload de outro Agent removido para não instalar dois gates (${token})`);
-			continue;
-		}
-		kept.push(token);
-	}
-	if (!present) kept.push(preload);
-	return kept.join(" ");
+	return [mergeNodeOptionsLegacy(value, warnings), preload].filter(Boolean).join(" ");
 }
 
 /**
@@ -547,7 +540,7 @@ export function buildAgentLaunch({ store, env = process.env, args = [] } = {}) {
 		}
 		// Nenhuma AGENT_JUICE_* herdada sobrevive ao caminho legado: um `pi` sem gate não pode
 		// aparentar estar contabilizando.
-		for (const key of Object.keys(cleaned)) if (key.startsWith("AGENT_JUICE_") || key === "AGENT_ARTIFACT") delete cleaned[key];
+		for (const key of Object.keys(cleaned)) if (key.startsWith("AGENT_JUICE_") || ["AGENT_ARTIFACT", "AGENT_RUNTIME_ENABLED", "AGENT_PI_ROOT", "AGENT_CHILD"].includes(key)) delete cleaned[key];
 		cleaned.NODE_OPTIONS = mergeNodeOptionsLegacy(cleaned.NODE_OPTIONS, warnings);
 		if (cleaned.NODE_OPTIONS === "") delete cleaned.NODE_OPTIONS;
 		const pi = legacyPiCommand(root);
@@ -569,25 +562,28 @@ export function buildAgentLaunch({ store, env = process.env, args = [] } = {}) {
 
 	const artifact = validateAgentArtifact({ store: root, artifactId: config.artifactId, piRoot: config.piRoot });
 	requirePhysical(config.piRoot, `"piRoot" de ${configPath}`);
-	const juiceHome = requireDirectory(config.juiceHome, `"juiceHome" de ${configPath}`);
-	const ledgerPath = join(juiceHome, artifact.brokerPath ? "run.json" : LEDGER_FILE);
+	const lean = artifact.manifest.version >= 3;
+	if (!lean && config.version !== 1) fail("artefato legado exige configuração v1 com juiceHome declarado");
+	const juiceHome = lean ? undefined : requireDirectory(config.juiceHome, `"juiceHome" de ${configPath}`);
+	const ledgerPath = lean ? undefined : join(juiceHome, artifact.brokerPath ? "run.json" : LEDGER_FILE);
 	const preload = `--import=${pathToFileURL(artifact.runtimePreload).href}`;
 	const warnings = [];
 	const nextEnv = { ...passthrough };
 	// Filho herdado de outra sessão criaria um run novo (ou exigiria um pai que não existe): este
 	// processo é o pai do run.
-	delete nextEnv.AGENT_JUICE_CHILD;
-	nextEnv.AGENT_JUICE_ENABLED = "1";
-	if (artifact.brokerPath) nextEnv.AGENT_JUICE_BIN = artifact.brokerPath; // v1 rollback only
-	else delete nextEnv.AGENT_JUICE_BIN;
-	nextEnv.AGENT_JUICE_HOME = juiceHome;
-	nextEnv.AGENT_JUICE_STATE = ledgerPath;
-	nextEnv.AGENT_JUICE_PI_ROOT = artifact.piRoot;
-	if (artifact.manifest.piEntry === DURABLE_PI_ENTRY) {
-		nextEnv.AGENT_JUICE_PI_ENTRY = "bundle";
-	} else {
-		delete nextEnv.AGENT_JUICE_PI_ENTRY;
+	for (const key of Object.keys(nextEnv)) if (key.startsWith("AGENT_JUICE_") || ["AGENT_RUNTIME_ENABLED", "AGENT_PI_ROOT", "AGENT_CHILD"].includes(key)) delete nextEnv[key];
+	if (lean) {
+		nextEnv.AGENT_RUNTIME_ENABLED = "1";
+		nextEnv.AGENT_PI_ROOT = artifact.piRoot;
 		nextEnv.PI_DURABLE_HOST = "0";
+	} else {
+		nextEnv.AGENT_JUICE_ENABLED = "1";
+		if (artifact.brokerPath) nextEnv.AGENT_JUICE_BIN = artifact.brokerPath;
+		nextEnv.AGENT_JUICE_HOME = juiceHome;
+		nextEnv.AGENT_JUICE_STATE = ledgerPath;
+		nextEnv.AGENT_JUICE_PI_ROOT = artifact.piRoot;
+		if (artifact.manifest.piEntry === DURABLE_PI_ENTRY) nextEnv.AGENT_JUICE_PI_ENTRY = "bundle";
+		else nextEnv.PI_DURABLE_HOST = "0";
 	}
 	nextEnv.AGENT_ARTIFACT = artifact.artifactId;
 	// Cache Anthropic de 1 h: com o cache-keeper (ping a 90% do TTL) custa ~45% menos que 5 min
@@ -619,14 +615,20 @@ export function buildAgentLaunch({ store, env = process.env, args = [] } = {}) {
 
 /** No caminho legado o preload de um Agent herdado também sai: ele importaria o gate sem env. */
 function mergeNodeOptionsLegacy(value, warnings) {
-	const tokens = typeof value === "string" ? value.split(/\s+/).filter(Boolean) : [];
+	// Preserve raw quoting of unrelated options (paths with spaces included).
+	const tokens = typeof value === "string" ? value.match(/(?:[^\s"']+|"[^"\n]*"|'[^'\n]*')+/g) ?? [] : [];
 	const kept = [];
-	for (const token of tokens) {
-		if (/^--(?:import|require|experimental-loader|loader)=.*juice[\\/]runtime\.mjs/.test(token)) {
-			warnings.push(`NODE_OPTIONS: preload do Agent removido no caminho legado (${token})`);
+	const unquote = (s) => s.replace(/["']/g, "");
+	for (let i = 0; i < tokens.length; i++) {
+		const token = unquote(tokens[i]);
+		const separate = /^--(?:import|require|experimental-loader|loader)$/.test(token);
+		const target = separate ? unquote(tokens[i + 1] ?? "") : token.replace(/^--[^=]+=/, "");
+		if ((separate || /^--(?:import|require|experimental-loader|loader)=/.test(token)) && /juice[\\/]runtime\.mjs(?:$|[?#])/.test(target)) {
+			warnings.push("NODE_OPTIONS: preload herdado do Agent removido");
+			if (separate) i++;
 			continue;
 		}
-		kept.push(token);
+		kept.push(tokens[i]);
 	}
 	return kept.join(" ");
 }

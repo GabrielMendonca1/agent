@@ -193,7 +193,6 @@ const enabledConfig = {
 	enabled: true,
 	artifactId: prepared.artifactId,
 	piRoot: prepared.piRoot,
-	juiceHome,
 };
 
 // ---------------------------------------------------------------- artefato
@@ -208,7 +207,7 @@ test("prepare instala o artefato completo, com agentRoot=artifactRoot/agent e ma
 	assert.equal(manifest.platform, process.platform);
 	assert.equal(manifest.arch, process.arch);
 	assert.equal(manifest.piEntry, PI_ENTRY);
-	assert.equal(manifest.version, 2);
+	assert.equal(manifest.version, 3);
 	assert.equal(manifest.broker, undefined);
 	// A árvore viaja inteira; node_modules e .DS_Store ficam de fora.
 	assert.ok(manifest.files[RUNTIME_PRELOAD], "o preload tem de estar no manifesto");
@@ -329,7 +328,7 @@ test("artefato durável histórico valida e lança bundle com ambiente antigo; p
 	const old = legacyArtifact(historical.prepareAgentArtifact({ sourceRoot: source, store, piRoot: durablePi, ...quiet }), store);
 	assert.equal(validateAgentArtifact({ store, artifactId: old.artifactId }).piEntry, join(durablePi, "dist/bundle/cli.js"));
 	assert.throws(() => prepareAgentArtifact({ sourceRoot: source, store, piRoot: durablePi, ...quiet }), /CLI clássico/);
-	writeAgentConfig({ store, config: { ...enabledConfig, artifactId: old.artifactId, piRoot: durablePi } });
+	writeAgentConfig({ store, config: { ...enabledConfig, version: 1, juiceHome, artifactId: old.artifactId, piRoot: durablePi } });
 	for (const durableHost of [undefined, "1"]) {
 		const env = { ...baseEnv, AGENT_JUICE_PI_ENTRY: "stale" };
 		if (durableHost !== undefined) env.PI_DURABLE_HOST = durableHost;
@@ -374,6 +373,27 @@ test("artefato durável histórico valida e lança bundle com ambiente antigo; p
 	writeAgentConfig({ store, config: enabledConfig });
 });
 
+test("artefato v2 histórico continua com seu contrato Juice sem ser reescrito", () => {
+	const historicalStore = fixtureStore("v2-history");
+	const current = prepareAgentArtifact({ sourceRoot: source, store: historicalStore, piRoot, ...quiet });
+	const manifest = JSON.parse(readFileSync(current.manifestPath, "utf8"));
+	manifest.version = 2;
+	const digest = createHash("sha256").update(`agent-artifact v2\0${process.platform}\0${process.arch}\0${manifest.piRoot}\0${manifest.piEntry}\0`);
+	for (const [file, value] of Object.entries(manifest.files).sort((a,b) => a[0] < b[0] ? -1 : 1)) digest.update(`F ${file}\0${value}\0`);
+	manifest.artifactId = digest.digest("hex");
+	chmodSync(current.manifestPath, 0o644); writeFileSync(current.manifestPath, JSON.stringify(manifest));
+	const destination = join(dirname(current.artifactRoot), manifest.artifactId);
+	renameSync(current.artifactRoot, destination);
+	const before = readFileSync(join(destination, MANIFEST_FILE), "utf8");
+	writeAgentConfig({ store: historicalStore, config: { ...enabledConfig, version: 1, artifactId: manifest.artifactId, juiceHome } });
+	const spec = buildAgentLaunch({ store: historicalStore, env: baseEnv });
+	assert.equal(spec.env.AGENT_JUICE_ENABLED, "1");
+	assert.equal(spec.env.AGENT_JUICE_STATE, join(juiceHome, "run.v3.json"));
+	assert.equal(spec.env.AGENT_JUICE_PI_ROOT, piRoot);
+	assert.equal(spec.env.AGENT_RUNTIME_ENABLED, undefined);
+	assert.equal(readFileSync(join(destination, MANIFEST_FILE), "utf8"), before);
+});
+
 // ---------------------------------------------------------------- configuração
 
 test("config: ausente é null, roundtrip atômico valida e preserva resourceReceipt", () => {
@@ -398,11 +418,11 @@ test("config: schema fechado recusa preferência pessoal, caminho relativo e tip
 	const cases = [
 		[{ ...enabledConfig, defaultModel: "anthropic/claude-opus-5-5" }, /chave desconhecida/],
 		[{ ...enabledConfig, defaultThinkingLevel: "high" }, /chave desconhecida/],
-		[{ ...enabledConfig, version: 2 }, /versão/],
+		[{ ...enabledConfig, version: 99 }, /versão/],
 		[{ ...enabledConfig, enabled: "sim" }, /booleano/],
 		[{ ...enabledConfig, artifactId: "../../etc/passwd" }, /artifactId/],
 		[{ ...enabledConfig, piRoot: "relativo/pi" }, /absoluto/],
-		[{ ...enabledConfig, juiceHome: `${root}/ledger/../ledger/juice` }, /\.\./],
+		[{ ...enabledConfig, version: 1, juiceHome: `${root}/ledger/../ledger/juice` }, /\.\./],
 		[{ ...enabledConfig, resourceReceipt: "~/recibo.json" }, /absoluto|~/],
 		[[], /objeto JSON/],
 	];
@@ -412,7 +432,7 @@ test("config: schema fechado recusa preferência pessoal, caminho relativo e tip
 
 test("config ilegível ou que é link não cai em fallback silencioso", () => {
 	const fresh = fixtureStore("config-broken");
-	mkdirSync(join(fresh, "agent"), { recursive: true });
+	mkdirSync(join(fresh, "runtime"), { recursive: true });
 	writeFileSync(agentConfigPath(fresh), "{ não é json");
 	assert.throws(() => readAgentConfig(fresh), /não é JSON válido/);
 	rmSync(agentConfigPath(fresh));
@@ -453,7 +473,7 @@ test(`${DISABLE_ENV}=1 volta ao legado e limpa contabilização fantasma herdada
 	assert.equal(spec.env.PI_AUTOMATIC_SKILLS, "minha-skill", "opt-out restaura curadoria nativa do usuário");
 	const noPrevious = buildAgentLaunch({ store, env: { ...dirty, AGENT_JUICE_SKILLS_BEFORE: "null" } });
 	assert.equal(noPrevious.env.PI_AUTOMATIC_SKILLS, undefined, "sem env anterior, opt-out remove a curadoria do Agent");
-	assert.ok(spec.warnings.some((warning) => /preload do Agent removido/.test(warning)));
+	assert.ok(spec.warnings.some((warning) => /preload herdado/.test(warning)));
 });
 
 test("habilitado: lança a entrada clássica da release física por process.execPath, sem subprocesso pi", () => {
@@ -462,31 +482,31 @@ test("habilitado: lança a entrada clássica da release física por process.exec
 	assert.equal(spec.mode, "agent");
 	assert.equal(spec.command, process.execPath);
 	assert.deepEqual(spec.args, [join(prepared.piRoot, PI_ENTRY), "-p", "oi", "--session", "/tmp/s.jsonl"]);
-	assert.equal(spec.env.AGENT_JUICE_ENABLED, "1");
+	assert.equal(spec.env.AGENT_RUNTIME_ENABLED, "1");
 	assert.equal(spec.env.AGENT_JUICE_BIN, undefined);
-	assert.equal(spec.env.AGENT_JUICE_HOME, juiceHome);
-	assert.equal(spec.env.AGENT_JUICE_STATE, join(juiceHome, "run.v3.json"));
-	assert.equal(spec.env.AGENT_JUICE_PI_ROOT, prepared.piRoot);
+	assert.equal(spec.env.AGENT_JUICE_HOME, undefined);
+	assert.equal(spec.env.AGENT_JUICE_STATE, undefined);
+	assert.equal(spec.env.AGENT_PI_ROOT, prepared.piRoot);
 	assert.equal(spec.env.AGENT_JUICE_PI_ENTRY, undefined);
 	assert.equal(spec.env.PI_DURABLE_HOST, "0");
 	assert.equal(spec.env.AGENT_ARTIFACT, prepared.artifactId);
-	for (const key of ["AGENT_JUICE_HOME", "AGENT_JUICE_STATE", "AGENT_JUICE_PI_ROOT"]) {
+	for (const key of ["AGENT_PI_ROOT"]) {
 		assert.ok(spec.env[key].startsWith("/") || /^[A-Za-z]:\\/.test(spec.env[key]), `${key} tem de ser absoluto`);
 	}
 	assert.equal(spec.env.NODE_OPTIONS, `--import=${pathToFileURL(join(prepared.agentRoot, RUNTIME_PRELOAD)).href}`);
 	// Nenhum caminho do artefato/release passa por um ponteiro mutável.
-	for (const value of [spec.env.AGENT_JUICE_PI_ROOT, spec.args[0], spec.env.NODE_OPTIONS]) {
+	for (const value of [spec.env.AGENT_PI_ROOT, spec.args[0], spec.env.NODE_OPTIONS]) {
 		assert.ok(!value.includes("/current/"), `${value} não pode depender de "current"`);
 	}
 });
 
-test("launcher usa o Juice global configurado, não caminhos herdados", () => {
+test("launcher novo descarta Juice herdado sem acessar ledger", () => {
 	writeAgentConfig({ store, config: enabledConfig });
 	const epHome = realpathSync(mkdtempSync(join(tmpdir(), "agent-ep-")));
 	const epState = join(epHome, "ledger.json");
 	const plain = buildAgentLaunch({ store, env: { ...baseEnv, AGENT_JUICE_HOME: epHome, AGENT_JUICE_STATE: epState }, args: ["-p", "x"] });
-	assert.equal(plain.env.AGENT_JUICE_HOME, juiceHome);
-	assert.equal(plain.env.AGENT_JUICE_STATE, join(juiceHome, "run.v3.json"));
+	assert.equal(plain.env.AGENT_JUICE_HOME, undefined);
+	assert.equal(plain.env.AGENT_JUICE_STATE, undefined);
 });
 
 test("o ambiente real do usuário passa intacto: HOME, agent dir, modelos, thinking e extras", () => {
@@ -505,7 +525,7 @@ test("o ambiente real do usuário passa intacto: HOME, agent dir, modelos, think
 	}
 	// Nada de transplante do piloto nem de preferência imposta.
 	const added = Object.keys(spec.env).filter((key) => !(key in personal));
-	assert.deepEqual(added.sort(), ["AGENT_ARTIFACT", "AGENT_JUICE_ENABLED", "AGENT_JUICE_HOME", "AGENT_JUICE_PI_ROOT", "AGENT_JUICE_STATE", "NODE_OPTIONS", "PI_CACHE_RETENTION", "PI_DURABLE_HOST"]);
+	assert.deepEqual(added.sort(), ["AGENT_ARTIFACT", "AGENT_PI_ROOT", "AGENT_RUNTIME_ENABLED", "NODE_OPTIONS", "PI_CACHE_RETENTION", "PI_DURABLE_HOST"]);
 	// Cache de 1 h por padrão; valor do usuário prevalece.
 	assert.equal(spec.env.PI_CACHE_RETENTION, "long");
 	assert.equal(buildAgentLaunch({ store, env: { ...personal, PI_CACHE_RETENTION: "none" }, args: [] }).env.PI_CACHE_RETENTION, "none");
@@ -525,7 +545,9 @@ test("NODE_OPTIONS do usuário é preservado e o preload entra uma única vez", 
 	// Preload de OUTRO Agent (piloto, artefato antigo) sai, com aviso explícito.
 	const third = buildAgentLaunch({ store, env: { ...baseEnv, NODE_OPTIONS: `--import=file:///perfil/piloto/agent/juice/runtime.mjs --trace-warnings` }, args: [] });
 	assert.equal(third.env.NODE_OPTIONS, `--trace-warnings ${ours}`);
-	assert.ok(third.warnings.some((warning) => /dois gates/.test(warning)));
+	const quoted = buildAgentLaunch({ store, env: { ...baseEnv, NODE_OPTIONS: '--require "unrelated module with spaces.cjs" --import "file:///old path/juice/runtime.mjs" --trace-warnings' } });
+	assert.equal(quoted.env.NODE_OPTIONS, `--require "unrelated module with spaces.cjs" --trace-warnings ${ours}`);
+	assert.ok(third.warnings.some((warning) => /preload herdado/.test(warning)));
 });
 
 test("versão fixa por processo: promover outra release não muda a especificação já resolvida", () => {
@@ -536,8 +558,8 @@ test("versão fixa por processo: promover outra release não muda a especificaç
 	symlinkSync(other, join(store, "current"));
 	const after = buildAgentLaunch({ store, env: baseEnv, args: [] });
 	assert.deepEqual(after.args, before.args);
-	assert.equal(after.env.AGENT_JUICE_PI_ROOT, before.env.AGENT_JUICE_PI_ROOT);
-	assert.equal(after.env.AGENT_JUICE_PI_ROOT, prepared.piRoot);
+	assert.equal(after.env.AGENT_PI_ROOT, before.env.AGENT_PI_ROOT);
+	assert.equal(after.env.AGENT_PI_ROOT, prepared.piRoot);
 	assert.ok(!before.args[0].includes(other), "a sessão não pode seguir o ponteiro current");
 	// Restaura o `current` de fixture para os testes seguintes.
 	rmSync(join(store, "current"), { recursive: true, force: true });
@@ -551,8 +573,8 @@ test("habilitado com artefato/ledger/config quebrado: erro, nunca lançamento se
 	writeAgentConfig({ store: fresh, config: { ...enabledConfig, artifactId: victim.artifactId } });
 	assert.equal(buildAgentLaunch({ store: fresh, env: baseEnv, args: [] }).mode, "agent");
 	// juiceHome inexistente.
-	writeAgentConfig({ store: fresh, config: { ...enabledConfig, artifactId: victim.artifactId, juiceHome: join(root, "ledger-fantasma") } });
-	assert.throws(() => buildAgentLaunch({ store: fresh, env: baseEnv, args: [] }), /juiceHome/);
+	assert.throws(() => writeAgentConfig({ store: fresh, config: { ...enabledConfig, artifactId: victim.artifactId, juiceHome: join(root, "ledger-fantasma") } }), /juiceHome/);
+	assert.equal(buildAgentLaunch({ store: fresh, env: baseEnv }).mode, "agent");
 	// piRoot mutável na configuração: o artefato valida (o link resolve para a mesma release), mas um
 	// ponteiro trocaria de versão no meio da sessão, então o lançamento é recusado.
 	const link = join(root, "pi-roots", "current-cfg");
@@ -584,15 +606,16 @@ test("o wrapper despacha manutenção antes do runtime e só chama o launcher no
 	const esac = wrapper.indexOf("esac");
 	const agent = wrapper.indexOf('exec node "$AGENT_LAUNCHER"');
 	assert.ok(dispatch > 0 && esac > dispatch && agent > esac, "o bloco Agent tem de vir depois do dispatch de manutenção");
-	assert.match(wrapper, /\[ "\$\{AGENT_DISABLED:-\}" != "1" \] && \[ -f "\$AGENT_CONFIG" \]/);
+	assert.match(wrapper, /\[ -f "\$AGENT_LAUNCHER" \]/);
 	assert.match(wrapper, /exec node "\$AGENT_LAUNCHER" --store "\$STORE" -- "\$@"/);
 	// Launcher ausente com opt-in ligado: erro, não "pi sem Agent" silencioso.
 	assert.match(wrapper, /exit 1/);
 	const cmd = readFileSync(join(repo, "scripts", "agent-wrapper.cmd"), "utf8");
+	assert.match(cmd, /^:normal$/m);
 	assert.ok(cmd.indexOf(":normal") < cmd.indexOf('node "%AGENT_LAUNCHER%"'));
 	assert.ok(cmd.indexOf("goto :normal") > cmd.indexOf('if /i "%~1"=="update" goto :update'));
-	assert.match(cmd, /if defined AGENT_DISABLED \(if \/i "%AGENT_DISABLED%"=="1" goto :delegate\)/);
-	assert.match(cmd, /if not exist "%AGENT_CONFIG%" goto :delegate/);
+	assert.match(cmd, /if exist "%AGENT_LAUNCHER%" goto :agent_launch/);
+	assert.match(cmd, /if exist "%AGENT_CONFIG%" goto :agent_missing/);
 	assert.match(cmd, /node "%AGENT_LAUNCHER%" --store "%STORE%" -- %\*/);
 	assert.ok(cmd.includes(":agent_missing"));
 	// O despacho de manutenção continua intacto nos dois.
@@ -638,8 +661,8 @@ test("CLI lança o Pi com o preload uma vez, repassa argumentos e propaga o cód
 	assert.equal(result.status, 7, `${result.stdout}${result.stderr}`);
 	const observed = JSON.parse(readFileSync(out, "utf8"));
 	assert.deepEqual(observed.argv, ["--session", "/tmp/x.jsonl", "--", "-p", "oi"]);
-	assert.equal(observed.env.AGENT_JUICE_ENABLED, "1");
-	assert.equal(observed.env.AGENT_JUICE_PI_ROOT, prepared.piRoot);
+	assert.equal(observed.env.AGENT_RUNTIME_ENABLED, "1");
+	assert.equal(observed.env.AGENT_PI_ROOT, prepared.piRoot);
 	assert.equal(observed.env.HOME, baseEnv.HOME);
 	assert.equal(observed.env.PI_CODING_AGENT_DIR, baseEnv.PI_CODING_AGENT_DIR);
 	assert.equal(observed.execPath, process.execPath);
@@ -661,7 +684,7 @@ test("CLI com opt-out executa o Pi legado da release ativa", () => {
 
 test("CLI falha fechado com diagnóstico (exit 70) quando a configuração não serve", () => {
 	const fresh = fixtureStore("cli-bad");
-	mkdirSync(join(fresh, "agent"), { recursive: true });
+	mkdirSync(join(fresh, "runtime"), { recursive: true });
 	writeFileSync(agentConfigPath(fresh), JSON.stringify({ ...enabledConfig, artifactId: "d".repeat(64) }));
 	const result = runLauncher(["--store", fresh, "--", "-p", "oi"], baseEnv);
 	assert.equal(result.status, 70);

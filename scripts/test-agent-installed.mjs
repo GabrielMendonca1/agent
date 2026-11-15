@@ -14,9 +14,9 @@
  *    extensão pessoal homônima) continuam byte a byte onde estavam;
  *  - os recursos do Agent entram **uma única vez** (`planAgentResources`/`applyAgentResources`
  *    idempotentes) e as políticas chegam ao modelo EFETIVO: `agent_autonomy` sempre, `agent_complex`
- *    só no modo complex — lido no corpo que foi pela rede ao provider falso;
- *  - o ledger real (JSON) conta exatamente uma reserva fechada por requisição, e um
- *    relançamento preserva preferências e o acumulado;
+ *    não exigem modo complex — lido no corpo que foi pela rede ao provider falso;
+ *  - nenhum ledger é criado; um ledger legado corrompido/bloqueado é ignorado e preservado;
+ *    relançamentos e opt-in de subagentes preservam preferências;
  *  - `rollbackAgentResources` + opt-out devolvem o settings pessoal e o launcher ao modo legado,
  *    sem nenhuma `AGENT_JUICE_*`.
  *
@@ -66,8 +66,7 @@ function findPiRoot() {
 
 const piRoot = findPiRoot();
 if (!piRoot) {
-	console.log(`sem release do Pi com CLI clássico em ${realStore}; teste do Agent instalado pulado`);
-	process.exit(0);
+	throw new Error(`sem release candidata do Pi com CLI clássico em ${realStore}; startup instalado não validado`);
 }
 
 const PERSONAL = {
@@ -177,7 +176,7 @@ try {
 	const preferencesBefore = readFileSync(preferencesPath, "utf8");
 	writeAgentConfig({
 		store,
-		config: { version: 1, enabled: true, artifactId: artifact.artifactId, piRoot, juiceHome, resourceReceipt: applied.receiptPath },
+		config: { version: 2, enabled: true, artifactId: artifact.artifactId, piRoot, resourceReceipt: applied.receiptPath },
 	});
 
 	// ---------------------------------------------------------------- bundle instalado fictício
@@ -237,17 +236,19 @@ try {
 		const tokens = enabled.env.NODE_OPTIONS.split(/\s+/).filter(Boolean);
 		assert.ok(tokens.includes(userNodeOptions), `NODE_OPTIONS do usuário perdido: ${enabled.env.NODE_OPTIONS}`);
 		assert.equal(tokens.filter((token) => token.includes("juice/runtime.mjs")).length, 1, `preload repetido: ${enabled.env.NODE_OPTIONS}`);
-		assert.equal(enabled.env.AGENT_JUICE_HOME, juiceHome);
-		assert.equal(enabled.env.AGENT_JUICE_STATE, join(juiceHome, "run.v3.json"));
+		assert.equal(enabled.env.AGENT_JUICE_HOME, undefined);
+		assert.equal(enabled.env.AGENT_JUICE_STATE, undefined);
+		assert.equal(enabled.env.AGENT_RUNTIME_ENABLED, "1");
+		assert.equal(enabled.env.AGENT_PI_ROOT, piRoot);
 		return true;
 	})());
 
 	// ---------------------------------------------------------------- Pi real, provider falso
 	const session = join(root, "session");
-	const runPi = (prompt, label) => new Promise((done) => {
+	const runPi = (prompt, label, extraEnv = {}) => new Promise((done) => {
 		const observeFile = join(root, `system-${label}.jsonl`);
 		const child = spawn(process.execPath, [launcher, "--store", store, "--", "--session", session, "-p", "--mode", "json", prompt], {
-			cwd, stdio: ["ignore", "pipe", "pipe"], timeout: 180_000, env: { ...piEnv, AGENT_OBSERVE_SYSTEM: observeFile },
+			cwd, stdio: ["ignore", "pipe", "pipe"], timeout: 180_000, env: { ...piEnv, ...extraEnv, AGENT_OBSERVE_SYSTEM: observeFile },
 		});
 		let out = "";
 		let err = "";
@@ -260,14 +261,6 @@ try {
 				: [],
 		}));
 	});
-	// /mode persiste no branch da sessão; preferences só define o default de sessões novas.
-	const setMode = async (mode) => {
-		const before = fake.messages().length;
-		const result = await runPi(`/mode ${mode}`, `set-${mode}`);
-		assert.equal(result.code, 0, result.err);
-		assert.equal(fake.messages().length, before, "/mode não deve chamar o provider");
-		assert.equal(readFileSync(preferencesPath, "utf8"), preferencesBefore, "/mode não deve mudar o default pessoal");
-	};
 	const systemText = (index) => (fake.messages()[index].system ?? []).map((block) => block.text ?? "").join("\n");
 	const count = (text, pattern) => (text.match(pattern) ?? []).length;
 
@@ -279,7 +272,7 @@ try {
 		assert.ok(fake.messages().length >= 1, "nenhuma requisição chegou ao provider falso");
 		return true;
 	})());
-	test("políticas no system EFETIVO do modo simple: autonomia 1, complex 0", (() => {
+	test("políticas no system EFETIVO sem modo obrigatório: autonomia 1, complex 0", (() => {
 		assert.equal(first.observed.length, fake.messages().length, "uma observação por requisição");
 		assert.equal(first.observed[0], systemText(0), "ctx.getSystemPrompt() != system da 1ª requisição (observação não finge)");
 		for (const [index, text] of first.observed.entries()) {
@@ -295,58 +288,48 @@ try {
 		return true;
 	})());
 
-	const ledger = () => JSON.parse(readFileSync(join(juiceHome, "run.v3.json"), "utf8"));
-	test("ledger real conta toda requisição, com recibos fechados", (() => {
-		const state = ledger();
-		assert.equal(state.calls.used, fake.messages().length, `ledger ${state.calls.used} != ${fake.messages().length} requisições`);
-		assert.ok(state.receipts.every((receipt) => receipt.status === "settled"), "recibo aberto no ledger");
+	const ledgerPath = join(juiceHome, "run.v3.json");
+	test("runtime novo responde sem criar ledger nem config Juice", (() => {
+		assert.equal(existsSync(ledgerPath), false);
+		assert.equal(readAgentConfig(store).juiceHome, undefined);
+		assert.equal(readAgentConfig(store).version, 2);
 		return true;
 	})());
 
-	// Relançamento: preferências e acumulado preservados.
+	// A corrupt legacy ledger and a lock must be irrelevant, not silently repaired.
+	writeFileSync(ledgerPath, "corrupt legacy sentinel");
+	writeFileSync(join(juiceHome, "run.v3.json.lock"), "locked sentinel");
 	const before = fake.messages().length;
-	const second = await runPi("de novo", "run2-simple");
-	test("relançamento preserva preferências e acumula no ledger", (() => {
-		assert.equal(second.code, 0, `relançamento saiu com ${second.code}\n${second.err.slice(0, 2000)}`);
-		assert.equal(readFileSync(preferencesPath, "utf8"), preferencesBefore, "launcher mexeu nas preferências");
-		assert.ok(fake.messages().length > before, "relançamento não chamou o provider");
-		assert.equal(ledger().calls.used, fake.messages().length, "ledger reiniciou no relançamento");
-		return true;
-	})());
-
-	// Modo complex: a política entra no system efetivo e o modelo pessoal segue o do usuário.
-	await setMode("complex");
-	const afterSimple = fake.messages().length;
-	const complex = await runPi("agora com a equipe", "run3-complex");
-	test("modo complex adiciona agent_complex no system efetivo, sem trocar o modelo do usuário", (() => {
-		assert.equal(complex.code, 0, `complex saiu com ${complex.code}\n${complex.err.slice(0, 2000)}`);
-		const texts = complex.observed;
-		assert.ok(texts.length > 0, "complex não chamou o provider");
-		for (const [index, text] of texts.entries()) {
-			assert.equal(count(text, /<agent_autonomy>/g), 1, `complex: requisição ${index} sem autonomia única`);
-			assert.equal(count(text, /<agent_complex>/g), 1, `complex: requisição ${index} sem política complex`);
-		}
-		for (const payload of fake.messages().slice(afterSimple)) {
-			assert.ok(String(payload.model).includes("haiku"), `modelo efetivo trocado pelo Agent: ${payload.model}`);
-		}
-		return true;
-	})());
-	await setMode("simple");
-	const back = await runPi("sozinho de novo", "run4-simple");
-	test("volta a simple remove a política complex e mantém o ledger acumulado", (() => {
-		assert.equal(back.code, 0, back.err);
-		assert.ok(back.observed.length > 0, "volta a simple não chamou o provider");
-		for (const text of back.observed) {
-			assert.equal(count(text, /<agent_autonomy>/g), 1);
-			assert.equal(count(text, /<agent_complex>/g), 0);
-		}
+	const second = await runPi("de novo", "run2-lean", { AGENT_JUICE_HOME: juiceHome, AGENT_JUICE_STATE: ledgerPath });
+	test("relançamento preserva preferências e ignora ledger legado corrompido/bloqueado", (() => {
+		assert.equal(second.code, 0, second.err);
 		assert.equal(readFileSync(preferencesPath, "utf8"), preferencesBefore);
-		assert.equal(ledger().calls.used, fake.messages().length);
-		assert.ok(ledger().receipts.every((receipt) => receipt.status === "settled"));
+		assert.ok(fake.messages().length > before);
+		assert.equal(readFileSync(ledgerPath, "utf8"), "corrupt legacy sentinel");
+		assert.equal(readFileSync(join(juiceHome, "run.v3.json.lock"), "utf8"), "locked sentinel");
 		return true;
 	})());
 
-	test("arquivos pessoais intactos depois das trocas de modo e relançamentos instalados", (() => {
+	const afterDefault = fake.messages().length;
+	const enabledSubagents = await runPi("agora com a equipe opcional", "run3-opt-in", { AGENT_SUBAGENTS: "1" });
+	test("subagentes opt-in não exigem comando complex nem trocam modelo pessoal", (() => {
+		assert.equal(enabledSubagents.code, 0, enabledSubagents.err);
+		assert.ok(enabledSubagents.observed.length > 0);
+		for (const payload of fake.messages().slice(afterDefault)) assert.ok(String(payload.model).includes("haiku"));
+		assert.equal(readFileSync(ledgerPath, "utf8"), "corrupt legacy sentinel");
+		return true;
+	})());
+	const back = await runPi("sozinho de novo", "run4-default");
+	test("novo processo volta ao opt-in padrão sem criar modo ou contabilidade", (() => {
+		assert.equal(back.code, 0, back.err);
+		assert.ok(back.observed.length > 0);
+		for (const text of back.observed) assert.equal(count(text, /<agent_complex>/g), 0);
+		assert.equal(readFileSync(preferencesPath, "utf8"), preferencesBefore);
+		assert.equal(readFileSync(ledgerPath, "utf8"), "corrupt legacy sentinel");
+		return true;
+	})());
+
+	test("arquivos pessoais intactos depois dos opt-ins e relançamentos instalados", (() => {
 		assert.equal(readFileSync(join(agentDir, "SYSTEM.md"), "utf8"), PERSONAL.system);
 		// keybindings.json: só o delta GERENCIADO (a ação reservada que bloqueava o atalho do Agent)
 		// aparece; o atalho sentinela e o valor pessoal de app.thinking.cycle seguem exatos.

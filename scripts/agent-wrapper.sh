@@ -54,24 +54,20 @@ case "${1:-}" in
       exec "$ACTIVE_PI" update "$@"
     fi
     if [ "$mode" = all ]; then
-      node "$UPDATER"
+      node "$UPDATER" --install-artifact latest
       exec "$ACTIVE_PI" update "${extension_args[@]}"
     fi
-    exec node "$UPDATER"
+    exec node "$UPDATER" --install-artifact latest
     ;;
 esac
 
-# Caminho normal (as rotas de manutenção acima já saíram por exec): o Agent entra aqui, e só
-# quando houve opt-in explícito. Sem config, nada muda em relação ao comportamento anterior.
-# AGENT_DISABLED=1 é o escape documentado; o launcher é quem valida artefato/broker/config e
-# falha fechado — um `pi` que anuncia contabilização sem tê-la seria pior do que um que não abre.
-if [ "${AGENT_DISABLED:-}" != "1" ] && [ -f "$AGENT_CONFIG" ]; then
-  if [ ! -f "$AGENT_LAUNCHER" ]; then
-    echo "Agent está habilitado em $AGENT_CONFIG, mas $AGENT_LAUNCHER não existe neste bundle." >&2
-    echo "Reinstale o overlay (node $UPDATER) ou rode sem Agent: AGENT_DISABLED=1 agent" >&2
-    exit 1
-  fi
+# Sempre passe pelo helper quando disponível: inclusive opt-out precisa limpar preloads herdados.
+if [ -f "$AGENT_LAUNCHER" ]; then
   exec node "$AGENT_LAUNCHER" --store "$STORE" -- "$@"
+fi
+if [ -f "$AGENT_CONFIG" ]; then
+  echo "Agent configurado em $AGENT_CONFIG, mas $AGENT_LAUNCHER não existe. Reinstale o bundle." >&2
+  exit 1
 fi
 
 if [ ! -x "$ACTIVE_PI" ]; then

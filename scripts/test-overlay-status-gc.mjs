@@ -243,9 +243,11 @@ teste("gc preserves the recorded rollback artifact even when a newer artifact ha
 	dir(old, 0);
 	writeFileSync(join(old, "manifest.json"), JSON.stringify({ artifactId: "recorded-old", piRoot }));
 	utimesSync(old, dia(0), dia(0));
-	writeFileSync(join(store, "runtime", "pi-artifacts.json"), JSON.stringify({ [piRoot]: "recorded-old" }));
-	const plan = planOverlayGc(store, 0, { getProcesses: () => [] });
-	assert.ok(!plan.some((item) => item.path === old && item.action === "delete"));
+	for (const entry of ["recorded-old", { version: 1, artifactId: "recorded-old", piRoot, juiceHome: "/legacy" }]) {
+		writeFileSync(join(store, "runtime", "pi-artifacts.json"), JSON.stringify({ [piRoot]: entry }));
+		const plan = planOverlayGc(store, 0, { getProcesses: () => [] });
+		assert.ok(!plan.some((item) => item.path === old && item.action === "delete"));
+	}
 	rmSync(join(store, "runtime", "pi-artifacts.json"));
 	assert.ok(planOverlayGc(store, 0, { getProcesses: () => [] }).some((item) => item.path === old && item.action === "delete"));
 });

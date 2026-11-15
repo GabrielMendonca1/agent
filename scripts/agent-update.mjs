@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import { createHash } from "node:crypto";
+import { validateDirectory, downloadArtifact, bootstrap } from "./lib/agent-distribution.mjs";
 import {
 	chmodSync,
 	copyFileSync,
@@ -64,7 +65,7 @@ const removedLayers = {
 };
 // Receipt v1 additionally hashes raw bytes and file modes; not a runtime digest format.
 const receiptDigestAlgorithm = 0;
-const updaterGeneration = 4;
+const updaterGeneration = 5;
 
 const isWindows = process.platform === "win32";
 
@@ -188,7 +189,8 @@ function parseArgs(argv) {
 	};
 	for (let index = 0; index < args.length; index++) {
 		const arg = args[index];
-		if (arg === "--prepare") parsed.prepare = true;
+		if (arg === "--install-artifact") parsed.installArtifact = args[++index] ?? fail("--install-artifact requires a path or latest");
+		else if (arg === "--prepare") parsed.prepare = true;
 		else if (arg === "--promote") parsed.promote = args[++index] ?? fail("--promote requires a release ID");
 		else if (arg === "--check") parsed.check = true;
 		else if (arg === "--hydrate") parsed.hydrate = true;
@@ -213,11 +215,11 @@ function parseArgs(argv) {
 		else if (arg === "--without") parsed.without.push(args[++index] ?? fail("--without requires a layer name"));
 		else if (arg === "--ref") parsed.ref = args[++index] ?? fail("--ref requires a value");
 		else if (arg === "--store") parsed.store = resolve(args[++index] ?? fail("--store requires a value"));
-		else fail(`Unknown overlay update option: ${arg}. Usage: agent-update [--prepare | --promote <releaseId> | --check | --rollback | --agent-enable --juice-home <abs> | --agent-disable | --status | --gc [--dry-run] [--keep <N>]] [--hydrate] [--ref <vX.Y.Z|latest>] [--with <layer>] [--without <layer>] [--rollback] [--force] [--no-prune] [--adopt-launcher] [--vendor-model-data] [--store <path>]`);
+		else fail(`Unknown overlay update option: ${arg}. Usage: agent-update [--prepare | --promote <releaseId> | --check | --rollback | --agent-enable | --agent-disable | --install-artifact <archive|latest> | --status | --gc [--dry-run] [--keep <N>]] [--hydrate] [--ref <vX.Y.Z|latest>] [--with <layer>] [--without <layer>] [--rollback] [--force] [--no-prune] [--adopt-launcher] [--vendor-model-data] [--store <path>]`);
 	}
-	const modes = [parsed.prepare, parsed.promote !== undefined, parsed.check, parsed.rollback, parsed.agentEnable, parsed.agentDisable, parsed.status, parsed.gc].filter(Boolean);
+	const modes = [parsed.installArtifact !== undefined, parsed.prepare, parsed.promote !== undefined, parsed.check, parsed.rollback, parsed.agentEnable, parsed.agentDisable, parsed.status, parsed.gc].filter(Boolean);
 	if (modes.length > 1) {
-		fail("--prepare, --promote, --check, --rollback, --agent-enable, --agent-disable, --status and --gc are mutually exclusive");
+		fail("--prepare, --promote, --install-artifact, --check, --rollback, --agent-enable, --agent-disable, --status and --gc are mutually exclusive");
 	}
 	const reject = (flags) => {
 		for (const flag of flags) if (args.includes(flag)) fail(`${flag} is incompatible with this mode`);
@@ -227,15 +229,13 @@ function parseArgs(argv) {
 	}
 	if (parsed.status && (args.includes("--dry-run") || args.includes("--keep"))) fail("--dry-run and --keep are only valid with --gc");
 	if (!parsed.gc && (args.includes("--dry-run") || args.includes("--keep"))) fail("--dry-run and --keep are only valid with --gc");
+	if (parsed.installArtifact !== undefined) reject(["--ref", "--with", "--without", "--hydrate", "--vendor-model-data", "--simulate-conflict", "--force", "--juice-home"]);
 	if (parsed.promote !== undefined) reject(["--ref", "--with", "--without", "--hydrate", "--vendor-model-data", "--simulate-conflict"]);
 	if (parsed.prepare) reject(["--adopt-launcher", "--no-prune", "--force"]);
 	// Habilitar/desabilitar Agent não constrói nem seleciona camadas: ele opera sobre a release que
 	// já está ativa. Aceitar uma flag de build aqui prometeria uma reconstrução que não acontece.
 	if (parsed.agentEnable || parsed.agentDisable) {
 		reject(["--ref", "--with", "--without", "--hydrate", "--vendor-model-data", "--simulate-conflict", "--no-prune"]);
-	}
-	if (parsed.agentEnable && parsed.juiceHome === undefined) {
-		fail("--agent-enable requires --juice-home <absolute path>: the Juice home is recorded in the Agent config");
 	}
 	if (parsed.juiceHome !== undefined) {
 		if (!parsed.agentEnable) fail("--juice-home is only valid with --agent-enable");
@@ -879,6 +879,7 @@ function installOverlayBundle(store) {
 		),
 		"overlay/README.md",
 		"scripts/agent-update.mjs",
+		"scripts/lib/agent-distribution.mjs",
 		// The updater imports these at module load; a bundle without them cannot run `pi update` at all.
 		"scripts/lib/store-lock.mjs",
 		"scripts/lib/internal-packages.mjs",
@@ -1037,6 +1038,7 @@ function installWrapper(store, adoptLauncher) {
  * preservada: o bundle não enxerga o checkout, então não pode afirmar nada novo sobre ele.
  */
 function checkoutSource() {
+	if (process.env.AGENT_DIST === "1") { const info = checkoutInfo(repoRoot); return info ? { sourceCommit: info.head } : {}; }
 	const info = checkoutInfo(repoRoot);
 	if (info && resolvedPath(info.top) === resolvedPath(repoRoot)) return { sourceRepo: info.top, sourceCommit: info.head };
 	return {};
@@ -1198,7 +1200,7 @@ function agentResourceBackupDir(store, config) {
 /** HOME/agent-dir em que os recursos do Agent são registrados, com a guarda de store isolado. */
 function agentHostDirs(options) {
 	const homeDir = homedir();
-	const agentDir = process.env.PI_CODING_AGENT_DIR || join(homeDir, ".pi", "agent");
+	const agentDir = process.env.PI_CODING_AGENT_DIR || join(homeDir, ".agent");
 	// Um store que não é o do usuário não autoriza escrita no perfil real: ou o chamador isola o
 	// agent-dir (fixture, teste), ou ele está operando o store padrão de propósito.
 	if (!options.adoptLauncher && !process.env.PI_CODING_AGENT_DIR) {
@@ -1241,7 +1243,7 @@ function captureAgentBackup(store, label, { config, resourcesDir } = {}) {
 		writeFileSync(join(dir, "agent-config.json"), `${JSON.stringify(config, null, 2)}\n`);
 		restore.push(
 			config.enabled
-				? `# reativar: node ${join(repoRoot, "scripts", "agent-update.mjs")} --store ${store} --agent-enable --juice-home ${config.juiceHome}`
+				? `# reativar: node ${join(repoRoot, "scripts", "agent-update.mjs")} --store ${store} --agent-enable${config.version === 1 ? ` --juice-home ${config.juiceHome}` : ""}`
 				: `# a config salva em ${join(dir, "agent-config.json")} já estava desabilitada`,
 		);
 	}
@@ -1314,8 +1316,13 @@ function rollbackAgentResourcesOrFail(resources, receiptPath) {
 /** Reaplica os registros de um agentRoot sobre o estado pessoal (volta ao par anterior). */
 function restoreAgentResources({ resources, agentRoot, agentDir, homeDir, backupDir, snapshot }) {
 	try {
+		// Undo any new generation first; never append the old generation on top of it.
+		const receiptPath = join(backupDir, resources.RECEIPT_NAME);
+		if (existsSync(receiptPath)) rollbackAgentResourcesOrFail(resources, receiptPath);
+		if (snapshot) copyFileSync(snapshot, receiptPath);
 		const plan = planAgentResourcesOrFail(resources, { agentRoot, agentDir, homeDir });
 		const applied = applyAgentResourcesOrFail(resources, plan, backupDir);
+		if (snapshot) copyFileSync(snapshot, applied.receiptPath);
 		return {
 			restored: true,
 			receiptPath: applied.receiptPath,
@@ -1366,7 +1373,7 @@ function agentActiveSummary(config) {
 		enabled: config.enabled === true,
 		artifactId: config.artifactId,
 		piRoot: config.piRoot,
-		juiceHome: config.juiceHome,
+		...(config.version === 1 ? { juiceHome: config.juiceHome } : {}),
 		resourceReceipt: config.resourceReceipt,
 	};
 }
@@ -1377,7 +1384,7 @@ function agentPairHistory(store) {
 	if (!existsSync(file)) return {};
 	const history = JSON.parse(readFileSync(file, "utf8"));
 	if (!history || typeof history !== "object" || Array.isArray(history) ||
-		Object.values(history).some((id) => typeof id !== "string")) {
+		Object.values(history).some((id) => typeof id !== "string" && !(id && typeof id.artifactId === "string"))) {
 		throw new Error(`Invalid Agent pair history: ${file}`);
 	}
 	return history;
@@ -1392,7 +1399,15 @@ function agentPairHistory(store) {
  */
 async function prepareAgentPair(store, releaseDir, label, options) {
 	const state = await readAgentState(store);
-	if (!state?.config?.enabled) return undefined;
+	if (!state?.config?.enabled) {
+		if (!options?.installRuntime || state?.config) return undefined;
+		const runtime = await loadAgentRuntime(), resources = await loadAgentResourceHelper();
+		const piRoot = agentPiRoot(releaseDir, runtime);
+		const artifact = runtime.prepareAgentArtifact({ sourceRoot: repoRoot, store, piRoot });
+		const { homeDir, agentDir } = agentHostDirs(options);
+		const plan = planAgentResourcesOrFail(resources, { agentRoot: artifactAgentRoot(artifact), agentDir, homeDir });
+		return { runtime, resources, artifact, piRoot, homeDir, agentDir, initial: true, oldConfig: state?.config, plan, config: {} };
+	}
 	const { runtime, config } = state;
 	const resources = await loadAgentResourceHelper();
 	const history = agentPairHistory(store);
@@ -1412,7 +1427,7 @@ async function prepareAgentPair(store, releaseDir, label, options) {
 	let artifact;
 	try {
 		const recordedId = label === "Rollback" ? history[piRoot] : undefined;
-		const artifactId = recordedId ?? runtime.prepareAgentArtifact({ sourceRoot: repoRoot, store, piRoot }).artifactId;
+		const artifactId = (typeof recordedId === "object" ? recordedId.artifactId : recordedId) ?? runtime.prepareAgentArtifact({ sourceRoot: repoRoot, store, piRoot }).artifactId;
 		artifact = runtime.validateAgentArtifact({ store, artifactId, piRoot });
 	} catch (error) {
 		fail(
@@ -1436,9 +1451,15 @@ async function prepareAgentPair(store, releaseDir, label, options) {
 	// Do this before pointers/resources change; a failed activation leaves a valid association.
 	const historyPath = join(store, agentStoreDir, "pi-artifacts.json");
 	const temporary = `${historyPath}.tmp-${process.pid}`;
-	writeFileSync(temporary, `${JSON.stringify({ ...history, [config.piRoot]: config.artifactId }, null, 2)}\n`);
+	writeFileSync(temporary, `${JSON.stringify({ ...history, [config.piRoot]: config }, null, 2)}\n`);
 	renameSync(temporary, historyPath);
-	return { runtime, resources, config, artifact, previousArtifact, piRoot, agentDir, homeDir, label, switching };
+	const historicalConfig = label === "Rollback" && typeof history[piRoot] === "object" ? history[piRoot] : undefined;
+	if (artifact.manifest?.version < 3) {
+		console.warn("Rollback: legacy runtime restores its declared Juice accounting contract.");
+		const home = historicalConfig?.juiceHome || config.juiceHome;
+		if (!home || !isAbsolute(home) || home.split(/[\\/]/).includes("..") || !existsSync(home) || !statSync(home).isDirectory()) fail("Legacy rollback requires its original existing juiceHome directory; nothing activated");
+	}
+	return { runtime, resources, config, historicalConfig, artifact, previousArtifact, piRoot, agentDir, homeDir, label, switching };
 }
 
 /**
@@ -1448,6 +1469,17 @@ async function prepareAgentPair(store, releaseDir, label, options) {
 function commitAgentPair(store, pair) {
 	let receiptPath = pair.config.resourceReceipt;
 	let switched;
+	if (pair.initial) {
+		const backupDir = agentResourceBackupDir(store, pair.oldConfig);
+		try { receiptPath = pair.resources.applyAgentResources({ plan: pair.plan, backupDir }).receiptPath; }
+		catch (error) {
+			const receipt = join(backupDir, pair.resources.RECEIPT_NAME);
+			if (existsSync(receipt)) rollbackAgentResourcesOrFail(pair.resources, receipt);
+			throw error;
+		}
+		if (!receiptPath) fail("Initial runtime activation returned no resource receipt");
+		pair.initialReceipt = receiptPath;
+	}
 	if (pair.switching) {
 		switched = switchAgentResources({
 			store,
@@ -1467,17 +1499,20 @@ function commitAgentPair(store, pair) {
 	}
 	const config = {
 		...pair.config,
-		version: 1,
+		version: pair.artifact.manifest?.version >= 3 ? 2 : (pair.historicalConfig?.version ?? pair.config.version),
 		enabled: true,
 		artifactId: pair.artifact.artifactId,
 		piRoot: pair.artifact.piRoot ?? pair.piRoot,
 		resourceReceipt: receiptPath,
 	};
+	if (config.version === 2) delete config.juiceHome;
+	else if (pair.historicalConfig?.juiceHome) config.juiceHome = pair.historicalConfig.juiceHome;
 	pair.committed = { config, switched };
 	try {
 		pair.runtime.writeAgentConfig({ store, config });
 	} catch (error) {
 		pair.committed = undefined;
+		if (pair.initialReceipt) rollbackAgentResourcesOrFail(pair.resources, pair.initialReceipt);
 		if (switched) {
 			const recovery = restoreAgentResources({
 				resources: pair.resources,
@@ -1501,6 +1536,15 @@ function commitAgentPair(store, pair) {
  */
 function restoreAgentPair(store, pair) {
 	if (!pair?.committed) return { note: "", unknown: false };
+	if (pair.initial) {
+		try {
+			rollbackAgentResourcesOrFail(pair.resources, pair.initialReceipt);
+			if (pair.oldConfig) pair.runtime.writeAgentConfig({ store, config: pair.oldConfig });
+			else rmSync(join(store, agentStoreDir, "config.json"), { force: true });
+			pair.committed = undefined;
+			return { note: "Initial runtime resources/config restored.", unknown: false };
+		} catch (error) { return { note: error.message, unknown: true }; }
+	}
 	const { switched } = pair.committed;
 	const notes = [];
 	let unknown = false;
@@ -1547,7 +1591,7 @@ async function agentStatusReport(store) {
 		}
 		return (
 			`Agent: ${config.enabled ? "enabled" : "disabled"} (artifactId ${config.artifactId}, piRoot ${config.piRoot}, ` +
-			`juiceHome ${config.juiceHome}, ${artifactState}` +
+			`contract v${config.version}, ${artifactState}` +
 			`${config.resourceReceipt ? `, resource receipt ${config.resourceReceipt}` : ""})`
 		);
 	} catch (error) {
@@ -1565,14 +1609,7 @@ async function agentStatusReport(store) {
  */
 async function agentEnable(options) {
 	const { store } = options;
-	// O launcher exige juiceHome existente (exit 70 a cada `pi`): recusar aqui, antes de qualquer escrita.
-	let juiceInfo;
-	try {
-		juiceInfo = statSync(options.juiceHome);
-	} catch (error) {
-		fail(`--juice-home does not exist: ${options.juiceHome} (${error.code ?? error.message}). Create it first; nothing was changed.`);
-	}
-	if (!juiceInfo.isDirectory()) fail(`--juice-home is not a directory: ${options.juiceHome}. Nothing was changed.`);
+	if (options.juiceHome !== undefined) console.warn("--juice-home is deprecated and ignored for new runtimes; that path is not accessed.");
 	const runtime = await loadAgentRuntime();
 	const resources = await loadAgentResourceHelper();
 	if (!existsSync(agentFilePath("launch"))) {
@@ -1701,11 +1738,10 @@ async function agentEnable(options) {
 	}
 
 	const config = {
-		version: 1,
+		version: 2,
 		enabled: true,
 		artifactId: artifact.artifactId,
 		piRoot: artifact.piRoot ?? piRoot,
-		juiceHome: options.juiceHome,
 		resourceReceipt: receiptPath,
 	};
 	try {
@@ -1726,16 +1762,16 @@ async function agentEnable(options) {
 			...agentSource(store, releaseDir),
 		}, { inheritSource: true });
 	} catch (error) {
-		error.message =
-			`${error.message}\nAgent IS enabled (config and resources are in place) but ${join(store, "active.json")} ` +
-			`could not be updated, so it still records the previous launcher/bundle. Re-run --agent-enable after fixing ` +
-			`the cause, or --agent-disable to opt out. Backup at ${backup.dir}.`;
-		error.activationState = "partial";
+		const recovery = undoResources(receiptPath);
+		if (existing) runtime.writeAgentConfig({ store, config: existing });
+		else rmSync(join(store, agentStoreDir, "config.json"), { force: true });
+		error.message = `${error.message}\nAgent activation record failed; previous config restored. ${recovery}. Backup at ${backup.dir}.`;
+
 		throw error;
 	}
 	console.log(
-		`${productDisplayName}: Agent enabled over ${config.piRoot} (artifact ${artifact.artifactId}, juiceHome ` +
-			`${options.juiceHome}, receipt ${receiptPath}; backup ${backup.dir}). Ledger, mark2, SYSTEM/Vault, auth and ` +
+		`${productDisplayName}: Agent enabled over ${config.piRoot} (artifact ${artifact.artifactId}, runtime v3, ` +
+			`receipt ${receiptPath}; backup ${backup.dir}). Ledger, SYSTEM/Vault, auth and ` +
 			`model/thinking defaults were not touched.`,
 	);
 }
@@ -1756,7 +1792,7 @@ async function agentDisable(options) {
 		return;
 	}
 	const backup = captureAgentBackup(store, "disable", { config, resourcesDir: agentResourceBackupDir(store, config) });
-	const disabled = { ...config, version: 1, enabled: false };
+	const disabled = { ...config, enabled: false };
 	runtime.writeAgentConfig({ store, config: disabled });
 	const active = activeRecord(store);
 	if (active?.releaseDir) {
@@ -1962,11 +1998,11 @@ function assertActiveWritable(store) {
  * 3. gravação de `active.json`: se ela falhar, os ponteiros voltam, para não deixar `current` novo
  *    com metadata velha.
  */
-async function activateRelease(store, releaseDir, adoptLauncher) {
+async function activateRelease(store, releaseDir, adoptLauncher, activationOptions = {}) {
 	const metadata = assertActivatable(store, releaseDir);
 	// Par Pi+Agent preparado e validado ANTES de qualquer ponteiro: com o opt-in ligado, uma troca
 	// de release sem artefato correspondente deixaria `pi` sem runtime para carregar.
-	const agent = await prepareAgentPair(store, releaseDir, "Activation", { store, adoptLauncher });
+	const agent = await prepareAgentPair(store, releaseDir, "Activation", { store, adoptLauncher, ...activationOptions });
 	const current = join(store, "current");
 	const previous = join(store, "previous");
 	const oldCurrent = linkTarget(current);
@@ -2009,8 +2045,8 @@ async function activateRelease(store, releaseDir, adoptLauncher) {
 
 	// Só o store padrão é o Agent do usuário; um store de teste não toca o settings do Pi.
 	let syncFailure;
-	if (adoptLauncher) {
-		const agentDir = process.env.PI_CODING_AGENT_DIR || join(homedir(), ".pi", "agent");
+	if (adoptLauncher && !(activationOptions.installRuntime && !agent)) {
+		const agentDir = process.env.PI_CODING_AGENT_DIR || join(homedir(), ".agent");
 		try {
 			// Com o Agent ligado, extensões, skills e temas são registrados pelo recibo de recursos, com
 			// backup/CAS e rollback. Os syncs legados escrevem `settings.extensions`/`settings.skills` sem
@@ -2025,8 +2061,10 @@ async function activateRelease(store, releaseDir, adoptLauncher) {
 				// Os registros que o usuário já tinha (settings/symlinks) ainda apontam para <store>/skills e
 				// <store>/extensions/megamind: sem atualizar os arquivos, o Megamind e as skills padrão ficam
 				// congelados na última ativação legada. Só o conteúdo de cópias existentes muda; settings não.
-				syncAgentSkills({ sourceRoot: launcher.overlayRepo, store, agentDir, homeDir: homedir(), register: false });
-				syncAgentExtensions({ sourceRoot: launcher.overlayRepo, store, agentDir, register: false });
+				if (!(agent.artifact.manifest?.version >= 3)) {
+					syncAgentSkills({ sourceRoot: launcher.overlayRepo, store, agentDir, homeDir: homedir(), register: false });
+					syncAgentExtensions({ sourceRoot: launcher.overlayRepo, store, agentDir, register: false });
+				}
 			} else {
 				syncAgentSkills({ sourceRoot: launcher.overlayRepo, store, agentDir, homeDir: homedir() });
 				syncAgentExtensions({ sourceRoot: launcher.overlayRepo, store, agentDir });
@@ -2040,6 +2078,7 @@ async function activateRelease(store, releaseDir, adoptLauncher) {
 	let agentConfig;
 	try {
 		agentConfig = agent ? commitAgentPair(store, agent) : undefined;
+		if (activationOptions.selection) writeStoreLayers(store, activationOptions.selection);
 		writeActive(store, releaseDir, metadata, launcher, {
 			activatedAt: new Date().toISOString(),
 			agent: agentConfig ? agentActiveSummary(agentConfig) : undefined,
@@ -2202,6 +2241,58 @@ async function promote(options) {
 	writeStoreLayers(store, selection.optional);
 	// Do not prune here: a prepared binary may still be running external tests.
 	console.log(`${productDisplayName}: promoted prepared release ${id} without rebuilding (${metadata.treeDigest})`);
+}
+
+// Portable content verification replaces (never bypasses) host-bound --prepare receipts.
+async function installArtifact(options) {
+	options.store = realpathSync(options.store);
+	const root = realpathSync(resolve(options.installArtifact));
+	const artifact = validateDirectory(root);
+	if (root !== repoRoot.replace(/[\\/]bundle$/, "")) fail("Install must run from the verified artifact bundle (use the archive path)");
+	const source = join(root, "release");
+	assertContainedTree(source);
+	const metadata = releaseMetadata(source);
+	const selection = selectLayers(overlayPatches(), { with: metadata?.optionalLayers ?? [] });
+	for (const patch of selection.selected) verifyOverlayPatch(patch);
+	if (metadata?.digestAlgorithm !== 3 || metadata?.treeDigest !== artifact.treeDigest ||
+		metadata?.overlayFingerprint !== artifact.overlayFingerprint || metadata?.overlayFingerprint !== overlayFingerprint(selection.selected) ||
+		JSON.stringify(metadata.patches) !== JSON.stringify(Object.fromEntries(selection.selected.map(p => [p.name, p.sha256])))) fail("Artifact release metadata/selection mismatch");
+	for (const pkgRoot of findInstalledPackages(source, manifest.officialPackage)) {
+		const pkg = JSON.parse(readFileSync(join(pkgRoot, "package.json"), "utf8"));
+		if (pkg.name !== manifest.officialPackage || pkg.version !== metadata.officialVersion || !upstreamLayouts().some(l => l.binPi === pkg.bin?.pi)) fail("Artifact package identity/layout mismatch");
+	}
+	if (!findInstalledPackages(source, manifest.officialPackage).length) fail("Artifact contains no Pi package");
+	requireVerified(source, metadata);
+	const before = readCurrentTarget(options.store);
+	const releases = join(options.store, "releases"); mkdirSync(releases, { recursive: true });
+	if (lstatSync(releases).isSymbolicLink() || realpathSync(releases) !== releases) fail("Unsafe releases directory");
+	const release = join(releases, artifact.releaseId);
+	if (linkExists(release)) {
+		if (lstatSync(release).isSymbolicLink() || sha256(join(release, releaseMetadataFile)) !== sha256(join(source, releaseMetadataFile)) || digestTree(release, 0) !== digestTree(source, 0)) fail("Existing release ID has different content");
+	} else {
+		const stage = join(releases, `.artifact-${process.pid}`);
+		try { cpSync(source, stage, { recursive: true, verbatimSymlinks: true }); assertContainedTree(stage); renameSync(stage, release); }
+		finally { rmSync(stage, { recursive: true, force: true }); }
+	}
+	// Capture only transaction-owned launcher/metadata files; auth and sessions never enter backups.
+	const paths = [join(options.store,"active.json"), join(options.store,"layers.json"), join(options.store,"bin", isWindows ? "pi-wrapper.cmd" : "pi-wrapper")];
+	if (options.adoptLauncher) paths.push(join(homedir(), ".local", "bin", isWindows ? "agent.cmd" : "agent"));
+	const snapshots = paths.map(path => ({ path, exists: linkExists(path), link: linkExists(path) && lstatSync(path).isSymbolicLink() ? readlinkSync(path) : null,
+		body: linkExists(path) && lstatSync(path).isFile() ? readFileSync(path) : null, mode: linkExists(path) ? lstatSync(path).mode : 0o755 }));
+	try {
+		assertCurrentUnchanged(options.store, before);
+		await activateRelease(options.store, release, options.adoptLauncher, { installRuntime: true, selection: selection.optional });
+	} catch (error) {
+		for (const saved of snapshots) {
+			try {
+				if (!saved.exists) rmSync(saved.path, { force: true });
+				else if (saved.link) { rmSync(saved.path, { force: true }); symlinkSync(saved.link, saved.path); }
+				else if (saved.body) writeFileSync(saved.path, saved.body, { mode: saved.mode });
+			} catch (restoreError) { error.message += `\nLauncher metadata restore failed: ${restoreError.message}`; }
+		}
+		throw error;
+	}
+	console.log(`Agent: installed private artifact ${artifact.releaseId}; profile ${process.env.PI_CODING_AGENT_DIR || join(homedir(), ".agent")}`);
 }
 
 function readJsonFile(path) {
@@ -2406,7 +2497,7 @@ function planOverlayGc(store, keep = 1, { sizeReports = true, getProcesses = liv
 		// Keep the exact recorded rollback pair, not just the newest artifact for that Pi.
 		try {
 			for (const [piRoot, id] of Object.entries(agentPairHistory(store))) {
-				if (inPrevious(piRoot)) activeIds.add(id);
+				if (inPrevious(piRoot)) activeIds.add(typeof id === "object" ? id.artifactId : id);
 			}
 		} catch {
 			// An unreadable index cannot prove any artifact unused.
@@ -2546,6 +2637,15 @@ async function main() {
 	// Somente leitura: não toma o lock, não exige geração do updater (só lê o que está no disco).
 	if (options.status) return overlayStatus(options.store);
 	if (options.gc && options.dryRun) return overlayGc(options);
+	if (options.installArtifact !== undefined && (options.installArtifact === "latest" || !lstatSync(resolve(options.installArtifact)).isDirectory())) {
+		const temporary = mkdtempSync(join(tmpdir(), "agent-download-"));
+		try {
+			const archive = options.installArtifact === "latest" ? downloadArtifact(temporary, process.env.AGENT_VERSION || "") : resolve(options.installArtifact);
+			const status = bootstrap(archive, ["--store", options.store, ...(options.adoptLauncher ? ["--adopt-launcher"] : [])]);
+			if (status !== 0) fail(`Artifact bootstrap failed (${status})`);
+			return;
+		} finally { rmSync(temporary, { recursive: true, force: true }); }
+	}
 	assertUpdaterGeneration(options.store, options.force);
 
 	// `--check` constrói em tmp e não promove nada: não disputa o store, não toma o lock. O status do
@@ -2575,7 +2675,8 @@ async function main() {
 	}
 	try {
 		// Fotografia de `current` ANTES da construção: a comparação no fim é contra este valor.
-		if (options.agentEnable) await agentEnable(options);
+		if (options.installArtifact !== undefined) await installArtifact(options);
+		else if (options.agentEnable) await agentEnable(options);
 		else if (options.agentDisable) await agentDisable(options);
 		else if (options.gc) await overlayGc(options);
 		else if (options.promote !== undefined) await promote(options);
@@ -2872,7 +2973,7 @@ function discardOwnStaging(installDir) {
 	}
 }
 
-export { overlayStatus, overlayGc, planOverlayGc, parseArgs, digestTree, writePrepared, collectOrphanReleases, allocateReleaseDir, discardOwnStaging, agentStatusReport };
+export { overlayStatus, overlayGc, planOverlayGc, parseArgs, digestTree, writePrepared, collectOrphanReleases, allocateReleaseDir, discardOwnStaging, agentStatusReport, installOverlayBundle, requireVerified, verifyRelease, assertContainedTree };
 
 if (process.argv[1] && resolvedPath(resolve(process.argv[1])) === resolvedPath(fileURLToPath(import.meta.url))) {
 	try {

@@ -8,9 +8,9 @@ Agent é o agente de terminal pessoal do Gabriel, usado na ARCA, no Omni e em pr
 - `agent-patches/`: patches aplicados sobre a árvore `agent/` para rodar sem infraestrutura pessoal;
 - `scripts/`: updater, launcher e testes do portão de checks (`.pi/checks.json`).
 
-Modos `simple` (agente sozinho) e `complex` (subagentes assíncronos); a tool nativa `codemode` do Pi fica ativa em toda sessão. Subagentes rodam em processos `pi -p`, vinculados por `parentSession`. Sessões JSONL, `/resume` e `--session` são os oficiais do Pi.
+Runtime novo sem contabilidade Juice; subagentes são opt-in (`AGENT_SUBAGENTS=1`), sem modo complex obrigatório. Cache-keeper e Megamind permanecem. Subagentes rodam em processos `pi -p`, vinculados por `parentSession`. Sessões JSONL, `/resume` e `--session` são os oficiais do Pi.
 
-O updater constrói e testa a release antes de ativar, instala em `~/.local/share/agent` e coloca o comando `agent` em `~/.local/bin`. Nenhuma credencial ou estado pessoal é distribuído.
+Distribuição privada por artefatos prontos, com Node externo >=22.19 e acesso autenticado via `gh`: sem clone/build para o consumidor. Pipeline implementado, ainda sem release publicada por esta mudança. Instalação em `~/.local/share/agent`, perfil próprio `~/.agent` e comando `~/.local/bin/agent`; `/login` usa a conta do usuário. Update e rollback verificam o par Pi+Agent antes da troca. Nenhuma credencial ou estado pessoal é distribuído.
 
 - Repositório: [GabrielMendonca1/agent](https://github.com/GabrielMendonca1/agent)
 - Instalar e configurar: [docs/setup.md](docs/setup.md)
