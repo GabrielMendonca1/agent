@@ -38,8 +38,8 @@
 		{
 			"name": "transcript-feedback",
 			"path": "overlay/transcript-feedback.patch",
-			"sha256": "a3e512367acd00b800619f9b2c019ccda9254a36b8cf4c76d6930880ffa326f1",
-			"description": "Resumo contextual curto em terceira pessoa via Haiku (PI_TUI_RECAP_MODEL), até duas tentativas assíncronas por turno (primário → Luna deduplicado), com fallback local imediato. Falhas e timeout permitem Luna; cancelamento real ou aborto do provider não. Avisos semânticos opt-in via PI_TUI_FEEDBACK=1 ou /heads-up on, até PI_TUI_FEEDBACK_MAX_NOTICES tentativas por execução (default 3, faixa 0..10); dedupe e avaliação 1/2/0. PI_TUI_FEEDBACK=0 desliga tudo. Preserva mascaramento, afterTranscript, persistência sem projeção de modelo e tail ajustável.",
+			"sha256": "5565e7ecba094ecc3b3fa7396b8e1f461db8ae2a5fcfc34f362f8d713703a8a6",
+			"description": "Transcript rendering, masking and local recap only. No auxiliary inference for recaps or notices.",
 			"tests": [
 				"packages/coding-agent/test/run-feedback.test.ts",
 				"packages/coding-agent/test/interactive-tui.test.ts"

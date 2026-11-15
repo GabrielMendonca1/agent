@@ -26,8 +26,7 @@ import {
 import { type Component, Container, Markdown, Spacer, Text, truncateToWidth } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
 import { formatRoleModelChoices, getRoleModelChoices } from "../lib/tiers.ts";
-import { ensureSessionMode } from "../lib/session-mode.mjs";
-import { getJuicePreferences, getJuiceSnapshot, juiceEnabled } from "../../../juice/client.mjs";
+import { getAgentPreferences, subagentsEnabled } from "../../../juice/client.mjs";
 import { parseWorkflow, readWorkflow } from "../../../juice/workflow.mjs";
 import { type AgentConfig, type AgentScope, discoverAgents } from "./agents.ts";
 import {
@@ -57,11 +56,11 @@ const ANCHOR_ENTRY_TYPE = "subagent-job";
 /** Pending completions kept in memory; the persisted copy is the record on disk (notified:false). */
 const MAX_PENDING = 64;
 /**
- * Concurrent children allowed in pilot (juice) sessions. An internal ceiling
+ * Concurrent children allowed in Agent sessions. An internal ceiling
  * only: it is never named in the tool description or guidelines, so the model
  * delegates by task independence, not by counting slots.
  */
-const JUICE_CHILD_LIMIT = 10;
+const CHILD_LIMIT = 10;
 
 function brief(text: string, fallback = "sem detalhes"): string {
 	const clean = text.replace(/\s+/g, " ").trim();
@@ -323,51 +322,6 @@ function readRecipe(cwd: string): { steps: Array<{ role: string; slot: "apoio" |
 	}
 }
 
-/**
- * Despachante barato: dado papel, contrato e brief,
- * responde `apoio` ou `principal`. Qualquer dúvida, timeout ou erro → o slot da receita.
- */
-async function dispatchSlot(
-	ctx: ExtensionContext,
-	defaults: DispatchDefaults,
-	role: string,
-	contract: string | undefined,
-	brief: string,
-	fallback: "apoio" | "principal",
-	signal?: AbortSignal,
-): Promise<"apoio" | "principal"> {
-	if (signal?.aborted) return fallback;
-	const support = defaults.juice?.supportModel;
-	const primary = defaults.model;
-	if (!support || !primary || support === primary || process.env.AGENT_DISPATCHER === "0") return fallback;
-	try {
-		const [provider, ...rest] = support.split("/");
-		const model = ctx.modelRegistry.find(provider, rest.join("/"));
-		if (!model) return fallback;
-		const deadline = AbortSignal.timeout(8000);
-		const dispatchSignal = signal ? AbortSignal.any([signal, deadline]) : deadline;
-		const prompt = [
-			"Você decide qual modelo executa uma etapa de uma equipe de agentes de código.",
-			`Papel: ${role}. Contrato: ${contract ?? "(sem contrato)"}. Slot sugerido pela receita: ${fallback}.`,
-			"apoio = modelo barato e rápido, bom para tarefas delimitadas com brief claro. principal = modelo caro, para ambiguidade, muitos arquivos, decisões de design ou revisão crítica.",
-			"Brief:", brief.slice(0, 4000),
-			"Responda com UMA palavra: apoio ou principal.",
-		].join("\n");
-		// streamSimple sem `reasoning` = thinking desligado (uma palavra de resposta).
-		const response = await ctx.modelRegistry.streamSimple(
-			model,
-			{ messages: [{ role: "user", content: [{ type: "text", text: prompt }], timestamp: Date.now() }] } as any,
-			{ maxTokens: 16, signal: dispatchSignal, cacheRetention: "none" } as any,
-		).result();
-		const answer = (response.content ?? []).filter((p: any) => p.type === "text").map((p: any) => p.text).join(" ").trim().toLowerCase();
-		if (/^principal\b/.test(answer)) return "principal";
-		if (/^apoio\b/.test(answer)) return "apoio";
-		return fallback;
-	} catch {
-		return fallback;
-	}
-}
-
 export default function (pi: ExtensionAPI) {
 	let sessionGeneration = 0;
 	let statusContext: ExtensionContext | undefined;
@@ -534,7 +488,7 @@ export default function (pi: ExtensionAPI) {
 
 	const createManager = () => new SubagentJobManager({
 		baseDir,
-		...(juiceEnabled() ? { childLimit: JUICE_CHILD_LIMIT } : {}),
+		childLimit: CHILD_LIMIT,
 		onComplete: (record) => enqueueCompletion(record),
 		onProcessStarted: (agentName) => processStarted(agentName, sessionGeneration),
 	});
@@ -648,22 +602,16 @@ export default function (pi: ExtensionAPI) {
 			"Independent tasks go in one call as `tasks` (parallel), so they run at the same time instead of one after the other.",
 			'Parallel writers sharing a repository use isolated worktrees: inspect their commits, then explicitly integrate (jobId, optional 1-based taskIndex) or discard (force:true permits uncommitted deletion); merges are never automatic.',
 			'Control the job with the same tool: action "status" | "result" (jobId, optional offset/limit) | "list" | "cancel".',
-			juiceEnabled()
-				? "Modes: single (agent + brief), parallel (tasks array), chain (sequential with {previous} placeholder, usable inside brief fields). Omit model: a role with its own configured choices (listed below as `allowed`) keeps them; any other role takes its slot (apoio/principal from /models), decided internally at dispatch."
-				: "Modes: single (agent + brief), parallel (tasks array), chain (sequential with {previous} placeholder, usable inside brief fields). Each item accepts optional model; omit it for that role's preferred first choice. Explicit models outside that role's allowed list are rejected before spawn; thinking is fixed by the authorized pair and cannot be overridden.",
+			"Optional: launch requires AGENT_SUBAGENTS=1 or /subagents on. Modes: single (agent + brief), parallel (tasks array), chain (sequential with {previous} placeholder). Omit model to retain the role's configured model/thinking; otherwise the role uses its principal/apoio slot from /models. Explicit models must respect the role's allowed choices.",
 			SUBAGENT_CAPABILITY_RULE,
 			"Quota/rate failures are returned as failures and are never silently retried. For mutating work, inspect the failure and explicitly redispatch to an allowed alternative so partial work is not replayed automatically.",
 			`Available agents and model choices: ${describeUserAgents()}.`,
 			`Default agent scope is "user" (from ${path.join(getAgentDir(), "agents")}).`,
 			`To enable project-local agents in ${CONFIG_DIR_NAME}/agents, set agentScope: "both" (or "project").`,
 		].join(" "),
-		promptSnippet: juiceEnabled()
-			? "Delegate roles to subagents (async: returns a jobId, result arrives later; independent tasks in parallel)"
-			: "Delegate reading, recon, review and self-contained implementation to subagents (async: returns a jobId, result arrives later)",
-		// No Agent, a política de delegação vem de policy.mjs apenas em complex. O Vault
-		// mantém metadados de todas as tools no system: repetir diretrizes aqui vazaria em simple.
-		promptGuidelines: juiceEnabled() ? [] : [
-			"Act as an orchestrator: delegate recon and bulk reading to `scout`, isolated implementation to `worker`, and review to `reviewer`; keep your own context for decisions and integration. Use subagent action integrate to merge committed isolated work after review.",
+		promptSnippet: "Optional async subagents: launch returns a jobId; independent tasks run in parallel",
+		promptGuidelines: [
+			"Use subagents only when the user enables them. Select the role for the task and review results before explicit integration.",
 			"Always delegate through the `brief` object instead of a prose task, and put what you already know (paths, findings, decisions) in `brief.context`; each role has required fields and the call fails before spawning if they are missing.",
 			"Subagent dispatch is asynchronous: after launching, report the jobId and continue with independent work. Never loop on `status` waiting for a job — the result is delivered to you automatically.",
 			"If a subagent reports quota/rate failure, do not assume its mutating task is safe to replay; explicitly choose another model listed for that role and redispatch only after accounting for partial work.",
@@ -768,17 +716,11 @@ export default function (pi: ExtensionAPI) {
 				model: ctx.model ? `${ctx.model.provider}/${ctx.model.id}` : undefined,
 				thinkingLevel: ctx.thinkingLevel,
 			};
-			if (juiceEnabled()) {
-				try {
-					// Authorization belongs to the active session branch, not the ledger.
-					if (ensureSessionMode(pi, ctx) !== "complex") return fail("Modo simple: trabalhe sozinho com as ferramentas. Só o usuário muda para complex (Shift+Tab).");
-					// Keep the accounting availability check; its mode is not authorization.
-					if (!getJuiceSnapshot() || !process.env.AGENT_JUICE_STATE) return fail("Agent: ledger indisponível; nenhum subagente foi lançado.");
-					const prefs = getJuicePreferences();
-					dispatchDefaults.juice = { statePath: process.env.AGENT_JUICE_STATE, supportModel: prefs.supportModel ?? undefined, slots: {} };
-				} catch (error) {
-					return fail(`Juice indisponível; dispatch bloqueado: ${error instanceof Error ? error.message : String(error)}`);
-				}
+			if (!subagentsEnabled(ctx)) return fail("Subagents disabled. Enable AGENT_SUBAGENTS=1 or /subagents on.");
+			try {
+				dispatchDefaults.resources = { supportModel: getAgentPreferences().supportModel ?? undefined, slots: {} };
+			} catch (error) {
+				return fail(`Agent preferences unavailable: ${error instanceof Error ? error.message : String(error)}`);
 			}
 
 			const hasChain = (params.chain?.length ?? 0) > 0;
@@ -853,17 +795,16 @@ export default function (pi: ExtensionAPI) {
 				model: item.model,
 			}));
 
-			// Pilot: the project recipe says which slot each role uses; a cheap
-			// dispatcher may override per brief. Decided before anything launches.
-			if (dispatchDefaults.juice) {
+			// Snapshot role slots from the project recipe before anything launches.
+			if (dispatchDefaults.resources) {
 				const recipe = readRecipe(ctx.cwd);
-				// At most four classifier requests in flight, and none for an authoritative role model.
+				// Explicit role configuration is authoritative; no classifier inference.
 				await mapWithConcurrencyLimit(tasks, 4, async (t) => {
 					const role = agents.find((a) => a.name === t.agent);
 					if (t.model || role?.model || role?.thinking || getRoleModelChoices(t.agent)?.length) return;
 					const step = recipe.steps.find((st) => st.role === t.agent);
 					const fromRecipe = step?.slot ?? (t.agent === "scout" ? "apoio" : "principal");
-					t.slot = await dispatchSlot(ctx, dispatchDefaults, t.agent, step?.contract, t.task, fromRecipe, signal);
+					t.slot = fromRecipe;
 				}, () => signal?.aborted === true);
 			}
 

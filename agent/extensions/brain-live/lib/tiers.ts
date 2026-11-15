@@ -1,5 +1,5 @@
 /**
- * Tiers de modelo — fonte canônica: ~/Sistema/Pi/models.json (Vault).
+ * Tiers de modelo — fonte canônica: agent-models.json no perfil Agent.
  *
  *   fast · standard · deep · visual · image
  *
@@ -8,10 +8,10 @@
  * defaultModel do settings.json, que o Pi já atualiza a cada troca de modelo.
  */
 
-import { existsSync, readFileSync, renameSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { homedir } from "node:os";
 import { randomUUID } from "node:crypto";
-import { sistemaDir } from "./paths";
 
 export const TIER_NAMES = ["fast", "standard", "deep", "visual", "image"] as const;
 export type TierName = (typeof TIER_NAMES)[number];
@@ -48,15 +48,17 @@ export interface ResolvedRoleModel extends RoleModelChoice {
 	preference: boolean;
 }
 
-export const MODELS_FILE = join(sistemaDir(), "Pi", "models.json");
+export const MODELS_FILE = join(process.env.PI_CODING_AGENT_DIR || join(homedir(), ".agent"), "agent-models.json");
 
 export function loadTiers(): TiersFile {
+	if (!existsSync(MODELS_FILE)) return { tiers: {} as Record<TierName, Tier> };
 	const raw = readFileSync(MODELS_FILE, "utf-8");
 	const parsed = JSON.parse(raw) as Partial<TiersFile>;
 	if (!parsed.tiers) throw new Error(`${MODELS_FILE}: campo "tiers" ausente`);
 	for (const name of TIER_NAMES) {
 		const t = parsed.tiers[name];
-		if (!t || typeof t.model !== "string" || !t.model.includes("/")) {
+		if (!t) continue;
+		if (typeof t.model !== "string" || !t.model.includes("/")) {
 			throw new Error(`${MODELS_FILE}: tier "${name}" precisa de "model" no formato provider/modelId`);
 		}
 	}
@@ -156,6 +158,7 @@ export function formatRoleModelChoices(role: string): string | undefined {
 
 export function saveTiers(data: TiersFile): void {
 	// Troca atômica: uma leitura concorrente nunca vê o arquivo pela metade.
+	mkdirSync(dirname(MODELS_FILE), { recursive: true, mode: 0o700 });
 	const temp = `${MODELS_FILE}.${randomUUID()}.tmp`;
 	writeFileSync(temp, `${JSON.stringify(data, null, 2)}\n`, "utf-8");
 	renameSync(temp, MODELS_FILE);
@@ -176,5 +179,6 @@ export function resolveModelRef(value: string): { model: string; thinking?: stri
 		throw new Error(`tier desconhecido "${name}" — use ${TIER_NAMES.join(", ")}`);
 	}
 	const tier = loadTiers().tiers[name];
+	if (!tier) throw new Error(`tier "${name}" não configurado em ${MODELS_FILE}`);
 	return { model: tier.model, thinking: tier.thinking, tier: name };
 }

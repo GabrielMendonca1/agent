@@ -37,7 +37,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { bindSessionCachePolicy, breakCause, compactionDecision, idleCompactionAt, idleCompactionDecision, idleCompactMinTokens, fingerprint, firstChangedSegment, JUICE_KIND, modelSwitchEstimate, openaiCacheKey, prefetchPayload, warmPlan } from "../../juice/cache-policy.mjs";
-import { getJuiceReport, recordJuiceCacheEvent } from "../../juice/client.mjs";
+import { isChild } from "../../juice/client.mjs";
 import { CompactionEpoch, branchOf } from "./lib/compaction-epoch.ts";
 
 const DEFAULT_WINDOW_S = 3 * 3600; // ótimo nas pausas do Gabriel pesadas por contexto (curva plana de 2,7 h a 9 h)
@@ -83,11 +83,10 @@ export function warmWindow(gaps: Gap[], ttl: number): number {
 }
 
 const MAX_PING_USD = Number(process.env.AGENT_CACHE_KEEPER_MAX_PING_USD ?? 0.5);
-const ledger = (event: Record<string, unknown>) => { try { recordJuiceCacheEvent(event); } catch { /* best-effort */ } };
 
 export default function cacheKeeper(pi: ExtensionAPI) {
   if (process.env.AGENT_CACHE_KEEPER === "0") return;
-  const child = process.env.AGENT_JUICE_CHILD === "1";
+  const child = isChild();
 
   // H — vale também em subagentes: chave do prefixo estável quando falta ou é por sessão de filho.
   pi.on("before_provider_request", (event: { payload: Payload }) => {
@@ -147,11 +146,11 @@ export default function cacheKeeper(pi: ExtensionAPI) {
   function noteCompactionDone(ctx: ExtensionContext) {
     if (!epoch.observe(branchOf(ctx))) return;
     deferredTurns = 0;
-    ledger({ event: "break", cause: "compaction" });
+
   }
 
   const store = (cwd: string) => {
-    const base = process.env.AGENT_JUICE_HOME || join(homedir(), ".pi/agent");
+    const base = process.env.PI_CODING_AGENT_DIR || join(homedir(), ".agent");
     const dir = join(base, "cache-keeper");
     mkdirSync(dir, { recursive: true });
     return join(dir, createHash("sha1").update(cwd).digest("hex").slice(0, 12) + ".json");
@@ -161,7 +160,7 @@ export default function cacheKeeper(pi: ExtensionAPI) {
   };
   const saveGap = (cwd: string, gap: Gap) => {
     if (gap.s < 1) return;
-    ledger({ event: "gap", seconds: Math.min(gap.s, 30 * 86400), censored: gap.c === 1 });
+
     const gaps = [...loadGaps(cwd), gap].slice(-MAX_SAMPLES);
     try { writeFileSync(store(cwd), JSON.stringify({ cwd, gaps }) + "\n"); } catch { /* best-effort */ }
   };
@@ -206,7 +205,7 @@ export default function cacheKeeper(pi: ExtensionAPI) {
     idleCompacting = true;
     const runCycle = cycle;
     forget(); // o resumo muda o prefixo: o payload guardado não serve mais para aquecer
-    ledger({ event: "compaction", action: "allowed", cause: "idle" });
+
     status("compactando (ocioso)…");
     const done = (text: string, level: "info" | "warning") => {
       if (runCycle !== cycle) return;
@@ -264,7 +263,7 @@ export default function cacheKeeper(pi: ExtensionAPI) {
     // Guarda no momento do ping (ctx é mutável): mesmo provider/modelo/API do request guardado.
     if (!sameModel(last.model, model) || model.api !== "anthropic-messages" || (typeof last.payload.model === "string" && last.payload.model !== model.id)) {
       forget();
-      ledger({ event: "warm_skip", reason: "no-payload" });
+
       lastSkip = "modelo trocado";
       return false;
     }
@@ -272,7 +271,7 @@ export default function cacheKeeper(pi: ExtensionAPI) {
     const ttl = ttlOf(snapshot);
     const plan = warmPlan(snapshot, { model, promptTokens: ctx.getContextUsage?.()?.tokens ?? 0, ttlSeconds: ttl, maxPingUsd: MAX_PING_USD });
     if (plan.action === "skip") {
-      ledger({ event: "warm_skip", reason: plan.reason });
+
       lastSkip = plan.reason;
       return false;
     }
@@ -307,7 +306,7 @@ export default function cacheKeeper(pi: ExtensionAPI) {
     } catch (error) {
       if (refreshCycle !== cycle) return false;
       if (process.env.AGENT_CACHE_KEEPER_TEST === "1") process.stderr.write(`cache-keeper erro: ${error}\n`);
-      ledger({ event: "warm_skip", reason: "error" });
+
       return false;
     } finally {
       clearTimeout(kill);
@@ -323,7 +322,7 @@ export default function cacheKeeper(pi: ExtensionAPI) {
     const base = warmUntil ?? last.at + ttl * 1000;
     const at = base - Math.max(10_000, ttl * 100); // 90% do TTL (margem ≥ 10 s)
     if (at - idleSince > window) {
-      ledger({ event: "warm_skip", reason: "window-closed" });
+
       planIdleCompaction(ctx, at);
       status(`cache até ${hhmm(base)}` + (idleAt ? ` · resumo ${hhmm(idleAt)}` : ""));
       return;
@@ -381,7 +380,7 @@ export default function cacheKeeper(pi: ExtensionAPI) {
     if (prompt < 2048 || (u.cacheRead ?? 0) >= 0.5 * prompt) return;
     const { cause, ...changed } = requestBreak;
     lastDrop = changed;
-    ledger({ event: "break", cause, ...changed });
+
     status();
   });
 
@@ -423,7 +422,7 @@ export default function cacheKeeper(pi: ExtensionAPI) {
     if (memo) return memo;
     const decision = decideCompaction(event, ctx);
     if (chave) decidido.set(chave, decision);
-    ledger({ event: "compaction", action: decision.action === "defer" ? "deferred" : "allowed", cause: decision.cause });
+
     if (decision.action === "defer") {
       deferredTurns += 1;
       status(`compactação adiada: cache quente (${deferredTurns}/${decision.maxTurns})`);
@@ -438,7 +437,7 @@ export default function cacheKeeper(pi: ExtensionAPI) {
   // contar a MESMA compactação de novo no próximo gate.
   pi.on("session_compact", (_e: any, ctx: ExtensionContext) => {
     deferredTurns = 0;
-    ledger({ event: "break", cause: "compaction" });
+
     epoch.sync(branchOf(ctx));
   });
 
@@ -501,17 +500,6 @@ export default function cacheKeeper(pi: ExtensionAPI) {
     idleSince = undefined;
   });
 
-  const ledgerLines = (): string[] => {
-    let r: any;
-    try { r = getJuiceReport(); } catch { return []; }
-    if (!r) return [];
-    const top = (m: Record<string, number>) => Object.entries(m ?? {}).sort((a, b) => b[1] - a[1]).slice(0, 4).map(([k, n]) => `${k} ${n}`).join(", ") || "nenhuma";
-    return [
-      `ledger: acerto ${(100 * (r.hitRate ?? 0)).toFixed(0)}% · pings ${r.warm?.pings ?? 0} (US$${(r.warm?.usd ?? 0).toFixed(4)})`,
-      `quebras: ${top(r.cache?.breaks)} · pulos: ${top(r.cache?.warmSkips)} · D: ${top(r.cache?.decisions)}`,
-    ];
-  };
-
   pi.registerCommand("cache", {
     description: "Estado do cache-keeper: janela de aquecimento, pings e pausas registradas",
     handler: async (_args: string, ctx: ExtensionContext) => {
@@ -523,7 +511,6 @@ export default function cacheKeeper(pi: ExtensionAPI) {
         `compactação ociosa: ${idleEnabled ? `≥${Math.round(idleMin / 1000)}k tokens${idleAt ? ` · agendada ${hhmm(idleAt)}` : ""}` : "desligada (AGENT_IDLE_COMPACT=0)"}`,
         `pings nesta sessão: ${stats.pings} (${stats.misses} sem acerto, US$${stats.cost.toFixed(4)})` + (warmUntil ? ` · cache garantido até ${hhmm(warmUntil)}` : ""),
         ...(dropLabel() ? [dropLabel()!] : []),
-        ...ledgerLines(),
       ].join("\n"), "info");
     },
   });

@@ -168,6 +168,7 @@ export function stableDynamics(pi: Pick<ExtensionAPI, "getAllTools">, options: P
 }
 
 export default function vaultRuntime(pi: ExtensionAPI) {
+  if (process.env.AGENT_VAULT !== "1") return;
   let validation = validatePiVault();
   let captured: { base: string; options: PromptDynamics } | null = null;
 

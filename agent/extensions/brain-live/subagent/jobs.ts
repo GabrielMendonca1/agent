@@ -137,10 +137,10 @@ export interface RoleFileConfig {
 
 export function resolveJobTaskModels(tasks: JobTaskSpec[], defaults?: DispatchDefaults, roleFiles?: readonly RoleFileConfig[]): { ok: true; tasks: JobTaskSpec[] } | { ok: false; error: string } {
 	try {
-		if (defaults?.juice) {
+		if (defaults?.resources) {
 			const primary = defaults.model;
-			const support = defaults.juice.supportModel || primary;
-			if (!primary || !path.isAbsolute(defaults.juice.statePath)) throw new Error("Juice: principal ou orçamento do pedido indisponível.");
+			const support = defaults.resources.supportModel || primary;
+			if (!primary) throw new Error("Agent: parent model unavailable.");
 			return { ok: true, tasks: tasks.map((task) => {
 				// A config do papel que o usuário já tinha (`roleModels`: modelo + thinking por papel)
 				// é autoritativa e NUNCA é zerada pelo piloto; o slot principal/apoio só preenche
@@ -151,11 +151,11 @@ export function resolveJobTaskModels(tasks: JobTaskSpec[], defaults?: DispatchDe
 				// o arquivo do usuário decide (o runner resolve `tier:`/thinking do frontmatter).
 				const file = roleFiles?.find((role) => role.name === task.agent);
 				if (!task.model && (file?.model || file?.thinking)) return { ...task };
-				// Slot vem da receita (+ despachante); sem receita, scout em apoio e o resto no principal.
-				const slot = task.slot ?? defaults.juice?.slots?.[task.agent] ?? (task.agent === "scout" ? "apoio" : "principal");
+				// Slot vem da receita; sem receita, scout em apoio e o resto no principal.
+				const slot = task.slot ?? defaults.resources?.slots?.[task.agent] ?? (task.agent === "scout" ? "apoio" : "principal");
 				const model = task.model ?? (slot === "apoio" ? support : primary);
 				if (model !== primary && model !== support) {
-					throw new Error(`Juice: ${task.agent} deve usar principal ou apoio configurado em /models; recebido ${model}.`);
+					throw new Error(`Agent: ${task.agent} deve usar principal ou apoio configurado em /models; recebido ${model}.`);
 				}
 				// Papel sem config própria: slot do piloto e o thinking do pedido.
 				return { ...task, model, thinking: defaults.thinkingLevel ?? "medium" };
@@ -199,8 +199,6 @@ export interface JobRecord {
 	/** pi que lançou (ou retomou) este job; vazio em registros antigos. */
 	parentPid?: number;
 	parentIdentity?: ProcessIdentity;
-	/** Budget provenance; a pilot job is never automatically replayed after a crash. */
-	juiceStatePath?: string;
 	/** Histórico de jobs duráveis antigos; usado somente para limpeza segura. */
 	runs?: DurableRunState[];
 	/** Total de retomadas para telemetria; MAX_RESUMES vale por slot. */
@@ -466,7 +464,6 @@ export class SubagentJobManager {
 			sessionGeneration: spec.sessionGeneration,
 			parentPid: process.pid,
 			parentIdentity: readProcessIdentity(process.pid),
-			...(spec.dispatchDefaults.juice ? { juiceStatePath: spec.dispatchDefaults.juice.statePath } : {}),
 		};
 
 		// Persist the launch before acknowledging it, so a crash right after the

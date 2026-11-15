@@ -1,37 +1,56 @@
+import { fileURLToPath } from 'node:url';
 import { restoreSkillPolicyEnvironment } from './skill-policy.mjs';
 
 const PRELOAD = /(^|[\\/])agent[\\/]juice[\\/]runtime\.mjs$/;
-const isPreload = (value) => PRELOAD.test(String(value).replace(/^file:\/\//, ''));
+const isPreload = (value) => {
+  if (value.startsWith('file:')) {
+    try { value = fileURLToPath(value); } catch { return false; }
+  }
+  return PRELOAD.test(value);
+};
 
-function stripPreload(nodeOptions) {
-  const tokens = nodeOptions.split(/\s+/).filter(Boolean);
+// Keep the exact spelling of unrelated Node flags, including quoted paths.
+export function stripPreload(nodeOptions) {
+  const tokens = [];
+  const pattern = /(?:[^\s"']|"(?:\\.|[^"\\])*"|'[^']*')+/g;
+  for (const match of nodeOptions.matchAll(pattern)) {
+    const raw = match[0];
+    const value = raw.replace(/"((?:\\.|[^"\\])*)"|'([^']*)'/g, (_, double, single) => single ?? double.replace(/\\(["\\])/g, '$1'));
+    tokens.push({ raw, value });
+  }
   const kept = [];
   for (let i = 0; i < tokens.length; i++) {
-    const token = tokens[i];
-    if (token.startsWith('--import=') && isPreload(token.slice('--import='.length))) continue;
-    if (token === '--import' && i + 1 < tokens.length && isPreload(tokens[i + 1])) { i++; continue; }
-    kept.push(token);
+    const { raw, value } = tokens[i];
+    if (value.startsWith('--import=') && isPreload(value.slice(9))) continue;
+    if (value === '--import' && tokens[i + 1] && isPreload(tokens[i + 1].value)) { i++; continue; }
+    kept.push(raw);
   }
   return kept.join(' ');
 }
 
-/**
- * Env para comandos que a sessão executa a pedido do usuário/agente (bash, codemode):
- * sem o preload do Juice, sem a curadoria de skills e sem AGENT_JUICE_*. Devolve cópia;
- * o processo pai e os subagentes seguem com process.env intacto.
- */
+/** Bash/codemode must not inherit the Agent preload or feature activation. */
 export function userCommandEnv(env = process.env) {
   const copy = { ...env };
-  try {
-    if (typeof copy.NODE_OPTIONS === 'string') {
-      const rest = stripPreload(copy.NODE_OPTIONS);
-      if (rest) copy.NODE_OPTIONS = rest;
-      else delete copy.NODE_OPTIONS;
-    }
-    restoreSkillPolicyEnvironment(copy);
-    for (const key of Object.keys(copy)) if (key.startsWith('AGENT_JUICE_')) delete copy[key];
-    return copy;
-  } catch {
-    return { ...env };
+  if (typeof copy.NODE_OPTIONS === 'string') {
+    const rest = stripPreload(copy.NODE_OPTIONS);
+    if (rest) copy.NODE_OPTIONS = rest;
+    else delete copy.NODE_OPTIONS;
   }
+  // Invalid policy snapshots fail visibly, never restore the unsafe inherited env.
+  restoreSkillPolicyEnvironment(copy);
+  for (const key of Object.keys(copy)) {
+    if (key.startsWith('AGENT_JUICE_') || ['AGENT_RUNTIME_ENABLED', 'AGENT_PI_ROOT', 'AGENT_CHILD', 'AGENT_SUBAGENTS', 'AGENT_CACHE_PREFETCH'].includes(key)) delete copy[key];
+  }
+  return copy;
+}
+
+/** Agent children retain the preload and skill policy, but no legacy accounting env. */
+export function subagentEnv(env = process.env) {
+  const copy = { ...env, AGENT_CHILD: '1', AGENT_SUBAGENTS: '0' };
+  if (copy.AGENT_RUNTIME_ENABLED === undefined && copy.AGENT_JUICE_ENABLED !== undefined) copy.AGENT_RUNTIME_ENABLED = copy.AGENT_JUICE_ENABLED;
+  if (!copy.AGENT_PI_ROOT && copy.AGENT_JUICE_PI_ROOT) copy.AGENT_PI_ROOT = copy.AGENT_JUICE_PI_ROOT;
+  for (const key of Object.keys(copy)) {
+    if (key.startsWith('AGENT_JUICE_') && key !== 'AGENT_JUICE_SKILLS_BEFORE') delete copy[key];
+  }
+  return copy;
 }

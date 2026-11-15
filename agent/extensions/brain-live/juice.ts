@@ -1,51 +1,14 @@
-/**
- * Modo do Agent: `simple` ⇄ `complex`.
- *
- *   simple   → orquestrador sozinho, `subagent` bloqueado na chamada.
- *   complex  → equipe pela receita do projeto, `subagent` liberado.
- *
- * Modelo e thinking do principal são escolha MANUAL do humano (`/model`, `/thinking`,
- * `/models`) e persistem: o modo NÃO mexe em nenhum dos dois. Trocar de modo (ou de
- * modelo) nunca reescreve o nível de raciocínio escolhido.
- *
- * Políticas globais no system prompt: autonomia nos dois modos; complex só
- * em complex. A lista de tools não muda; simple bloqueia subagent na chamada.
- *
- * Shift+Tab alterna. `/mode [simple|complex]` também. O agente nunca vê limite
- * de token: o ledger JSON só mede custo, disponível ao humano em /cost.
- * Compactação: ~450k em janelas de 1M; faltando 10% nas menores.
- * Receita do projeto: `.agent/workflow.md` (criada em repositórios git) é interna —
- * o modelo principal NÃO a vê (nem no prompt, nem em nota): ela só alimenta os slots
- * de modelo por papel do `subagent` e o aprendizado.
- * Aprender do trabalho real: run com checks verdes → o modelo de apoio escreve
- * 0–3 regras na receita (centavos). Nunca o modelo principal; nunca em filhos.
- */
-import { modeStatus } from '../agent/tui/status-line';
 import type { ExtensionAPI, ExtensionContext, Theme } from '@earendil-works/pi-coding-agent';
 import { agentStatus, shortModel, type ModeFooterState, type TeamStatus } from '../../juice/panel.ts';
-import { getJuicePreferences, juiceEnabled } from '../../juice/client.mjs';
-import { ensureWorkflow, parseWorkflow, readWorkflow } from '../../juice/workflow.mjs';
+import { runtimeEnabled, isChild, subagentsEnabled, setSessionSubagents } from '../../juice/client.mjs';
 import { categoryPrompt } from '../../juice/skill-categories.mjs';
 import { companySkillDirs } from '../../juice/companies.mjs';
 import { appendPolicy, policySections, POLICY_SECTIONS, notesSection } from '../../juice/policy.mjs';
 import { readNotesMetadata, unmappedDocs } from '../../juice/notes.mjs';
-import { applyLearned, digestRun, hadGreenChecks, lastRunMessages, learnPrompt, parseRules } from '../../juice/learn.mjs';
 import { existsSync, readFileSync, renameSync, statSync } from 'node:fs';
-import { basename, join } from 'node:path';
-import { ensureSessionMode, saveSessionMode } from './lib/session-mode.mjs';
+import { join } from 'node:path';
 import { allowAutoCompaction } from '../../juice/cache-policy.mjs';
-import type { JuiceMode } from '../../juice/protocol.d.ts';
 
-/**
- * O modo também vai como nota curta na conversa (só no primeiro run e quando muda).
- * As políticas globais — autonomia sempre, complex só em complex — vão no system
- * prompt de verdade; ver policy.mjs.
- */
-export function modeNote(mode: JuiceMode): string {
-  return mode === 'complex'
-    ? 'Modo do Agent agora: complex — trabalhe com a equipe (`subagent`); a política de complex está no system prompt.'
-    : 'Modo do Agent agora: simple — trabalhe sozinho; sem política de complex no system prompt e com `subagent` bloqueado.';
-}
 const COMPACT_AT_1M = 450_000;
 const TEAM_TOOL = 'subagent';
 
@@ -67,32 +30,20 @@ export function shouldInjectHandoff({ messageType, firstRun, mtime, now }: {
 }
 
 /**
- * Active tool list: the team tool stays active in BOTH modes when registered.
+ * Keep the tool schema stable; admission is checked at launch.
  * Changing the tool list rewrites the request head and zeroes the cache (classic
- * main collapses tool changes to the top); simple blocks `subagent` at call time.
+ * main collapses tool changes to the top).
  */
-export function activeToolsFor(_mode: JuiceMode, active: string[], all: string[]): string[] {
+export function activeToolsFor(_mode: unknown, active: string[], all: string[]): string[] {
   const required = [TEAM_TOOL, 'codemode', 'tool_search'].filter(name => all.includes(name) && !active.includes(name));
   return required.length ? [...active, ...required] : active;
 }
 
-/** Why a tool call is refused under the current mode, or null. */
-export function refusal(tool: string, mode: JuiceMode): string | null {
-  if (tool === TEAM_TOOL && mode === 'simple') return 'Modo simple: `subagent` indisponível. Trabalhe sozinho ou peça ao Gabriel para trocar para complex (Shift+Tab).';
-  return null;
-}
-
-export function learnEligible(support: string | null | undefined, env: NodeJS.ProcessEnv = process.env): boolean {
-  return env.AGENT_JUICE_CHILD !== '1' && env.AGENT_LEARN === '1' && !!support;
-}
-
 export default function (pi: ExtensionAPI) {
   // Agent desligado = sem hooks; com ele, activeToolsFor liga subagent e codemode no session_start.
-  if (!juiceEnabled()) return;
+  if (!runtimeEnabled()) return;
   let statusContext: ExtensionContext | undefined;
-  let state: ModeFooterState = { mode: 'simple', model: '—', usd: null, sessionUsd: 0, team: [] };
-  let notedMode: JuiceMode | null = null;
-  // Rodapé e execução usam learnEligible: aprendizado só com AGENT_LEARN=1.
+  let state: ModeFooterState = { model: '—', sessionUsd: 0, team: [] };
   let projectNotes = ''; // Snapshot só no session_start; nunca reler por turno.
 
   // /next is isolated from policy/notes injection: switching the host
@@ -154,7 +105,7 @@ export default function (pi: ExtensionAPI) {
   const render = () => {
     snapshot = undefined;
     if (statusContext?.mode === 'tui') {
-      statusContext.ui.setStatus('agent-mode', modeStatus(state.mode));
+      statusContext.ui.setStatus('agent-mode', subagentsEnabled(statusContext) ? 'subagents on' : undefined);
       statusContext.ui.setStatus('agent-next', state.nextHint ? '/next encerra a tarefa' : undefined);
     }
   };
@@ -171,14 +122,10 @@ export default function (pi: ExtensionAPI) {
       const active = new Set(pi.getActiveTools());
       deferred = lazy.length && hasSearch ? { loaded: lazy.filter(n => active.has(n)).length, total: lazy.length } : null;
     } catch { deferred = undefined; }
-    let support: string | null | undefined;
-    try { support = getJuicePreferences().supportModel; } catch { support = undefined; }
     return {
       ...state,
       host: 'clássico',
-      support,
       ttl: process.env.PI_CACHE_RETENTION === 'long' ? '1h' : '5m',
-      learn: support === undefined ? undefined : learnEligible(support),
       deferred,
       prefetch: process.env.AGENT_CACHE_PREFETCH_NEXT === '1',
     };
@@ -188,26 +135,12 @@ export default function (pi: ExtensionAPI) {
     state = { ...state, model };
     render();
   }
-  // Só modo + lista de tools. Thinking e modelo são do humano (ver nota no topo): o modo
-  // não os reescreve, nem aqui nem em model_select/before_agent_start.
-  function applyMode(mode: JuiceMode) {
-    state = { ...state, mode };
+  // Tool activation never changes the user-selected model or thinking.
+  function applyTools() {
     try {
-      pi.setActiveTools(activeToolsFor(mode, pi.getActiveTools(), pi.getAllTools().map(t => t.name)));
+      pi.setActiveTools(activeToolsFor(undefined, pi.getActiveTools(), pi.getAllTools().map(t => t.name)));
     } catch { /* tools not registered yet; before_agent_start re-applies */ }
     render();
-  }
-  function setMode(mode: JuiceMode, ctx: ExtensionContext) {
-    try {
-      if (process.env.AGENT_JUICE_CHILD === '1') throw new Error('Juice children cannot change mode');
-      saveSessionMode(pi, ctx, mode);
-      const saved = ensureSessionMode(pi, ctx);
-      if (saved !== mode) throw new Error('Agent: não foi possível salvar o modo da sessão.');
-      applyMode(saved);
-      refresh(ctx);
-    } catch (error) {
-      ctx.ui.notify(error instanceof Error ? error.message : String(error), 'error');
-    }
   }
   function dispose() {
     statusContext?.ui.setStatus('agent-mode', undefined);
@@ -218,14 +151,12 @@ export default function (pi: ExtensionAPI) {
   pi.on('session_start', async (_event, ctx) => {
     dispose();
     statusContext = ctx;
-    // Estado da sessão zera; o ledger cumulativo permanece separado em /cost.
+    // Usage is native session data, never profile accounting.
     state = { ...state, team: [], cacheHit: undefined, sessionUsd: 0, nextHint: false };
     firstHandoffRun = true;
     compacting = false;
-    notedMode = null;
     projectNotes = notesSection(readNotesMetadata(ctx.cwd));
-    try { ensureWorkflow(ctx.cwd); } catch { /* read-only checkout: the prompt just omits the recipe */ }
-    applyMode(ensureSessionMode(pi, ctx));
+    applyTools();
     refresh(ctx);
   });
   pi.on('session_shutdown', async () => { dispose(); });
@@ -235,36 +166,19 @@ export default function (pi: ExtensionAPI) {
     return skillPaths.length ? { skillPaths } : undefined;
   });
   pi.on('session_tree', async (_event, ctx) => {
-    notedMode = null;
-    applyMode(ensureSessionMode(pi, ctx));
+    applyTools();
     refresh(ctx);
   });
-  pi.on('model_select', async (_event, ctx) => { applyMode(ensureSessionMode(pi, ctx)); refresh(ctx); });
+  pi.on('model_select', async (_event, ctx) => { applyTools(); refresh(ctx); });
   // Tools register in extension order; re-apply right before each run so the
-  // schema stays stable; simple blocks `subagent` at call time.
+  // schema stays stable; dispatch checks the optional feature flag.
   pi.on('before_agent_start', async (event, ctx) => {
-    applyMode(ensureSessionMode(pi, ctx));
-    const notes = [
-      notedMode === state.mode ? '' : modeNote(state.mode),
-    ].filter(Boolean);
-    notedMode = state.mode;
-    const message = () => notes.length ? { customType: 'agent-mode', content: notes.join('\n\n'), display: false } : undefined;
-    const result = (systemPrompt: string | null) => {
-      const msg = message();
-      if (systemPrompt === null && !msg) return undefined;
-      return { ...(systemPrompt === null ? {} : { systemPrompt }), ...(msg ? { message: msg } : {}) };
-    };
-    // Políticas GLOBAIS no system prompt do principal: autonomia nos dois modos,
-    // complex só em complex. Vão por seção (host clássico monta o prompt a partir delas
-    // e remove a que sai) e, quando o prompt JÁ está forçado por outro handler ou pelo
-    // outro handler, anexadas ao texto forçado. As duas vias não se somam: quando este
-    // handler roda antes do vault-runtime o prompt ainda não está forçado (só seções, que
-    // o vault renderiza); quando roda depois, o texto forçado não tem as seções.
+    applyTools();
     const opts = event.systemPromptOptions;
-    const policy: JuiceMode | null = process.env.AGENT_JUICE_CHILD === '1' ? null : state.mode;
+    const policy = !isChild();
     if (policy && opts) {
       opts.sections ??= {};
-      const sections: Record<string, string | undefined> = { ...policySections(policy), agent_skill_categories: categoryPrompt() };
+      const sections: Record<string, string | undefined> = { ...policySections(), agent_skill_categories: categoryPrompt() };
       opts.sections.agent_skill_categories = sections.agent_skill_categories!;
       for (const name of POLICY_SECTIONS) {
         if (sections[name]) opts.sections[name] = sections[name]!;
@@ -278,9 +192,9 @@ export default function (pi: ExtensionAPI) {
     }
     const forced = typeof opts?.forceSystemPrompt === 'string' ? opts.forceSystemPrompt : null;
     const withPolicy = policy && forced !== null
-      ? `${appendPolicy(forced, policy)}\n\n<agent_skill_categories>\n${categoryPrompt()}\n</agent_skill_categories>${projectNotes ? `\n\n${projectNotes}` : ''}`
+      ? `${appendPolicy(forced)}\n\n<agent_skill_categories>\n${categoryPrompt()}\n</agent_skill_categories>${projectNotes ? `\n\n${projectNotes}` : ''}`
       : null;
-    return result(withPolicy);
+    return withPolicy === null ? undefined : { systemPrompt: withPolicy };
   });
   pi.on('message_end', async (event: any, ctx) => {
     const u = event?.message?.role === 'assistant' ? event.message.usage : undefined;
@@ -299,7 +213,6 @@ export default function (pi: ExtensionAPI) {
   pi.on('agent_settled', async (_event, ctx) => {
     state = { ...state, nextHint: nextHint(ctx.getContextUsage()?.tokens) };
     refresh(ctx);
-    try { await learnFromRun(ctx); } catch { /* aprender é best-effort; nunca atrapalha a sessão */ }
     autoCompact(ctx);
   });
   // Compactação automática por limiar. `ctx.compact()` é a única porta pública e o SDK a
@@ -320,46 +233,6 @@ export default function (pi: ExtensionAPI) {
   pi.on('session_compact', async () => { compacting = false; });
   pi.on('session_compact_failed', async () => { compacting = false; });
 
-  function projectCheckCmds(cwd: string): string[] {
-    try {
-      const file = join(cwd, '.pi/checks.json');
-      if (!existsSync(file)) return [];
-      const parsed = JSON.parse(readFileSync(file, 'utf8'));
-      return Array.isArray(parsed?.checks) ? parsed.checks.map((c: any) => String(c.cmd || '')).filter(Boolean) : [];
-    } catch { return []; }
-  }
-  async function learnFromRun(ctx: ExtensionContext) {
-    const prefs = getJuicePreferences();
-    const supportId = prefs.supportModel;
-    if (!supportId || !learnEligible(supportId)) return;
-    const text = readWorkflow(ctx.cwd);
-    if (text === null) return;
-    const messages = lastRunMessages(ctx.sessionManager.getBranch() as any[]);
-    if (!messages.length || !hadGreenChecks(messages, projectCheckCmds(ctx.cwd))) return;
-    const [provider, ...rest] = supportId.split('/');
-    const model = ctx.modelRegistry.find(provider, rest.join('/'));
-    if (!model) return;
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), 45_000);
-    let answer = '';
-    try {
-      // streamSimple sem `reasoning` = thinking desligado: resposta de 3 linhas,
-      // o teto não some em pensamento (complete() herda thinking do modelo).
-      const response = await ctx.modelRegistry.streamSimple(
-        model,
-        { messages: [{ role: 'user', content: [{ type: 'text', text: learnPrompt(digestRun(messages), parseWorkflow(text).rules, basename(ctx.cwd)) }], timestamp: Date.now() }] } as any,
-        { maxTokens: 600, signal: controller.signal, cacheRetention: 'none' } as any,
-      ).result();
-      // Só resposta completa: um stream abortado/cortado deixaria regra truncada na receita.
-      if (response.stopReason === 'stop') answer = (response.content ?? []).filter((p: any) => p.type === 'text').map((p: any) => p.text).join('\n');
-    } finally { clearTimeout(timer); }
-    const rules = parseRules(answer);
-    if (!rules.length) return;
-    const merged = applyLearned(ctx.cwd, rules, { by: supportId, mode: state.mode, proven: 'no' });
-    if (!merged) return;
-    pi.events.emit('agent:workflow-changed', { cwd: ctx.cwd, version: merged.version, added: merged.added });
-    if (ctx.hasUI) ctx.ui.notify(`receita ${merged.version}: ${merged.added.length} regra(s) aprendida(s)`, 'info');
-  }
   // Team state from the subagent extension.
   pi.events.on('agent:team', (data: { agents?: string[]; status?: TeamStatus }) => {
     if (!Array.isArray(data?.agents) || !data.status) return;
@@ -373,21 +246,6 @@ export default function (pi: ExtensionAPI) {
     render();
   });
 
-  pi.on('tool_call', async (event, ctx) => {
-    if (event.toolName !== TEAM_TOOL) return;
-    try {
-      const mode = ensureSessionMode(pi, ctx);
-      applyMode(mode);
-      const reason = refusal(event.toolName, mode);
-      return reason ? { block: true, reason } : undefined;
-    } catch (error) {
-      return { block: true, reason: `Agent: dispatch bloqueado: ${error instanceof Error ? error.message : String(error)}` };
-    }
-  });
-  pi.registerShortcut('shift+tab', {
-    description: 'Agent: simple ⇄ complex',
-    handler: async (ctx) => setMode(ensureSessionMode(pi, ctx) === 'simple' ? 'complex' : 'simple', ctx),
-  });
   // Independente dos comandos de modo: /notes só pede manutenção do mapa ao agente.
   pi.registerCommand('notes', {
     description: 'Agent: acrescentar ao mapa os documentos ainda sem nota',
@@ -406,15 +264,13 @@ export default function (pi: ExtensionAPI) {
       ].join('\n'), { deliverAs: 'followUp' });
     },
   });
-  pi.registerCommand('mode', {
-    description: 'Agent: simple | complex (Shift+Tab alterna)',
+  pi.registerCommand('subagents', {
+    description: 'Subagentes opcionais: on | off (nesta sessão)',
     handler: async (args, ctx) => {
-      const arg = args.trim();
-      if (arg === 'simple' || arg === 'complex') return setMode(arg, ctx);
-      if (arg) return ctx.ui.notify('Use /mode simple ou /mode complex', 'error');
-      setMode(ensureSessionMode(pi, ctx) === 'simple' ? 'complex' : 'simple', ctx);
+      if (isChild()) return ctx.ui.notify('Subagentes não podem habilitar delegação.', 'error');
+      if (!['on', 'off'].includes(args.trim())) return ctx.ui.notify('Use /subagents on ou /subagents off', 'info');
+      setSessionSubagents(ctx, args.trim() === 'on');
+      refresh(ctx);
     },
   });
-  // The pilot does not authorize non-chat auxiliary APIs.
-  pi.on('cache_warming_decision', async () => ({ action: 'stop' as const }));
 }

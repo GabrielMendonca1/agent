@@ -1,15 +1,15 @@
 import { existsSync, readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { PI_VAULT_DIR } from "./vault-runtime";
+import { homedir } from "node:os";
 
 /**
- * Reescreve as descrições das ferramentas com o texto de Pi/tools.md.
+ * Reescreve as descrições das ferramentas com o texto de tools.md no perfil Agent.
  *   ## nome_da_tool     → descrição da ferramenta
  *   ### param           → descrição do parâmetro (aceita caminho: args.steps)
  * Ferramenta ausente do arquivo mantém a descrição original.
  */
-export const PI_TOOLS_PATH = join(PI_VAULT_DIR, "tools.md");
+export const PI_TOOLS_PATH = join(process.env.PI_CODING_AGENT_DIR || join(homedir(), ".agent"), "tools.md");
 
 export interface ToolEntry {
   description: string;

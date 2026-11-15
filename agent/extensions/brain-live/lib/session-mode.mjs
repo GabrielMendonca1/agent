@@ -1,4 +1,3 @@
-import { getJuicePreferences } from '../../../juice/client.mjs';
 /** @typedef {import('@earendil-works/pi-coding-agent').ExtensionAPI} ExtensionAPI */
 /** @typedef {import('@earendil-works/pi-coding-agent').ExtensionContext} ExtensionContext */
 /** @typedef {import('../../../juice/protocol.d.ts').JuiceMode} JuiceMode */
@@ -71,7 +70,7 @@ export function saveSessionMode(pi, ctx, mode) {
 export function ensureSessionMode(pi, ctx) {
   const saved = readSessionMode(ctx);
   if (saved !== null) return saved;
-  const mode = getJuicePreferences().mode;
+  const mode = 'simple';
   saveSessionMode(pi, ctx, mode);
   return mode;
 }

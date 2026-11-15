@@ -3,8 +3,7 @@
  * (relativo ao cwd, ou PI_TODO_PATH), um markdown por item, para sessões pi
  * concorrentes se coordenarem via claim/release.
  *
- * NÃO é a lista de tarefas do Gabriel: essas vivem canonicamente no Vault
- * (/mnt/garime/state/tasks) e nunca passam por aqui.
+ * Não substitui a lista pessoal de tarefas do usuário.
  *
  * Formato de <todo-dir>/<id>.md:
  * - front matter JSON (não YAML): { id, title, tags, status, created_at, assigned_to_session }
@@ -675,7 +674,7 @@ export function createTaskTool(): ToolDefinition<typeof TodoParams> {
     label: "Todo",
     description:
       `Project-scoped agent work items in ${todosDirLabel} (list, list-all, get, create, update, append, delete, claim, release). ` +
-      "NOT for Gabriel's personal tasks — those live in the canonical Vault. " +
+      "Use only for project work, not personal tasks. " +
       "Title is the short summary; body is long-form markdown notes (update replaces, append adds). " +
       "Todo ids are shown as TODO-<hex>; id parameters accept TODO-<hex> or the raw hex filename. " +
       "Claim tasks before working on them to avoid conflicts with other pi sessions, and close them when complete.",

@@ -2,7 +2,7 @@
  * /models — painel de tiers de modelo (Default · Fast · Standard · Deep · Visual · Image).
  *
  *   Default  → modelo da sessão e dos chats novos (o Pi grava o último usado)
- *   demais   → ~/Sistema/Pi/models.json (Vault): `subagent` usa `model: tier:<nome>`,
+ *   demais   → agent-models.json no perfil Agent: `subagent` usa `model: tier:<nome>`,
  *              `generate_image` usa o tier image.
  *
  * Papéis nativos (scout/worker/planner/reviewer/visual) aparecem sempre, com o
@@ -17,7 +17,7 @@
 import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
 import { getSelectListTheme } from "@earendil-works/pi-coding-agent";
 import { Container, fuzzyFilter, Input, Key, matchesKey, type SelectItem, SelectList, Spacer, Text, truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
-import { formatJuiceStatus, getJuicePreferences, getJuiceSnapshot, juiceEnabled, setJuicePreferences } from "../../juice/client.mjs";
+import { getAgentPreferences, runtimeEnabled, setAgentPreferences } from "../../juice/client.mjs";
 import { loadRoleModels, loadTiers, MODELS_FILE, ROLE_NAMES, type RoleModelChoice, saveTiers, setRolePreference, TIER_NAMES, type Tier, type TierName, type TiersFile } from "./lib/tiers.ts";
 
 const THINKING = ["off", "minimal", "low", "medium", "high", "xhigh"];
@@ -169,22 +169,20 @@ export default function (pi: ExtensionAPI) {
 			}
 			let pilot = false;
 			try {
-				pilot = juiceEnabled();
+				pilot = runtimeEnabled();
 			} catch {
 				// A broken opt-in client must not alter the established /models view.
 			}
 			let data: TiersFile | undefined;
 			let roleChoices: Record<string, RoleModelChoice[]> = {};
 			let roleError: string | undefined;
-			let juicePrefs: { mode: "simple" | "complex"; supportModel: string | null } | undefined;
-			let juiceSnapshot: object | null = null;
-			let juiceError: string | undefined;
+			let resourcePrefs: { supportModel: string | null } | undefined;
+			let resourceError: string | undefined;
 			if (pilot) {
 				try {
-					juicePrefs = getJuicePreferences();
-					juiceSnapshot = getJuiceSnapshot();
+					resourcePrefs = getAgentPreferences();
 				} catch (err) {
-					juiceError = err instanceof Error ? err.message : String(err);
+					resourceError = err instanceof Error ? err.message : String(err);
 				}
 			} else {
 				try {
@@ -203,7 +201,7 @@ export default function (pi: ExtensionAPI) {
 			}
 			const options = modelOptions(ctx, pilot);
 			const currentDefault = () => (ctx.model ? `${ctx.model.provider}/${ctx.model.id}` : "");
-			const supportUnset = "__juice_support_inherit__";
+			const supportUnset = "__agent_support_inherit__";
 
 			await ctx.ui.custom((tui, theme, _kb, done) => {
 				const setTier = (name: TierName, patch: Partial<Tier>) => {
@@ -250,7 +248,7 @@ export default function (pi: ExtensionAPI) {
 								id: "support",
 								label: "Apoio",
 								description: "fallback económico dos papéis sem allowlist",
-								model: () => juicePrefs?.supportModel ?? "",
+								model: () => resourcePrefs?.supportModel ?? "",
 								extra: () => ["fallback"],
 							},
 							...roleRows,
@@ -265,7 +263,7 @@ export default function (pi: ExtensionAPI) {
 								extra: () => [ctx.thinkingLevel ?? ""],
 							},
 							...TIER_NAMES.map((name): Row => {
-								const t = () => data!.tiers[name];
+								const t = () => data!.tiers[name] ?? { label: name, description: "Não configurado", model: "" };
 								return {
 									kind: "tier",
 									id: name,
@@ -296,7 +294,7 @@ export default function (pi: ExtensionAPI) {
 					const name = row.id as TierName;
 					const list = name === "image" ? QUALITY : THINKING;
 					const field = name === "image" ? "quality" : "thinking";
-					const cur = list.indexOf((data!.tiers[name] as any)[field] ?? list[0]);
+					const cur = list.indexOf((data!.tiers[name] as any)?.[field] ?? list[0]);
 					setTier(name, { [field]: list[(cur + dir + list.length) % list.length] } as Partial<Tier>);
 				};
 				const cycleSize = () => {
@@ -372,9 +370,9 @@ export default function (pi: ExtensionAPI) {
 								if (m) void pi.setModel(m).then((ok) => !ok && ctx.ui.notify(`sem auth para ${v}`, "error"));
 							} else if (row.kind === "support") {
 								try {
-									juicePrefs = setJuicePreferences({ supportModel: v === supportUnset ? null : v });
+									resourcePrefs = setAgentPreferences({ supportModel: v === supportUnset ? null : v });
 								} catch (err) {
-									ctx.ui.notify(`erro salvando preferência juice: ${err instanceof Error ? err.message : String(err)}`, "error");
+									ctx.ui.notify(`erro salvando preferência: ${err instanceof Error ? err.message : String(err)}`, "error");
 								}
 							} else {
 								setTier(row.id as TierName, { model: v });
@@ -433,11 +431,11 @@ export default function (pi: ExtensionAPI) {
 
 				const header = (width: number) => pilot
 					? [
-							truncateToWidth(theme.bold(theme.fg("accent", "Modelos")) + theme.fg("dim", `   ${juiceError ? `juice indisponível · ${juiceError}` : formatJuiceStatus(juiceSnapshot, juicePrefs)}`), width, ""),
+							truncateToWidth(theme.bold(theme.fg("accent", "Modelos")) + theme.fg("dim", `   ${resourceError ? `preferências indisponíveis · ${resourceError}` : "preferências do perfil"}`), width, ""),
 							"",
 						]
 					: [
-							theme.bold(theme.fg("accent", "Modelos")) + theme.fg("dim", "   Astra conversa com você; os subagentes usam o tier de cada um"),
+							theme.bold(theme.fg("accent", "Modelos")) + theme.fg("dim", "   O agente conversa com você; os subagentes usam o tier de cada um"),
 							"",
 						];
 				const footer = (width: number) => {

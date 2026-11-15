@@ -3,7 +3,7 @@
  *
  * Usa o backend Codex (`chatgpt.com/backend-api/codex/responses`) com a tool
  * nativa `image_generation`; não precisa de OPENAI_API_KEY. O modelo "host" e
- * a qualidade/tamanho vêm do tier `image` em ~/Sistema/Pi/models.json (/models).
+ * a qualidade/tamanho vêm do tier `image` em agent-models.json no perfil Agent (/models).
  *
  * Saída: PNG salvo em `output` (ou ~/Pictures/pi-images/<timestamp>.png).
  * Com `reference_images`, o pedido vira edição (as imagens vão como input_image).

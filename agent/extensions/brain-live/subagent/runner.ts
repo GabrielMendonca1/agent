@@ -17,6 +17,7 @@ import type { AgentToolResult, ThinkingLevel } from "@earendil-works/pi-agent-co
 import type { Message } from "@earendil-works/pi-ai";
 import { getPackageDir, SessionManager, withFileMutationQueue } from "@earendil-works/pi-coding-agent";
 import { resolveModelRef } from "../lib/tiers.ts";
+import { subagentEnv } from "../../../juice/child-env.mjs";
 import { projectRules } from "../../../juice/workflow.mjs";
 import { readHostFreePercent, waitForHostMemory } from "./host-memory.ts";
 import { listDescendants, signalProcesses } from "./process-tree.ts";
@@ -110,9 +111,8 @@ export interface DispatchDefaults {
 	parentSession?: string;
 	model?: string;
 	thinkingLevel?: ThinkingLevel;
-	/** Pilot only: snapshot at launch, not whatever run the parent starts later. */
-	juice?: {
-		statePath: string;
+	/** Resource choices snapshotted at launch. */
+	resources?: {
 		supportModel?: string;
 		/** Slot por papel decidido pela receita do projeto e pelo despachante: apoio | principal. */
 		slots?: Record<string, "apoio" | "principal">;
@@ -479,8 +479,6 @@ interface ChildRunOptions {
 	args: string[];
 	cwd: string;
 	agentName: string;
-	/** Every child of this job debits the original parent's budget. */
-	juiceStatePath?: string;
 	signal?: AbortSignal;
 	/** Mutado no lugar: o chamador é dono do resultado. */
 	result: SingleResult;
@@ -529,11 +527,7 @@ async function runPiChild(opts: ChildRunOptions): Promise<void> {
 				cwd: opts.cwd,
 				shell: false,
 				stdio: ["ignore", "pipe", "pipe"],
-				...(opts.juiceStatePath || opts.extraEnv ? { env: {
-					...process.env,
-					...(opts.juiceStatePath ? { AGENT_JUICE_STATE: opts.juiceStatePath, AGENT_JUICE_CHILD: "1" } : {}),
-					...opts.extraEnv,
-				} } : {}),
+				env: subagentEnv({ ...process.env, ...opts.extraEnv }),
 			});
 			let buffer = "";
 			let stdoutBytes = 0;
@@ -772,7 +766,7 @@ export async function runSingleAgent(opts: RunAgentOptions): Promise<SingleResul
 		extraEnv.AGENT_BASH_SANDBOX = sandbox;
 		extraEnv.AGENT_SANDBOX_CWD = cwd;
 	}
-	if (opts.prefetch) Object.assign(extraEnv, { AGENT_CACHE_PREFETCH: "1", AGENT_JUICE_CHILD: "1" });
+	if (opts.prefetch) Object.assign(extraEnv, { AGENT_CACHE_PREFETCH: "1", AGENT_CHILD: "1" });
 	let sessionFile: string | undefined;
 	if (opts.prefetch) args.push("--no-session");
 	else {
@@ -786,14 +780,8 @@ export async function runSingleAgent(opts: RunAgentOptions): Promise<SingleResul
 	}
 	// Aquecimento: o cache-keeper troca o 1º request por max_tokens 1 sem thinking e sai.
 	// Não muda system/tools (só before_provider_request), então o prefixo é o do filho real.
-	// Filhos do piloto (AGENT_JUICE_CHILD=1) carregam o cache-keeper em modo filho: só a
-	// prompt_cache_key estável do Codex/Responses (Anthropic intacto). Fora do piloto não:
-	// sem AGENT_JUICE_CHILD o keeper rodaria em modo pai (aquecimento) dentro do filho.
-	if ((opts.prefetch || opts.dispatchDefaults.juice) && fs.existsSync(CACHE_KEEPER_PATH)) args.push("-e", CACHE_KEEPER_PATH);
-	// O read nativo do Pi clássico já lê imagens; o loadout do papel basta.
-	// Pilot children retain the skills catalog; the runtime gate is inherited via
-	// NODE_OPTIONS, independently of extension discovery. Legacy dispatch is unchanged.
-	if (!opts.dispatchDefaults.juice) args.push("--no-skills");
+	// Every child keeps cache keys, limits and the skill catalog, without warming timers.
+	if (fs.existsSync(CACHE_KEEPER_PATH)) args.push("-e", CACHE_KEEPER_PATH);
 	// Explicit child extensions can provide an offline
 	// provider in checks. Never inherit the parent's whole profile.
 	for (const ext of (process.env.AGENT_SUBAGENT_CHILD_EXTENSIONS ?? "").split(":").filter(Boolean)) {
@@ -881,7 +869,6 @@ export async function runSingleAgent(opts: RunAgentOptions): Promise<SingleResul
 				args,
 				cwd,
 				agentName,
-				juiceStatePath: opts.dispatchDefaults.juice?.statePath,
 				signal,
 				result: currentResult,
 				emitUpdate,
