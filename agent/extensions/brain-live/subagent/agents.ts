@@ -4,6 +4,7 @@
 
 import * as fs from "node:fs";
 import * as path from "node:path";
+import { fileURLToPath } from "node:url";
 import { CONFIG_DIR_NAME, getAgentDir, parseFrontmatter } from "@earendil-works/pi-coding-agent";
 
 export type AgentScope = "user" | "project" | "both";
@@ -19,7 +20,7 @@ export interface AgentConfig {
 	/** Default "Return format" section when the caller's brief omits it. */
 	returnFormat?: string;
 	systemPrompt: string;
-	source: "user" | "project";
+	source: "bundled" | "user" | "project";
 	filePath: string;
 }
 
@@ -67,7 +68,7 @@ function parseNameList(value: unknown): string[] | undefined {
 	return names.length > 0 ? names : undefined;
 }
 
-function loadAgentsFromDir(dir: string, source: "user" | "project"): AgentConfig[] {
+function loadAgentsFromDir(dir: string, source: AgentConfig["source"]): AgentConfig[] {
 	const agents: AgentConfig[] = [];
 
 	if (!fs.existsSync(dir)) {
@@ -140,7 +141,12 @@ export function discoverAgents(cwd: string, scope: AgentScope): AgentDiscoveryRe
 	const userDir = path.join(getAgentDir(), "agents");
 	const projectAgentsDir = findNearestProjectAgentsDir(cwd);
 
-	const userAgents = scope === "project" ? [] : loadAgentsFromDir(userDir, "user");
+	// Bundled roles travel with the runtime; never copy them into the personal profile.
+	const bundledDir = fileURLToPath(new URL("../../../agents/", import.meta.url));
+	const userAgents = scope === "project" ? [] : [
+		...loadAgentsFromDir(bundledDir, "bundled"),
+		...loadAgentsFromDir(userDir, "user"),
+	];
 	const projectAgents = scope === "user" || !projectAgentsDir ? [] : loadAgentsFromDir(projectAgentsDir, "project");
 
 	const agentMap = new Map<string, AgentConfig>();

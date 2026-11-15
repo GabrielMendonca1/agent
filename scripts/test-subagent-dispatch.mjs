@@ -4,15 +4,14 @@ import './lib/hermetic-test-env.mjs';
 // concorrência e receita restrita aos filhos. Sem rede.
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
+import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { homedir, tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { createRequire } from 'node:module';
 import { fileURLToPath } from 'node:url';
-import { juiceOperation, setJuiceMode } from '../agent/juice/client.mjs';
 
 const repo = resolve(dirname(fileURLToPath(import.meta.url)), '..');
-const piRoot = process.env.AGENT_JUICE_PI_ROOT || join(homedir(), '.local/share/agent/current/lib/node_modules/@earendil-works/pi-coding-agent');
+const piRoot = process.env.AGENT_PI_ROOT || join(homedir(), '.local/share/agent/current/lib/node_modules/@earendil-works/pi-coding-agent');
 const cli = join(piRoot, 'dist/cli.js');
 assert.ok(existsSync(cli), 'pi instalado');
 
@@ -27,9 +26,6 @@ writeFileSync(join(agent, 'agents/alltools.md'), '---\nname: alltools\ndescripti
 writeFileSync(join(agent, 'agents/mutator.md'), '---\nname: mutator\ndescription: fixture que edita\ntools: read, edit\n---\nfixture\n');
 writeFileSync(join(agent, 'settings.json'), JSON.stringify({ packages: [], extensions: [], skills: [], enableSkillCommands: false, retry: { enabled: false }, quietStartup: true }));
 writeFileSync(join(agent, 'auth.json'), '{}');
-const ledger = join(root, 'run.v3.json');
-Object.assign(process.env, { AGENT_JUICE_ENABLED: '1', AGENT_JUICE_HOME: root, AGENT_JUICE_STATE: ledger }); juiceOperation({ op: 'init', runId: 'ep', mode: 'complex' });
-
 // Provider falso: pai chama `subagent` uma vez, depois encerra com texto; filho só responde texto.
 const provider = join(root, 'provider.mjs');
 writeFileSync(provider, `
@@ -42,21 +38,19 @@ export default function (pi) {
     const s = new AssistantMessageEventStream();
     queueMicrotask(async () => {
       const n = context.messages.filter(m => m.role === 'assistant').length;
-      const child = !!process.env.AGENT_JUICE_CHILD;
-      if (!process.env.AGENT_JUICE_CHILD && process.env.FG_TOOLS) {
+      const child = !!process.env.AGENT_CHILD;
+      if (!process.env.AGENT_CHILD && process.env.FG_TOOLS) {
         const { writeFileSync } = await import('node:fs');
         try { writeFileSync(process.env.FG_TOOLS, JSON.stringify(context)); } catch {}
       }
-      if (process.env.AGENT_JUICE_CHILD && process.env.FG_CHILD_CTX) {
+      if (process.env.AGENT_CHILD && process.env.FG_CHILD_CTX) {
         const { writeFileSync } = await import('node:fs');
         try { writeFileSync(process.env.FG_CHILD_CTX, JSON.stringify(context)); } catch {}
       }
       const lastUser = [...context.messages].reverse().find(m => m.role === 'user');
       const userText = lastUser ? (Array.isArray(lastUser.content) ? lastUser.content.map(p => p.text || '').join(' ') : String(lastUser.content)) : '';
       let content, stopReason = 'stop';
-      if (/^Você decide qual modelo/.test(userText)) {
-        content = [{ type: 'text', text: 'apoio' }]; // despachante: manda para o barato
-      } else if (child && n === 0 && process.env.FG_SANDBOX_COMMAND) {
+      if (child && n === 0 && process.env.FG_SANDBOX_COMMAND) {
         content = [{ type: 'toolCall', id: 'call-sandbox', name: 'bash', arguments: { command: process.env.FG_SANDBOX_COMMAND } }];
         stopReason = 'toolUse';
       } else if (child && process.env.FG_WRITE) {
@@ -91,6 +85,12 @@ export default function (pi) {
         await new Promise(r => setTimeout(r, delay));
         s.push({ type: 'done', reason: 'stop', message: { ...partial } }); s.end();
         return;
+      } else if (!child && n === 0 && process.env.FG_CHAIN) {
+        content = [{ type: 'toolCall', id: 'call-chain', name: 'subagent', arguments: { chain: [
+          { agent: 'scout', brief: { objective: 'first', context: 'fixture' } },
+          { agent: 'scout', brief: { objective: 'second', context: '{previous}' } }
+        ] } }];
+        stopReason = 'toolUse';
       } else if (!child && n === 0 && process.env.FG_PARALLEL) {
         const brief = { objective: 'o', context: 'c', scope: 's', done_when: 'd', stop_if: 'x' };
         const names = process.env.FG_PARALLEL.split(',');
@@ -122,21 +122,78 @@ export default function (pi) {
 
 let runIndex = 0;
 function runPi(extraEnv) {
-  if (extraEnv.AGENT_JUICE_PILOT_MODE) {
-    Object.assign(process.env, { AGENT_JUICE_ENABLED: '1', AGENT_JUICE_HOME: root, AGENT_JUICE_STATE: ledger }); setJuiceMode(extraEnv.AGENT_JUICE_PILOT_MODE);
-    delete extraEnv.AGENT_JUICE_PILOT_MODE;
-  }
   const env = { ...process.env, HOME: home, USERPROFILE: home, PI_CODING_AGENT_DIR: agent, PI_OFFLINE: '1', PI_DURABLE_HOST: '0',
-    AGENT_JUICE_ENABLED: '1', AGENT_JUICE_STATE: ledger, AGENT_JUICE_HOME: root, AGENT_JUICE_PI_ROOT: piRoot,
-    NODE_OPTIONS: '', AGENT_SUBAGENT_CHILD_EXTENSIONS: provider, ...extraEnv };
+    AGENT_RUNTIME_ENABLED: '1', AGENT_SUBAGENTS: '1', AGENT_PI_ROOT: piRoot,
+    NODE_OPTIONS: '', PI_AUTOMATIC_SKILLS: 'fixture', AGENT_SUBAGENT_CHILD_EXTENSIONS: provider, ...extraEnv };
   const r = spawnSync(process.execPath, [cli, '-p', '--mode', 'json', '--session', join(root, `parent-${++runIndex}.jsonl`), '--no-extensions', '-e', provider, '-e', join(repo, 'agent/extensions/brain-live/subagent/index.ts'), '--model', 'fg-fake/fake', 'tarefa'],
     { cwd: root, env, encoding: 'utf8', timeout: 60000, maxBuffer: 16 * 1024 * 1024 });
   assert.equal(r.status, 0, r.stderr);
   return r.stdout.trim().split('\n').map(l => { try { return JSON.parse(l); } catch { return null; } }).filter(Boolean);
 }
 
-// Fora do piloto: assíncrono (comportamento legado intacto)
-const bg = runPi({ AGENT_JUICE_ENABLED: '0' });
+// Installed layout, empty profile: discovery must not depend on checkout or copied personal roles.
+const { createJiti: discoveryJiti } = createRequire(join(piRoot, 'package.json'))('jiti');
+const load = discoveryJiti(import.meta.url, { fsCache: false, alias: { '@earendil-works/pi-coding-agent': join(piRoot, 'dist/index.js') } });
+const installed = join(root, 'installed/agent');
+mkdirSync(join(installed, 'extensions/brain-live/subagent'), { recursive: true });
+cpSync(join(repo, 'agent/agents'), join(installed, 'agents'), { recursive: true });
+cpSync(join(repo, 'agent/extensions/brain-live/subagent/agents.ts'), join(installed, 'extensions/brain-live/subagent/agents.ts'));
+const { discoverAgents } = await load.import(join(installed, 'extensions/brain-live/subagent/agents.ts'));
+const cleanProfile = join(home, '.agent');
+mkdirSync(cleanProfile, { recursive: true });
+cpSync(join(agent, 'settings.json'), join(cleanProfile, 'settings.json'));
+writeFileSync(join(cleanProfile, 'auth.json'), '{}');
+const previousProfile = process.env.PI_CODING_AGENT_DIR;
+process.env.PI_CODING_AGENT_DIR = cleanProfile;
+try {
+  const defaults = discoverAgents(root, 'user').agents;
+  assert.deepEqual(defaults.map(a => a.name).sort(), ['planner', 'reviewer', 'scout', 'visual', 'worker']);
+  assert.ok(defaults.every(a => a.source === 'bundled' && a.filePath.startsWith(installed) && a.systemPrompt && a.tools.length));
+  assert.equal(discoverAgents(root, 'project').agents.length, 0);
+  mkdirSync(join(cleanProfile, 'agents'));
+  writeFileSync(join(cleanProfile, 'agents/scout.md'), '---\nname: scout\ndescription: personal override\ntools: read\n---\nPERSONAL-SCOUT');
+  assert.equal(discoverAgents(root, 'user').agents.find(a => a.name === 'scout').source, 'user');
+  const { CONFIG_DIR_NAME } = await load.import(join(piRoot, 'dist/index.js'));
+  const projectRoles = join(root, CONFIG_DIR_NAME, 'agents');
+  mkdirSync(projectRoles, { recursive: true });
+  writeFileSync(join(projectRoles, 'scout.md'), '---\nname: scout\ndescription: untrusted project\ntools: read\n---\nPROJECT-SCOUT');
+  assert.equal(discoverAgents(root, 'user').agents.find(a => a.name === 'scout').systemPrompt.trim(), 'PERSONAL-SCOUT');
+  for (const scope of ['project', 'both']) {
+    const role = discoverAgents(root, scope).agents.find(a => a.name === 'scout');
+    assert.equal(role.source, 'project', 'project override retains provenance for consent');
+    assert.equal(role.systemPrompt.trim(), 'PROJECT-SCOUT');
+  }
+  assert.equal(discoverAgents(root, 'project').agents.length, 1, 'project-only excludes personal and bundled');
+  rmSync(projectRoles, { recursive: true });
+  rmSync(join(cleanProfile, 'agents'), { recursive: true });
+} finally {
+  if (previousProfile === undefined) delete process.env.PI_CODING_AGENT_DIR;
+  else process.env.PI_CODING_AGENT_DIR = previousProfile;
+}
+mkdirSync(join(cleanProfile, 'skills/fixture'), { recursive: true });
+writeFileSync(join(cleanProfile, 'skills/fixture/SKILL.md'), '---\nname: fixture\ndescription: OFFLINE-SKILL-CATALOG\n---\nRead-only fixture skill.');
+const bundledDump = join(root, 'bundled-context.json');
+const bundledEvents = runPi({ PI_CODING_AGENT_DIR: cleanProfile, FG_AGENT: 'scout', FG_CHILD_CTX: bundledDump, FG_KEEPALIVE: '4' });
+const bundledLaunch = bundledEvents.find(e => e.type === 'tool_execution_end' && e.toolName === 'subagent').result;
+assert.match(bundledLaunch.content[0].text, /Launched subagent job/);
+const bundledContext = JSON.parse(readFileSync(bundledDump, 'utf8'));
+assert.match(JSON.stringify(bundledContext), /Read only. Bash is for inspection only/);
+assert.match(JSON.stringify(bundledContext), /OFFLINE-SKILL-CATALOG/);
+const bundledTools = bundledContext.messages.find(m => m.role === 'system').toolsAdded;
+assert.ok(bundledTools.some(t => t.name === 'read'));
+assert.ok(!bundledTools.some(t => ['edit', 'write', 'subagent'].includes(t.name)), 'bundled scout scope is retained');
+assert.ok(!existsSync(join(cleanProfile, 'agents')), 'dispatch never installs roles into profile');
+console.log('ok bundled: relocated discovery, personal/project precedence, async scout prompt/tools/skills');
+
+const chainDump = join(root, 'chain-context.json');
+const chainEvents = runPi({ FG_CHAIN: '1', FG_CHILD_CTX: chainDump, FG_KEEPALIVE: '6' });
+const chainLaunch = chainEvents.find(e => e.type === 'tool_execution_end' && e.toolName === 'subagent').result;
+assert.match(chainLaunch.content[0].text, /Launched subagent job .*chain/);
+assert.match(readFileSync(chainDump, 'utf8'), /FILHO-PRONTO/, 'chain forwards the previous result into the next brief');
+console.log('ok chain: async launch and previous result passed to next role');
+
+// Opt-in also works without the runtime preload.
+const bg = runPi({ AGENT_RUNTIME_ENABLED: '0' });
 const end3 = bg.find(e => e.type === 'tool_execution_end' && e.toolName === 'subagent');
 assert.match(end3.result.content[0].text, /Launched subagent job .* status running/, 'fora do piloto continua assíncrono');
 console.log('ok legado: subagent assíncrono (jobId + follow-up)');
@@ -145,40 +202,38 @@ mkdirSync(join(root, '.agent'), { recursive: true });
 writeFileSync(join(root, '.agent/workflow.md'), ['# Receita', '', 'versão: v1', '', '## Etapas (complex)',
   ...['worker', 'mutator', 'todoer', 'alltools', 'emptytools'].map((r, i) => `${i + 1}. ${r} · apoio · contrato`), ''].join('\n'));
 
-// Piloto em complex: assíncrono como o Pi normal — a chamada volta
+// Runtime opt-in: assíncrono como o Pi normal — a chamada volta
 //    com jobId na hora e o pai segue trabalhando.
-const pilot = runPi({ AGENT_JUICE_PILOT_MODE: 'complex' });
+const pilot = runPi({  });
 const end9 = pilot.find(e => e.type === 'tool_execution_end' && e.toolName === 'subagent');
 const t9 = end9.result.content[0].text;
 assert.match(t9, /Launched subagent job .* status running/, `complex é assíncrono: ${t9.slice(0, 200)}`);
 assert.equal(end9.result.details.job.status, 'running');
 assert.doesNotMatch(t9, /FILHO-PRONTO/, 'nada de resultado inline');
-console.log('ok piloto em complex: dispatch assíncrono (jobId na hora)');
+console.log('ok runtime opt-in: dispatch assíncrono (jobId na hora)');
 
-// Both gates must ignore conflicting global defaults and accounting modes.
-for (const [savedMode, defaultMode, allowed] of [['complex', 'simple', true], ['simple', 'complex', false], ['invalid', 'complex', false]]) {
-  const events = runPi({ AGENT_JUICE_PILOT_MODE: defaultMode, FG_SESSION_MODE: savedMode });
-  const result = events.find(e => e.type === 'tool_execution_end' && e.toolName === 'subagent').result;
-  if (allowed) assert.match(result.content[0].text, /Launched subagent job/);
-  else {
-    assert.doesNotMatch(result.content[0].text, /Launched subagent job/);
-    assert.match(result.content[0].text, savedMode === 'invalid' ? /modo da sessão inválido/ : /Modo simple/);
+// Opt-in is independent of the old session mode; disabled launches fail closed.
+for (const enabled of ['0', '1']) {
+  for (const savedMode of ['complex', 'simple', 'invalid']) {
+    const events = runPi({ AGENT_SUBAGENTS: enabled, FG_SESSION_MODE: savedMode });
+    const result = events.find(e => e.type === 'tool_execution_end' && e.toolName === 'subagent').result;
+    assert.match(result.content[0].text, enabled === '1' ? /Launched subagent job/ : /Subagents disabled/);
   }
 }
-console.log('ok dispatch usa o branch: default/ledger divergentes e registro inválido');
+console.log('ok opt-in independente de modos legados');
 
-// Slot do apoio continua valendo no assíncrono (despachante escolhe apoio).
-writeFileSync(join(root, 'preferences.v3.json'), JSON.stringify({ mode: 'complex', supportModel: 'fg-fake/cheap' }));
-const t10 = runPi({ AGENT_JUICE_PILOT_MODE: 'complex' }).find(e => e.type === 'tool_execution_end' && e.toolName === 'subagent').result.content[0].text;
+// Slot do apoio vem da receita explícita, sem inferência classificadora.
+writeFileSync(join(agent, 'agent-preferences.json'), JSON.stringify({ supportModel: 'fg-fake/cheap' }));
+const t10 = runPi({  }).find(e => e.type === 'tool_execution_end' && e.toolName === 'subagent').result.content[0].text;
 assert.match(t10, /Models: worker=fg-fake\/cheap/, `slot apoio no assíncrono: ${t10.slice(0, 250)}`);
-console.log('ok assíncrono: slot/despachante ainda manda o papel para o apoio');
-rmSync(join(root, 'preferences.v3.json'));
-delete process.env.AGENT_JUICE_SUPPORT_MODEL;
+console.log('ok assíncrono: slot explícito ainda manda o papel para o apoio');
+rmSync(join(agent, 'agent-preferences.json'));
+
 
 // tasks[] independentes correm em paralelo de verdade: três papéis distintos,
 //     todos nascidos antes do 1º token de qualquer um deles.
 const plog = join(root, 'async-parallel.log'); rmSync(plog, { force: true });
-const par = runPi({ AGENT_JUICE_PILOT_MODE: 'complex', FG_PARALLEL: 'worker,mutator,alltools', FG_LOG: plog, FG_DELAY: '2500', FG_KEEPALIVE: '8' });
+const par = runPi({ FG_PARALLEL: 'worker,mutator,alltools', FG_LOG: plog, FG_DELAY: '2500', FG_KEEPALIVE: '8' });
 const t11 = par.find(e => e.type === 'tool_execution_end' && e.toolName === 'subagent').result.content[0].text;
 assert.match(t11, /Launched subagent job .* \(parallel: worker, mutator, alltools\), status running/, t11.slice(0, 250));
 const ev11 = readFileSync(plog, 'utf8').trim().split('\n').map(l => JSON.parse(l));
@@ -188,12 +243,12 @@ const firstToken = Math.min(...ev11.filter(e => e.what === 'token').map(e => e.t
 assert.ok(starts11.every(e => e.t < firstToken), `filhos concorrentes: ${JSON.stringify(ev11)}`);
 console.log('ok assíncrono: tasks[] de papéis distintos correm concorrentes');
 
-// Descrição e guidelines do piloto não prometem foreground nem citam o limite.
+// Descrição e guidelines não prometem foreground nem citam o limite.
 // A receita do projeto ganha uma regra aprendida: o principal não pode vê-la.
 const wfFile = join(root, '.agent/workflow.md');
 writeFileSync(wfFile, `${readFileSync(wfFile, 'utf8')}\n## Regras aprendidas\n- regra aprendida neste projeto fixture\n`);
 const dump = join(root, 'context.json'); rmSync(dump, { force: true });
-runPi({ AGENT_JUICE_PILOT_MODE: 'complex', FG_TOOLS: dump });
+runPi({ FG_TOOLS: dump });
 const prompt = readFileSync(dump, 'utf8');
 assert.match(prompt, /ASYNC: the call returns a jobId immediately/, 'o dump contém a descrição da tool');
 assert.match(prompt, /Independent tasks go in one call as/, 'a descrição da tool explica chamadas paralelas');
@@ -212,7 +267,7 @@ for (const banned of [/regra aprendida neste projeto fixture/, /Project notes/, 
   assert.doesNotMatch(prompt, banned, `o principal não vê a receita (${banned})`);
 }
 const childDump = join(root, 'child-context.json'); rmSync(childDump, { force: true });
-const withRules = runPi({ AGENT_JUICE_PILOT_MODE: 'complex', FG_CHILD_CTX: childDump, FG_KEEPALIVE: '3' });
+const withRules = runPi({ FG_CHILD_CTX: childDump, FG_KEEPALIVE: '3' });
 assert.match(withRules.find(e => e.type === 'tool_execution_end' && e.toolName === 'subagent').result.content[0].text, /status running/);
 const childCtx = readFileSync(childDump, 'utf8');
 assert.match(childCtx, /## Project notes/, 'o filho recebe a orientação do projeto');
@@ -242,7 +297,7 @@ try {
   runner.runnerHooks.hostFreePercent = () => 100;
   Object.assign(process.env, { HOME: home, USERPROFILE: home, PI_CODING_AGENT_DIR: agent, PI_OFFLINE: '1', AGENT_SUBAGENT_CHILD_EXTENSIONS: provider });
   const role = { name: 'readonly', source: 'user', tools: ['read', 'bash'], systemPrompt: 'fixture' };
-  const run = () => runner.runSingleAgent({ defaultCwd: sandboxCwd, agents: [role], agentName: role.name, task: 'fixture', dispatchDefaults: { model: 'fg-fake/fake', juice: { statePath: ledger } }, makeDetails: results => ({ mode: 'single', agentScope: 'user', projectAgentsDir: null, results }) });
+  const run = () => runner.runSingleAgent({ defaultCwd: sandboxCwd, agents: [role], agentName: role.name, task: 'fixture', dispatchDefaults: { model: 'fg-fake/fake', resources: { slots: {} } }, makeDetails: results => ({ mode: 'single', agentScope: 'user', projectAgentsDir: null, results }) });
   assert.equal(runner.sandboxForTools(['read', 'bash', 'write']), undefined, 'worker não recebe sandbox');
   assert.equal(runner.sandboxForTools([]), undefined, 'tools vazia preserva padrão');
   if (process.platform === 'darwin') {
@@ -262,6 +317,57 @@ try {
   assert.equal(detected.stopReason, 'error');
   assert.match(detected.errorMessage, /read-only role modified the checkout: dirty.txt/);
   console.log('ok sandbox=none: detector reprova mudança de conteúdo com porcelain inalterado');
+
+  // Exercise the actual spawn queue: two live children, remaining tasks queued,
+  // cancellation owned by the launching session, and no spawn under pressure.
+  delete process.env.FG_SANDBOX_COMMAND;
+  process.env.FG_LOG = join(root, 'bounded.log');
+  process.env.FG_DELAY = '10000';
+  const { SubagentJobManager: BudgetManager, MAX_PARALLEL_TASKS } = await jiti.import(join(repo, 'agent/extensions/brain-live/subagent/jobs.ts'));
+  let terminal;
+  const budget = new BudgetManager({ baseDir: join(root, 'budget-jobs'), childLimit: 2, onComplete: record => { terminal = record; } });
+  const spec = { sessionId: 'owner', sessionGeneration: 0, mode: 'parallel',
+    tasks: Array.from({ length: 4 }, (_, i) => ({ agent: 'readonly-' + i, task: 'tarefa-' + i })),
+    agents: Array.from({ length: 4 }, (_, i) => ({ ...role, name: 'readonly-' + i, tools: ['read'] })), agentScope: 'user', projectAgentsDir: null,
+    dispatchDefaults: { model: 'fg-fake/fake', resources: { slots: {} } }, cwd: sandboxCwd, timeoutSeconds: 60 };
+  assert.equal(budget.launch({ ...spec, tasks: Array.from({ length: MAX_PARALLEL_TASKS + 1 }, () => spec.tasks[0]) }).ok, false);
+  const launched = budget.launch(spec);
+  assert.ok(launched.ok, launched.error);
+  const waitUntil = async (condition) => {
+    const deadline = Date.now() + 15000;
+    while (!condition()) {
+      assert.ok(Date.now() < deadline, 'bounded dispatch settled before deadline');
+      await new Promise(r => setTimeout(r, 25));
+    }
+  };
+  try {
+    await waitUntil(() => existsSync(process.env.FG_LOG) && readFileSync(process.env.FG_LOG, 'utf8').trim().split('\n').length === 2);
+    assert.equal(budget.activeChildren(), 2);
+    assert.equal(budget.cancel('other-session', launched.record.jobId).ok, false);
+    assert.equal(budget.activeCount(), 1, 'foreign cancellation leaves owner running');
+    assert.equal(budget.cancel('owner', launched.record.jobId).ok, true);
+    await waitUntil(() => terminal !== undefined);
+    assert.equal(terminal.status, 'cancelled');
+    assert.equal(budget.activeChildren(), 0);
+    assert.equal(readFileSync(process.env.FG_LOG, 'utf8').trim().split('\n').length, 2, 'queued children never spawned');
+  } finally {
+    await budget.shutdown();
+  }
+  delete process.env.FG_LOG;
+  delete process.env.FG_DELAY;
+  runner.runnerHooks.hostFreePercent = () => 0;
+  const abort = new AbortController();
+  const timer = setTimeout(() => abort.abort(), 100);
+  try {
+    const blocked = await runner.runSingleAgent({ defaultCwd: sandboxCwd, agents: [role], agentName: role.name,
+      task: 'fixture', signal: abort.signal, dispatchDefaults: { model: 'fg-fake/fake', resources: { slots: {} } }, makeDetails: results => ({ results }) });
+    assert.notEqual(blocked.exitCode, 0);
+    assert.equal(blocked.usage.turns, 0, 'memory wait cancels without inference');
+  } finally {
+    clearTimeout(timer);
+    runner.runnerHooks.hostFreePercent = () => 100;
+  }
+  console.log('ok bounded dispatch: ceiling, queued cancellation, session ownership, memory pressure');
 } finally {
   for (const key of Object.keys(process.env)) if (!(key in savedEnv)) delete process.env[key];
   Object.assign(process.env, savedEnv);
@@ -283,7 +389,7 @@ writeFileSync(join(root, 'linked', 'fixture'), 'linked');
 writeFileSync(join(root, '.pi/checks.json'), JSON.stringify({ link: ['linked'], checks: [{ name: 'fixture', cmd: 'node -e "require(\\\"node:fs\\\").readFileSync(\\\"linked/fixture\\\")"' }] }));
 git('add', '.gitignore'); git('add', '-f', '.pi/checks.json'); git('commit', '-m', 'base');
 const writerLog = join(root, 'writers.log');
-const isolatedEvents = runPi({ AGENT_JUICE_PILOT_MODE: 'complex', FG_PARALLEL: 'worker', FG_WRITE: writerLog, FG_KEEPALIVE: '8' });
+const isolatedEvents = runPi({ FG_PARALLEL: 'worker', FG_WRITE: writerLog, FG_KEEPALIVE: '8' });
 const isolatedJob = isolatedEvents.find(e => e.type === 'tool_execution_end' && e.toolName === 'subagent').result.details.job;
 const rows = readFileSync(writerLog, 'utf8').trim().split('\n').map(JSON.parse);
 assert.equal(rows.length, 3);
@@ -298,7 +404,7 @@ assert.equal(isolatedRecord.status, 'completed', isolatedRecord.error);
 assert.match(isolatedRecord.result, /status --porcelain:/);
 assert.match(isolatedRecord.result, /tarefa-a/);
 // A chamada seguinte usa a própria tool, na mesma sessão do pai.
-const integrated = runPi({ AGENT_JUICE_PILOT_MODE: 'complex', FG_PARALLEL: 'worker', FG_WRITE: join(root, 'integrated.log'), FG_KEEPALIVE: '8', FG_INTEGRATE: '1' });
+const integrated = runPi({ FG_PARALLEL: 'worker', FG_WRITE: join(root, 'integrated.log'), FG_KEEPALIVE: '8', FG_INTEGRATE: '1' });
 const integration = integrated.filter(e => e.type === 'tool_execution_end' && e.toolName === 'subagent').at(-1).result;
 assert.ok(!integration.isError, JSON.stringify(integration));
 assert.match(integration.content[0].text, /integrate complete/);
@@ -404,8 +510,8 @@ for (const sourceBranch of [undefined, null]) {
 }
 
 const singleLog = join(root, 'single.log');
-runPi({ AGENT_JUICE_PILOT_MODE: 'complex', FG_WRITE: singleLog, FG_KEEPALIVE: '4' });
+runPi({ FG_WRITE: singleLog, FG_KEEPALIVE: '4' });
 assert.equal(resolve(JSON.parse(readFileSync(singleLog, 'utf8').trim()).cwd).replace(/^\/private/, ''), root.replace(/^\/private/, ''), 'single mantém cwd');
 console.log('ok worktrees: isolamento paralelo, origem limpa, integração explícita e single intacto');
 rmSync(root, { recursive: true, force: true });
-console.log('ok subagent-dispatch: legado, piloto, slots, concorrência e isolamento da receita');
+console.log('ok subagent-dispatch: opt-in, slots, concorrência e isolamento da receita');
