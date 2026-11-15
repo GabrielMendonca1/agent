@@ -1,12 +1,14 @@
 ---
 name: prometheus
-description: Drive Prometheus (the ARCA/Omni desktop app, formerly ARCA Desktop) through its CLI — open a new terminal with another agent session (Pi by default) and hand it a task, in this checkout or a new worktree; read or type into an app terminal; use the app's built-in browser tab; or click through a native Windows/macOS app. Use when the user asks to open a terminal/session/agent and pass work, or when the work lives in Prometheus state or needs GUI control on a partner's machine.
+description: Drive Prometheus (the desktop app, formerly ARCA Desktop) through its CLI — open a new terminal with another agent session (Pi by default) and hand it a task, in this checkout or a new worktree; read or type into an app terminal; use the app's built-in browser tab; or click through a native Windows/macOS app. Use when the user asks to open a terminal/session/agent and pass work, or when the work lives in Prometheus state or needs GUI control on a partner's machine.
 ---
 
-# Prometheus (ARCA app)
+# Prometheus
 
-Prometheus (`~/Applications/Prometheus.app`, repo `GabrielMendonca1/prometheus`;
-the old `ARCA.app` gets no more releases) exposes its state through a CLI that talks to the running app:
+Prometheus (repo `GabrielMendonca1/prometheus`, formerly `ARCA.app`) exposes
+its state through a CLI that talks to the running app. Existing macOS profiles
+may install it at `~/Applications/Prometheus.app`; resolve the CLI rather than
+assuming that path:
 `arca` on macOS, `orca` on Windows (`orca.cmd`, put on PATH when the command line
 tool is enabled). The same binary ships the version-matched guides, so load them
 instead of guessing flags.

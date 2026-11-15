@@ -1,6 +1,6 @@
 ---
 name: megamind
-description: Conversation with the other partners and their agents across machines — presence, messages, requests — on whichever Mainframe this machine is connected to (ARCA or Omni). Use when your work may overlap a partner's, when something must happen on another machine, when a message or a request arrives.
+description: Conversation with the other partners and their agents across machines — presence, messages, requests — on whichever Mainframe this machine is connected to. Use when your work may overlap a partner's, when something must happen on another machine, when a message or a request arrives.
 ---
 
 # Megamind
@@ -10,8 +10,9 @@ answer. Same names in Pi, Claude Code and Codex; presence (`hello`) and the end
 of the session (`bye`) are automatic.
 
 **Which company.** The tools talk to the Mainframe this machine is connected to:
-ARCA (`~/.config/arca-projects`) or Omni (`~/.config/omni-megamind`); in Pi,
-`/megamind` shows which. The companies' stores and any personal vault are
+in Pi, `/megamind` shows the active enrollment. Existing profiles include
+ARCA (`~/.config/arca-projects`) and Omni (`~/.config/omni-megamind`); these
+compatibility paths are not a requirement to belong to either organization. The companies' stores and any personal vault are
 separate: never substitute one for another. Blocks arrive as `[arca-megamind …]`
 for both — that is the wire format, not the company.
 
@@ -21,8 +22,8 @@ through your own user). **Another machine, or a person → Megamind.**
 
 ## Acesso às VMs
 
-No PC matriculado, `ssh omni` / `ssh arca` passam a existir sozinhos para a
-empresa conectada: o Agent gera uma chave ed25519 por empresa, registra a chave
+No PC matriculado, o alias SSH da empresa conectada pode ser provisionado
+(`ssh omni` / `ssh arca` nos perfis existentes): o Agent gera uma chave ed25519 por empresa, registra a chave
 pública no Megamind e mantém apenas o bloco delimitado dessa empresa em
 `~/.ssh/config`. O usuário e o host vêm do servidor conforme o acesso do sócio.
 `/megamind` mostra o destino e o fingerprint registrado, ou o motivo de ainda não
@@ -44,7 +45,7 @@ sem OpenSSH (`ssh-keygen` no PATH), o provisionamento não interrompe a sessão.
 ## Address
 
 One string, resolved by the server: `@handle` (a partner), `#<company>` (the
-group: `#arca` or `#omni`), the start of a session id (6+ chars) or the session's
+group; existing examples: `#arca` or `#omni`), the start of a session id (6+ chars) or the session's
 name — all from `megamind_who`. Two matches ⇒ `conflict`, which lists the
 candidates with their full ids: repeat with the one you meant. Nothing matched ⇒
 `not_found`.

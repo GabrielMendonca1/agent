@@ -47,7 +47,8 @@ Agora é distribuída somente pelo Agent, sob demanda, sem cópia nas skills pad
   do índice). HTML gerado de `examples/` não foi copiado (é reconstruível com
   `node examples/<nome>/build.mjs`).
 - `html-plan`: `$ARGUMENTS` (Claude Code) → texto após `/skill:html-plan`.
-- `rea`: reparo de registro por `rea setup` → a entrada `rea` do `mcp.json` do perfil, que o
-  Gabriel liga em `/mcp`; `doctor` segue disponível (read-only).
-- `sources`: “background agent” → `subagent` (só em complex). `handoff`: “Skill tool” →
+- `rea`: diagnóstico de registro no perfil ativo; entradas existentes podem ser
+  ligadas pelo usuário em `/mcp`. Novo registro exige autorização; `doctor` segue
+  disponível (read-only).
+- `sources`: “background agent” → `subagent` (opt-in via `AGENT_SUBAGENTS=1`). `handoff`: “Skill tool” →
   `/skill:<nome>`. `iso-figure`: `compatibility` sem “Written for Claude Code”.

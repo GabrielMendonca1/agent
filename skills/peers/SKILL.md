@@ -1,11 +1,11 @@
 ---
 name: peers
-description: Coordination with other Pi sessions on THIS machine (same computer). Use to see what the other local sessions are doing, to send them a tracked message or request, or to read a bounded slice of their context. Another machine or another partner is megamind_*.
+description: Coordination with other Pi sessions on THIS machine (same computer). Use to see what the other local sessions are doing, to send them a tracked message or request, or to read a bounded slice of their context. For another machine or a person, use megamind_*.
 ---
 
 # peers
 
-`peers` é **só a sua máquina**. Outra máquina, outro sócio ou o chat da ARCA:
+`peers` é **só a sua máquina**. Outra máquina, outra pessoa ou o chat da organização conectada:
 `megamind_*`. Cada sessão é autônoma; você fala com ela, não manda nela. O
 contrato é o mesmo do Megamind: mensagem com id, pedido acompanhado, resposta.
 

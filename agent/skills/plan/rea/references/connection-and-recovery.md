@@ -36,20 +36,21 @@ as such; only actual REA output supplies REA Evidence.
 
 ## Repair registration when needed
 
-On this machine the server is already registered in the Pi profile's `mcp.json`
-as `rea` (`npx -y rea-agents@<version> mcp`), disabled by default. Ask Gabriel to
-turn it on in `/mcp`; the tools appear once it connects. Never run
-`rea setup`/`rea-agents setup`: it rewrites client configuration and bundled
-skills.
+Inspect the active client's registration first. Existing Pi profiles may have a
+`rea` entry (`npx -y rea-agents@<version> mcp`) disabled in `mcp.json`.
+If present, ask the user to enable it in `/mcp`. If missing or stale, propose a
+scoped registration change with backups and obtain authorization before using
+`rea setup`/`rea-agents setup`: these commands rewrite client configuration and
+bundled skills. A skill alone does not register MCP.
 
 Diagnosis is read-only:
 
 ```bash
-npx -y rea-agents@latest doctor --json
+rea doctor --json
 ```
 
-If a required analysis engine is missing, report what is missing and let Gabriel
-decide; do not install or upgrade prerequisites. After he enables the server,
+If a required analysis engine is missing, report what is missing and let the user
+decide; do not install or upgrade prerequisites. After the user enables the server,
 verify the tools actually appear and resume the original task. If they remain
 absent, inspect the launch failure instead of retrying registration.
 

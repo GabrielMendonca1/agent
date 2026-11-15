@@ -34,9 +34,10 @@ availability have different remedies; avoid repeating setup for all of them.
 
 Prefer an existing `rea` CLI. When none is installed and REA package acquisition
 is within the authorized scope, use `npx -y rea-agents@latest` in its place.
-The MCP server is already registered in the Pi profile (`rea`, disabled): ask
-Gabriel to enable it in `/mcp` instead of running `rea setup`, which rewrites
-client configuration. Preserve existing approval and target-execution
+Check the active profile before assuming MCP registration. If `rea` is
+registered but disabled in Pi, ask the user to enable it in `/mcp`. If absent,
+propose scoped registration and obtain authorization before running `rea setup`,
+which rewrites client configuration. Preserve existing approval and target-execution
 boundaries. Never install or upgrade unrelated software, including Node.js, npm,
 Homebrew, Java, Ghidra, IDA, JADX, Binwalk or Unblob.
 
