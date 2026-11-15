@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import './lib/hermetic-test-env.mjs';
 import assert from 'node:assert/strict';
-import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { chmodSync, cpSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, readlinkSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { spawnSync } from 'node:child_process';
@@ -127,6 +127,17 @@ try {
   const before=snapshot();
   run(process.execPath,[updater,'--install-artifact',archive(outB)],false,{FIXTURE_FAIL_CONFIG:'1'});
   assert.deepEqual(snapshot(),before);
+ });
+ test('failed adoption restores a regular launcher without following the new symlink',()=>{
+  const before=snapshot(),wrapper=join(store,'bin/pi-wrapper'),wrapperBefore=readFileSync(wrapper);
+  const link=readlinkSync(launcher),body='#!/bin/sh\necho personal launcher\n';
+  rmSync(launcher);writeFileSync(launcher,body,{mode:0o751});chmodSync(launcher,0o751);
+  try {
+   run(process.execPath,[updater,'--install-artifact',archive(outB),'--adopt-launcher'],false,{FIXTURE_FAIL_CONFIG:'1'});
+   assert.ok(lstatSync(launcher).isFile());assert.equal(lstatSync(launcher).mode & 0o777,0o751);
+   assert.equal(readFileSync(launcher,'utf8'),body);assert.deepEqual(readFileSync(wrapper),wrapperBefore);
+   assert.deepEqual(snapshot(),before);
+  } finally {rmSync(launcher,{force:true});symlinkSync(link,launcher);}
  });
  test('remote update uses private gh fixture and no build',()=>{
   const bin=join(root,'fake-bin');mkdirSync(bin);

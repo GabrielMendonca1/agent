@@ -40,7 +40,7 @@ node scripts/agent-update.mjs --install-artifact /caminho/agent-<id>-<os>-<arch>
 
 ## Contrato do runtime novo e rollback histórico
 
-Novos artefatos internos têm manifesto **v3**, config **v2** e preload `agent/juice/runtime.mjs`. O nome do arquivo foi mantido por compatibilidade; não implica contabilidade. O launcher exporta `AGENT_RUNTIME_ENABLED=1` e `AGENT_PI_ROOT` físico/absoluto. Filhos usam `AGENT_CHILD=1`; subagentes são opt-in com `AGENT_SUBAGENTS=1`, sem modo complex obrigatório. Preferências pertencem ao perfil `PI_CODING_AGENT_DIR`, não a Juice.
+Novos artefatos internos têm manifesto **v3**, config **v2** e preload `agent/juice/runtime.mjs`. O nome do arquivo foi mantido por compatibilidade; não implica contabilidade. O launcher exporta `AGENT_RUNTIME_ENABLED=1` e `AGENT_PI_ROOT` físico/absoluto. Filhos usam `AGENT_CHILD=1`; subagentes são opt-in com `AGENT_SUBAGENTS=1` ou `/subagents on` na sessão (`/subagents off` desativa novos lançamentos), sem modo complex obrigatório. Preferências pertencem ao perfil `PI_CODING_AGENT_DIR`, não a Juice.
 
 Não há `juiceHome`, ledger, runId nem `AGENT_JUICE_HOME/STATE` no contrato novo. `--agent-enable` liga o runtime sobre a release ativa sem build; `--juice-home <absoluto>` ainda é aceito com aviso, mas é ignorado e não acessado para artefatos novos. `--agent-disable` fecha o opt-in e desfaz os recursos por recibo. `AGENT_DISABLED=1` é um escape por processo. Preloads herdados do Agent são removidos de NODE_OPTIONS (inclusive forma separada e com aspas); opções alheias são preservadas.
 
@@ -76,7 +76,7 @@ Requer Git, npm e Node >=22.19. `node scripts/agent-update.mjs --prepare` constr
 
 ### Skills, papéis e mídia
 
-- As skills pessoais `peers`, `megamind`, `prometheus`, `tasks` e as de `agent/skills/system/` são automáticas. `design/` e `plan/` ficam sob demanda e geram uma linha curta por categoria no system prompt. A curadoria usa o formatter compartilhado entre os hosts.
+- As skills de integração `peers`, `megamind`, `prometheus`, `tasks` e as de `agent/skills/system/` são automáticas. `design/` e `plan/` ficam sob demanda e geram uma linha curta por categoria no system prompt. A curadoria usa o formatter compartilhado entre os hosts.
 - `/skill` ou `/skill:` abre o catálogo agrupado por categoria; o runtime novo não exige modos simple/complex.
 - `/models` separa slots de execução e escolhas por papel e preserva as escolhas pessoais. O picker de um papel lista primeiro os pares autorizados e depois todo modelo disponível; escolher um novo o autoriza naquele papel com o thinking da preferência atual. `Esc Esc` abre só a lista de fork. Falha de quota/503 não troca modelo silenciosamente.
 - `read` é o nativo do Pi clássico: imagens, texto, offset/limit e cancelamento. O loadout controla quais papéis recebem `read`. Principal, scout e visual precisam de modelo capaz de receber imagens; anexos diretos continuam suportados.
@@ -93,7 +93,7 @@ agent overlay-gc                # apaga, guardando 1 item sem uso de cada tipo
 
 `/agent-doctor` mostra as tools registradas e declaradas na sessão, exposição (`direct`, `codemode`, `deferred`, etc.), origem real do registry e comandos/skills observados. Usa as APIs públicas do Pi; não adiciona tool ao prompt, não chama modelo, não faz probes e não altera settings. Na TUI/RPC abre o editor nativo como visualizador: o texto devolvido é descartado, nunca salvo ou enviado; em print escreve texto em stderr e em JSON emite `{ "type": "agent_doctor", "report": "..." }` em stderr, sem alterar o protocolo oficial em stdout. Funciona mesmo sem projeto Git. Configuração não prova atividade: hooks sem tool/comando e cobranças auxiliares ficam explicitamente como não observados; uma integração registrada não prova conexão. Para instalação use `agent overlay-status`; para recursos configurados, `agent config`; para uso/cache, `/session`, `/cost` e `/cache` quando disponíveis.
 
-Defaults de inferência auxiliar no checkout: aprendizado automático exige `AGENT_LEARN=1` (receitas existentes permanecem intactas). O recap da TUI publica fallback local imediato e tenta Haiku (`PI_TUI_RECAP_MODEL`) → Luna, deduplicados, com até duas tentativas. Resumo em terceira pessoa, até 240 caracteres, sem hint. Erro terminal ou cancelamento não chamam modelo; retry recuperado permite resumo. Avisos semânticos exigem `PI_TUI_FEEDBACK=1` ou `/heads-up on`. `PI_TUI_FEEDBACK=0` e `/heads-up off` desativam também os cards. Cache-keeper e compatibilidade de imagens históricas permanecem.
+O runtime novo não executa aprendizado/mineração automáticos nem chama modelos para recaps ou avisos semânticos. O recap usa apenas texto local; o chat, o mascaramento de dados e a compatibilidade de imagens históricas permanecem. Cache-keeper e prefetch continuam com seus limites próprios e sem ledger Juice. `/cache` mostra métricas da sessão; custos do provedor continuam nas métricas nativas do Pi.
 
 Instalações por artefato atualizam com `agent update`, não com commits do checkout. `agent overlay-update` continua sendo o caminho de desenvolvimento que reconstrói a release.
 
@@ -103,21 +103,21 @@ O código de `agent/` não depende de caminhos literais `/Users/biel` (só um ex
 
 | Extensão | Sem infraestrutura pessoal |
 |---|---|
-| vault-runtime | `vault-runtime-quiet.patch`: Vault ausente não gera validação/rodapé com erros; mantém prompt nativo. Comandos explícitos de dump/sync continuam disponíveis. |
-| subagent | `02-optional-role-models.patch`: models.json do Vault ausente não impede listar papéis nem iniciar jobs sem override; usa o modelo herdado. Allowlist existente continua sendo validada; override explícito sem allowlist continua recusado. Gate Megamind ausente é inerte; se explicitamente configurado e quebrado, continua falhando fechado. |
-| models | Carrega normalmente; `/models` informa falta do arquivo de tiers somente quando solicitado. Use `/model` nativo sem Vault. Não distribuímos models.json. |
-| generate-image | Carrega normalmente; execução exige tier image do Vault e login Codex próprios. Falta deles vira erro da tool, não erro de startup. |
-| compaction | Sempre usa geração/prompt/validação nativos do Pi, mantendo Luna como modelo separado. Sem Luna/auth ou em falha, volta ao modelo atual. Não lê compactacao.md; arquivo pessoal preservado. |
+| vault-runtime | Somente com `AGENT_VAULT=1`. Sem opt-in mantém o prompt nativo e não depende de Vault. Nenhum dado pessoal é migrado. |
+| subagent | Papéis/modelos usam o perfil do Agent, não o Vault. Sem configuração específica o filho herda o modelo atual. Allowlists e confirmações de agentes do projeto continuam aplicáveis; falhas de quota não trocam o modelo silenciosamente. Gate Megamind explicitamente configurado continua falhando fechado. |
+| models | `/model` mantém o seletor nativo. `/models` usa `agent-models.json` no perfil para escolhas por papel; `agent-preferences.json` guarda preferências de recursos, não contabilidade. Nenhuma configuração pessoal é distribuída. |
+| generate-image | Execução exige configuração do modelo de imagem no perfil e autenticação própria. Falta deles vira erro da tool, não erro de startup. |
+| compaction | Usa geração, prompt e validação nativos do Pi, sem impor Luna ou executar aprendizado auxiliar. O cache-keeper mantém suas proteções de compactação. |
 | herdr-agent-state | Já inerte sem HERDR_ENV=1, socket e pane; erros de socket tratados. |
 | tui | Código local, não depende de serviço Garime. Recursos interativos guardados por modo/UI; logs usam HOME local. |
-| accounts | Usa contas/autenticação locais do parceiro; nada é copiado de Gabriel. Mirror só opera com dados locais existentes. |
+| accounts | Preserva autenticação e contas locais do usuário; nenhuma credencial é copiada de outro perfil. Mirror só opera com dados locais existentes. |
 | peers | IPC local em HOME/PI_MESH_DIR, sem serviço pessoal remoto; pasta é criada em runtime. |
 | cost, sessions | Leem sessões locais; histórico vazio é válido. `03-sessions-explicit-gc-only.patch`: `sessions` não poda no `session_start`; apagar sessão velha/vazia só por `/gc` explícito. |
 | image-normalize | Normalização local; nenhuma pasta pessoal obrigatória. |
-| project-operator, checks | Operam sobre o projeto atual; não exigem repositório do Gabriel. |
+| project-operator, checks | Operam sobre o projeto atual; não exigem repositórios pessoais. |
 | ask-user, btw, codex-fast, files, plan, slash-anywhere, todos, tool-lexicon, whimsical | Sem infraestrutura pessoal obrigatória. |
 
-Os três patches citados ficam em `agent-patches/`.
+Patches de compatibilidade ficam em `agent-patches/`.
 
 ## Verificação
 

@@ -2287,7 +2287,16 @@ async function installArtifact(options) {
 			try {
 				if (!saved.exists) rmSync(saved.path, { force: true });
 				else if (saved.link) { rmSync(saved.path, { force: true }); symlinkSync(saved.link, saved.path); }
-				else if (saved.body) writeFileSync(saved.path, saved.body, { mode: saved.mode });
+				else if (saved.body) {
+					// Replace the directory entry; never follow a launcher symlink created during activation.
+					const temporary = mkdtempSync(join(dirname(saved.path), ".agent-restore-"));
+					try {
+						const file = join(temporary, "file");
+						writeFileSync(file, saved.body, { mode: saved.mode & 0o7777, flag: "wx" });
+						chmodSync(file, saved.mode & 0o7777);
+						renameSync(file, saved.path);
+					} finally { rmSync(temporary, { recursive: true, force: true }); }
+				}
 			} catch (restoreError) { error.message += `\nLauncher metadata restore failed: ${restoreError.message}`; }
 		}
 		throw error;
