@@ -41,6 +41,7 @@ const PNG_1X1 = Buffer.from(
 );
 
 function findPiRoot() {
+  if (process.env.AGENT_PI_ROOT) return realpathSync(process.env.AGENT_PI_ROOT);
   if (process.env.AGENT_JUICE_PI_ROOT) return realpathSync(process.env.AGENT_JUICE_PI_ROOT);
   const relative = join('lib/node_modules/@earendil-works/pi-coding-agent');
   const current = join(store, 'current', relative);
@@ -88,7 +89,10 @@ async function announcement(piRoot) {
     assert.match(text, /scout — recon read-only \[tools: read, grep, find, ls\]/, text);
     assert.match(text, /visual — imagens \[tools: read\]/, text);
     assert.match(text, /worker — implementação \[tools: default set \(all tools of this build\)\]/, text);
-    assert.ok(!/bash/.test(text.split('worker')[0]), 'nenhuma tool inventada para papel read-only');
+    for (const role of ['scout', 'visual']) {
+      const tools = text.split(`${role} — `)[1]?.split('[tools: ')[1]?.split(']')[0];
+      assert.ok(tools && !tools.split(/,\s*/).includes('bash'), `nenhuma tool inventada para papel read-only ${role}`);
+    }
     ok('anúncio lista o conjunto real de tools por papel, sem inventar');
 
     // A frase de roteamento por capacidade é exportada e entra na descrição da tool.

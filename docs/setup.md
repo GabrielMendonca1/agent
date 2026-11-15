@@ -70,6 +70,24 @@ HOME="$H" PI_CODING_AGENT_DIR="$H/.agent" AGENT_STORE="$H/store" \
 
 A saída é um ustar gzip determinístico para os mesmos bytes de entrada, mais `install.sh`, bootstrap independente e SHA256SUMS. O build normal ainda depende das fontes/dependências upstream fixadas; timestamps de builds distintos podem diferir. O pack remove `sourceRepo` da metadata e faz scan de arquivos de estado/chaves e paths pessoais em metadata. Isso não substitui revisão humana de segredos nem prova suporte a outro SO. Cada pacote declara apenas o par SO/arquitetura do build; rode startup real com provider falso e o gate completo nesse par antes de publicar. Esta implementação não publica, cria release, faz push ou migra o host.
 
+### Portão contra a release candidata
+
+Os checks de UI/inferência precisam do Pi recém-compilado: a instalação global antiga ainda pode conter recaps removidos nesta versão. Não atualize o perfil real apenas para testar. Depois da instalação temporária acima, rode o manifesto completo contra o candidato:
+
+```sh
+AGENT_STORE="$H/store" \
+AGENT_PI_ROOT="$H/store/current/lib/node_modules/@earendil-works/pi-coding-agent" \
+node --input-type=module -e '
+  import { findManifest, gate, formatResults } from "./agent/extensions/brain-live/checks/runner.ts";
+  const result = await gate(findManifest(process.cwd()));
+  console.log(result.verdict);
+  console.log(formatResults(result.results));
+  process.exitCode = result.results.every(check => check.ok) ? 0 : 1;
+'
+```
+
+O comando exige todos os checks verdes para o pacote, mesmo quando o gate identifica uma falha como herdada. Endpoints de inferência dos checks são fixtures locais; isso não substitui uma validação de login real feita pelo usuário.
+
 ## Desenvolvimento por checkout (legado)
 
 Requer Git, npm e Node >=22.19. `node scripts/agent-update.mjs --prepare` constrói/testa sem ativar; `--promote <ID>` exige o recibo local host-bound intacto. `node scripts/agent-update.mjs` constrói e ativa; `--agent-enable` liga o runtime novo. O caminho legado sem runtime ainda pode copiar recursos e defaults ausentes e editar `.zshrc`/`.bashrc`; não o use como teste de distribuição no HOME real.

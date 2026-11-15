@@ -7,7 +7,9 @@ import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
 import { mkdtempSync as makeTemp, rmSync as removeTemp, readdirSync as listDir } from 'node:fs';
-import { tmpdir as tempDir } from 'node:os';
+import { homedir, tmpdir as tempDir } from 'node:os';
+// Locate the read-only Pi fixture before isolating HOME.
+const testPiRoot = process.env.AGENT_PI_ROOT || join(process.env.AGENT_STORE || join(homedir(), '.local/share/agent'), 'current/lib/node_modules/@earendil-works/pi-coding-agent');
 const isolated = makeTemp(join(tempDir(), 'agent-cache-check-'));
 process.env.HOME = isolated;
 process.env.USERPROFILE = isolated;
@@ -189,7 +191,7 @@ assert.ok(historyFp.messages.every(hash => /^[0-9a-f]{16}$/.test(hash)), 'only m
   const { createServer } = await import('node:http');
   const { mkdtempSync } = await import('node:fs');
   const { tmpdir } = await import('node:os');
-  const piAi = join(process.env.AGENT_PI_ROOT || join(process.env.HOME, '.local/share/agent/current/lib/node_modules/@earendil-works/pi-coding-agent'), 'node_modules/@earendil-works/pi-ai/dist');
+  const piAi = join(testPiRoot, 'node_modules/@earendil-works/pi-ai/dist');
   const { streamSimpleAnthropic } = await import(pathToFileURL(join(piAi, 'legacy-api-aliases.js')).href);
   const seen = []; const prefixes = new Set();
   const server = createServer((req, res) => {
