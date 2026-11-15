@@ -159,6 +159,7 @@ const env = {
   PI_SYSTEM_DIR: join(home, 'Sistema'),
   PI_ACCOUNTS_MIRROR: '0', PI_OFFLINE: '1', ORCA_BACKGROUND_LAUNCH: '1',
   AGENT_RUNTIME_ENABLED: '1', AGENT_PI_ROOT: piRoot, AGENT_CHILD: '0',
+  AGENT_VAULT: vaultOption || promptOverride ? '1' : '0',
   AGENT_SUBAGENTS: process.env.AGENT_SUBAGENTS === '1' ? '1' : '0',
   // Prompt cache de 1 h (Anthropic): pausa humana típica 5 min–1 h; −15% sozinho (cache-plan.md).
   PI_CACHE_RETENTION: 'long',
