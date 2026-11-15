@@ -1,8 +1,19 @@
 #!/usr/bin/env node
 // cache-keeper: janela de aquecimento pela curva de retorno e troca do payload no refresh.
 import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import { syncBuiltinESMExports } from 'node:module';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
+
+import { mkdtempSync as makeTemp, rmSync as removeTemp, readdirSync as listDir } from 'node:fs';
+import { tmpdir as tempDir } from 'node:os';
+const isolated = makeTemp(join(tempDir(), 'agent-cache-check-'));
+process.env.HOME = isolated;
+process.env.USERPROFILE = isolated;
+process.env.PI_CODING_AGENT_DIR = join(isolated, 'agent');
+delete process.env.AGENT_CHILD;
+process.on('exit', () => removeTemp(isolated, { recursive: true, force: true }));
 
 const repo = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const mod = await import(pathToFileURL(join(repo, 'agent/extensions/brain-live/cache-keeper.ts')).href);
@@ -29,7 +40,7 @@ assert.equal(warmWindow(Array.from({ length: 40 }, () => ({ s: 720 })), 300), 54
 // Registro: guarda o último payload real e não altera requests sem cache_control.
 const handlers = {};
 const pi = { on: (name, fn) => { (handlers[name] ??= []).push(fn); }, registerCommand: () => {} };
-delete process.env.AGENT_JUICE_CHILD; delete process.env.AGENT_CACHE_KEEPER;
+delete process.env.AGENT_CHILD; delete process.env.AGENT_CACHE_KEEPER;
 mod.default(pi);
 for (const name of ['before_provider_request', 'agent_settled', 'agent_start', 'session_shutdown']) assert.ok(handlers[name], name);
 const payload = { system: [{ type: 'text', text: 'x', cache_control: { type: 'ephemeral', ttl: '1h' } }], messages: [{ role: 'user', content: 'oi' }] };
@@ -149,9 +160,9 @@ assert.ok(historyFp.messages.every(hash => /^[0-9a-f]{16}$/.test(hash)), 'only m
   assert.equal(emitted[0][0], 'agent:cache-estimate'); assert.equal(emitted[0][1].to, 'anthropic/claude-sonnet-5-5'); assert.ok(emitted[0][1].rebuildUsd > 0);
   run('model_select', { source: 'restore', previousModel: opus, model: sonnet });
   assert.equal(emitted.length, 1, 'restore não avisa');
-  process.env.AGENT_JUICE_CHILD = '1';
+  process.env.AGENT_CHILD = '1';
   const hc = {}; mod.default({ on: (n, f) => { (hc[n] ??= []).push(f); }, registerCommand: () => {} });
-  delete process.env.AGENT_JUICE_CHILD;
+  delete process.env.AGENT_CHILD;
   assert.deepEqual(Object.keys(hc), ['before_provider_request'], 'filho: só a chave OpenAI');
   assert.match(hc.before_provider_request[0]({ payload: { ...resp, prompt_cache_key: 'sess-9' } }).prompt_cache_key, /^agent-/);
 }
@@ -161,9 +172,9 @@ assert.ok(historyFp.messages.every(hash => /^[0-9a-f]{16}$/.test(hash)), 'only m
   assert.deepEqual(policy.prefetchPayload({ ...payload, thinking: { type: 'enabled', budget_tokens: 4096 }, max_tokens: 32000 }), { ...payload, max_tokens: 1 });
   assert.equal(policy.prefetchPayload({ messages: [], system: 'sem cache_control' }), undefined);
   assert.equal(policy.prefetchPayload(resp), undefined);
-  Object.assign(process.env, { AGENT_JUICE_CHILD: '1', AGENT_CACHE_PREFETCH: '1', AGENT_CACHE_PREFETCH_NO_EXIT: '1' });
+  Object.assign(process.env, { AGENT_CHILD: '1', AGENT_CACHE_PREFETCH: '1', AGENT_CACHE_PREFETCH_NO_EXIT: '1' });
   const h = {}; mod.default({ on: (n, f) => { (h[n] ??= []).push(f); }, registerCommand: () => {} });
-  for (const k of ['AGENT_JUICE_CHILD', 'AGENT_CACHE_PREFETCH', 'AGENT_CACHE_PREFETCH_NO_EXIT']) delete process.env[k];
+  for (const k of ['AGENT_CHILD', 'AGENT_CACHE_PREFETCH', 'AGENT_CACHE_PREFETCH_NO_EXIT']) delete process.env[k];
   const send = (p) => h.before_provider_request.map(f => f({ payload: p })).find(r => r !== undefined);
   const first = send({ ...payload, thinking: { type: 'adaptive' }, max_tokens: 32000 });
   assert.equal(first.max_tokens, 1); assert.equal(first.thinking, undefined); assert.deepEqual(first.system, payload.system);
@@ -178,7 +189,7 @@ assert.ok(historyFp.messages.every(hash => /^[0-9a-f]{16}$/.test(hash)), 'only m
   const { createServer } = await import('node:http');
   const { mkdtempSync } = await import('node:fs');
   const { tmpdir } = await import('node:os');
-  const piAi = join(process.env.AGENT_JUICE_PI_ROOT || join(process.env.HOME, '.local/share/agent/current/lib/node_modules/@earendil-works/pi-coding-agent'), 'node_modules/@earendil-works/pi-ai/dist');
+  const piAi = join(process.env.AGENT_PI_ROOT || join(process.env.HOME, '.local/share/agent/current/lib/node_modules/@earendil-works/pi-coding-agent'), 'node_modules/@earendil-works/pi-ai/dist');
   const { streamSimpleAnthropic } = await import(pathToFileURL(join(piAi, 'legacy-api-aliases.js')).href);
   const seen = []; const prefixes = new Set();
   const server = createServer((req, res) => {
@@ -204,7 +215,7 @@ assert.ok(historyFp.messages.every(hash => /^[0-9a-f]{16}$/.test(hash)), 'only m
   });
   await new Promise(r => server.listen(0, '127.0.0.1', r));
   const model = { ...opus, id: 'claude-test', name: 'test', baseUrl: `http://127.0.0.1:${server.address().port}`, reasoning: true, input: ['text'], contextWindow: 1_000_000, maxTokens: 64_000 };
-  process.env.AGENT_JUICE_HOME = mkdtempSync(join(tmpdir(), 'ck-')); delete process.env.AGENT_JUICE_ENABLED;
+  process.env.AGENT_JUICE_HOME = join(isolated, 'unused-ledger'); delete process.env.AGENT_RUNTIME_ENABLED;
   process.env.AGENT_CACHE_KEEPER_TEST = '1';
   const errWrite = process.stderr.write.bind(process.stderr); const lines = [];
   async function scenario(real, tokens, final) {
@@ -227,7 +238,7 @@ assert.ok(historyFp.messages.every(hash => /^[0-9a-f]{16}$/.test(hash)), 'only m
     assert.equal(r.bodies.length, 1, name); assert.equal(r.bodies[0].max_tokens, 1, name);
     assert.deepEqual({ ...r.bodies[0], max_tokens: 0 }, { ...real, max_tokens: 0 }, `${name}: corpo idêntico salvo max_tokens`);
     assert.match(r.last, /hit/, name);
-    assert.equal(r.opts[0][policy.JUICE_KIND], 'cache-warm', `${name}: ping marcado para o ledger`);
+    assert.equal(r.opts[0][policy.JUICE_KIND], 'cache-warm', `${name}: ping marcado para não substituir o payload real`);
   }
   // Extensão depois do keeper muda o corpo (ex.: tool-lexicon): o ping reenvia o corpo FINAL.
   {
@@ -283,27 +294,39 @@ assert.ok(historyFp.messages.every(hash => /^[0-9a-f]{16}$/.test(hash)), 'only m
   delete process.env.AGENT_CACHE_KEEPER_TEST;
 }
 
-// ---- ledger J de verdade: ledger JSON + runtime Juice + hooks da extensão ----
+// ---- runtime nativo + hooks: zero ledger I/O ----
 {
   const { existsSync, mkdtempSync, readFileSync, writeFileSync, readdirSync, rmSync } = await import('node:fs');
   const { createHash } = await import('node:crypto');
   const { tmpdir } = await import('node:os');
   const runtime = await import(pathToFileURL(join(repo, 'agent/juice/runtime.mjs')).href);
   const client = await import(pathToFileURL(join(repo, 'agent/juice/client.mjs')).href);
-  const home = mkdtempSync(join(tmpdir(), 'ck-ledger-'));
-  Object.assign(process.env, { AGENT_JUICE_ENABLED: '1', AGENT_JUICE_HOME: home, AGENT_JUICE_STATE: join(home, 'run.json') });
+  const home = mkdtempSync(join(isolated, 'ck-ledger-'));
+  Object.assign(process.env, { AGENT_RUNTIME_ENABLED: '1', AGENT_JUICE_HOME: home, AGENT_JUICE_STATE: join(home, 'run.json') });
   const broker = join(home, 'run.json'), legacyPrefs = join(home, 'preferences.json');
   writeFileSync(broker, JSON.stringify({ version: 2, runId: 'broker', mode: 'simple', calls: { used: 1 }, output: { used: 0, reserved: 100 }, usd: 0, pending: [{ callId: 'legacy-reservation', model: 'legacy/model', kind: 'stream', reservedOutputTokens: 100, status: 'reserved' }], receipts: [], cache: { gaps: [], breaks: {}, warmSkips: {} } }));
   writeFileSync(legacyPrefs, JSON.stringify({ mode: 'complex', supportModel: 'legacy/model' }));
   const hash = path => createHash('sha256').update(readFileSync(path)).digest('hex');
   const before = [hash(broker), hash(legacyPrefs)];
-  assert.equal(client.getJuicePreferences().mode, 'complex');
-  writeFileSync(legacyPrefs, JSON.stringify({ mode: 'simple', supportModel: 'legacy/model' }));
-  assert.equal(client.getJuicePreferences().mode, 'complex', 'legacy mode is seeded once');
-  writeFileSync(legacyPrefs, JSON.stringify({ mode: 'complex', supportModel: 'legacy/model' }));
-  client.juiceOperation({ op: 'init', runId: 'ck', mode: 'simple' });
-  client.setJuiceMode('complex');
-  // Ping marcado: o runtime registra kind cache-warm (o símbolo não chega ao provider como campo).
+  // Observe even swallowed ledger reads/writes, not only the final bytes.
+  const io = [];
+  const restoreIO = [];
+  for (const target of [fs, fs.promises]) {
+    for (const name of ['readFile', 'writeFile', 'appendFile', 'open', 'stat', 'access', 'rename', 'unlink', 'mkdir',
+      'readFileSync', 'writeFileSync', 'appendFileSync', 'openSync', 'statSync', 'existsSync', 'renameSync', 'unlinkSync', 'mkdirSync']) {
+      if (typeof target[name] !== 'function') continue;
+      const original = target[name];
+      target[name] = function (...args) {
+        if (args.slice(0, 2).some(p => typeof p === 'string' && p.startsWith(home + '/') && /(?:run|preferences)(?:\.v3)?\.json/.test(p))) io.push([name, args[0]]);
+        return original.apply(this, args);
+      };
+      restoreIO.push(() => { target[name] = original; });
+    }
+  }
+  syncBuiltinESMExports();
+  try {
+  assert.deepEqual(client.getAgentPreferences(), { supportModel: null }, 'preferências antigas não são importadas');
+  // Ping marcado: símbolo interno não é um campo JSON do provider.
   class FakeRuntime { async prepareRequest(model, options) { return { model, options, provider: { streamSimple: (_m, _c, o) => {
     assert.equal(JSON.stringify(o).includes('cache-warm'), false);
     const message = { role: 'assistant', stopReason: 'length', usage: { input: 3, output: 1, cacheRead: 8000, cacheWrite: 0, totalTokens: 8004, cost: { total: 0.004 } } };
@@ -329,9 +352,34 @@ assert.ok(historyFp.messages.every(hash => /^[0-9a-f]{16}$/.test(hash)), 'only m
     assert.equal(got.length, 1, 'ping não sobrescreve');
     globalThis[key] = saved;
   }
+  // Both provider entrypoints return the native stream, usage, error and abort signal.
+  for (const method of ['stream', 'streamSimple']) {
+    const controller = new AbortController();
+    const failure = new Error('native provider failure');
+    const message = { stopReason: 'length', usage: { output: 99999, cost: { total: 42 } } };
+    const event = { type: 'done', message };
+    const native = { result: async () => { if (controller.signal.aborted) throw controller.signal.reason; return message; },
+      async *[Symbol.asyncIterator]() { yield event; } };
+    let received;
+    class NativeRuntime { async prepareRequest(model, options) { return { model, options, provider: {
+      [method]: (_m, _c, o) => { received = o; if (o.fail) throw failure; return native; },
+    } }; } }
+    assert.equal(runtime.installAgentRuntime(NativeRuntime), true);
+    assert.equal(runtime.installJuiceGate(NativeRuntime), true, 'alias idempotente');
+    const options = { signal: controller.signal, maxTokens: 32000 };
+    const p = await new NativeRuntime().prepareRequest(opus, options);
+    const actual = p.provider[method](p.model, {}, p.options);
+    assert.equal(actual, native);
+    assert.equal(received, options, 'sem teto ou reserva de output');
+    assert.equal(await actual.result(), message);
+    assert.deepEqual(await Array.fromAsync(actual), [event]);
+    assert.throws(() => p.provider[method](p.model, {}, { fail: true }), e => e === failure);
+    controller.abort(failure);
+    await assert.rejects(actual.result(), e => e === failure);
+  }
   const prepared = await rt.prepareRequest({ provider: 'anthropic', id: 'claude-test', maxTokens: 10 }, { maxTokens: 1, [policy.JUICE_KIND]: 'cache-warm' });
   await prepared.provider.streamSimple(prepared.model, {}, prepared.options).result();
-  // Hooks: compactação adiada, quebra com causa e pausa entram no ledger como enums/números.
+  // Hooks mantêm os diagnósticos locais sem escrever accounting.
   const h = {}; const cmds = {};
   mod.default({ on: (n, f) => { (h[n] ??= []).push(f); }, registerCommand: (n, c) => { cmds[n] = c; }, events: { emit() {} } });
   const notes = []; const statuses = [];
@@ -341,40 +389,62 @@ assert.ok(historyFp.messages.every(hash => /^[0-9a-f]{16}$/.test(hash)), 'only m
   for (const f of h.session_before_compact) f({ reason: 'threshold' }, ctx);
   for (const f of h.before_provider_request) f({ payload: { ...payload, tools: [{ name: 'novo' }] } }, ctx);
   for (const f of h.message_end) f({ message: { role: 'assistant', usage: { input: 9000, cacheRead: 0, cacheWrite: 0 } } });
-  assert.equal(client.recordJuiceCacheEvent({ event: 'gap', seconds: 4000, censored: false }), true);
-  assert.equal(client.recordJuiceCacheEvent({ event: 'break', cause: 'segredo do payload' }), false, 'causa fora do enum é recusada');
-  const raw = JSON.parse(readFileSync(join(home, 'run.v3.json'), 'utf8'));
-  assert.deepEqual(raw.cache.lastBreak, { cause: 'tools-changed', segment: 'tools' });
   assert.match(statuses.at(-1), /✂ tools/);
-  assert.equal(raw.cache.gaps.length, 10);
-  assert.ok(raw.cache.gaps.every(b => Number.isInteger(b.returned) && Number.isInteger(b.censored)));
-  assert.equal(raw.cache.gaps[4].returned, 1);
-  assert.deepEqual([hash(broker), hash(legacyPrefs)], before, 'JS reserve/settle/mode/gap never touch broker files');
-  assert.deepEqual(readdirSync(home).sort(), ['preferences.json', 'preferences.v3.json', 'run.json', 'run.v3.json']);
-  const report = client.getJuiceReport();
-  assert.equal(report.byKind['cache-warm'].calls, 2); assert.equal(report.warm.pings, 2); // + o ping do teste do corpo final assert.equal(report.warm.cacheRead, 8000);
-  assert.equal(report.cache.decisions['compaction:deferred:warm'], 1);
-  assert.equal(report.cache.breaks['tools-changed'], 1);
-  assert.equal(report.cache.gaps.count, 1);
+  assert.deepEqual(readdirSync(home).sort(), ['preferences.json', 'run.json'], 'nenhum ledger criado');
   await cmds.cache.handler('', ctx);
-  assert.match(notes.at(-1), /pings 2 \(US\$0\.0040\)/); assert.match(notes.at(-1), /tools-changed 1/); assert.match(notes.at(-1), /compaction:deferred:warm 1/);
+  assert.match(notes.at(-1), /pings nesta sessão: 0/);
   // OpenAI status survives non-Anthropic requests and clears at the next session.
   ctx.model = codex;
   for (const f of h.before_provider_request) f({ payload: { ...resp, input: history.messages } }, ctx);
   for (const f of h.before_provider_request) f({ payload: { ...resp, input: history.messages.map((m, i) => i === 1 ? { ...m, content: 'edit' } : m) } }, ctx);
   for (const f of h.message_end) f({ message: { role: 'assistant', usage: { input: 9000, cacheRead: 0 } } });
   assert.equal(statuses.at(-1), '✂ msg#1');
-  assert.deepEqual(JSON.parse(readFileSync(join(home, 'run.v3.json'), 'utf8')).cache.lastBreak, { cause: 'unknown', segment: 'message', index: 1 });
   for (const f of h.agent_start) f({}, ctx);
   assert.equal(statuses.at(-1), '✂ msg#1');
   await cmds.cache.handler('', ctx);
   assert.match(notes.at(-1), /✂ msg#1/);
   for (const f of h.session_start) f({}, ctx);
   assert.equal(statuses.at(-1), undefined);
-  const snap = client.getJuiceSnapshot();
-  assert.equal(snap.receipts, undefined, 'resposta sem receipts'); assert.equal(snap.receiptCount, 3);
+  assert.deepEqual(readdirSync(home).sort(), ['preferences.json', 'run.json']);
+  assert.deepEqual(io, [], 'zero ledger/preferências legadas I/O, incluindo leituras');
+  } finally {
+    restoreIO.forEach(restore => restore());
+    syncBuiltinESMExports();
+  }
+  assert.deepEqual([hash(broker), hash(legacyPrefs)], before, 'nenhum arquivo legado alterado');
   rmSync(home, { recursive: true, force: true });
-  for (const k of ['AGENT_JUICE_ENABLED', 'AGENT_JUICE_BIN', 'AGENT_JUICE_STATE']) delete process.env[k];
+  for (const k of ['AGENT_RUNTIME_ENABLED', 'AGENT_JUICE_BIN', 'AGENT_JUICE_STATE']) delete process.env[k];
+}
+
+// Pausas persistem no perfil Agent, com censura e limite real de 400 amostras.
+{
+  const h = {};
+  mod.default({ on: (n, f) => { (h[n] ??= []).push(f); }, registerCommand() {} });
+  const ctx = { sessionManager: {}, cwd: join(isolated, 'pause-project'), model: opus,
+    getContextUsage: () => ({ tokens: 8000, contextWindow: 1000000 }) };
+  const clock = Date.now;
+  let now = clock();
+  Date.now = () => now;
+  try {
+    h.session_start.forEach(f => f({}, ctx));
+    h.before_provider_request.forEach(f => f({ payload }, ctx));
+    for (let i = 0; i < 401; i++) {
+      for (const f of h.agent_settled) await f({}, ctx);
+      now += 2000;
+      h.agent_start.forEach(f => f({}, ctx));
+    }
+    for (const f of h.agent_settled) await f({}, ctx);
+    now += 3000;
+    h.session_shutdown.forEach(f => f({}, ctx));
+    const dir = join(process.env.PI_CODING_AGENT_DIR, 'cache-keeper');
+    const saved = listDir(dir).map(name => JSON.parse(fs.readFileSync(join(dir, name), 'utf8'))).find(x => x.cwd === ctx.cwd);
+    assert.equal(saved.gaps.length, 400);
+    assert.deepEqual(saved.gaps.at(-1), { s: 3, c: 1, k: 8000 });
+    assert.ok(saved.gaps.slice(0, -1).every(x => x.s === 2 && x.k === 8000 && x.c === undefined));
+  } finally {
+    Date.now = clock;
+    h.session_shutdown.forEach(f => f({}, ctx));
+  }
 }
 
 // Refresh em voo de um ciclo encerrado não pode aquecer nem contabilizar no novo ciclo.
@@ -426,4 +496,5 @@ assert.equal(policy.idleCompactionDecision({ ...idleOk, pending: true }).reason,
 assert.equal(policy.idleCompactionDecision({ ...idleOk, editorText: 'oi' }).reason, 'typing');
 assert.equal(policy.idleCompactionDecision({ ...idleOk, tokens: 120_000 }).reason, 'small');
 
+assert.ok(listDir(process.env.PI_CODING_AGENT_DIR).every(name => name === 'cache-keeper'), 'somente estado de pausas no perfil');
 console.log('PASS cache-keeper');

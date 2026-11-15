@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// Compactação do Agent: motor nativo, modelo separado, preservação e gatilho por limiar.
+// Compactação do Agent: motor e modelo nativos, preservação e gatilho por limiar.
 // Hooks públicos com pi/ctx falsos. modelRegistry.streamSimple é um dublê;
 // compact()/serialização/validação são os reais do SDK. Nenhuma inferência externa.
 import assert from 'node:assert/strict';
@@ -12,7 +12,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 const repo = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 // SDK real instalado: as extensões resolvem `@earendil-works/*` contra ele (serializeConversation
 // de verdade), como o host faz. Sem rede e sem modelo.
-const piRoot = process.env.AGENT_JUICE_PI_ROOT || join(homedir(), '.local/share/agent/current/lib/node_modules/@earendil-works/pi-coding-agent');
+const piRoot = process.env.AGENT_PI_ROOT || join(homedir(), '.local/share/agent/current/lib/node_modules/@earendil-works/pi-coding-agent');
 assert.ok(existsSync(join(piRoot, 'package.json')), `pi instalado em ${piRoot}`);
 
 // As extensões importam vizinhos sem extensão (`./vault-runtime`), como o bundler do host faz;
@@ -40,18 +40,22 @@ registerHooks({
 // Vault temporário: PI_SYSTEM_DIR vence em lib/paths, e PI_VAULT_DIR é const de módulo
 // resolvida no import — por isso o env vem antes do primeiro `import()`.
 const vaultRoot = mkdtempSync(join(tmpdir(), 'agent-compaction-'));
+process.on('exit', () => rmSync(vaultRoot, { recursive: true, force: true }));
 mkdirSync(join(vaultRoot, 'Pi'), { recursive: true });
 process.env.PI_SYSTEM_DIR = vaultRoot;
+process.env.HOME = vaultRoot;
+process.env.USERPROFILE = vaultRoot;
+process.env.PI_CODING_AGENT_DIR = join(vaultRoot, 'agent');
 const TEMPLATE = 'LEGACY_VAULT_SENTINEL {{CONVERSA}}';
 writeFileSync(join(vaultRoot, 'Pi', 'compactacao.md'), TEMPLATE + '\n');
 
-// Ledger do Juice ligado mas apontado para um bin inexistente: as extensões rodam o caminho
-// real (recordJuiceCacheEvent é best-effort e engole a falha) sem broker nem estado global.
-process.env.AGENT_JUICE_ENABLED = '1';
+// Runtime ligado; variáveis legadas não devem criar estado de accounting.
+process.env.AGENT_RUNTIME_ENABLED = '1';
 process.env.AGENT_JUICE_BIN = join(vaultRoot, 'bin-inexistente');
 process.env.AGENT_JUICE_HOME = vaultRoot;
 process.env.AGENT_JUICE_STATE = join(vaultRoot, 'run.json');
 delete process.env.AGENT_JUICE_CHILD;
+delete process.env.AGENT_CHILD;
 delete process.env.AGENT_CACHE_KEEPER;
 
 const load = (rel) => import(pathToFileURL(join(repo, rel)).href);
@@ -67,13 +71,6 @@ const test = async (name, fn) => {
   try { await fn(); checks += 1; console.log(`ok ${name}`); }
   catch (erro) { falhas.push(`${name}: ${erro?.message ?? erro}`); console.log(`not ok ${name}`); }
 };
-
-await test('aprendizado opt-in: só AGENT_LEARN=1 no principal com modelo', () => {
-  for (const value of [undefined, '', '0', 'true', 'yes']) assert.equal(juice.learnEligible('provider/model', { AGENT_LEARN: value }), false);
-  assert.equal(juice.learnEligible('provider/model', { AGENT_LEARN: '1' }), true);
-  assert.equal(juice.learnEligible(null, { AGENT_LEARN: '1' }), false);
-  assert.equal(juice.learnEligible('provider/model', { AGENT_LEARN: '1', AGENT_JUICE_CHILD: '1' }), false);
-});
 
 // ---------- /next: limites e elegibilidade do handoff ----------
 await test('/next: hint somente acima de 60k', () => {
@@ -96,7 +93,7 @@ await test('/next: handoff só no primeiro run de usuário e recente', () => {
 const LUNA = { provider: 'openai-codex', id: 'gpt-6-luna', api: 'openai-codex-responses', contextWindow: 400_000 };
 const MAIN = { provider: 'anthropic', id: 'claude-opus-5-5', api: 'anthropic-messages', contextWindow: 1_000_000 };
 
-function fakeCtx({ model = MAIN, tokens = 0, contextWindow = 1_000_000, lunaFound = true, complete } = {}) {
+function fakeCtx({ model = MAIN, tokens = 0, contextWindow = 1_000_000, lunaFound = false, complete } = {}) {
   const notes = [];
   const statuses = [];
   const calls = [];
@@ -137,6 +134,21 @@ function register(mod) {
   mod.default(pi);
   return { handlers, commands, sent };
 }
+
+await test('learning removido mesmo com opt-in legado', async () => {
+  process.env.AGENT_LEARN = '1';
+  const { handlers, commands } = register(juice);
+  assert.equal(juice.learnEligible, undefined);
+  assert.equal(commands.learn, undefined);
+  assert.equal(handlers.session_before_compact, undefined);
+  const ctx = fakeCtx();
+  for (const event of ['agent_end', 'agent_settled']) {
+    for (const handler of handlers[event] ?? []) await handler({}, ctx);
+  }
+  assert.equal(ctx.calls.length, 0);
+  assert.equal(existsSync(join(vaultRoot, '.agent/workflow.md')), false);
+  delete process.env.AGENT_LEARN;
+});
 
 await test('/next: ocupado recusa sem enviar, esperar, compactar ou trocar', async () => {
   const { commands, sent } = register(juice);
@@ -265,6 +277,14 @@ const prep = (over = {}) => ({
   ...over,
 });
 
+const { compact: nativeCompact } = await import(pathToFileURL(join(piRoot, 'dist/core/compaction/compaction.js')).href);
+// Model the host continuation, not an extension-owned summary or fallback.
+async function nativeAfterHook(handler, event, ctx) {
+  assert.equal(await handler(event, ctx), undefined, 'hook deixa preparação e instruções com o host');
+  return { compaction: await nativeCompact(event.preparation, ctx.model, 'offline', {},
+    event.customInstructions, event.signal, undefined, ctx.modelRegistry.streamSimple) };
+}
+
 // ---------- compactação pelo motor nativo; o template antigo não governa ----------
 await test('modelo já é Luna: host nativo cuida do resumo sem override', async () => {
   const { handlers } = register(compaction);
@@ -276,9 +296,8 @@ await test('modelo já é Luna: host nativo cuida do resumo sem override', async
 for (const stopReason of ['length', 'error']) await test(`resumo ${stopReason} não vira checkpoint`, async () => {
   const { handlers } = register(compaction);
   const ctx = fakeCtx({ complete: () => ({ stopReason, content: [{ type: 'text', text: 'PARCIAL' }], errorMessage: 'fixture' }) });
-  const result = await handlers.session_before_compact[0]({ preparation: prep(), reason: 'manual' }, ctx);
-  assert.equal(result, undefined);
-  assert.match(ctx.notes.at(-1).text, /falhou/);
+  await assert.rejects(nativeAfterHook(handlers.session_before_compact[0], { preparation: prep(), reason: 'manual' }, ctx));
+  assert.equal(ctx.calls.length, 1, 'sem retry alternativo');
 });
 
 await test('cancelamento não chama modelo nem retorna resumo', async () => {
@@ -289,16 +308,16 @@ await test('cancelamento não chama modelo nem retorna resumo', async () => {
   assert.equal(ctx.calls.length, 0);
 });
 
-await test('hook real: /compact com instruções mantém o texto no prompt enviado à Luna', async () => {
+await test('hook real: /compact com instruções mantém o texto no prompt enviado ao modelo selecionado', async () => {
   const { handlers } = register(compaction);
   const ctx = fakeCtx();
   const event = { preparation: prep(), customInstructions: 'liste apenas os comandos que falharam', reason: 'manual' };
-  const out = await handlers.session_before_compact[0](event, ctx);
+  const out = await nativeAfterHook(handlers.session_before_compact[0], event, ctx);
   assert.ok(out?.compaction?.summary, 'resumo custom devolvido');
   assert.equal(ctx.calls.length, 1, 'uma chamada de resumo');
   const prompt = ctx.calls[0].request.messages[0].content[0].text;
   assert.match(JSON.stringify(ctx.calls[0].request), /liste apenas os comandos que falharam/, 'instruções do usuário chegaram ao prompt');
-  assert.equal(ctx.calls[0].model.id, LUNA.id, 'resumo sai na Luna');
+  assert.equal(ctx.calls[0].model, MAIN, 'resumo usa modelo selecionado');
   assert.doesNotMatch(JSON.stringify(ctx.calls[0].request), /LEGACY_VAULT_SENTINEL/);
   assert.equal(readFileSync(join(vaultRoot, 'Pi', 'compactacao.md'), 'utf8'), TEMPLATE + '\n', 'arquivo antigo permanece intacto');
 });
@@ -323,7 +342,7 @@ await test('resumo anterior vem da preparation nativa', async () => {
     branchEntries: [{ type: 'compaction', id: 'c1', summary: 'RESUMO-ANTIGO', firstKeptEntryId: 'z' }],
     reason: 'threshold',
   };
-  await handlers.session_before_compact[0](event, ctx);
+  await nativeAfterHook(handlers.session_before_compact[0], event, ctx);
   const prompt = ctx.calls[0].request.messages[0].content[0].text;
   assert.match(JSON.stringify(ctx.calls[0].request), /RESUMO-ANTIGO/, 'resumo anterior preservado no prompt');
 });
@@ -339,7 +358,7 @@ await test('turno partido: o prefixo do turno entra na conversa resumida', async
     }),
     reason: 'threshold',
   };
-  await handlers.session_before_compact[0](event, ctx);
+  await nativeAfterHook(handlers.session_before_compact[0], event, ctx);
   const prompt = ctx.calls[0].request.messages[0].content[0].text;
   assert.match(JSON.stringify(ctx.calls[0].request), /PEDIDO-LONGO-DO-GABRIEL/, 'prefixo do turno partido não pode ser descartado');
   assert.match(JSON.stringify(ctx.calls[0].request), /TRABALHO-FEITO/);
@@ -349,25 +368,25 @@ await test('tokensBefore nativo preservado sem estimativa paralela', async () =>
   const { handlers } = register(compaction);
   const ctx = fakeCtx({ tokens: 480_000 });
   const event = { preparation: prep({ tokensBefore: 7 }), reason: 'threshold' };
-  const out = await handlers.session_before_compact[0](event, ctx);
+  const out = await nativeAfterHook(handlers.session_before_compact[0], event, ctx);
   assert.equal(out.compaction.tokensBefore, 7);
 });
 
 await test('arquivos lidos/escritos seguem no prompt e nos details do resumo', async () => {
   const { handlers } = register(compaction);
   const ctx = fakeCtx();
-  const out = await handlers.session_before_compact[0]({ preparation: prep(), reason: 'manual' }, ctx);
+  const out = await nativeAfterHook(handlers.session_before_compact[0], { preparation: prep(), reason: 'manual' }, ctx);
   assert.match(out.compaction.summary, /a\.ts/); assert.match(out.compaction.summary, /b\.ts/);
   assert.deepEqual(out.compaction.details.readFiles, ['a.ts']);
   assert.deepEqual(out.compaction.details.modifiedFiles, ['b.ts']);
   assert.equal(out.compaction.firstKeptEntryId, 'entry-7', 'corte do pi preservado');
 });
 
-await test('falha do runtime alternativo devolve ao Pi sem resumo parcial', async () => {
+await test('falha do runtime nativo propaga falha sem resumo parcial', async () => {
   const { handlers } = register(compaction);
   const ctx = fakeCtx({ complete: () => { throw Error('context overflow fixture'); } });
-  assert.equal(await handlers.session_before_compact[0]({ preparation: prep(), reason: 'threshold' }, ctx), undefined);
-  assert.match(ctx.notes.at(-1).text, /falhou/);
+  await assert.rejects(nativeAfterHook(handlers.session_before_compact[0], { preparation: prep(), reason: 'threshold' }, ctx), /context overflow fixture/);
+  assert.equal(ctx.calls.length, 1);
 });
 
 // ---------- 3. gatilho automático por limiar (juice.ts) ----------
@@ -457,6 +476,7 @@ await test('callbacks e eventos do Pi liberam o gatilho; queda de contexto não 
 // ---------- 4. contabilidade do adiamento (cache-keeper) ----------
 function keeperWithWarmCache({ tokens = 460_000, contextWindow = 1_000_000 } = {}) {
   delete process.env.AGENT_JUICE_CHILD;
+delete process.env.AGENT_CHILD;
   delete process.env.AGENT_CACHE_KEEPER;
   const { handlers } = register(cacheKeeper);
   const ctx = fakeCtx({ tokens, contextWindow });
@@ -594,9 +614,8 @@ await test('cleanup antigo não remove conexão de runtime novo', async () => {
 // distribuição) e emite `session_before_compact` pela cadeia de handlers com a MESMA regra do
 // runner real (para no 1º cancel). Nenhuma chamada de modelo: o modelRegistry é dublê.
 const loaderEntry = join(piRoot, 'dist/core/extensions/loader.js');
-if (!existsSync(loaderEntry)) {
-  console.log('# sem loader do Pi instalado: seção do loader real pulada');
-} else {
+assert.ok(existsSync(loaderEntry), 'loader real obrigatório');
+{
   const { loadExtensions, createExtensionRuntime } = await import(pathToFileURL(loaderEntry).href);
   const { createEventBus } = await import(pathToFileURL(join(piRoot, 'dist/core/event-bus.js')).href);
   const paths = ['cache-keeper.ts', 'compaction.ts'].map((f) => join(repo, 'agent/extensions/brain-live', f));
@@ -637,16 +656,18 @@ if (!existsSync(loaderEntry)) {
     assert.equal(adiados.length, 1, `orçamento consumido uma vez: ${JSON.stringify(adiados)}`);
   });
 
-  await test('loader real: /compact manual passa pelo cache e leva as instruções à Luna', async () => {
+  await test('loader real: /compact manual passa pelo cache e leva as instruções ao modelo selecionado', async () => {
     const ctx = fakeCtx({ tokens: 460_000 });
     warmUp(ctx);
-    const out = await emit({ reason: 'manual', preparation: prep(), customInstructions: 'MANTENHA os números do ledger' }, ctx);
+    const out = await nativeAfterHook(emit, { reason: 'manual', preparation: prep(), customInstructions: 'MANTENHA os números do pedido' }, ctx);
     assert.ok(out?.compaction?.summary, 'manual nunca é bloqueado pelo cache');
     assert.equal(ctx.calls.length, 1);
-    assert.match(JSON.stringify(ctx.calls[0].request), /MANTENHA os números do ledger/);
+    assert.match(JSON.stringify(ctx.calls[0].request), /MANTENHA os números do pedido/);
   });
 }
 
+assert.equal(existsSync(join(vaultRoot, 'run.json')), false, 'nenhum ledger criado');
+assert.equal(existsSync(join(vaultRoot, 'run.v3.json')), false);
 rmSync(vaultRoot, { recursive: true, force: true });
 if (falhas.length) {
   console.error(`\n${falhas.length} falha(s):\n` + falhas.map((f) => ` - ${f}`).join('\n'));

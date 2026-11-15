@@ -1,6 +1,5 @@
 #!/usr/bin/env node
-// Concrete regression: queued children must inherit the ORIGINAL run, not a later
-// parent's budget; pilot routing must not read/write global model tiers.
+// Dispatch preserva escolhas de recursos e papéis, sem herdar accounting.
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import { EventEmitter } from 'node:events';
@@ -11,7 +10,7 @@ import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const repo = resolve(dirname(fileURLToPath(import.meta.url)), '..');
-const pkg = join(process.env.AGENT_STORE || join(homedir(), '.local/share/agent'), 'current/lib/node_modules/@earendil-works/pi-coding-agent');
+const pkg = process.env.AGENT_PI_ROOT || join(process.env.AGENT_STORE || join(homedir(), '.local/share/agent'), 'current/lib/node_modules/@earendil-works/pi-coding-agent');
 if (!existsSync(join(pkg, 'package.json'))) throw new Error('Pi instalado é necessário para verificar o dispatch do piloto.');
 const req = createRequire(join(pkg, 'package.json'));
 const { createJiti } = req('jiti');
@@ -19,6 +18,8 @@ const root = mkdtempSync(join(tmpdir(), 'juice-dispatch-'));
 const savedEnv = { ...process.env };
 let checks = 0;
 try {
+  delete process.env.AGENT_JUICE_CHILD;
+  delete process.env.AGENT_CHILD;
   process.env.HOME = root;
   process.env.USERPROFILE = root;
   process.env.PI_CODING_AGENT_DIR = join(root, 'agent');
@@ -27,19 +28,19 @@ try {
   } });
   const runner = await jiti.import(join(repo, 'agent/extensions/brain-live/subagent/runner.ts'));
   const jobs = await jiti.import(join(repo, 'agent/extensions/brain-live/subagent/jobs.ts'));
-  const defaults = { model: 'test/principal', thinkingLevel: 'low', juice: { statePath: join(root, 'original.json'), supportModel: 'test/economico' } };
+  const defaults = { model: 'test/principal', thinkingLevel: 'low', resources: { supportModel: 'test/economico' } };
   const routed = jobs.resolveJobTaskModels([{ agent: 'scout', task: 'inventário' }, { agent: 'worker', task: 'alteração' }], defaults);
   assert.equal(routed.ok, true);
   assert.equal(routed.tasks[0].model, 'test/economico');
   assert.equal(routed.tasks[1].model, 'test/principal');
   checks++; console.log('ok apoio para scout e principal para worker, sem Vault');
-  const bySlot = jobs.resolveJobTaskModels([{ agent: 'worker', task: 'w' }, { agent: 'reviewer', task: 'r' }], { ...defaults, juice: { ...defaults.juice, slots: { worker: 'apoio', reviewer: 'apoio' } } });
+  const bySlot = jobs.resolveJobTaskModels([{ agent: 'worker', task: 'w' }, { agent: 'reviewer', task: 'r' }], { ...defaults, resources: { ...defaults.resources, slots: { worker: 'apoio', reviewer: 'apoio' } } });
   assert.deepEqual(bySlot.tasks.map(t => t.model), ['test/economico', 'test/economico']);
   checks++; console.log('ok receita/despachante: slot por papel decide o modelo');
   assert.equal(jobs.resolveJobTaskModels([{ agent: 'scout', task: 'x', model: 'test/terceiro' }], defaults).ok, false);
   assert.equal(jobs.resolveJobTaskModels([{ agent: 'scout', task: 'x', model: 'test/principal' }], defaults).ok, true);
   checks++; console.log('ok override só admite os dois modelos selecionados');
-  const inherited = jobs.resolveJobTaskModels([{ agent: 'scout', task: 'x' }], { ...defaults, juice: { statePath: defaults.juice.statePath } });
+  const inherited = jobs.resolveJobTaskModels([{ agent: 'scout', task: 'x' }], { ...defaults, resources: {} });
   assert.equal(inherited.tasks[0].model, 'test/principal');
   checks++; console.log('ok apoio não configurado herda principal');
 
@@ -48,14 +49,14 @@ try {
   // (b) papel com `model`/`thinking` no próprio .md decide no runner (nada é fixado aqui);
   // (c) papel sem config própria segue no slot principal/apoio do piloto.
   {
-    const vault = join(root, 'Sistema/Pi');
+    const vault = process.env.PI_CODING_AGENT_DIR;
     mkdirSync(vault, { recursive: true });
     const tier = (model) => ({ label: 'l', description: 'd', model, thinking: 'medium' });
-    writeFileSync(join(vault, 'models.json'), JSON.stringify({
+    writeFileSync(join(vault, 'agent-models.json'), JSON.stringify({
       tiers: { fast: tier('test/fast'), standard: tier('test/std'), deep: tier('test/deep'), visual: tier('test/vis'), image: tier('test/img') },
       roleModels: { reviewer: [{ model: 'test/antigo-reviewer', thinking: 'xhigh' }, { model: 'test/segunda-opcao', thinking: 'low' }] },
     }) + '\n');
-    // MODELS_FILE = <sistemaDir>/Pi/models.json e sistemaDir vem do HOME isolado deste teste.
+    // MODELS_FILE pertence ao perfil isolado Agent.
     const freshJobs = jobs;
     const roleFiles = [{ name: 'reviewer' }, { name: 'planner', model: 'tier:deep', thinking: 'high' }, { name: 'worker' }];
     const kept = freshJobs.resolveJobTaskModels([{ agent: 'reviewer', task: 'r' }, { agent: 'planner', task: 'p' }, { agent: 'worker', task: 'w' }], defaults, roleFiles);
@@ -69,7 +70,7 @@ try {
     const denied = freshJobs.resolveJobTaskModels([{ agent: 'reviewer', task: 'r', model: 'test/principal' }], defaults, roleFiles);
     assert.equal(denied.ok, false, 'modelo fora da lista do papel configurado é recusado');
     assert.match(denied.error, /not allowed for agent "reviewer"/);
-    const modelsFile = join(vault, 'models.json');
+    const modelsFile = join(vault, 'agent-models.json');
     const validConfig = readFileSync(modelsFile, 'utf8');
     writeFileSync(modelsFile, '{ invalid');
     const broken = freshJobs.resolveJobTaskModels([{ agent: 'reviewer', task: 'r' }], defaults, roleFiles);
@@ -93,16 +94,18 @@ try {
     });
     return child;
   };
-  process.env.AGENT_JUICE_ENABLED = '1';
+  process.env.AGENT_RUNTIME_ENABLED = '1';
   process.env.AGENT_JUICE_STATE = join(root, 'later-parent.json');
   const agent = { name: 'scout', description: 'fixture', systemPrompt: '', tools: ['read'], source: 'user' };
   const result = await runner.runSingleAgent({ defaultCwd: root, dispatchDefaults: defaults, agents: [agent], agentName: 'scout', task: 'fixture', roleModel: { model: 'test/economico', thinking: 'low' }, makeDetails: (results) => ({ mode: 'single', agentScope: 'user', projectAgentsDir: null, results }) });
   assert.equal(result.exitCode, 0);
-  assert.equal(captured.opts.env.AGENT_JUICE_STATE, defaults.juice.statePath);
-  assert.equal(captured.opts.env.AGENT_JUICE_CHILD, '1');
+  assert.equal(captured.opts.env.AGENT_JUICE_STATE, undefined);
+  assert.equal(captured.opts.env.AGENT_RUNTIME_ENABLED, '1');
+  assert.equal(captured.opts.env.AGENT_SUBAGENTS, '0');
+  assert.equal(captured.opts.env.AGENT_CHILD, '1');
   assert.equal(captured.args[captured.args.indexOf('--model') + 1], 'test/economico');
   assert.ok(!captured.args.includes('--no-skills'));
-  checks++; console.log('ok filho compartilha snapshot original de budget e preserva skills');
+  checks++; console.log('ok filho remove estado de accounting e preserva skills');
 
   // Papel com config no próprio .md, sem par central: o filho nasce com o modelo/thinking
   // do arquivo do usuário (resolvendo `tier:`), não com o principal do piloto.
@@ -194,14 +197,14 @@ try {
   assert.deepEqual(guidanceRules(capped), ['regra curta depois da enorme', 'última curta 🧪'], 'mensagem do filho sem regra parcial');
   checks++; console.log('ok orientação limitada a 8KiB UTF-8, regras inteiras, fonte >64KiB não injetada');
 
-  delete process.env.AGENT_JUICE_ENABLED;
+  delete process.env.AGENT_RUNTIME_ENABLED;
   delete process.env.AGENT_JUICE_STATE;
   await runner.runSingleAgent({ defaultCwd: root, dispatchDefaults: { model: 'test/principal' }, agents: [agent], agentName: 'scout', task: 'fixture', makeDetails: (results) => ({ mode: 'single', agentScope: 'user', projectAgentsDir: null, results }) });
-  // Fora do piloto, só o ambiente do sandbox é acrescentado ao papel somente leitura.
+  // Sem recursos explícitos, filho ainda recebe isolamento e catálogo de skills.
   const sandbox = runner.sandboxForTools(agent.tools);
-  assert.deepEqual(captured.opts.env, { ...process.env, AGENT_BASH_SANDBOX: sandbox === 'none' ? '' : sandbox, AGENT_SANDBOX_CWD: sandbox === 'none' ? '' : root });
-  assert.ok(captured.args.includes('--no-skills'));
-  checks++; console.log('ok dispatch legado permanece inalterado fora do piloto');
+  assert.deepEqual(captured.opts.env, { ...process.env, AGENT_CHILD: '1', AGENT_SUBAGENTS: '0', AGENT_BASH_SANDBOX: sandbox === 'none' ? '' : sandbox, AGENT_SANDBOX_CWD: sandbox === 'none' ? '' : root });
+  assert.ok(!captured.args.includes('--no-skills'));
+  checks++; console.log('ok dispatch sem recursos mantém isolamento e catálogo de skills');
 
   // Launcher: argv[1] só vale se for CLI declarado do pacote Pi; host do SDK cai no CLI do Pi carregado.
   const piPkg = JSON.parse(readFileSync(join(pkg, 'package.json'), 'utf8'));

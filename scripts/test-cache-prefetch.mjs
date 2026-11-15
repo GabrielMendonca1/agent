@@ -6,19 +6,18 @@
 //   (b) `system` e `tools` do prefetch são byte-idênticos aos do 1º request do beta real;
 //   (c) um único request no prefetch, e ele nasce durante a etapa alpha (após o 1º token);
 //   (d) provider não Anthropic: o filho de prefetch sai 3 sem nenhum request;
-//   (e) contabilidade: o ledger do Juice registra a chamada com kind `cache-prefetch`;
-//   (f) sem opt-in (sem flag e sem TTL longo) não há prefetch.
+//   (e) nenhum accounting: ledger legado fica intacto;
+//   (f) sem flag opt-in não há prefetch, mesmo com TTL longo.
 import assert from 'node:assert/strict';
-import { spawn, spawnSync } from 'node:child_process';
+import { spawn } from 'node:child_process';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { createServer } from 'node:http';
 import { homedir, tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
-import { juiceOperation } from '../agent/juice/client.mjs';
 
 const repo = resolve(dirname(fileURLToPath(import.meta.url)), '..');
-const piRoot = process.env.AGENT_JUICE_PI_ROOT || join(homedir(), '.local/share/agent/current/lib/node_modules/@earendil-works/pi-coding-agent');
+const piRoot = process.env.AGENT_PI_ROOT || join(homedir(), '.local/share/agent/current/lib/node_modules/@earendil-works/pi-coding-agent');
 const cli = join(piRoot, 'dist/cli.js');
 assert.ok(existsSync(cli), 'pi instalado');
 
@@ -126,11 +125,11 @@ writeFileSync(join(agentDir, 'models.json'), JSON.stringify({ providers: {
 const ledger = join(root, 'run.v3.json');
 const baseEnv = {
   ...process.env, HOME: home, USERPROFILE: home, PI_CODING_AGENT_DIR: agentDir, PI_OFFLINE: '1', PI_DURABLE_HOST: '0',
-  AGENT_JUICE_ENABLED: '1', AGENT_JUICE_STATE: ledger, AGENT_JUICE_HOME: root, AGENT_JUICE_PI_ROOT: piRoot,
+  AGENT_SUBAGENTS: '1', AGENT_RUNTIME_ENABLED: '1', AGENT_JUICE_STATE: ledger, AGENT_JUICE_HOME: root, AGENT_PI_ROOT: piRoot,
   NODE_OPTIONS: `--import=${pathToFileURL(join(repo, 'agent/juice/runtime.mjs')).href}`,
 };
 // O processo desta fixture usa dist/cli.js (clássico), não o bundle do pai real.
-for (const k of ['AGENT_JUICE_PI_ENTRY', 'AGENT_JUICE_CHILD', 'AGENT_CACHE_PREFETCH', 'AGENT_CACHE_PREFETCH_NEXT', 'PI_CACHE_RETENTION', 'AGENT_SUBAGENT_CHILD_EXTENSIONS']) delete baseEnv[k];
+for (const k of ['AGENT_JUICE_PI_ENTRY', 'AGENT_JUICE_CHILD', 'AGENT_CHILD', 'AGENT_CACHE_PREFETCH', 'AGENT_CACHE_PREFETCH_NEXT', 'PI_CACHE_RETENTION', 'AGENT_SUBAGENT_CHILD_EXTENSIONS']) delete baseEnv[k];
 const run = (cmd, args, env) => new Promise((done) => {
   const p = spawn(cmd, args, { cwd: root, env, stdio: ['ignore', 'pipe', 'pipe'] });
   let out = '', err = '';
@@ -138,19 +137,18 @@ const run = (cmd, args, env) => new Promise((done) => {
   const timer = setTimeout(() => p.kill('SIGKILL'), 90_000);
   p.on('close', (code) => { clearTimeout(timer); done({ code, out, err }); });
 });
-const initLedger = () => {
-  rmSync(ledger, { force: true });
-  // Cada pai usa --no-session: o modo inicial vem das preferências, nunca do ledger.
-  writeFileSync(join(root, 'preferences.v3.json'), JSON.stringify({ mode: 'complex', supportModel: null }));
-  Object.assign(process.env, { AGENT_JUICE_ENABLED: '1', AGENT_JUICE_HOME: root, AGENT_JUICE_STATE: ledger }); juiceOperation({ op: 'init', runId: 'pf', mode: 'simple' });
+const resetPreferences = () => {
+  writeFileSync(ledger, 'legacy ledger sentinel');
+  writeFileSync(join(agentDir, 'agent-preferences.json'), JSON.stringify({ supportModel: null }));
 };
 const runParent = (extra) => run(process.execPath, [cli, '-p', '--mode', 'json', '--no-session', '--no-extensions', '-e', join(repo, 'agent/extensions/brain-live/subagent/index.ts'), '--model', 'fakeanth/claude-x', '--thinking', 'high', 'tarefa'], { ...baseEnv, ...extra });
 
 let n = 0;
 const ok = (m) => { n++; console.log(`ok ${m}`); };
 
+try {
 // ---- com opt-in ----
-initLedger();
+resetPreferences();
 let r = await runParent({ AGENT_CACHE_PREFETCH_NEXT: '1' });
 assert.equal(r.code, 0, r.err.slice(-2000));
 assert.match(r.out, /BETA-OK/, 'a chain chegou ao beta');
@@ -170,26 +168,20 @@ assert.match(JSON.stringify(pre[0].body.system), /cache_control/, 'prefixo marca
 ok('(b) system e tools do prefetch = 1º request do beta real (byte a byte)');
 assert.ok(pre[0].t > alphaReal.t && pre[0].t < betaReal.t, 'prefetch nasce durante a etapa alpha');
 ok('(c) 1 request de prefetch, durante a etapa anterior e antes do beta real');
-const state = readFileSync(ledger, 'utf8');
-const receipts = JSON.parse(state).receipts.filter(x => x.kind === 'cache-prefetch');
-assert.equal(receipts.length, 1, 'uma chamada cache-prefetch no ledger');
-assert.equal(receipts[0].status, 'settled', 'liquidada (filho saiu limpo, sem retry/compactação)');
-assert.equal(receipts[0].outputTokens, 1);
-assert.equal(receipts[0].usage.cacheWrite, 9, 'usage do provider contabilizado');
-assert.doesNotMatch(state, /Você é beta|x-api-key|offline/, 'ledger sem payload nem headers');
-ok('(e) ledger: chamada contabilizada como cache-prefetch, sem payload');
+assert.equal(readFileSync(ledger, 'utf8'), 'legacy ledger sentinel', 'prefetch não escreve ledger');
+ok('(e) prefetch sem accounting');
 
 // ---- (d) provider não Anthropic: o mesmo filho de prefetch sai 3 sem request ----
 const before = requests.length;
 const d = await run(process.execPath, [cli, '--mode', 'json', '-p', '--no-session', '--no-extensions', '-e', join(repo, 'agent/extensions/brain-live/cache-keeper.ts'), '--model', 'fakeoai/gpt-x', '--tools', 'read', 'Task: .'],
-  { ...baseEnv, NODE_OPTIONS: '', AGENT_JUICE_ENABLED: '0', AGENT_JUICE_CHILD: '1', AGENT_CACHE_PREFETCH: '1' });
+  { ...baseEnv, NODE_OPTIONS: '', AGENT_RUNTIME_ENABLED: '0', AGENT_CHILD: '1', AGENT_CACHE_PREFETCH: '1' });
 assert.equal(d.code, 3, d.err.slice(-1000));
 assert.equal(requests.length, before, 'nenhum request');
 ok('(d) não Anthropic: exit 3, zero requests');
 
 // ---- (f) sem opt-in: nada de prefetch ----
 requests.length = 0;
-initLedger();
+resetPreferences();
 r = await runParent({ PI_CACHE_RETENTION: 'long' });
 assert.equal(r.code, 0, r.err.slice(-2000));
 assert.match(r.out, /BETA-OK/);
@@ -198,7 +190,7 @@ ok('(f) sem AGENT_CACHE_PREFETCH_NEXT=1 não há prefetch (nem com TTL longo)');
 
 // ---- (i) etapa falha com aquecimento em voo: o warm morre com o job, nada depois ----
 requests.length = 0;
-initLedger();
+resetPreferences();
 process.env.PF_ALPHA_FAIL = '1'; process.env.PF_SLOW_WARM = '1';
 const t0 = Date.now();
 r = await runParent({ AGENT_CACHE_PREFETCH_NEXT: '1' });
@@ -220,12 +212,12 @@ ok('(i) etapa falha: aquecimento em voo abortado e aguardado; nada nasce depois 
 // ---- H nos filhos reais: o cache-keeper carrega no filho do piloto ----
 // Codex/Responses: dois filhos reais do mesmo papel chegam com a mesma prompt_cache_key "agent-…".
 requests.length = 0;
-initLedger();
+resetPreferences();
 process.env.PF_PARENT = 'gamma';
 // scout vai para o slot apoio = modelo de apoio no provider Responses falso.
-writeFileSync(join(root, 'preferences.v3.json'), JSON.stringify({ mode: 'complex', supportModel: 'fakeresp/gpt-x' }));
+writeFileSync(join(agentDir, 'agent-preferences.json'), JSON.stringify({ supportModel: 'fakeresp/gpt-x' }));
 r = await runParent({});
-rmSync(join(root, 'preferences.v3.json'));
+rmSync(join(agentDir, 'agent-preferences.json'));
 delete process.env.PF_PARENT;
 // Só os filhos scout (o despachante do piloto também pode usar o modelo de apoio).
 const resp = requests.filter(q => q.role === 'resp' && JSON.stringify(q.body).includes('Você é gamma'));
@@ -236,13 +228,17 @@ ok('(g) filhos reais Codex: prompt_cache_key "agent-…" estável entre filhos d
 // Anthropic: o keeper em modo filho não muda o corpo (mesmo argv com e sem -e keeper).
 requests.length = 0;
 const childArgs = ['--mode', 'json', '-p', '--no-session', '--no-extensions', '--model', 'fakeanth/claude-x', '--thinking', 'high', '--tools', 'read', 'Task: igual'];
-const childEnv = { ...baseEnv, NODE_OPTIONS: '', AGENT_JUICE_ENABLED: '0', AGENT_JUICE_CHILD: '1' };
+const childEnv = { ...baseEnv, NODE_OPTIONS: '', AGENT_RUNTIME_ENABLED: '0', AGENT_CHILD: '1' };
 await run(process.execPath, [cli, ...childArgs], childEnv);
 await run(process.execPath, [cli, ...childArgs.slice(0, 5), '-e', join(repo, 'agent/extensions/brain-live/cache-keeper.ts'), ...childArgs.slice(5)], childEnv);
 assert.equal(requests.length, 2);
 assert.equal(JSON.stringify(requests[1].body), JSON.stringify(requests[0].body), 'corpo Anthropic idêntico com e sem keeper');
 ok('(h) filho Anthropic: corpo byte-idêntico com o keeper carregado');
 
-server.close();
-rmSync(root, { recursive: true, force: true });
+assert.equal(readFileSync(ledger, 'utf8'), 'legacy ledger sentinel');
 console.log(`${n} checks passed`);
+} finally {
+  server.closeAllConnections();
+  server.close();
+  rmSync(root, { recursive: true, force: true });
+}
