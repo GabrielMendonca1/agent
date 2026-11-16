@@ -2402,8 +2402,11 @@ function overlayStatus(store) {
  */
 function liveProcesses() {
 	if (isWindows) return undefined;
+	// Sem locale UTF-8 (ex.: `env -i`), o ps escapa bytes não ASCII (`ç` vira `M-CM-'` no macOS,
+	// `?` no procps) e um caminho com acento deixa de casar: forçar UTF-8 mantém o texto literal.
 	const result = spawnSync("ps", ["eww", "-ax", "-o", "pid=,command="], {
 		encoding: "utf8", maxBuffer: 32 * 1024 * 1024, timeout: 10000,
+		env: { ...process.env, LC_ALL: "C.UTF-8" },
 	});
 	if (result.status !== 0 || !result.stdout?.trim()) return undefined;
 	const processes = result.stdout.split("\n").flatMap((line) => {
@@ -2420,7 +2423,13 @@ function commandUsesPath(command, path) {
 		if (next === undefined || /[\/\\\s"']/.test(next)) return true;
 		start += path.length;
 	}
-	return false;
+	// Se o ps ainda escapar bytes não ASCII (locale UTF-8 indisponível), casa cada trecho não
+	// ASCII com qualquer escape curto sem `/`: na dúvida, conserva.
+	if (!/[^\x00-\x7f]/.test(path)) return false;
+	const loose = path.split(/([^\x00-\x7f]+)/).map((part, index) => index % 2
+		? `[^/\\s]{1,${part.length * 16}}?`
+		: part.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join("");
+	return new RegExp(`${loose}(?=$|[\\/\\\\\\s"'])`).test(command);
 }
 
 /**
