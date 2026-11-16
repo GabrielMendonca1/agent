@@ -53,6 +53,12 @@
       "tags": ["fast"]
     },
     {
+      "name": "agent-skim",
+      "cmd": "node scripts/test-agent-skim.mjs",
+      "tags": ["integration", "agent"],
+      "timeoutMs": 240000
+    },
+    {
       "name": "agent-setup",
       "cmd": "node scripts/test-agent-setup.mjs",
       "tags": [

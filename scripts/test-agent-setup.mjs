@@ -108,7 +108,7 @@ try {
 		assert.ok(!names.includes("lib"));
 		assert.ok(!names.includes("sessions.md"));
 		assert.ok(names.includes("sessions"));
-		assert.deepEqual(extensionsIn(join(tree, AGENT_TREE)).map((e) => e.name), ["accounts", "peers", "tui", "web", "whimsical"]);
+		assert.deepEqual(extensionsIn(join(tree, AGENT_TREE)).map((e) => e.name), ["accounts", "peers", "skim", "tui", "web", "whimsical"]);
 	});
 
 	const clean = machine("clean");
@@ -213,12 +213,15 @@ try {
 		};
 		writeSettings(gabriel.agentDir, original);
 		const result = gabriel.sync();
-		assert.deepEqual(result.extensions, []);
+		// skim não existe na ARCA dele: é a única extensão do Agent registrada, uma vez.
+		assert.deepEqual(result.extensions, ["skim"]);
 		assert.deepEqual(result.themes, []);
 		assert.deepEqual(result.agents, []);
-		assert.equal(result.settingsUpdated, true); // só os defaults que ele não tinha
+		assert.equal(result.settingsUpdated, true); // os defaults que ele não tinha e o skim
 		const settings = readSettings(gabriel.agentDir);
-		assert.deepEqual(settings.extensions, [...original.extensions, "-builtin:codemode"]);
+		const skimPath = join(gabriel.store, AGENT_DIR, EXTENSIONS_SUBDIR, AGENT_TREE, "skim");
+		assert.deepEqual(settings.extensions.filter((entry) => entry !== skimPath), [...original.extensions, "-builtin:codemode"]);
+		assert.equal(settings.extensions.filter((entry) => entry === skimPath).length, 1);
 		assert.equal(settings.themes, undefined);
 		assert.equal(settings.theme, original.theme);
 		assert.equal(readFileSync(join(gabriel.agentDir, AGENTS_SUBDIR, "worker.md"), "utf8"), "meu worker\n");
@@ -407,7 +410,7 @@ try {
 		symlinkSync(personal, join(m.agentDir, "agents"), "dir");
 		symlinkSync(join(repo, "agent/extensions/brain-live"), join(m.agentDir, "extensions"), "dir");
 		symlinkSync(join(repo, "agent/themes"), join(m.agentDir, "themes"), "dir");
-		const settings = { ...AGENT_SETTINGS_DEFAULTS, extensions: ["accounts.ts", "peers", "whimsical.ts", "garime-tui", "-builtin:codemode"] };
+		const settings = { ...AGENT_SETTINGS_DEFAULTS, extensions: ["accounts.ts", "peers", "skim", "whimsical.ts", "garime-tui", "-builtin:codemode"] };
 		writeSettings(m.agentDir, settings);
 		const before = readFileSync(join(m.agentDir, "settings.json"), "utf8");
 		assert.equal(m.sync().settingsUpdated, false);

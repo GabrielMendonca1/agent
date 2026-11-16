@@ -5,7 +5,7 @@
  * sed/cat/head/git diff/rg, 17% read) cost about as much in later cacheRead as in the
  * first send. Above the limit the full text goes to a per-session temp file and the
  * model gets head + tail plus one line with the omitted size and the file path, to be
- * read in slices (read offset/limit or rg -n).
+ * read in slices (read offset/limit or rg -n), or asked about with skim when the child has it.
  *
  * Loaded only by the runner (`-e`) in children; it lives under subagent/ so the
  * main session never auto-loads it. AGENT_CHILD_TOOL_OUTPUT_MAX sets the limit in
@@ -42,7 +42,7 @@ export function shouldCap(toolName: string, input: unknown): boolean {
  * Head (~3/4 of max) + tail (~1/4), cut on line boundaries when one is near.
  * Returns undefined when `text` fits. `fullPath` is named in the marker line.
  */
-export function capText(text: string, max: number, fullPath: string): string | undefined {
+export function capText(text: string, max: number, fullPath: string, skim = false): string | undefined {
 	if (max <= 0 || text.length <= max) return undefined;
 	const headBudget = Math.floor(max * 0.75);
 	const tailBudget = max - headBudget;
@@ -55,7 +55,7 @@ export function capText(text: string, max: number, fullPath: string): string | u
 	const lineOf = (index: number) => text.slice(0, index).split("\n").length;
 	const totalLines = text.split("\n").length;
 	const omitted = tailStart - headEnd;
-	const marker = `[... ${omitted} of ${text.length} chars omitted (lines ${lineOf(headEnd) + (text[headEnd] === "\n" ? 1 : 0)}-${lineOf(tailStart) - (text[tailStart - 1] === "\n" ? 1 : 0)} of ${totalLines}). Full output: ${fullPath} — read it with read offset/limit or rg -n, not whole.]`;
+	const marker = `[... ${omitted} of ${text.length} chars omitted (lines ${lineOf(headEnd) + (text[headEnd] === "\n" ? 1 : 0)}-${lineOf(tailStart) - (text[tailStart - 1] === "\n" ? 1 : 0)} of ${totalLines}). Full output: ${fullPath} — read it with read offset/limit or rg -n, not whole${skim ? "; to understand it without exact text, skim path=<that file>" : ""}.]`;
 	return `${text.slice(0, headEnd)}\n${marker}\n${text.slice(tailStart)}`;
 }
 
@@ -63,7 +63,12 @@ export default function childOutputCap(pi: ExtensionAPI) {
 	const max = childToolOutputMax();
 	if (max <= 0) return;
 	let dir: string | undefined;
+	// skim's own bash call reads the full output (structuredContent); cutting it would drop that.
+	const skimCalls = new Set<string>();
+	pi.on("tool_call", (event: any) => { if (event.toolName === "skim") skimCalls.add(event.toolCallId); });
 	pi.on("tool_result", (event: any, ctx: any) => {
+		if (event.toolName === "skim") { skimCalls.delete(event.toolCallId); return; }
+		if (event.parentToolCallId && skimCalls.has(event.parentToolCallId)) return;
 		if (!shouldCap(event.toolName, event.input)) return;
 		const content = Array.isArray(event.content) ? event.content : [];
 		if (!content.length || content.some((part: any) => part?.type !== "text")) return;
@@ -75,7 +80,7 @@ export default function childOutputCap(pi: ExtensionAPI) {
 			mkdirSync(dir, { recursive: true, mode: 0o700 });
 		}
 		const file = join(dir, `${event.toolName}-${String(event.toolCallId).replace(/[^A-Za-z0-9._-]/g, "_")}.txt`);
-		const capped = capText(text, max, file);
+		const capped = capText(text, max, file, pi.getActiveTools?.().includes("skim") ?? false);
 		if (!capped) return;
 		try {
 			writeFileSync(file, text, { mode: 0o600 });

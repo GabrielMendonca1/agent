@@ -103,10 +103,9 @@ export function createWeb(options: { env?: NodeJS.ProcessEnv; lookup?: typeof lo
 			req.on("error", reject); req.end();
 		});
 	}
-	async function fetchPage(input: { url: string; offset?: number }, parent?: AbortSignal) {
+	/** Página inteira como texto (sem marcador); conta no limite de fetches. */
+	async function fetchText(input: { url: string }, parent?: AbortSignal): Promise<{ url: string; text: string }> {
 		if (fetches++ >= maxFetches) throw new Error("Limite de web_fetch por sessão atingido");
-		const offset = input.offset ?? 0;
-		if (!Number.isSafeInteger(offset) || offset < 0) throw new Error("offset inválido");
 		const signal = AbortSignal.any([AbortSignal.timeout(20_000), ...(parent ? [parent] : [])]);
 		let url = webURL(input.url);
 		for (let redirects = 0; ; redirects++) {
@@ -118,9 +117,15 @@ export function createWeb(options: { env?: NodeJS.ProcessEnv; lookup?: typeof lo
 			if (response.status < 200 || response.status >= 300) throw new Error(`HTTP ${response.status}`);
 			const text = /application\/pdf/i.test(response.type) || response.body.startsWith("%PDF-") ? "PDF não suportado" :
 				/html/i.test(response.type) ? htmlText(response.body, url.href) : response.body;
-			const nextOffset = offset + PAGE < text.length ? offset + PAGE : undefined;
-			return { text: wrap(url.href, text.slice(offset, offset + PAGE) + (nextOffset ? `\n[Saída truncada; próximo offset=${nextOffset}]` : "")), url: url.href, offset, nextOffset, totalChars: text.length };
+			return { url: url.href, text };
 		}
+	}
+	async function fetchPage(input: { url: string; offset?: number }, parent?: AbortSignal) {
+		const offset = input.offset ?? 0;
+		if (!Number.isSafeInteger(offset) || offset < 0) { fetches++; throw new Error("offset inválido"); }
+		const { url, text } = await fetchText(input, parent);
+		const nextOffset = offset + PAGE < text.length ? offset + PAGE : undefined;
+		return { text: wrap(url, text.slice(offset, offset + PAGE) + (nextOffset ? `\n[Saída truncada; próximo offset=${nextOffset}]` : "")), url, offset, nextOffset, totalChars: text.length };
 	}
 	function apiBase(name: string, fallback: string) {
 		if (!env[name]) return fallback;
@@ -170,5 +175,5 @@ export function createWeb(options: { env?: NodeJS.ProcessEnv; lookup?: typeof lo
 		const text = `${answer.slice(0, 12_000)}${answer.length > 12_000 ? "\n[Resposta truncada]" : ""}\nFontes: ${JSON.stringify(sources).slice(0, 20_000)}`;
 		return { text: wrap(source, text), provider };
 	}
-	return { fetchPage, search };
+	return { fetchPage, fetchText, search };
 }

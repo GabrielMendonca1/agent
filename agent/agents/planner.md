@@ -1,7 +1,7 @@
 ---
 name: planner
 description: Propõe passos mínimos, arquivos envolvidos e verificação.
-tools: read, grep, find, ls, bash, web_search, web_fetch
+tools: read, grep, find, ls, bash, skim, web_search, web_fetch
 brief_required: [objective, context]
 return_format: "Numbered minimal steps with files, verification and concrete risks."
 ---

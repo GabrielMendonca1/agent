@@ -243,6 +243,8 @@ const CACHE_KEEPER_PATH = path.join(path.dirname(fileURLToPath(import.meta.url))
 /** Extensão que registra web_search/web_fetch; o filho roda --no-extensions. */
 const WEB_EXTENSION_PATH = path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "..", "agent", "web", "index.ts");
 const WEB_TOOLS = new Set(["web_search", "web_fetch"]);
+/** Extensão que registra skim; só entra no filho cujo papel declara a tool. */
+const SKIM_EXTENSION_PATH = path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "..", "agent", "skim", "index.ts");
 /** Child-only cap for large tool outputs (AGENT_CHILD_TOOL_OUTPUT_MAX). */
 const CHILD_OUTPUT_CAP_PATH = path.join(path.dirname(fileURLToPath(import.meta.url)), "child-output-cap.ts");
 /** Child-only: Anthropic system cache breakpoint before the trailing <cwd> section. */
@@ -608,6 +610,10 @@ async function runPiChild(opts: ChildRunOptions): Promise<void> {
 						if (!result.model && msg.model) result.model = msg.model;
 						if (msg.stopReason) result.stopReason = msg.stopReason;
 						if (msg.errorMessage) result.errorMessage = msg.errorMessage;
+					} else if (msg.role === "toolResult" && (msg as any).usage) {
+						// Tool-side inference on another model (skim, web_fetch prompt): cost only;
+						// tokens stay the child model's so context and cache-hit figures keep meaning.
+						result.usage.cost += (msg as any).usage.cost?.total || 0;
 					}
 					opts.emitUpdate();
 				}
@@ -815,6 +821,7 @@ export async function runSingleAgent(opts: RunAgentOptions): Promise<SingleResul
 	// Papel que declara web_search/web_fetch precisa da extensão que os registra;
 	// sem ela o --tools filtra para nada e o filho fica sem web.
 	if (agent.tools?.some((t) => WEB_TOOLS.has(t)) && fs.existsSync(WEB_EXTENSION_PATH)) args.push("-e", WEB_EXTENSION_PATH);
+	if (agent.tools?.includes("skim") && fs.existsSync(SKIM_EXTENSION_PATH)) args.push("-e", SKIM_EXTENSION_PATH);
 	const inheritsDispatchConfig = !agent.model;
 	// Central role config wins for native roles. Without it, preserve legacy
 	// project/user frontmatter (`model`, `tier:*`, `thinking`) and parent defaults.
