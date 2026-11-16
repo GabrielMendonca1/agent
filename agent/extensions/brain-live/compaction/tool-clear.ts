@@ -13,7 +13,11 @@ const limit = (key: string, fallback: number) => {
 };
 type Replacement = { toolCallId: string; sourceHash: string; text: string };
 type Batch = { version: 1; replacements: Replacement[]; estimatedTokensSaved: number };
-const controllers = new WeakMap<object, ReturnType<typeof installToolClear>>();
+// Pi loads each extension through its own jiti instance. Share only manager-keyed
+// controllers, like the cache-policy connection; never a process-wide session state.
+const controllerKey = Symbol.for('agent.tool-clear.controllers');
+const shared = globalThis as any;
+const controllers: WeakMap<object, ReturnType<typeof installToolClear>> = shared[controllerKey] ??= new WeakMap();
 const branch = (ctx: ExtensionContext): any[] => ctx.sessionManager.getBranch();
 const modelKey = (ctx: ExtensionContext) => `${ctx.model?.provider}/${ctx.model?.id}`;
 
@@ -98,8 +102,12 @@ export function installToolClear(pi: ExtensionAPI) {
     // Write ahead. Never emit a projection that cannot be replayed from the active branch.
     pi.appendEntry(BATCH, batch);
   };
+  const controller = { clear };
   if (!child) {
-    pi.on('session_start', (_e, ctx) => { controllers.set(ctx.sessionManager, { clear }); });
+    pi.on('session_start', (_e, ctx) => { controllers.set(ctx.sessionManager, controller); });
+    pi.on('session_shutdown', (_e, ctx) => {
+      if (controllers.get(ctx.sessionManager) === controller) controllers.delete(ctx.sessionManager);
+    });
     pi.on('context', (event, ctx) => {
       clear(ctx, false, event.messages);
       return { messages: replayToolClears(event.messages, branch(ctx)) };
@@ -108,5 +116,5 @@ export function installToolClear(pi: ExtensionAPI) {
       recordToolClearRequest(pi, ctx, process.env.PI_CACHE_RETENTION === 'long' ? 3600 : 300);
     });
   }
-  return { clear };
+  return controller;
 }

@@ -32,7 +32,9 @@ for (let turn = 0; turn < 6; turn++) {
 }
 // An approved name is not enough: images and unmatched results must survive.
 messages.splice(2, 0, { role: 'toolResult', toolName: 'read', toolCallId: 'unmatched', content: text('x'.repeat(200000)), timestamp: 1 });
-messages.splice(4, 0, { role: 'toolResult', toolName: 'read', toolCallId: 'image', content: [{ type: 'image', data: 'AA==', mimeType: 'image/png' }], timestamp: 1 });
+messages.splice(4, 0,
+  { role: 'assistant', content: [{ type: 'toolCall', id: 'image', name: 'read', arguments: { path: 'image.png' } }], timestamp: 1 },
+  { role: 'toolResult', toolName: 'read', toolCallId: 'image', content: [{ type: 'image', data: 'AA==', mimeType: 'image/png' }], timestamp: 1 });
 const entry = (m, i) => ({ id: `m${i}`, type: 'message', message: m });
 const request = { type: 'custom', customType: 'agent-tool-clear-request', data: { at: Date.now() - 4000000, ttl: 3600, model: 'fake/claude-test' } };
 function fixture({ tokens = 600000, warm, child = false, entries = [...messages.map(entry), structuredClone(request)] } = {}) {
@@ -85,10 +87,45 @@ for (const reason of ['manual', 'overflow']) {
   await t.handlers.session_before_compact[0]({ reason }, t.ctx);
   assert.equal(t.batches().length, 0, `${reason} does not trigger cleanup`);
 }
-const edited = structuredClone(messages); edited[2].content = text('changed source');
-assert.deepEqual(mod.replayToolClears(edited, cold.entries)[2], edited[2], 'source hash mismatch');
+const edited = structuredClone(messages);
+const readIndex = edited.findIndex(m => m.role === 'toolResult' && m.toolCallId === '0-read');
+edited[readIndex].content = text('changed source');
+assert.deepEqual(mod.replayToolClears(edited, cold.entries)[readIndex], edited[readIndex], 'source hash mismatch');
+// A usage response absorbs pending savings; new turns still replay old replacements.
+cold.entries.push({ type: 'message', message: { role: 'assistant', usage, stopReason: 'stop' } });
+assert.equal(mod.pendingToolClearSavings(cold.ctx), 0);
+assert.deepEqual(cold.context(), projected);
+process.env.AGENT_TOOL_CLEAR_KEEP_TURNS = '1';
+const keepOne = fixture({ warm: false }); keepOne.context();
+assert.equal(keepOne.batches()[0].data.replacements.length, 40);
+delete process.env.AGENT_TOOL_CLEAR_KEEP_TURNS;
+// A persisted keeper refresh survives process restart and prevents a premature cold clear.
+const refreshed = fixture();
+mod.recordToolClearRequest({ appendEntry: (customType, data) => refreshed.entries.push({ type: 'custom', customType, data }) }, refreshed.ctx, 3600);
+const afterRefresh = fixture({ entries: structuredClone(refreshed.entries) });
+afterRefresh.context(); assert.equal(afterRefresh.batches().length, 0);
 const fork = fixture({ entries: messages.map(entry), warm: true }); fork.context(); assert.equal(fork.batches().length, 0, 'other branch has no batches');
 console.log('ok thresholds, cold/warm/unknown/model switch, selection, replay, disabled, children, compaction');
+
+// Separate extension loaders must share the automatic-compaction controller.
+{
+  process.env.AGENT_RUNTIME_ENABLED = '1';
+  const { loadExtensions, createExtensionRuntime } = await import(pathToFileURL(join(piRoot, 'dist/core/extensions/loader.js')).href);
+  const { createEventBus } = await import(pathToFileURL(join(piRoot, 'dist/core/event-bus.js')).href);
+  const t = fixture({ tokens: 460000, warm: true });
+  const runtime = createExtensionRuntime();
+  runtime.appendEntry = (customType, data) => t.entries.push({ type: 'custom', customType, data });
+  const loaded = await loadExtensions(['compaction.ts', 'juice.ts'].map(f => join(repo, 'agent/extensions/brain-live', f)), root, createEventBus(), runtime);
+  assert.deepEqual(loaded.errors, []);
+  let compacts = 0;
+  Object.assign(t.ctx, { cwd: root, hasUI: false, compact: () => compacts++ });
+  bindSessionCachePolicy(t.ctx, { cacheState: () => ({ warm: true }), deferCompaction: () => false });
+  for (const ext of loaded.extensions) for (const f of ext.handlers.get('session_start') ?? []) await f({}, t.ctx);
+  for (const ext of loaded.extensions) for (const f of ext.handlers.get('agent_settled') ?? []) await f({}, t.ctx);
+  assert.equal(t.batches().length, 1, 'juice reaches compaction controller across real loaders');
+  assert.equal(compacts, 0, 'cleanup postponed the automatic summary');
+  delete process.env.AGENT_RUNTIME_ENABLED;
+}
 
 // Real journal writer and provider serializers, across three separate Pi processes.
 const { SessionManager } = await import(pathToFileURL(join(piRoot, 'dist/core/session-manager.js')).href);
@@ -104,7 +141,7 @@ try {
   writeFileSync(join(profile, 'models.json'), JSON.stringify({ providers: { fake: { api: 'anthropic-messages', apiKey: 'offline', baseUrl: fake.baseUrl, models: [{ id: 'claude-test', name: 'test', reasoning: false, input: ['text'], cost: { input: 5, output: 25, cacheRead: 0.5, cacheWrite: 6.25 }, contextWindow: 1000000, maxTokens: 32000 }] } } }));
   const manager = SessionManager.create(root, join(root, 'sessions'));
   // Images were tested above; omit fake image bytes from wire test.
-  for (const m of messages.filter(m => !m.content?.some?.(c => c.type === 'image'))) manager.appendMessage(m);
+  for (const m of messages.filter(m => m.toolCallId !== 'image' && !m.content?.some?.(c => c.id === 'image'))) manager.appendMessage(m);
   manager.appendCustomEntry(request.customType, request.data);
   const session = manager.getSessionFile();
   const run = (extra = {}) => new Promise((resolveRun, reject) => {
