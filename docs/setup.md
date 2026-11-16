@@ -115,6 +115,34 @@ O runtime novo não executa aprendizado/mineração automáticos nem chama model
 
 Instalações por artefato atualizam com `agent update`, não com commits do checkout. `agent overlay-update` continua sendo o caminho de desenvolvimento que reconstrói a release.
 
+## Checkpoints de arquivo e /rewind
+
+Antes de cada `edit`/`write` do agente na sessão principal (também os chamados de dentro do `codemode`), a extensão `brain-live/checkpoints.ts` guarda o conteúdo anterior do arquivo, ou o marcador "não existia", associado à mensagem do usuário que abriu o turno. Só a primeira mudança de cada arquivo por turno é guardada. Depois de cada edição registra o hash que o agente deixou.
+
+`/rewind` lista os turnos do ramo atual, do mais novo ao mais antigo, com o texto do pedido e os arquivos que o agente mudou nele:
+
+```
+Voltar para antes de qual turno? (só edições feitas por edit/write do agente; bash (rm, mv, sed…) não é rastreado)
+→ 2. segundo pedido · novo.txt
+  1. primeiro pedido · a.txt
+
+Arquivos desde esse turno:
+  novo.txt: remover (criado pelo agente)
+O que desfazer?
+→ Código e conversa
+  Só código
+  Só conversa
+  Cancelar
+```
+
+- Código: cada arquivo tocado desde o turno escolhido volta ao estado de antes dele; arquivo criado pelo agente é apagado. Vale a ordem em que as edições aconteceram no disco, de qualquer ramo da conversa.
+- Conversa: `ctx.navigateTree` até a mensagem escolhida, o mesmo mecanismo do `/tree` (sem resumo do ramo abandonado). O ramo antigo continua no `/tree` e o texto do pedido volta ao editor.
+- Se um arquivo mudou depois da última edição do agente (editor, `bash`, outro processo), o `/rewind` lista os arquivos e pergunta: sobrescrever, pular os alterados ou cancelar.
+- Não rastreia `bash` (rm, mv, `sed -i`, geradores) nem filhos (`AGENT_CHILD=1`), que escrevem em worktree próprio. Arquivo acima de 20 MB fica marcado como não restaurável.
+- Só roda com o agente parado. `/fork` e `/clone` criam sessão nova sem os checkpoints da anterior. O double-Esc continua abrindo o `/tree`, que não mexe em arquivos.
+
+Disco: `<perfil>/checkpoints/<sessionId>/index.jsonl` (registro append-only) e `blobs/<sha256>` (conteúdo, deduplicado). Persistem ao retomar a sessão. No início de cada sessão, apaga os checkpoints de sessões sem uso há mais de `AGENT_CHECKPOINTS_DAYS` dias (30) e, se o total passar de `AGENT_CHECKPOINTS_MAX_MB` (500), os das sessões menos recentes; a sessão atual nunca. `AGENT_CHECKPOINTS=0` desliga a gravação e o comando. Não adiciona tool nem texto ao prompt.
+
 ## Atualizar o Pi
 
 O Agent traz o próprio Pi dentro do store, em releases imutáveis. Um Pi global instalado por npm não afeta o Agent.
@@ -279,7 +307,7 @@ O código de `agent/` não depende de caminhos literais `/Users/biel` (só um ex
 | cost, sessions | Leem sessões locais; histórico vazio é válido. `03-sessions-explicit-gc-only.patch`: `sessions` não poda no `session_start`; apagar sessão velha/vazia só por `/gc` explícito. |
 | image-normalize | Normalização local; nenhuma pasta pessoal obrigatória. |
 | project-operator, checks | Operam sobre o projeto atual; não exigem repositórios pessoais. |
-| ask-user, btw, codex-fast, files, plan, slash-anywhere, todos, tool-lexicon, whimsical | Sem infraestrutura pessoal obrigatória. |
+| ask-user, btw, checkpoints, codex-fast, files, plan, slash-anywhere, todos, tool-lexicon, whimsical | Sem infraestrutura pessoal obrigatória. |
 
 Patches de compatibilidade ficam em `agent-patches/`.
 

@@ -258,6 +258,12 @@
       "tags": ["fast"]
     },
     {
+      "name": "agent-checkpoints",
+      "cmd": "node scripts/test-agent-checkpoints.mjs",
+      "tags": ["integration", "agent"],
+      "timeoutMs": 180000
+    },
+    {
       "name": "cache-keeper",
       "cmd": "node scripts/test-cache-keeper.mjs",
       "tags": [
