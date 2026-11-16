@@ -112,6 +112,16 @@
 				"packages/ai/test/cc-hidden-tool-names.test.ts",
 				"packages/ai/test/anthropic-claude-code.test.ts"
 			]
+		},
+		{
+			"name": "auth-guidance-short",
+			"path": "overlay/auth-guidance-short.patch",
+			"description": "Mensagens de falta de login/modelo/chave terminam em \"Use /login to log into a provider via OAuth or API key.\", sem \"See:\" nem os caminhos absolutos de docs/providers.md e docs/models.md.",
+			"sha256": "5482387ee5bf52d457936c686e0b54ef5da59ba05450f23ab4b5b1e42b1aa579",
+			"tests": [
+				"packages/coding-agent/test/auth-guidance-short.test.ts",
+				"packages/coding-agent/test/rpc-prompt-response-semantics.test.ts"
+			]
 		}
 	],
 	"modelData": [

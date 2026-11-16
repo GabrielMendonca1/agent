@@ -12,8 +12,9 @@ O entrypoint é o main oficial do Pi, com patches pequenos na ordem do manifesto
 8. `codemode-background` — espera padrão de 5 minutos, saída parcial, conclusão e cancelamento de jobs.
 9. `tool-load-append` — tool carregada no meio da sessão não reescreve o system prompt; as instruções dela vão no fim da conversa, pelo mesmo caminho da seção MCP.
 10. `cc-hidden-tool-names` — no OAuth Anthropic, `Bash`/`Read` de uma tool escondida pelo codemode `only` voltam em minúsculas.
+11. `auth-guidance-short` — avisos de falta de login, modelo ou chave terminam em "Use /login to log into a provider via OAuth or API key.", sem "See:" e sem os caminhos de `docs/providers.md` e `docs/models.md`.
 
-Total: 10 patches, além das extensões do Agent.
+Total: 11 patches, além das extensões do Agent.
 
 ## Port 1.5.0
 

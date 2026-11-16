@@ -1,0 +1,80 @@
+diff --git a/packages/coding-agent/src/core/auth-guidance.ts b/packages/coding-agent/src/core/auth-guidance.ts
+index 9782cdaffa30bf598f11fd662ea024119d972346..bd8f44fcbaee4216368109ff95b178ea53a43104 100644
+--- a/packages/coding-agent/src/core/auth-guidance.ts
++++ b/packages/coding-agent/src/core/auth-guidance.ts
+@@ -1,14 +1,7 @@
+-import { join } from "node:path";
+-import { getDocsPath } from "../config.ts";
+-
+ const UNKNOWN_PROVIDER = "unknown";
+ 
+ export function getProviderLoginHelp(): string {
+-	return [
+-		"Use /login to log into a provider via OAuth or API key. See:",
+-		`  ${join(getDocsPath(), "providers.md")}`,
+-		`  ${join(getDocsPath(), "models.md")}`,
+-	].join("\n");
++	return "Use /login to log into a provider via OAuth or API key.";
+ }
+ 
+ export function formatNoModelsAvailableMessage(): string {
+diff --git a/packages/coding-agent/test/auth-guidance-short.test.ts b/packages/coding-agent/test/auth-guidance-short.test.ts
+new file mode 100644
+index 0000000000000000000000000000000000000000..b0d86af37405120a524046ca8b28ac7dca668d9e
+--- /dev/null
++++ b/packages/coding-agent/test/auth-guidance-short.test.ts
+@@ -0,0 +1,41 @@
++import { describe, expect, it } from "vitest";
++import {
++	formatNoApiKeyFoundMessage,
++	formatNoModelSelectedMessage,
++	formatNoModelsAvailableMessage,
++	getProviderLoginHelp,
++} from "../src/core/auth-guidance.ts";
++
++describe("auth guidance without docs paths", () => {
++	const messages = [
++		formatNoModelsAvailableMessage(),
++		formatNoModelSelectedMessage(),
++		formatNoApiKeyFoundMessage("fake-provider"),
++		formatNoApiKeyFoundMessage("unknown"),
++	];
++
++	it("keeps only the short login sentence", () => {
++		expect(getProviderLoginHelp()).toBe("Use /login to log into a provider via OAuth or API key.");
++		for (const message of messages) {
++			expect(message).toContain("Use /login to log into a provider via OAuth or API key.");
++			expect(message).not.toContain("providers.md");
++			expect(message).not.toContain("models.md");
++			expect(message).not.toContain("See:");
++		}
++	});
++
++	it("composes the three messages from the short help", () => {
++		expect(formatNoModelsAvailableMessage()).toBe(
++			"No models available. Use /login to log into a provider via OAuth or API key.",
++		);
++		expect(formatNoModelSelectedMessage()).toBe(
++			"No model selected.\n\nUse /login to log into a provider via OAuth or API key.\n\nThen use /model to select a model.",
++		);
++		expect(formatNoApiKeyFoundMessage("fake-provider")).toBe(
++			"No API key found for fake-provider.\n\nUse /login to log into a provider via OAuth or API key.",
++		);
++		expect(formatNoApiKeyFoundMessage("unknown")).toBe(
++			"No API key found for the selected model.\n\nUse /login to log into a provider via OAuth or API key.",
++		);
++	});
++});
+diff --git a/packages/coding-agent/test/rpc-prompt-response-semantics.test.ts b/packages/coding-agent/test/rpc-prompt-response-semantics.test.ts
+index 18c40646c5c9e5eee400f6e31b2fedf2bac7da70..e44aad0266bb2aec4edc7d5149887893507a43dc 100644
+--- a/packages/coding-agent/test/rpc-prompt-response-semantics.test.ts
++++ b/packages/coding-agent/test/rpc-prompt-response-semantics.test.ts
+@@ -210,7 +210,7 @@ describe("RPC prompt response semantics", () => {
+ 					command: "prompt",
+ 					success: false,
+ 					error: expect.stringContaining(
+-						"No API key found for fake-provider.\n\nUse /login to log into a provider via OAuth or API key. See:",
++						"No API key found for fake-provider.\n\nUse /login to log into a provider via OAuth or API key.",
+ 					),
+ 				});
+ 			});
