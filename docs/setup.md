@@ -224,6 +224,10 @@ O slot `apoio` usa o modelo de apoio; `principal`, o modelo da sessão. Não há
 
 Cada filho é outro processo `pi -p`, com contexto próprio. Só o resultado volta ao pai. O que o filho lê não entra no contexto nem no cache do pai.
 
+### Custo dos filhos
+
+- `AGENT_CHILD_TOOL_OUTPUT_MAX` (padrão 8000 caracteres; `0` desliga): saída de `bash`/`read`/`grep`/`find`/`ls` maior que isso chega ao filho como cabeça (~6k) + cauda (~2k) e uma linha com o total omitido e o arquivo com a saída completa (`$TMPDIR/agent-child-output/<sessão>/`). Motivo: saídas acima de 10k caracteres nos filhos custaram ~US$ 327 no 1º envio e ~US$ 390 em leitura de cache nos turnos seguintes em 30 dias. `read` com `limit` ≤ 200 linhas não é cortado. Os papéis pedem `rg -n` e trechos de até ~150 linhas.
+
 ### O que o pai consegue auditar
 
 - **Registro do job:** `<perfil>/subagent-jobs/<sessionId>/<jobId>.json`, modo 0600, gravado atomicamente. Uma entrada por tarefa: papel, brief, `cwd`, modelo usado, thinking, usage e caminho do JSONL do filho. O caminho do JSONL entra no registro quando a tarefa começa. Estado por tarefa: `running`, `completed`, `failed`, `not_run` (o job parou antes dela) ou `interrupted` (o pai caiu com a tarefa rodando; o JSONL fica no registro). Estado e usage são gravados quando a tarefa termina, não só no fim do job. Num job `parallel`, uma tarefa que lança exceção não derruba as outras: o job espera todas, continua cancelável até lá e termina `failed` com o resultado das que concluíram. Registros anteriores a essa auditoria mostram `legacy`: `status`/`trace` associam as sessões do job às tarefas por índice quando as contagens batem; senão `trace` lista as sessões sem atribuí-las.

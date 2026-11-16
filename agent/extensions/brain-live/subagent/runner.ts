@@ -243,6 +243,8 @@ const CACHE_KEEPER_PATH = path.join(path.dirname(fileURLToPath(import.meta.url))
 /** Extensão que registra web_search/web_fetch; o filho roda --no-extensions. */
 const WEB_EXTENSION_PATH = path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "..", "agent", "web", "index.ts");
 const WEB_TOOLS = new Set(["web_search", "web_fetch"]);
+/** Child-only cap for large tool outputs (AGENT_CHILD_TOOL_OUTPUT_MAX). */
+const CHILD_OUTPUT_CAP_PATH = path.join(path.dirname(fileURLToPath(import.meta.url)), "child-output-cap.ts");
 
 export type SandboxMode = "seatbelt" | "bwrap" | "none";
 let probedSandbox: SandboxMode | undefined;
@@ -784,6 +786,7 @@ export async function runSingleAgent(opts: RunAgentOptions): Promise<SingleResul
 	// Não muda system/tools (só before_provider_request), então o prefixo é o do filho real.
 	// Every child keeps cache keys, limits and the skill catalog, without warming timers.
 	if (fs.existsSync(CACHE_KEEPER_PATH)) args.push("-e", CACHE_KEEPER_PATH);
+	if (fs.existsSync(CHILD_OUTPUT_CAP_PATH)) args.push("-e", CHILD_OUTPUT_CAP_PATH);
 	// Explicit child extensions can provide an offline
 	// provider in checks. Never inherit the parent's whole profile.
 	for (const ext of (process.env.AGENT_SUBAGENT_CHILD_EXTENSIONS ?? "").split(":").filter(Boolean)) {

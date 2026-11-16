@@ -199,6 +199,7 @@ assert.match(bundledLaunch.content[0].text, /Launched subagent job/);
 const bundledContext = JSON.parse(readFileSync(bundledDump, 'utf8'));
 assert.match(JSON.stringify(bundledContext), /Read only. Bash is for inspection only/);
 assert.match(JSON.stringify(bundledContext), /OFFLINE-SKILL-CATALOG/);
+assert.match(JSON.stringify(bundledContext), /Inspect with `rg -n` and excerpts of up to ~150 lines/, 'role prompt asks for bounded reads');
 const bundledTools = bundledContext.messages.find(m => m.role === 'system').toolsAdded;
 assert.ok(bundledTools.some(t => t.name === 'read'));
 assert.ok(!bundledTools.some(t => ['edit', 'write', 'subagent'].includes(t.name)), 'bundled scout scope is retained');
@@ -375,6 +376,31 @@ try {
   assert.equal(detected.stopReason, 'error');
   assert.match(detected.errorMessage, /read-only role modified the checkout: dirty.txt/);
   console.log('ok sandbox=none: detector reprova mudança de conteúdo com porcelain inalterado');
+
+  // Child tool-output cap: real bash in the child, ~10.5k chars (under Pi's own 2000-line cut).
+  const cap = await jiti.import(join(repo, 'agent/extensions/brain-live/subagent/child-output-cap.ts'));
+  assert.equal(cap.shouldCap('read', { path: 'x', limit: 150 }), false, 'small read limit is left alone');
+  assert.equal(cap.shouldCap('read', { path: 'x' }), true);
+  const capDump = join(root, 'cap-context.json');
+  const bashResult = () => JSON.parse(readFileSync(capDump, 'utf8')).messages.find(m => m.role === 'toolResult' && m.toolName === 'bash').content.map(p => p.text).join('');
+  const seqOut = spawnSync('seq', ['100000', '101500'], { encoding: 'utf8' }).stdout;
+  process.env.FG_SANDBOX_COMMAND = 'seq 100000 101500';
+  process.env.FG_CHILD_CTX = capDump;
+  const capped = await run();
+  assert.equal(capped.exitCode, 0, capped.errorMessage || capped.stderr);
+  const cappedText = bashResult();
+  assert.ok(cappedText.length < 8600, `capped bash output: ${cappedText.length} chars`);
+  assert.ok(cappedText.startsWith('100000\n100001\n') && cappedText.trimEnd().endsWith('101499\n101500'), 'head and tail kept');
+  assert.match(cappedText, /\[\.\.\. \d+ of \d+ chars omitted \(lines \d+-\d+ of \d+\)\. Full output: \S+ — read it with read offset\/limit or rg -n/);
+  const fullPath = /Full output: (\S+)/.exec(cappedText)[1];
+  assert.equal(readFileSync(fullPath, 'utf8').trimEnd(), seqOut.trimEnd(), 'full output saved for the child');
+  rmSync(dirname(fullPath), { recursive: true, force: true });
+  process.env.AGENT_CHILD_TOOL_OUTPUT_MAX = '0';
+  await run();
+  delete process.env.AGENT_CHILD_TOOL_OUTPUT_MAX;
+  delete process.env.FG_CHILD_CTX;
+  assert.equal(bashResult().trimEnd(), seqOut.trimEnd(), 'AGENT_CHILD_TOOL_OUTPUT_MAX=0 disables the cap');
+  console.log('ok child output cap: bash head+tail with full-output path; read with small limit untouched; 0 disables');
 
   // Exercise the actual spawn queue: two live children, remaining tasks queued,
   // cancellation owned by the launching session, and no spawn under pressure.
