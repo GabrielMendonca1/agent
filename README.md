@@ -8,7 +8,7 @@ Agent é o agente de terminal pessoal do Gabriel, usado na ARCA, no Omni e em pr
 - `agent-patches/`: patches aplicados sobre a árvore `agent/` para rodar sem infraestrutura pessoal;
 - `scripts/`: updater, launcher e testes do portão de checks (`.pi/checks.json`).
 
-Runtime novo sem contabilidade Juice. Cada sessão tem modo simple ou complex (Shift+Tab ou `/mode`): em simple a tool `subagent` recusa chamadas; em complex delegar é o padrão. Cache-keeper e compactação ociosa ficam ligados por padrão; custo e como desligar em [docs/setup.md](docs/setup.md#custo-o-que-roda-sem-prompt). Megamind permanece. Subagentes rodam em processos `pi -p`, vinculados por `parentSession`. Sessões JSONL, `/resume` e `--session` são os oficiais do Pi.
+Runtime novo sem contabilidade Juice. A tool `subagent` está sempre ligada na sessão principal, e o system prompt pede ao modelo que atue como orquestrador; isolamento, auditoria e lacunas em [docs/setup.md](docs/setup.md#subagentes-sempre-ligados-isolamento-e-auditoria). Cache-keeper e compactação ociosa ficam ligados por padrão; custo e como desligar em [docs/setup.md](docs/setup.md#custo-o-que-roda-sem-prompt). Megamind permanece. Subagentes rodam em processos `pi -p`, vinculados por `parentSession`. Sessões JSONL, `/resume` e `--session` são os oficiais do Pi.
 
 Distribuição privada por artefatos prontos, com Node externo >=22.19 e acesso autenticado via `gh`: sem clone/build para o consumidor. Pipeline implementado, ainda sem release publicada por esta mudança. Instalação em `~/.local/share/agent`, perfil próprio `~/.agent` e comando `~/.local/bin/agent`; `/login` usa a conta do usuário. Update e rollback verificam o par Pi+Agent antes da troca. Nenhuma credencial ou estado pessoal é distribuído.
 

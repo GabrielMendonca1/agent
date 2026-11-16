@@ -36,11 +36,11 @@ node scripts/agent-update.mjs --install-artifact /caminho/agent-<id>-<os>-<arch>
 - O manifesto de distribuição (`artifact.json`, schema 1, `runtimeContract:3`) fixa commit, plataforma/arquitetura, Node mínimo, perfil, hash do manifesto overlay e inventário de arquivos/modos/links. O digest cobre release e bundle; o releaseId inclui o digest portátil para distinguir atualizações só do Agent, mesmo com Pi idêntico. Nenhum recibo host-bound de `--prepare` é aceito como prova portátil.
 - Antes de ativar, o updater revalida pacote/entrypoint, seleção, hashes dos patches, fingerprint, tree digest, markers e `pi --version`. O inventário portátil substitui a prova de conteúdo do recibo local, não a verificação da release. `--force` não dispensa isso.
 - Sob lock do store, copia em stage e renomeia a release, prepara o par físico Pi+Agent e o plano de recursos, troca current/previous e escreve recursos/config/active. Falhas verificadas restauram o par anterior, os registros e o recibo. Diretórios candidatos não ativos podem permanecer para diagnóstico; auth e sessões nunca fazem parte da transação. Falha de recuperação é reportada, não declarada sucesso.
-- Uma desativação explícita é preservada nas atualizações por artefato. O runtime registra extensões core, Megamind e skills padrão pelo mesmo recibo/CAS em `runtime/resources-backup`. Cópias pessoais são preservadas, colisões recebem exclusões reversíveis; `-megamind`/`-nome` e `-agent-setup` são respeitados. Temas pessoais e settings de modelo/thinking não são substituídos. O caminho novo não roda os syncs legados sem recibo. Shift+Tab fica reservado para alternar o modo da sessão: o `shift+tab` de `app.thinking.cycle` é suspenso de forma reversível no `keybindings.json` do perfil, sem tocar outras teclas; Ctrl+T continua nativo do Pi.
+- Uma desativação explícita é preservada nas atualizações por artefato. O runtime registra extensões core, Megamind e skills padrão pelo mesmo recibo/CAS em `runtime/resources-backup`. Cópias pessoais são preservadas, colisões recebem exclusões reversíveis; `-megamind`/`-nome` e `-agent-setup` são respeitados. Temas pessoais e settings de modelo/thinking não são substituídos. O caminho novo não roda os syncs legados sem recibo. A instalação por artefato não reserva tecla: Shift+Tab e Ctrl+T seguem nativos do Pi. No `settings.json` do perfil entra `warnings.anthropicExtraUsage: false` só quando a chave falta, pelo mesmo recibo; valor seu nunca é sobrescrito, e o rollback só remove o `false` que ainda estiver lá.
 
 ## Contrato do runtime novo e rollback histórico
 
-Novos artefatos internos têm manifesto **v3**, config **v2** e preload `agent/juice/runtime.mjs`. O nome do arquivo foi mantido por compatibilidade; não implica contabilidade. O launcher exporta `AGENT_RUNTIME_ENABLED=1` e `AGENT_PI_ROOT` físico/absoluto. Filhos usam `AGENT_CHILD=1`. Subagentes seguem o modo da sessão (simple ou complex); ver "Subagentes: modos e auditoria". Preferências pertencem ao perfil `PI_CODING_AGENT_DIR`, não a Juice.
+Novos artefatos internos têm manifesto **v3**, config **v2** e preload `agent/juice/runtime.mjs`. O nome do arquivo foi mantido por compatibilidade; não implica contabilidade. O launcher exporta `AGENT_RUNTIME_ENABLED=1` e `AGENT_PI_ROOT` físico/absoluto. Filhos usam `AGENT_CHILD=1`. A tool `subagent` fica sempre ligada na sessão principal; ver "Subagentes: sempre ligados, isolamento e auditoria". Preferências pertencem ao perfil `PI_CODING_AGENT_DIR`, não a Juice.
 
 Não há `juiceHome`, ledger, runId nem `AGENT_JUICE_HOME/STATE` no contrato novo. `--agent-enable` liga o runtime sobre a release ativa sem build; `--juice-home <absoluto>` ainda é aceito com aviso, mas é ignorado e não acessado para artefatos novos. `--agent-disable` fecha o opt-in e desfaz os recursos por recibo. `AGENT_DISABLED=1` é um escape por processo. Preloads herdados do Agent são removidos de NODE_OPTIONS (inclusive forma separada e com aspas); opções alheias são preservadas.
 
@@ -115,6 +115,61 @@ O runtime novo não executa aprendizado/mineração automáticos nem chama model
 
 Instalações por artefato atualizam com `agent update`, não com commits do checkout. `agent overlay-update` continua sendo o caminho de desenvolvimento que reconstrói a release.
 
+## Atualizar o Pi
+
+O Agent traz o próprio Pi dentro do store, em releases imutáveis. Um Pi global instalado por npm não afeta o Agent.
+
+| Comando | Faz |
+|---|---|
+| `agent update` | Instala o último artefato do Agent. Não chama o auto-update do Pi. |
+| `agent update --extensions`, `--models` ou outros argumentos | Delega ao Pi. |
+| `agent update --all` | Instala o artefato e depois atualiza as extensões pelo Pi. |
+
+Pi novo só chega com artefato novo. Quem faz o quê:
+
+- Mantenedor: reaplica os 10 patches de `overlay/manifest.json` sobre o Pi upstream novo, passa o portão e publica o artefato.
+- Consumidor: roda `agent update`.
+
+Nenhum patch é necessário para as extensões carregarem; eles dão funcionalidade. Linhas: inserções/remoções de `git apply --stat`, testes incluídos. Fragilidade: risco de conflito num port, pelo quanto o patch mexe em arquivo central do upstream.
+
+| Patch | Função | Linhas | Fragilidade |
+|---|---|---|---|
+| `pi-black` | Lane Anthropic OAuth com identidade Claude Code. | +471/−9 | Média: arquivo novo, mas edita `anthropic-messages.ts`. |
+| `garime-frame` | Moldura, margens e tema da TUI. | +495/−31 | Alta: 13 arquivos, componentes e `interactive-mode.ts`. |
+| `pi-account-env` | Conta por projeto via `PI_ACCOUNT_<PROVIDER>`. | +887/−9 | Média: arquivo novo, mas edita `auth-storage.ts` e `model-runtime.ts`. |
+| `transcript-feedback` | Widgets e recap local após o transcript. | +2077/−17 | Alta: maior patch, 12 arquivos, `interactive-mode.ts`. |
+| `stream-markdown` | Agrupa deltas por quadro e `PI_TUI_HZ`. | +288/−6 | Alta: `interactive-mode.ts` e `tui.ts`. |
+| `agent-skill-curation` | Curadoria opt-in do anúncio de skills. | +119/−1 | Baixa: um arquivo de código. |
+| `codemode-typed-results` | Resultados estruturados de read/grep/find em scripts. | +113/−7 | Baixa: acréscimos nas tools. |
+| `codemode-background` | Codemode em segundo plano após 5 min, saída parcial e cancelamento. | +333/−149 | Alta: reescreve boa parte de `execute.ts`. |
+| `tool-load-append` | Tool carregada no meio da sessão não reescreve o system prompt. | +211/−26 | Média: `agent-session.ts`. |
+| `cc-hidden-tool-names` | No OAuth Anthropic, `Bash`/`Read` de tool escondida voltam em minúsculas. | +30/−3 | Baixa: poucas linhas, mas no mesmo arquivo de `pi-black`. |
+
+## Avisos da TUI e como desligar
+
+| Aviso | Desligar |
+|---|---|
+| "Anthropic subscription auth is active. Third-party harness usage draws from extra usage..." | `warnings.anthropicExtraUsage: false` no settings, ou `/settings`. Instalação por artefato já grava `false` se a chave faltar. |
+| "Update Available ... Run agent update" | `PI_SKIP_VERSION_CHECK=1`, ou `PI_OFFLINE=1` / `--offline`. |
+| "Package Updates Available" | Só `PI_OFFLINE=1` ou `--offline`. |
+| Changelog após troca de versão do Pi | Não desliga. `collapseChangelog: true` reduz a uma linha. Só aparece em sessão nova. |
+| Cabeçalho e detalhes de startup | `quietStartup: true` esconde os dois; `"header"` mantém o cabeçalho e esconde os detalhes. |
+| Frases enquanto o modelo pensa ("Schlepping...") | Extensão `whimsical`: `"-whimsical"` em `extensions[]`. Ver abaixo. |
+
+```json
+{
+  "warnings": { "anthropicExtraUsage": false },
+  "collapseChangelog": true,
+  "quietStartup": "header"
+}
+```
+
+- O aviso de versão é enganoso no Agent: `agent update` só traz Pi novo quando houver artefato novo.
+- `PI_OFFLINE=1` também desliga o refresh do catálogo de modelos no startup e a checagem de pacotes. Use `PI_SKIP_VERSION_CHECK=1` se quiser calar só o aviso de versão.
+- `-whimsical` só vale quando o plano de recursos roda. Com o Agent já instalado: `agent overlay-update --agent-disable`, acrescente `"-whimsical"` em `extensions[]`, `agent overlay-update --agent-enable`. Editar `extensions[]` com o Agent ligado faz o próximo `agent update` recusar por conflito no recibo.
+- O banner "pi has joined Earendil" não é automático; só aparece por comando.
+- Custo em USD no rodapé é preço de lista calculado localmente, não fatura. Com assinatura, representa consumo de cota.
+
 ## Custo: o que roda sem prompt
 
 Chamadas pagas que não saem de uma mensagem sua. Todas usam a sua conta ou chave do provider.
@@ -124,7 +179,6 @@ Chamadas pagas que não saem de uma mensagem sua. Todas usam a sua conta ou chav
 | Cache-keeper | Sessão principal ociosa, modelo Anthropic com `cache_control`. Reenvia o último payload inteiro com `max_tokens` 1 a 90% do TTL: a cada 54 min (TTL 1h) ou 4 min 30 s (TTL 5 min). | Ligado. | `AGENT_CACHE_KEEPER=0` |
 | Compactação ociosa | Contexto ≥ 200k tokens e o aquecimento acabou (janela fechada, ping pulado ou sem acerto), nunca antes de 54 min parado; agente ocioso, sem fila e editor vazio. Resume no modelo selecionado. | Ligada. | `AGENT_IDLE_COMPACT=0` |
 | Compactação por limiar | Fim de turno com contexto > 450k tokens em janelas ≥ 1M, ou > 90% da janela nas menores. Com cache quente pode ser adiada por alguns turnos, nunca além do limite duro (janela − max(64k, 10%)). Resume no modelo selecionado. | Ligada. | Não há variável. |
-| Classificador de dispatch | Cada `subagent` em complex sem modelo fixo para o papel: até 16 tokens de saída no modelo de apoio para escolher o slot do brief. | Ligado quando há modelo de apoio. | `AGENT_DISPATCHER=0` |
 | `web_search` | Cada chamada da tool por um subagente cujo papel a declara: uma inferência Gemini (`gemini-2.5-flash` com Google Search, fallback OpenRouter). A sessão principal não carrega a extensão web. | Até 20 buscas e 40 fetches por sessão. | `AGENT_WEB_MAX_SEARCHES=0` (`AGENT_WEB_MAX_FETCHES=0` para fetch) |
 
 Prompt cache: o launcher define `PI_CACHE_RETENTION=long` (TTL 1h) quando a variável não está definida; um valor do usuário, inclusive `none`, prevalece. Escrita de cache custa 2× a entrada com TTL 1h e 1,25× com 5 min; leitura, 0,1×. Medido na auditoria do commit 6f77207: o prefixo fixo da 1ª requisição tem 10,2 KB de system e 20,0 KB de tools (o schema de `subagent` ocupa 8,9 KB), idêntico entre requisições e processos; cada passo do modelo é uma requisição.
@@ -139,17 +193,15 @@ Cache-keeper em detalhe:
 
 `AGENT_IDLE_COMPACT_MIN_TOKENS` ajusta o mínimo da compactação ociosa (piso 100k). `AGENT_CACHE_PREFETCH_NEXT=1` liga o prefetch do próximo papel de uma chain; é desligado por padrão e custa mais do que não aquecer.
 
-## Subagentes: modos e auditoria
+## Subagentes: sempre ligados, isolamento e auditoria
 
-### Modos
+### Contrato
 
-Cada sessão tem modo `simple` ou `complex`. Shift+Tab alterna; `/mode`, `/mode simple` e `/mode complex` também. O modo fica salvo na sessão; o padrão de sessões novas é a preferência `mode` em `<perfil>/agent-preferences.json`, ao lado de `supportModel`. Sem preferência, `simple`.
-
-- `simple`: a tool `subagent` continua no schema, para não mudar o prefixo de cache, mas toda chamada é recusada.
-- `complex`: o system prompt ganha a seção de política "Modo complex" e delegar passa a ser o padrão.
-- Filhos (`AGENT_CHILD=1`) nunca delegam.
-
-O opt-in `/subagents on|off` e `AGENT_SUBAGENTS` não existem mais. `.agent/workflow.md` não é criado automaticamente.
+- A tool `subagent` está sempre ligada na sessão principal. Não há modos, atalho, comando nem variável para ligar ou desligar.
+- Filhos (`AGENT_CHILD=1`) não lançam subagentes.
+- O system prompt da sessão principal traz a diretriz de orquestrador: "Act as an orchestrator: delegate recon and bulk reading to scout, isolated implementation to worker, and review to reviewer; keep your own context for decisions and integration".
+- `.agent/workflow.md` não é criado automaticamente.
+- `<perfil>/agent-preferences.json` guarda só `supportModel`.
 
 ### Modelo por papel
 
@@ -157,29 +209,34 @@ Ordem de decisão:
 
 1. Config do papel em `/models` (`<perfil>/agent-models.json`).
 2. Frontmatter do papel (`model`, `thinking`).
-3. Slot da receita: `.agent/workflow.md`, se existir; senão scout=apoio, worker=apoio, reviewer=principal. O classificador de dispatch pode trocar o slot por brief (ver tabela de custo).
+3. Slot: `.agent/workflow.md`, se existir; senão scout=apoio e os demais=principal.
 
-O slot `apoio` usa o modelo de apoio; `principal`, o modelo da sessão. Sem modelo de apoio configurado, todos os filhos herdam o modelo principal. Risco de custo: configure o apoio em `/models`.
+O slot `apoio` usa o modelo de apoio; `principal`, o modelo da sessão. Não há classificador de dispatch. Sem modelo de apoio configurado, todos os filhos herdam o modelo principal. Risco de custo: configure o apoio em `/models`.
+
+### Isolamento
+
+Cada filho é outro processo `pi -p`, com contexto próprio. Só o resultado volta ao pai. O que o filho lê não entra no contexto nem no cache do pai.
 
 ### O que o pai consegue auditar
 
-- **Registro do job:** `<perfil>/subagent-jobs/<sessionId>/<jobId>.json`, modo 0600, gravado atomicamente. Campos: `jobId`, `mode`, `status`, `agents`, `tasks` (brief completo, `cwd`, slot, modelo, thinking e, para escritores isolados, worktree, branch e commit base), `createdAt`, `finishedAt`, `result`, `error`, `usage` (soma do job: entrada, saída, cache read/write, custo, turnos) e `sessionFiles`.
-- **Sessões filhas:** cada filho grava o JSONL oficial do Pi, com `parentSession` apontando para a sessão do pai. Os caminhos ficam em `sessionFiles` e no topo do resultado (`[child sessions]`). O JSONL tem mensagens, tool calls, resultados e uso por turno.
-- **Ações da tool:** `status`, `result` (`offset`/`limit` em bytes, até 8 KB por leitura), `list` e `cancel`, sempre com `jobId` da sessão atual. Ao terminar, o pai recebe uma mensagem `subagent-result` com até 4 KB do resultado, o caminho do registro, modelos e uso; essa mensagem fica no JSONL do pai.
+- **Registro do job:** `<perfil>/subagent-jobs/<sessionId>/<jobId>.json`, modo 0600, gravado atomicamente. Uma entrada por tarefa: papel, brief, `cwd`, modelo usado, thinking, usage e caminho do JSONL do filho. O caminho do JSONL entra no registro quando a tarefa começa. Tarefa que falhou também tem entrada; tarefa não executada fica marcada como tal.
+- **Sessões filhas:** cada filho grava o JSONL oficial do Pi, com `parentSession` apontando para a sessão do pai. O JSONL tem mensagens, tool calls, resultados e uso por turno.
+- **Ações da tool**, sempre com `jobId` da sessão atual:
+  - `status`: estado do job e, por tarefa, o caminho do JSONL, já durante a execução.
+  - `result`: saída final (`offset`/`limit` em bytes, até 8 KB por leitura).
+  - `trace`: resumo passo a passo do JSONL de um filho (`jobId`, `taskIndex` opcional, `offset`/`limit`). Mostra texto do assistant, tool calls com argumentos resumidos, `ok`|`erro` com bytes do resultado, modelo, turnos e usage. Thinking bruto não sai.
+  - `list` e `cancel`.
+- Ao terminar, o pai recebe uma mensagem `subagent-result` com até 4 KB do resultado, o caminho do registro, modelos e uso; essa mensagem fica no JSONL do pai.
 - **Escritores em paralelo:** dois ou mais papéis com `edit`/`write` no mesmo repositório, num job `parallel`, rodam cada um num worktree próprio (`<perfil>/agent/worktrees/<jobId>-<n>`, branch `agent/<jobId>-<n>`). O resultado traz `git status` e `git log` desde o commit base. Nada é integrado sozinho: `integrate` (roda o portão de checks se houver manifesto e faz `merge --no-ff`) ou `discard` (`force:true` para descartar trabalho não commitado), com `taskIndex` opcional.
-- **Sandbox por papel:** papéis sem `edit`/`write` rodam `bash` sob seatbelt (macOS) ou bwrap (Linux). Sem sandbox disponível, o runner compara o `git status` antes e depois e falha a tarefa se o checkout mudou. O resultado informa `sandbox=`.
 
-O que o pai não vê pela tool:
+### Lacunas
 
-- Enquanto o job roda, `status` não traz os caminhos das sessões filhas; `sessionFiles` só é gravado no fim. O JSONL já existe no diretório de sessões, com `parentSession` no header.
-- Uma tarefa que lança exceção no runner, ou uma tarefa paralela que nunca rodou, não entra em `sessionFiles` nem em `usage`.
-- `usage` é a soma do job, não por tarefa; o uso por filho está no JSONL de cada um.
 - stderr do filho fica só em memória (até 64 KB) e só aparece no resultado quando a tarefa falha.
-- O system prompt do papel vai por arquivo temporário apagado no fim; o registro guarda o nome do papel, não o texto. As regras de `.agent/workflow.md` anexadas à tarefa do filho ficam no JSONL dele, não no registro.
-- Papel com `model`/`thinking` no frontmatter fica sem modelo no registro; o modelo efetivo está no JSONL do filho.
-- Um escritor fora de job `parallel` com dois ou mais escritores (single, chain, ou escritor único) grava direto no `cwd`, sem worktree nem diff registrado; use `git` para ver o que mudou.
-- O prefetch (`AGENT_CACHE_PREFETCH_NEXT=1`) roda com `--no-session` e seu custo não entra em `usage`.
-- `list` apaga o registro de jobs terminados há mais de 30 dias, junto com worktrees limpos e já integrados; um worktree sujo ou não integrado preserva o registro. Os JSONL dos filhos ficam.
+- O system prompt do papel vai por arquivo temporário, apagado no fim. O registro guarda o nome do papel, não o texto. As regras de `.agent/workflow.md` anexadas à tarefa ficam no JSONL do filho.
+- Escritor único (single, chain, ou `parallel` com um só escritor) grava direto no `cwd`, sem worktree nem diff registrado. Use `git` para ver o que mudou.
+- Sandbox só cobre o `bash` de papéis sem `edit`/`write`: seatbelt no macOS, bwrap no Linux, `none` sem suporte. O resultado informa `sandbox=`. Sem sandbox, o detector compara só o `git status` do checkout antes e depois; escrita fora do checkout Git não é vista.
+- `list` apaga o registro de jobs terminados há mais de 30 dias, junto com worktrees limpos e já integrados. Worktree sujo ou não integrado preserva o registro. Os JSONL dos filhos ficam.
+- O prefetch (`AGENT_CACHE_PREFETCH_NEXT=1`) roda com `--no-session`; seu custo não entra em usage.
 
 ## Dependências pessoais / degradação
 

@@ -50,5 +50,5 @@ Agora é distribuída somente pelo Agent, sob demanda, sem cópia nas skills pad
 - `rea`: diagnóstico de registro no perfil ativo; entradas existentes podem ser
   ligadas pelo usuário em `/mcp`. Novo registro exige autorização; `doctor` segue
   disponível (read-only).
-- `sources`: “background agent” → `subagent` (só no modo complex). `handoff`: “Skill tool” →
+- `sources`: “background agent” → `subagent`. `handoff`: “Skill tool” →
   `/skill:<nome>`. `iso-figure`: `compatibility` sem “Written for Claude Code”.

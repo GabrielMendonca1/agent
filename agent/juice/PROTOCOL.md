@@ -16,31 +16,28 @@ a política de skills. `installJuiceGate` é alias de `installAgentRuntime`.
 `client.mjs`:
 
 - `runtimeEnabled()`: `AGENT_RUNTIME_ENABLED=1` (aceita `AGENT_JUICE_ENABLED` legado).
-- `isChild()`: `AGENT_CHILD=1`. Filho nunca delega nem altera preferências.
+- `isChild()`: `AGENT_CHILD=1`. Filho não lança subagentes nem altera preferências.
 - Preferências em `<perfil>/agent-preferences.json` (`PI_CODING_AGENT_DIR`, padrão
-  `~/.agent`): `supportModel` (modelo de apoio, `provider/id` ou `null`) e `mode`
-  (`simple` | `complex`, padrão `simple`). Escrita sob trava e rename atômico.
-  `getJuicePreferences`/`setJuicePreferences` são aliases.
+  `~/.agent`): só `supportModel` (modelo de apoio, `provider/id` ou `null`).
+  Escrita sob trava e rename atômico. `getJuicePreferences`/`setJuicePreferences`
+  são aliases.
 
-## Modo da sessão
+## Subagentes
 
-Cada sessão guarda seu modo. Sem modo salvo, vale a preferência `mode`.
-Retomada e fork preservam o modo salvo. Shift+Tab e `/mode [simple|complex]`
-alteram a sessão atual.
-
-- `simple`: a tool `subagent` fica no schema (prefixo de cache estável); a chamada
-  é recusada.
-- `complex`: `policy.mjs` adiciona a seção "Modo complex" ao system prompt; delegar
-  é o padrão.
+A tool `subagent` está sempre ligada na sessão principal. Não há modos, atalho,
+comando nem variável para desligar. O system prompt da sessão principal traz a
+diretriz de orquestrador: scout para reconhecimento e leitura em volume, worker
+para implementação isolada, reviewer para revisão; o pai guarda o contexto para
+decisão e integração. Isolamento, auditoria e lacunas: `docs/setup.md`,
+"Subagentes: sempre ligados, isolamento e auditoria".
 
 ## Receita e modelo por papel
 
 `workflow.mjs` lê `.agent/workflow.md` se existir; o arquivo não é criado
-automaticamente. Sem ele, a receita padrão é scout=apoio, worker=apoio,
-reviewer=principal. Ordem de decisão do modelo de um papel: config do papel em
-`/models` > frontmatter do papel > slot da receita. Um classificador opcional (até
-16 tokens no modelo de apoio) pode trocar o slot por brief; `AGENT_DISPATCHER=0`
-desliga. Sem modelo de apoio, todo filho herda o modelo principal.
+automaticamente. Sem ele, scout=apoio e os demais papéis=principal. Ordem de
+decisão do modelo de um papel: config do papel em `/models` > frontmatter do
+papel > slot. Não há classificador de dispatch. Sem modelo de apoio, todo filho
+herda o modelo principal.
 
 `projectRules` anexa as regras de `.agent/workflow.md` (até 8 KB; fonte acima de
 64 KB é ignorada) à tarefa de cada filho, como orientação.
