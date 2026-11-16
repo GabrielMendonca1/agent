@@ -1,5 +1,5 @@
 diff --git a/packages/coding-agent/src/core/extensions/types.ts b/packages/coding-agent/src/core/extensions/types.ts
-index 098f7fb0d02fd55660c6200c2d503ea75ba30e9e..d7c2e8d10fefd2936bf157b6aaf163873d84d5a7 100644
+index 7fcc870a99f799ebd19f3a4d51b300d63088ca78..1dc099172c07a87f7c1ffec59b4969c98f28d6a7 100644
 --- a/packages/coding-agent/src/core/extensions/types.ts
 +++ b/packages/coding-agent/src/core/extensions/types.ts
 @@ -121,11 +121,11 @@ export interface ExtensionUIDialogOptions {
@@ -17,7 +17,7 @@ index 098f7fb0d02fd55660c6200c2d503ea75ba30e9e..d7c2e8d10fefd2936bf157b6aaf16387
  }
  
 diff --git a/packages/coding-agent/src/core/keybindings.ts b/packages/coding-agent/src/core/keybindings.ts
-index 75e540b379f03ff7c67a6a570215a8b47bf5d80e..aec64de50a128ad69b17b8461c8c2073d640341e 100644
+index f06a2e6f1c5ded12cb37802035e6071d983f5450..3d3caed43f038c80100cc8bf611391d9ca91808f 100644
 --- a/packages/coding-agent/src/core/keybindings.ts
 +++ b/packages/coding-agent/src/core/keybindings.ts
 @@ -23,6 +23,9 @@ export function useWindowsKeybindings(
@@ -273,10 +273,10 @@ index 0000000000000000000000000000000000000000..740a018edc0c1a36fab97cb511e04950
 +	return v as unknown as TranscriptFeedback;
 +}
 diff --git a/packages/coding-agent/src/modes/interactive/interactive-mode.ts b/packages/coding-agent/src/modes/interactive/interactive-mode.ts
-index 36be8963b12dd250eeec8739fcdac989c4d98c40..fd64e53f0f25ca2527e4e0cf3028972a29d84b4e 100644
+index 33d2af8a2fcb29baf84fbfd02074e3459f56de14..7f3255a529ecc9c8802a1d289ed6eecf280dcfdc 100644
 --- a/packages/coding-agent/src/modes/interactive/interactive-mode.ts
 +++ b/packages/coding-agent/src/modes/interactive/interactive-mode.ts
-@@ -150,6 +150,7 @@ import { playArmin3d, playPiLogo3d } from "./components/easter-egg-3d.lazy.ts";
+@@ -158,6 +158,7 @@ import { playArmin3d, playPiLogo3d } from "./components/easter-egg-3d.lazy.ts";
  import { ExtensionEditorComponent } from "./components/extension-editor.ts";
  import { ExtensionInputComponent } from "./components/extension-input.ts";
  import { ExtensionSelectorComponent } from "./components/extension-selector.ts";
@@ -284,7 +284,7 @@ index 36be8963b12dd250eeec8739fcdac989c4d98c40..fd64e53f0f25ca2527e4e0cf3028972a
  import { FooterComponent, formatTokens } from "./components/footer.ts";
  import {
  	insetLayoutRoot,
-@@ -193,6 +194,7 @@ import { editInExternalEditor } from "./external-editor.ts";
+@@ -202,6 +203,7 @@ import { editInExternalEditor } from "./external-editor.ts";
  import { refreshModelCatalogs } from "./model-catalog-refresh.ts";
  import { getModelSearchText } from "./model-search.ts";
  import { type BlockedStatus, ProgramStatusReporter } from "./program-status-reporter.ts";
@@ -292,7 +292,7 @@ index 36be8963b12dd250eeec8739fcdac989c4d98c40..fd64e53f0f25ca2527e4e0cf3028972a
  import { shareSession } from "./session-share.ts";
  import {
  	getAvailableThemes,
-@@ -472,6 +474,10 @@ export class InteractiveMode {
+@@ -481,6 +483,10 @@ export class InteractiveMode {
  	private loadedResourcesContainer: Container;
  	private chatContainer: Container;
  	private documentContainer: Container;
@@ -303,7 +303,7 @@ index 36be8963b12dd250eeec8739fcdac989c4d98c40..fd64e53f0f25ca2527e4e0cf3028972a
  	private transcriptScrollView: TuiLayouts.ScrollView | undefined;
  	private fullscreenLayoutRoot: Component | undefined;
  	private pendingMessagesContainer: Container;
-@@ -514,7 +520,7 @@ export class InteractiveMode {
+@@ -525,7 +531,7 @@ export class InteractiveMode {
  	// Status line tracking (for mutating immediately-sequential status updates)
  	private lastStatusSpacer: Spacer | undefined = undefined;
  	private lastStatusText: ThemedText | undefined = undefined;
@@ -312,7 +312,7 @@ index 36be8963b12dd250eeec8739fcdac989c4d98c40..fd64e53f0f25ca2527e4e0cf3028972a
  	private managedToolStatusStarted = false;
  
  	// Streaming message tracking
-@@ -584,6 +590,8 @@ export class InteractiveMode {
+@@ -602,6 +608,8 @@ export class InteractiveMode {
  	}>();
  
  	// Extension widgets (components rendered above/below the editor)
@@ -321,7 +321,7 @@ index 36be8963b12dd250eeec8739fcdac989c4d98c40..fd64e53f0f25ca2527e4e0cf3028972a
  	private extensionWidgetsAbove = new Map<string, Component & { dispose?(): void }>();
  	private extensionWidgetsBelow = new Map<string, Component & { dispose?(): void }>();
  	private widgetContainerAbove!: Container;
-@@ -654,8 +662,11 @@ export class InteractiveMode {
+@@ -672,8 +680,11 @@ export class InteractiveMode {
  		this.documentContainer.addChild(this.headerContainer);
  		this.documentContainer.addChild(this.loadedResourcesContainer);
  		this.documentContainer.addChild(this.chatContainer);
@@ -334,7 +334,7 @@ index 36be8963b12dd250eeec8739fcdac989c4d98c40..fd64e53f0f25ca2527e4e0cf3028972a
  		this.pendingMessagesContainer = new Container();
  		this.statusContainer = new Container();
  		this.widgetContainerAbove = new Container();
-@@ -672,6 +683,7 @@ export class InteractiveMode {
+@@ -690,6 +701,7 @@ export class InteractiveMode {
  		this.editor = this.defaultEditor;
  		this.editorContainer = new Container();
  		this.editorContainer.addChild(this.editor as Component);
@@ -342,7 +342,7 @@ index 36be8963b12dd250eeec8739fcdac989c4d98c40..fd64e53f0f25ca2527e4e0cf3028972a
  		this.footerDataProvider = new FooterDataProvider(this.sessionManager.getCwd());
  		this.footer = new FooterComponent(this.session, this.footerDataProvider);
  		this.footer.setAutoCompactEnabled(this.session.autoCompactionEnabled);
-@@ -962,6 +974,7 @@ export class InteractiveMode {
+@@ -978,6 +990,7 @@ export class InteractiveMode {
  			nextUi.restoreRenderState(this.mainScreenRenderState);
  		}
  		this.renderer = nextUi;
@@ -350,7 +350,7 @@ index 36be8963b12dd250eeec8739fcdac989c4d98c40..fd64e53f0f25ca2527e4e0cf3028972a
  		this.options.tuiMode = mode;
  		this.mountInteractiveTui(nextUi, components);
  		nextUi.invalidate();
-@@ -2121,6 +2134,8 @@ export class InteractiveMode {
+@@ -2147,6 +2160,8 @@ export class InteractiveMode {
  					}
  
  					this.chatContainer.clear();
@@ -359,16 +359,16 @@ index 36be8963b12dd250eeec8739fcdac989c4d98c40..fd64e53f0f25ca2527e4e0cf3028972a
  					this.renderInitialMessages();
  					if (result.editorText && !this.editor.getText().trim()) {
  						this.editor.setText(result.editorText);
-@@ -2321,6 +2336,8 @@ export class InteractiveMode {
+@@ -2347,6 +2362,8 @@ export class InteractiveMode {
  	private renderCurrentSessionState(): void {
  		this.loadedResourcesContainer.clear();
  		this.chatContainer.clear();
 +		this.feedbackTranscript?.clear();
 +		this.runFeedback?.reset();
  		this.pendingMessagesContainer.clear();
+ 		this.pendingBashComponents = [];
  		this.compactionQueuedMessages = [];
- 		this.streamingComponent = undefined;
-@@ -2425,7 +2442,13 @@ export class InteractiveMode {
+@@ -2464,7 +2481,13 @@ export class InteractiveMode {
  		this.activeStatusIndicator = indicator;
  		this.activeWorkingIndicatorEmbedded = false;
  		this.statusContainer.clear();
@@ -382,7 +382,7 @@ index 36be8963b12dd250eeec8739fcdac989c4d98c40..fd64e53f0f25ca2527e4e0cf3028972a
  		if (this.setEditorWorkingStatusIndicator(indicator)) {
  			this.activeWorkingIndicatorEmbedded = true;
  			return;
-@@ -2443,9 +2466,11 @@ export class InteractiveMode {
+@@ -2482,9 +2505,11 @@ export class InteractiveMode {
  		this.activeStatusIndicator = undefined;
  		this.activeWorkingIndicatorEmbedded = false;
  		this.statusContainer.clear();
@@ -394,7 +394,7 @@ index 36be8963b12dd250eeec8739fcdac989c4d98c40..fd64e53f0f25ca2527e4e0cf3028972a
  			!clearedIndicatorWasEmbedded &&
  			this.options.tuiMode === "regular" &&
  			this.ui.getClearOnShrink()
-@@ -2485,7 +2510,7 @@ export class InteractiveMode {
+@@ -2524,7 +2549,7 @@ export class InteractiveMode {
  	private setWorkingIndicator(options?: WorkingIndicatorOptions): void {
  		this.workingIndicatorOptions = options;
  		if (this.activeStatusIndicator?.kind === "working") {
@@ -403,7 +403,7 @@ index 36be8963b12dd250eeec8739fcdac989c4d98c40..fd64e53f0f25ca2527e4e0cf3028972a
  		}
  		this.ui.requestRender();
  	}
-@@ -2518,6 +2543,7 @@ export class InteractiveMode {
+@@ -2557,6 +2582,7 @@ export class InteractiveMode {
  			map.delete(key);
  		};
  
@@ -411,7 +411,7 @@ index 36be8963b12dd250eeec8739fcdac989c4d98c40..fd64e53f0f25ca2527e4e0cf3028972a
  		removeExisting(this.extensionWidgetsAbove);
  		removeExisting(this.extensionWidgetsBelow);
  
-@@ -2543,12 +2569,19 @@ export class InteractiveMode {
+@@ -2582,12 +2608,19 @@ export class InteractiveMode {
  			component = content(this.ui, theme);
  		}
  
@@ -432,7 +432,7 @@ index 36be8963b12dd250eeec8739fcdac989c4d98c40..fd64e53f0f25ca2527e4e0cf3028972a
  		for (const widget of this.extensionWidgetsAbove.values()) {
  			widget.dispose?.();
  		}
-@@ -2600,6 +2633,7 @@ export class InteractiveMode {
+@@ -2641,6 +2674,7 @@ export class InteractiveMode {
  	private renderWidgets(): void {
  		if (!this.widgetContainerAbove || !this.widgetContainerBelow) return;
  		// garime-frame: sem Spacer(1) acima do editor — a margem era ar parado.
@@ -440,7 +440,7 @@ index 36be8963b12dd250eeec8739fcdac989c4d98c40..fd64e53f0f25ca2527e4e0cf3028972a
  		this.renderWidgetContainer(this.widgetContainerAbove, this.extensionWidgetsAbove, false, false);
  		this.renderWidgetContainer(this.widgetContainerBelow, this.extensionWidgetsBelow, false, false);
  		this.ui.requestRender();
-@@ -2621,7 +2655,7 @@ export class InteractiveMode {
+@@ -2662,7 +2696,7 @@ export class InteractiveMode {
  		}
  
  		if (leadingSpacer) {
@@ -449,7 +449,7 @@ index 36be8963b12dd250eeec8739fcdac989c4d98c40..fd64e53f0f25ca2527e4e0cf3028972a
  		}
  		for (const component of widgets.values()) {
  			container.addChild(component);
-@@ -3012,8 +3046,8 @@ export class InteractiveMode {
+@@ -3056,8 +3090,8 @@ export class InteractiveMode {
  			this.editor = this.defaultEditor;
  		}
  
@@ -460,7 +460,7 @@ index 36be8963b12dd250eeec8739fcdac989c4d98c40..fd64e53f0f25ca2527e4e0cf3028972a
  			this.statusContainer.clear();
  			this.activeWorkingIndicatorEmbedded = this.setEditorWorkingStatusIndicator(this.activeStatusIndicator);
  			if (!this.activeWorkingIndicatorEmbedded) {
-@@ -3136,6 +3170,16 @@ export class InteractiveMode {
+@@ -3200,6 +3234,16 @@ export class InteractiveMode {
  	// Key Handlers
  	// =========================================================================
  
@@ -477,7 +477,7 @@ index 36be8963b12dd250eeec8739fcdac989c4d98c40..fd64e53f0f25ca2527e4e0cf3028972a
  	private setupKeyHandlers(): void {
  		// Set up handlers on defaultEditor - they use this.editor for text access
  		// so they work correctly regardless of which editor is active
-@@ -3274,6 +3318,14 @@ export class InteractiveMode {
+@@ -3338,6 +3382,14 @@ export class InteractiveMode {
  			if (!text) return;
  
  			// Handle commands
@@ -492,7 +492,7 @@ index 36be8963b12dd250eeec8739fcdac989c4d98c40..fd64e53f0f25ca2527e4e0cf3028972a
  			if (text === "/settings") {
  				this.showSettingsSelector();
  				this.editor.setText("");
-@@ -3482,6 +3534,21 @@ export class InteractiveMode {
+@@ -3546,6 +3598,21 @@ export class InteractiveMode {
  
  		this.footer.invalidate();
  		this.programStatus.handleEvent(event);
@@ -514,7 +514,7 @@ index 36be8963b12dd250eeec8739fcdac989c4d98c40..fd64e53f0f25ca2527e4e0cf3028972a
  
  		switch (event.type) {
  			case "agent_start":
-@@ -3911,15 +3978,16 @@ export class InteractiveMode {
+@@ -3978,15 +4045,16 @@ export class InteractiveMode {
  		const secondLast = children.length > 1 ? children[children.length - 2] : undefined;
  
  		if (last && secondLast && last === this.lastStatusText && secondLast === this.lastStatusSpacer) {
@@ -534,7 +534,7 @@ index 36be8963b12dd250eeec8739fcdac989c4d98c40..fd64e53f0f25ca2527e4e0cf3028972a
  		this.chatContainer.addChild(spacer);
  		this.chatContainer.addChild(text);
  		this.lastStatusSpacer = spacer;
-@@ -4319,6 +4387,24 @@ export class InteractiveMode {
+@@ -4407,6 +4475,24 @@ export class InteractiveMode {
  	}
  
  	renderInitialMessages(): void {
@@ -559,7 +559,7 @@ index 36be8963b12dd250eeec8739fcdac989c4d98c40..fd64e53f0f25ca2527e4e0cf3028972a
  		const entries = this.sessionManager.buildContextEntries();
  		this.renderSessionEntries(entries, {
  			updateFooter: true,
-@@ -5782,6 +5868,8 @@ export class InteractiveMode {
+@@ -5872,6 +5958,8 @@ export class InteractiveMode {
  
  						// Update UI
  						this.chatContainer.clear();
@@ -568,7 +568,7 @@ index 36be8963b12dd250eeec8739fcdac989c4d98c40..fd64e53f0f25ca2527e4e0cf3028972a
  						this.renderInitialMessages();
  						if (result.editorText && !this.editor.getText().trim()) {
  							this.editor.setText(result.editorText);
-@@ -7207,6 +7295,8 @@ export class InteractiveMode {
+@@ -7298,6 +7386,8 @@ export class InteractiveMode {
  	}
  
  	stop(fullscreenExitOutput = this.settingsManager.getFullscreenExitOutput()): void {
@@ -2388,7 +2388,7 @@ index 0c59e73a83bb4bd9978818b16bf556da53f48123..d37dd82708e705291df2500fa8759219
  		this.intervalMs = indicator?.intervalMs && indicator.intervalMs > 0 ? indicator.intervalMs : DEFAULT_INTERVAL_MS;
  		this.currentFrame = 0;
 diff --git a/packages/tui/src/tui-alt-screen.ts b/packages/tui/src/tui-alt-screen.ts
-index 61d5b48255e4c2f82200644e4dfbbd55ba582d1e..31c69cb2f35d356ee72397f61ce701c2e8bfb02b 100644
+index 85f69ac662d22ed3aeb07d50782894ae5b086519..4c47603c31bd9519453eb2608c3d6c0d042fb451 100644
 --- a/packages/tui/src/tui-alt-screen.ts
 +++ b/packages/tui/src/tui-alt-screen.ts
 @@ -13,6 +13,7 @@ import {

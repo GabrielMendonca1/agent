@@ -1,12 +1,12 @@
 diff --git a/packages/ai/src/api/anthropic-claude-code.ts b/packages/ai/src/api/anthropic-claude-code.ts
 new file mode 100644
-index 0000000000000000000000000000000000000000..7220d3bdb6932ca690a5a88a1e5c609160bc8b97
+index 0000000000000000000000000000000000000000..da755cfb5adc0be903cbe2e0d6d39b62d3927664
 --- /dev/null
 +++ b/packages/ai/src/api/anthropic-claude-code.ts
 @@ -0,0 +1,253 @@
 +import type { FetchFunction, Message } from "../types.ts";
 +
-+export const CLAUDE_CODE_VERSION = "2.1.280";
++export const CLAUDE_CODE_VERSION = "2.1.322";
 +export const CLAUDE_CODE_ENTRYPOINT = "sdk-cli";
 +
 +const CCH_PLACEHOLDER = "cch=00000";
@@ -258,45 +258,60 @@ index 0000000000000000000000000000000000000000..7220d3bdb6932ca690a5a88a1e5c6091
 +	};
 +}
 diff --git a/packages/ai/src/api/anthropic-messages.ts b/packages/ai/src/api/anthropic-messages.ts
-index 9d6a8bdb7c2063254c9d8b40a1ca1550356dba2f..e9315709b1f4bb85a54eb586535636d672dc0529 100644
+index b031c28fba491a1f6db67410e6037226f48b58c3..a5e0c101e4bdc559de0eff0ccb6e78a11933e1e7 100644
 --- a/packages/ai/src/api/anthropic-messages.ts
 +++ b/packages/ai/src/api/anthropic-messages.ts
-@@ -57,6 +57,7 @@ import {
+@@ -60,6 +60,7 @@ import {
  	type TranscriptContext,
  } from "../utils/transcript.ts";
  
 +import { buildClaudeCodeBillingHeader, CLAUDE_CODE_VERSION, createClaudeCodeFetch } from "./anthropic-claude-code.ts";
  import {
  	getJsonSchemaToolParameters,
- 	isStrictToolLimitErrorMessage,
-@@ -98,9 +99,6 @@ function getCacheControl(
+ 	prefersJsonSchemaStrictSampling,
+@@ -105,9 +106,6 @@ function getCacheControl(
  	};
  }
  
 -// Stealth mode: Mimic Claude Code's tool naming exactly
--const claudeCodeVersion = "2.1.280";
+-const claudeCodeVersion = "2.1.322";
 -
  // Claude Code 2.x tool names (canonical casing)
  // Source: https://cchistory.mariozechner.at/data/prompts-2.1.11.md
  // To update: https://github.com/badlogic/cchistory
-@@ -641,6 +639,7 @@ export const stream: StreamFunction<"anthropic-messages", AnthropicOptions> = (
+@@ -843,10 +841,6 @@ export const stream: StreamFunction<"anthropic-messages", AnthropicOptions> = (
+ 			let inputTransformations: BetaInputTransformation[] | undefined;
+ 			const cacheRetention = resolveCacheRetention(options?.cacheRetention, options?.env);
+ 			const cacheSessionId = cacheRetention === "none" ? undefined : options?.sessionId;
+-			// Session whose requests may use threads; undefined when threads don't apply. Sessions where
+-			// the endpoint rejected threads ("off") still send the threads beta, which the resend that
+-			// turned them off was accepted with; `prepareThreadRequest()` just sends no `thread`.
+-			const threadSessionId = compat.supportsMessageThreads ? cacheSessionId : undefined;
+ 
+ 			if (options?.client) {
+ 				client = options.client;
+@@ -878,6 +872,12 @@ export const stream: StreamFunction<"anthropic-messages", AnthropicOptions> = (
  				client = created.client;
  				isOAuth = created.isOAuthToken;
  			}
++			// Session whose requests may use threads; undefined when threads don't apply. Sessions where
++			// the endpoint rejected threads ("off") still send the threads beta, which the resend that
++			// turned them off was accepted with; `prepareThreadRequest()` just sends no `thread`.
++			// OAuth billing requires the full system on every request; thread continuations omit it.
++			const threadSessionId = !isOAuth && compat.supportsMessageThreads ? cacheSessionId : undefined;
 +			const billingHeader = isOAuth ? await buildClaudeCodeBillingHeader(normalizedContext.messages) : undefined;
  			const requestOptions = {
  				...(options?.signal ? { signal: options.signal } : {}),
  				...(options?.timeoutMs !== undefined ? { timeout: options.timeoutMs } : {}),
-@@ -650,7 +649,7 @@ export const stream: StreamFunction<"anthropic-messages", AnthropicOptions> = (
- 			let response: Response;
- 			for (;;) {
- 				options?.signal?.throwIfAborted();
--				const built = buildParams(model, normalizedContext, isOAuth, options, disablePreferredStrictTools);
-+				const built = buildParams(model, normalizedContext, isOAuth, options, disablePreferredStrictTools, billingHeader);
+@@ -899,6 +899,7 @@ export const stream: StreamFunction<"anthropic-messages", AnthropicOptions> = (
+ 				const built = buildParams(model, normalizedContext, isOAuth, options, {
+ 					disablePreferredStrictTools,
+ 					messageThreads: threadSessionId !== undefined,
++					billingHeader,
+ 				});
  				if (built.providerThinkingLevel) output.providerThinkingLevel = built.providerThinkingLevel;
- 				let params = built.params;
- 				const nextParams = await options?.onPayload?.(params, model);
-@@ -1045,13 +1044,14 @@ function createClient(
+ 				params = built.params;
+@@ -1297,13 +1298,14 @@ function createClient(
  			authToken: apiKey,
  			baseURL: model.baseUrl,
  			dangerouslyAllowBrowser: true,
@@ -313,19 +328,20 @@ index 9d6a8bdb7c2063254c9d8b40a1ca1550356dba2f..e9315709b1f4bb85a54eb586535636d6
  				},
  				model.headers,
  				optionsHeaders,
-@@ -1156,6 +1156,7 @@ function buildParams(
- 	isOAuthToken: boolean,
- 	options?: AnthropicOptions,
- 	disablePreferredStrictTools = false,
-+	billingHeader?: string,
- ): {
- 	params: MessageCreateParamsStreaming;
- 	hasPreferredStrictTools: boolean;
-@@ -1219,10 +1220,10 @@ function buildParams(
+@@ -1415,6 +1417,8 @@ interface BuildParamsFlags {
+ 	disablePreferredStrictTools: boolean;
+ 	/** The session uses message threads, so the threads beta is sent. */
+ 	messageThreads: boolean;
++	/** Claude Code billing header for OAuth requests; first system block when present. */
++	billingHeader?: string;
+ }
+ 
+ function buildParams(
+@@ -1490,10 +1494,10 @@ function buildParams(
  	// For OAuth tokens, we MUST include Claude Code identity
  	if (isOAuthToken) {
  		params.system = [
-+			...(billingHeader ? [{ type: "text" as const, text: billingHeader }] : []),
++			...(flags.billingHeader ? [{ type: "text" as const, text: flags.billingHeader }] : []),
  			{
  				type: "text",
 -				text: "You are Claude Code, Anthropic's official CLI for Claude.",
@@ -334,7 +350,7 @@ index 9d6a8bdb7c2063254c9d8b40a1ca1550356dba2f..e9315709b1f4bb85a54eb586535636d6
  			},
  		];
  		if (initialSystemText) {
-@@ -1303,7 +1304,19 @@ function buildParams(
+@@ -1574,7 +1578,19 @@ function buildParams(
  		}
  	}
  
@@ -356,7 +372,7 @@ index 9d6a8bdb7c2063254c9d8b40a1ca1550356dba2f..e9315709b1f4bb85a54eb586535636d6
  		if (typeof userId === "string") {
  			params.metadata = { user_id: userId };
 diff --git a/packages/ai/test/anthropic-auth-token.test.ts b/packages/ai/test/anthropic-auth-token.test.ts
-index a49108638ee1ed184024d126bb687169753ad986..913187af552106d7044fcf0e98a318735b40044b 100644
+index a49108638ee1ed184024d126bb687169753ad986..83152aab29163874975a7a06ab6782e323cc5b87 100644
 --- a/packages/ai/test/anthropic-auth-token.test.ts
 +++ b/packages/ai/test/anthropic-auth-token.test.ts
 @@ -178,6 +178,39 @@ describe("Anthropic auth token env", () => {
@@ -364,10 +380,10 @@ index a49108638ee1ed184024d126bb687169753ad986..913187af552106d7044fcf0e98a31873
  		expect(mockState.constructorOpts?.authToken).toBe("sk-ant-oat-test");
  		expect(mockState.createParams?.betas).toContain("oauth-2025-04-20");
 +		const headers = mockState.constructorOpts?.defaultHeaders as Record<string, string>;
-+		expect(headers["user-agent"]).toBe("claude-cli/2.1.280 (external, sdk-cli)");
++		expect(headers["user-agent"]).toBe("claude-cli/2.1.322 (external, sdk-cli)");
 +		const system = mockState.createParams?.system as Array<{ text: string; cache_control?: unknown }>;
 +		expect(system[0].text).toMatch(
-+			/^x-anthropic-billing-header: cc_version=2\.1\.280\.[0-9a-f]{3}; cc_entrypoint=sdk-cli; cch=00000;$/,
++			/^x-anthropic-billing-header: cc_version=2\.1\.322\.[0-9a-f]{3}; cc_entrypoint=sdk-cli; cch=00000;$/,
 +		);
 +		expect(system[0].cache_control).toBeUndefined();
 +		expect(system[1]).toEqual({
@@ -401,7 +417,7 @@ index a49108638ee1ed184024d126bb687169753ad986..913187af552106d7044fcf0e98a31873
  	it("lets explicit request headers override ANTHROPIC_AUTH_TOKEN", async () => {
 diff --git a/packages/ai/test/anthropic-claude-code.test.ts b/packages/ai/test/anthropic-claude-code.test.ts
 new file mode 100644
-index 0000000000000000000000000000000000000000..feb0074ec33fe4c71345aabe921c6c6fc6a46f8f
+index 0000000000000000000000000000000000000000..009ed10bfdfa5d2fd87f7e4d6eb59b84cefa7b8f
 --- /dev/null
 +++ b/packages/ai/test/anthropic-claude-code.test.ts
 @@ -0,0 +1,163 @@
@@ -428,16 +444,16 @@ index 0000000000000000000000000000000000000000..feb0074ec33fe4c71345aabe921c6c6f
 +	});
 +
 +	it("reproduces the recovered cc_version prompt fingerprint", async () => {
-+		expect(await claudeCodeVersionFingerprint(promptMessages("Reply with exactly: PROBE_OK"))).toBe("022");
++		expect(await claudeCodeVersionFingerprint(promptMessages("Reply with exactly: PROBE_OK"))).toBe("42b");
 +		expect(await buildClaudeCodeBillingHeader(promptMessages("Reply with exactly: PROBE_OK"))).toBe(
-+			"x-anthropic-billing-header: cc_version=2.1.280.022; cc_entrypoint=sdk-cli; cch=00000;",
++			"x-anthropic-billing-header: cc_version=2.1.322.42b; cc_entrypoint=sdk-cli; cch=00000;",
 +		);
 +	});
 +
 +	it("omits the model value and complete max_tokens member before seeded XXH64", () => {
 +		const body =
-+			'{"model":"claude-opus-5","messages":[{"role":"user","content":"A"}],"max_tokens":64000,"stream":true,"system":[{"type":"text","text":"x-anthropic-billing-header: cc_version=2.1.280.000; cc_entrypoint=sdk-cli; cch=00000;"}]}';
-+		expect(patchClaudeCodeCch(body)).toContain("cch=5efff");
++			'{"model":"claude-opus-5","messages":[{"role":"user","content":"A"}],"max_tokens":64000,"stream":true,"system":[{"type":"text","text":"x-anthropic-billing-header: cc_version=2.1.322.000; cc_entrypoint=sdk-cli; cch=00000;"}]}';
++		expect(patchClaudeCodeCch(body)).toContain("cch=4f1be");
 +	});
 +
 +	it("patches only the billing block when user and nested fields collide", () => {
@@ -449,7 +465,7 @@ index 0000000000000000000000000000000000000000..feb0074ec33fe4c71345aabe921c6c6f
 +			system: [
 +				{
 +					type: "text",
-+					text: "x-anthropic-billing-header: cc_version=2.1.280.000; cc_entrypoint=sdk-cli; cch=00000;",
++					text: "x-anthropic-billing-header: cc_version=2.1.322.000; cc_entrypoint=sdk-cli; cch=00000;",
 +				},
 +				{ type: "text", text: "fake cch=00000" },
 +			],
@@ -464,7 +480,7 @@ index 0000000000000000000000000000000000000000..feb0074ec33fe4c71345aabe921c6c6f
 +
 +	it("patches the final SDK body and generates a request UUID", async () => {
 +		const body =
-+			'{"model":"claude-opus-5","messages":[],"max_tokens":1,"stream":true,"system":[{"type":"text","text":"x-anthropic-billing-header: cc_version=2.1.280.000; cc_entrypoint=sdk-cli; cch=00000;"}]}';
++			'{"model":"claude-opus-5","messages":[],"max_tokens":1,"stream":true,"system":[{"type":"text","text":"x-anthropic-billing-header: cc_version=2.1.322.000; cc_entrypoint=sdk-cli; cch=00000;"}]}';
 +		const transport = vi.fn<typeof fetch>(async () => new Response(null, { status: 200 }));
 +		const wrapped = createClaudeCodeFetch(transport);
 +
@@ -486,7 +502,7 @@ index 0000000000000000000000000000000000000000..feb0074ec33fe4c71345aabe921c6c6f
 +	describe("gzip request bodies", () => {
 +		const billing = {
 +			type: "text",
-+			text: "x-anthropic-billing-header: cc_version=2.1.280.000; cc_entrypoint=sdk-cli; cch=00000;",
++			text: "x-anthropic-billing-header: cc_version=2.1.322.000; cc_entrypoint=sdk-cli; cch=00000;",
 +		};
 +		const smallBody = () =>
 +			JSON.stringify({ model: "claude-opus-5", max_tokens: 1, system: [billing], messages: [] });
@@ -568,3 +584,46 @@ index 0000000000000000000000000000000000000000..feb0074ec33fe4c71345aabe921c6c6f
 +		});
 +	});
 +});
+diff --git a/packages/ai/test/anthropic-message-threads.test.ts b/packages/ai/test/anthropic-message-threads.test.ts
+index 569caf298fa50f0245f289b2e50b6f08783aabe6..b7988f3cc115d87e342e50b11436de46b27d39a4 100644
+--- a/packages/ai/test/anthropic-message-threads.test.ts
++++ b/packages/ai/test/anthropic-message-threads.test.ts
+@@ -528,7 +528,7 @@ describe("Anthropic message threads", () => {
+ 		expect(h.requests[0].betas).not.toContain(THREADS_BETA);
+ 	});
+ 
+-	it("matches Claude Code tool names across turns with OAuth", async () => {
++	it("matches Claude Code tool names across turns with OAuth, sending the full request every turn", async () => {
+ 		const h = harness();
+ 		h.queue.push((request) =>
+ 			reply(request, { id: "msg_oauth", toolCalls: [{ id: "toolu_1", name: "Read", input: { value: "x" } }] }),
+@@ -538,8 +538,27 @@ describe("Anthropic message threads", () => {
+ 		const first = await say(h, messages, { tools: [tool("read")], options });
+ 		expect(first.content.find((block) => block.type === "toolCall")).toMatchObject({ name: "read" });
+ 		messages.push(toolResult("toolu_1", "read"));
+-		await say(h, messages, { tools: [tool("read")], options });
+-		expect(threadOf(h.requests[1])).toEqual({ type: "continue", previous_message_id: "msg_oauth" });
++		const second = await say(h, messages, { tools: [tool("read")], options });
++
++		// OAuth billing requires the full system on every request; thread continuations omit it.
++		expect(second.stopReason).toBe("stop");
++		expect(h.requests).toHaveLength(2);
++		for (const request of h.requests) {
++			expect(request.body).not.toHaveProperty("thread");
++			expect(request.betas).not.toContain(THREADS_BETA);
++			const system = request.body.system as Array<{ type: string; text: string }>;
++			expect(system[0].text).toMatch(/^x-anthropic-billing-header: cc_version=[0-9.]+\.[0-9a-f]{3}; /);
++			expect(system[0].text).toMatch(/cch=[0-9a-f]{5};$/);
++			expect(system[0].text).not.toContain("cch=00000");
++			expect(request.body.tools).toBeDefined();
++		}
++		const next = h.requests[1];
++		expect(next.body.messages.map((message) => message.role)).toEqual(["user", "assistant", "user"]);
++		expect(next.body.messages[0]).toEqual({ role: "user", content: "read it" });
++		expect(next.body.messages[1].content).toEqual([
++			{ type: "text", text: "answer" },
++			{ type: "tool_use", id: "toolu_1", name: "Read", input: { value: "x" } },
++		]);
+ 	});
+ 
+ 	it("sends cache warming replays without a thread and keeps the conversation's thread", async () => {

@@ -66,10 +66,10 @@ index 0000000000000000000000000000000000000000..b0d86af37405120a524046ca8b28ac7d
 +	});
 +});
 diff --git a/packages/coding-agent/test/rpc-prompt-response-semantics.test.ts b/packages/coding-agent/test/rpc-prompt-response-semantics.test.ts
-index 18c40646c5c9e5eee400f6e31b2fedf2bac7da70..e44aad0266bb2aec4edc7d5149887893507a43dc 100644
+index 48741702f3b31341e66e50e4ffd1d14769f456a3..e17b48132d6737612f1d5ba504da48cf8a531348 100644
 --- a/packages/coding-agent/test/rpc-prompt-response-semantics.test.ts
 +++ b/packages/coding-agent/test/rpc-prompt-response-semantics.test.ts
-@@ -210,7 +210,7 @@ describe("RPC prompt response semantics", () => {
+@@ -211,7 +211,7 @@ describe("RPC prompt response semantics", () => {
  					command: "prompt",
  					success: false,
  					error: expect.stringContaining(

@@ -1,5 +1,5 @@
 diff --git a/packages/coding-agent/src/cli/args.ts b/packages/coding-agent/src/cli/args.ts
-index 4bcd28dc2369e4ba591ee40ed934996472ae2bc7..d88afd65f3d319d3e507192d9ccffb8ce2b1ceda 100644
+index 8de8441c43185db446cdb1290c1d4f0f9a1f5cb0..ac9358c2935d79cc4e02fb270ebfe1d7978c34a0 100644
 --- a/packages/coding-agent/src/cli/args.ts
 +++ b/packages/coding-agent/src/cli/args.ts
 @@ -21,6 +21,8 @@ export interface Args {
@@ -484,7 +484,7 @@ index 0000000000000000000000000000000000000000..36298a08815cfdaabd281bffe2623b2a
 +	}
 +}
 diff --git a/packages/coding-agent/src/core/auth-storage.ts b/packages/coding-agent/src/core/auth-storage.ts
-index 5a8fa417add67691beb7072d7b50967ca06bf872..1655e03e3226a097f272d5f355413ca076a91e49 100644
+index de4e57244bb167510898114f5cf1eb3c3cbb1027..706f8689c5480afcb53badedd776af8d97ae7d2c 100644
 --- a/packages/coding-agent/src/core/auth-storage.ts
 +++ b/packages/coding-agent/src/core/auth-storage.ts
 @@ -12,6 +12,7 @@ import { getAgentDir } from "../config.ts";
@@ -495,7 +495,7 @@ index 5a8fa417add67691beb7072d7b50967ca06bf872..1655e03e3226a097f272d5f355413ca0
  import { isCommandConfigValue, resolveConfigValue } from "./resolve-config-value.ts";
  
  type AuthStorageData = Record<string, Credential>;
-@@ -204,9 +205,11 @@ export class FileAuthStorageBackend implements AuthStorageBackend {
+@@ -205,9 +206,11 @@ export class FileAuthStorageBackend implements AuthStorageBackend {
  export class ReadOnlyAuthStorage implements CredentialStore {
  	private readonly authPath: string;
  	private data: AuthStorageData | undefined;
@@ -507,7 +507,7 @@ index 5a8fa417add67691beb7072d7b50967ca06bf872..1655e03e3226a097f272d5f355413ca0
  	}
  
  	private load(): AuthStorageData {
-@@ -258,6 +261,8 @@ export class ReadOnlyAuthStorage implements CredentialStore {
+@@ -259,6 +262,8 @@ export class ReadOnlyAuthStorage implements CredentialStore {
  
  	async read(providerId: string, options?: AuthOperationOptions): Promise<Credential | undefined> {
  		options?.signal?.throwIfAborted();
@@ -516,7 +516,7 @@ index 5a8fa417add67691beb7072d7b50967ca06bf872..1655e03e3226a097f272d5f355413ca0
  		const credential = this.load()[providerId];
  		options?.signal?.throwIfAborted();
  		if (!credential) return undefined;
-@@ -269,12 +274,15 @@ export class ReadOnlyAuthStorage implements CredentialStore {
+@@ -270,12 +275,15 @@ export class ReadOnlyAuthStorage implements CredentialStore {
  
  	async list(options?: AuthOperationOptions): Promise<readonly CredentialInfo[]> {
  		options?.signal?.throwIfAborted();
@@ -537,7 +537,7 @@ index 5a8fa417add67691beb7072d7b50967ca06bf872..1655e03e3226a097f272d5f355413ca0
  	}
  
  	async modify(
-@@ -329,10 +337,14 @@ export class AuthStorage implements CredentialStore {
+@@ -330,10 +338,14 @@ export class AuthStorage implements CredentialStore {
  	private storage: AuthStorageBackend;
  	private authPath: string | undefined;
  	private readState: AuthFileReadState;
@@ -552,7 +552,7 @@ index 5a8fa417add67691beb7072d7b50967ca06bf872..1655e03e3226a097f272d5f355413ca0
  		this.readState =
  			authPath && sharedAuthFileReadState?.authPath === authPath ? sharedAuthFileReadState.readState : { data: {} };
  		if (authPath && !sharedAuthFileReadState) {
-@@ -439,7 +451,16 @@ export class AuthStorage implements CredentialStore {
+@@ -440,7 +452,16 @@ export class AuthStorage implements CredentialStore {
  		}
  	}
  
@@ -569,7 +569,7 @@ index 5a8fa417add67691beb7072d7b50967ca06bf872..1655e03e3226a097f272d5f355413ca0
  		const credential = (await this.readLatestData(options))[provider];
  		options?.signal?.throwIfAborted();
  		if (credential?.type !== "api_key") return credential;
-@@ -451,6 +472,30 @@ export class AuthStorage implements CredentialStore {
+@@ -452,6 +473,30 @@ export class AuthStorage implements CredentialStore {
  		provider: string,
  		fn: (current: Credential | undefined) => Promise<Credential | undefined>,
  		options?: AuthOperationOptions,
@@ -600,7 +600,7 @@ index 5a8fa417add67691beb7072d7b50967ca06bf872..1655e03e3226a097f272d5f355413ca0
  	): Promise<Credential | undefined> {
  		let latestData = this.readState.data;
  		let revision: string | undefined;
-@@ -472,6 +517,12 @@ export class AuthStorage implements CredentialStore {
+@@ -473,6 +518,12 @@ export class AuthStorage implements CredentialStore {
  	}
  
  	async delete(provider: string, options?: AuthOperationOptions): Promise<void> {
@@ -613,7 +613,7 @@ index 5a8fa417add67691beb7072d7b50967ca06bf872..1655e03e3226a097f272d5f355413ca0
  		let latestData = this.readState.data;
  		await this.storage.withLockAsync(async (content) => {
  			const currentData = this.parseStorageData(content);
-@@ -486,7 +537,13 @@ export class AuthStorage implements CredentialStore {
+@@ -487,7 +538,13 @@ export class AuthStorage implements CredentialStore {
  	async list(options?: AuthOperationOptions): Promise<readonly CredentialInfo[]> {
  		const entries = Object.entries(await this.readLatestData(options));
  		options?.signal?.throwIfAborted();
@@ -629,7 +629,7 @@ index 5a8fa417add67691beb7072d7b50967ca06bf872..1655e03e3226a097f272d5f355413ca0
  }
  
 diff --git a/packages/coding-agent/src/core/model-runtime.ts b/packages/coding-agent/src/core/model-runtime.ts
-index 8e03f4d1f4d5166db8a10265f34602f4b542ff4e..d50ca1eb464097fc3b4c0b4163e42832b2693ccb 100644
+index ff5f42b3984a289c665855fe3ec676265bc8c4b9..4a143c629b5f73341b92915bf7ca07b23f6e4d70 100644
 --- a/packages/coding-agent/src/core/model-runtime.ts
 +++ b/packages/coding-agent/src/core/model-runtime.ts
 @@ -69,6 +69,7 @@ import {
@@ -640,7 +640,7 @@ index 8e03f4d1f4d5166db8a10265f34602f4b542ff4e..d50ca1eb464097fc3b4c0b4163e42832
  import { AuthStorage as DefaultAuthStorage } from "./auth-storage.ts";
  import { ModelConfig } from "./model-config.ts";
  import { FileModelsStore, InMemoryCodingAgentModelsStore } from "./models-store.ts";
-@@ -838,10 +839,23 @@ export class ModelRuntime implements Models {
+@@ -867,10 +868,23 @@ export class ModelRuntime implements Models {
  		options?: LoginOptions,
  	): Promise<Credential> {
  		const signal = operationSignal(interaction.signal);
@@ -688,10 +688,10 @@ index bb0740e49675be6a28a537fc1d8ae92d06fbb924..b8a528c7a063bb2d43c995fd9cd872fb
  
  		const skillPaths = this.noSkills
 diff --git a/packages/coding-agent/src/main.ts b/packages/coding-agent/src/main.ts
-index 88aa3c5d30775fb468ceaa94dd7ddfc3e8eab5ef..294803f7630f51d142ea9d159f5a36d775142091 100644
+index 0fae552814b1a9723e5281a37bac0ed8541a1936..1484b3e5891742b6a8509554d53e273c3dad9d12 100644
 --- a/packages/coding-agent/src/main.ts
 +++ b/packages/coding-agent/src/main.ts
-@@ -34,6 +34,7 @@ import { createProjectTrustContext } from "./cli/project-trust.ts";
+@@ -37,6 +37,7 @@ import { createProjectTrustContext } from "./cli/project-trust.ts";
  import { selectSession } from "./cli/session-picker.ts";
  import { shouldRunFirstTimeSetup, showFirstTimeSetup, showStartupSelector } from "./cli/startup-ui.ts";
  import { APP_NAME, ENV_SESSION_DIR, expandTildePath, getAgentDir, getPackageDir, VERSION } from "./config.ts";
@@ -699,7 +699,7 @@ index 88aa3c5d30775fb468ceaa94dd7ddfc3e8eab5ef..294803f7630f51d142ea9d159f5a36d7
  import { type CreateAgentSessionRuntimeFactory, createAgentSessionRuntime } from "./core/agent-session-runtime.ts";
  import {
  	type AgentSessionRuntimeDiagnostic,
-@@ -648,6 +649,11 @@ export async function main(args: string[], options?: MainOptions) {
+@@ -685,6 +686,11 @@ export async function main(args: string[], options?: MainOptions) {
  		process.exit(0);
  	}
  

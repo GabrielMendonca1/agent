@@ -1,8 +1,8 @@
 diff --git a/packages/ai/src/api/anthropic-messages.ts b/packages/ai/src/api/anthropic-messages.ts
-index e9315709b1f4bb85a54eb586535636d672dc0529..eab98fc0dfe7595d740abfc6720018344bb3444b 100644
+index a5e0c101e4bdc559de0eff0ccb6e78a11933e1e7..55b7f077688b1219ea859e7cd364a9ce297d7abc 100644
 --- a/packages/ai/src/api/anthropic-messages.ts
 +++ b/packages/ai/src/api/anthropic-messages.ts
-@@ -126,12 +126,14 @@ const ccToolLookup = new Map(claudeCodeTools.map((t) => [t.toLowerCase(), t]));
+@@ -133,12 +133,14 @@ const ccToolLookup = new Map(claudeCodeTools.map((t) => [t.toLowerCase(), t]));
  
  // Convert tool name to CC canonical casing if it matches (case-insensitive)
  const toClaudeCodeName = (name: string) => ccToolLookup.get(name.toLowerCase()) ?? name;
@@ -19,22 +19,6 @@ index e9315709b1f4bb85a54eb586535636d672dc0529..eab98fc0dfe7595d740abfc672001834
  	return name;
  };
  
-@@ -649,7 +651,14 @@ export const stream: StreamFunction<"anthropic-messages", AnthropicOptions> = (
- 			let response: Response;
- 			for (;;) {
- 				options?.signal?.throwIfAborted();
--				const built = buildParams(model, normalizedContext, isOAuth, options, disablePreferredStrictTools, billingHeader);
-+				const built = buildParams(
-+					model,
-+					normalizedContext,
-+					isOAuth,
-+					options,
-+					disablePreferredStrictTools,
-+					billingHeader,
-+				);
- 				if (built.providerThinkingLevel) output.providerThinkingLevel = built.providerThinkingLevel;
- 				let params = built.params;
- 				const nextParams = await options?.onPayload?.(params, model);
 diff --git a/packages/ai/test/cc-hidden-tool-names.test.ts b/packages/ai/test/cc-hidden-tool-names.test.ts
 new file mode 100644
 index 0000000000000000000000000000000000000000..e66dda4e57a5574989bb58e1af749c00577dc7d4

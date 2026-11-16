@@ -1,8 +1,8 @@
 diff --git a/packages/coding-agent/src/core/agent-session.ts b/packages/coding-agent/src/core/agent-session.ts
-index dbe36c3658a316d1156be664d5c192a3e7478432..09b854c1bf7996b58953184baabec621282e0d92 100644
+index f76247d5647a6ab17923425ebb0cee5b4ca6495b..f836170d3edda64e93deba73c8004c09b3eefe37 100644
 --- a/packages/coding-agent/src/core/agent-session.ts
 +++ b/packages/coding-agent/src/core/agent-session.ts
-@@ -1548,7 +1548,7 @@ export class AgentSession {
+@@ -1597,7 +1597,7 @@ export class AgentSession {
  	/**
  	 * Set active tools by name.
  	 * Only tools in the registry can be enabled. Unknown and hidden tool names are ignored.
@@ -11,7 +11,7 @@ index dbe36c3658a316d1156be664d5c192a3e7478432..09b854c1bf7996b58953184baabec621
  	 * Changes take effect on the next agent turn.
  	 */
  	setActiveToolsByName(toolNames: string[]): void {
-@@ -1560,10 +1560,28 @@ export class AgentSession {
+@@ -1609,10 +1609,28 @@ export class AgentSession {
  		if (previous.some((name) => !active.has(name))) this._pendingToolNames.clear();
  	}
  
@@ -42,7 +42,7 @@ index dbe36c3658a316d1156be664d5c192a3e7478432..09b854c1bf7996b58953184baabec621
  	}
  
  	/**
-@@ -1790,16 +1808,6 @@ export class AgentSession {
+@@ -1839,16 +1857,6 @@ export class AgentSession {
  		return sections ? { role: "system", content: "", sections, timestamp: Date.now() } : undefined;
  	}
  
@@ -59,7 +59,7 @@ index dbe36c3658a316d1156be664d5c192a3e7478432..09b854c1bf7996b58953184baabec621
  	/**
  	 * Remove the declarations that `prepareLoadout` hooks hide from every request. The whole
  	 * transcript is filtered with the current set, so the projected declarations stay consistent
-@@ -1825,20 +1833,31 @@ export class AgentSession {
+@@ -1874,20 +1882,31 @@ export class AgentSession {
  		};
  	}
  
@@ -95,7 +95,7 @@ index dbe36c3658a316d1156be664d5c192a3e7478432..09b854c1bf7996b58953184baabec621
  		};
  	}
  
-@@ -1878,7 +1897,7 @@ export class AgentSession {
+@@ -1927,7 +1946,7 @@ export class AgentSession {
  		// activated when they register. Excluded tools never register, so they are not kept pending.
  		this._pendingToolNames = new Set(names.filter((name) => this._isAllowedTool(name)));
  		// Ignores names that are not registered.
@@ -104,7 +104,7 @@ index dbe36c3658a316d1156be664d5c192a3e7478432..09b854c1bf7996b58953184baabec621
  	}
  
  	// =========================================================================
-@@ -3670,7 +3689,7 @@ export class AgentSession {
+@@ -3744,7 +3763,7 @@ export class AgentSession {
  		// Pending tools that are registered now become active.
  		nextActiveToolNames.push(...this._pendingToolNames);
  
@@ -114,10 +114,10 @@ index dbe36c3658a316d1156be664d5c192a3e7478432..09b854c1bf7996b58953184baabec621
  
  	/** Whether activating the tool declares it to the model. */
 diff --git a/packages/coding-agent/src/modes/interactive/run-feedback.ts b/packages/coding-agent/src/modes/interactive/run-feedback.ts
-index 868812919f5a598d674e8eaaed3d452cf1df8e14..887e4f156fae6abab60d97fd5e621256901a7982 100644
+index 89486313a52612e02c15ffa9a6f7991751277ce7..443cfb6289aab3c1ad5d02ac20f9bf75a6173160 100644
 --- a/packages/coding-agent/src/modes/interactive/run-feedback.ts
 +++ b/packages/coding-agent/src/modes/interactive/run-feedback.ts
-@@ -595,7 +595,8 @@ export class RunFeedback {
+@@ -589,7 +589,8 @@ export class RunFeedback {
  			const max = rawMax?.trim() ? Number(rawMax) : 3;
  			const maxNotices = Number.isSafeInteger(max) && max >= 0 ? Math.min(max, 10) : 3;
  			if (
@@ -176,7 +176,7 @@ index bbe5fb9f0b12cc1cf38c4f1a3a51fce6aef3b8d5..52c2497f1c0ce8c66e79f2bf53db1d9c
  
 diff --git a/packages/coding-agent/test/tool-load-append.test.ts b/packages/coding-agent/test/tool-load-append.test.ts
 new file mode 100644
-index 0000000000000000000000000000000000000000..3ccdbbe579f358809be586a88fb24e961d9f8802
+index 0000000000000000000000000000000000000000..7ea8065029b6002b8ab7e4b48d467ac766ef0e0f
 --- /dev/null
 +++ b/packages/coding-agent/test/tool-load-append.test.ts
 @@ -0,0 +1,165 @@

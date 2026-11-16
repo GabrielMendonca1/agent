@@ -3,23 +3,24 @@
 	"name": "agent",
 	"officialRepository": "https://github.com/earendil-works/pi.git",
 	"officialPackage": "@earendil-works/pi-coding-agent",
-	"overlayBase": "f9a26365568127461c47a07a37dcb42c140a3ac5",
-	"overlayRef": "v1.5.0",
+	"overlayBase": "b4afdddf44e059c67ccf5097e5317d913521b470",
+	"overlayRef": "v1.5.2",
 	"patches": [
 		{
 			"name": "pi-black",
 			"path": "overlay/pi-black.patch",
-			"sha256": "17fad608b43f7c5f59eaa64e6d652a71259fde475d695e8322b5eceb9d6f59a0",
+			"sha256": "90d019304a3e6b31422e37af2f35d19829fe64268b09387ea2355373ee3f6bc0",
 			"tests": [
 				"packages/ai/test/anthropic-claude-code.test.ts",
 				"packages/ai/test/anthropic-auth-token.test.ts",
+				"packages/ai/test/anthropic-message-threads.test.ts",
 				"packages/coding-agent/test/interactive-mode-anthropic-warning.test.ts"
 			]
 		},
 		{
 			"name": "garime-frame",
 			"path": "overlay/garime-frame.patch",
-			"sha256": "9e278856e77d2dfbfa704ff359d3dd9f24cb9a944c83354b5f48c33681f4274c",
+			"sha256": "ceda5731099d461ed5f9c4c32b104529832301ad9357a900e8a12fe49f91fe8e",
 			"tests": [
 				"packages/coding-agent/test/garime-frame.test.ts",
 				"packages/coding-agent/test/interactive-tui.test.ts"
@@ -29,7 +30,7 @@
 			"name": "pi-account-env",
 			"path": "overlay/pi-account-env.patch",
 			"description": "PI_ACCOUNT_<PROVIDER>=<nome> resolve a credencial pela conta do bucket accounts.json (contas por projeto no ARCA); estrito, refresh sob proper-lockfile; `pi --arca-capabilities` declara suporte.",
-			"sha256": "405e4712172f2daf619e02c23f73fdf892de58511a3fe7bd2578666775891189",
+			"sha256": "02e9ff0586b8da50a137550d5ba076092cbdbb964a420a11dca8d40c347c422b",
 			"tests": [
 				"packages/coding-agent/test/account-selection.test.ts",
 				"packages/coding-agent/test/auth-storage.test.ts"
@@ -38,7 +39,7 @@
 		{
 			"name": "transcript-feedback",
 			"path": "overlay/transcript-feedback.patch",
-			"sha256": "06ded099fb11def86737a64328a731efbb292ac6c60d2a82fc1dad5fd7f12be7",
+			"sha256": "6a8dc800509a67d1d4afc890a02348434a0e3ed34dde92da3dd5890454fd660b",
 			"description": "Transcript rendering, masking and local recap only. No auxiliary inference for recaps or notices.",
 			"tests": [
 				"packages/coding-agent/test/run-feedback.test.ts",
@@ -49,7 +50,7 @@
 			"name": "stream-markdown",
 			"path": "overlay/stream-markdown.patch",
 			"description": "Agrupamento de message_update por quadro no host clássico e PI_TUI_HZ (30..240, default 60), com teto adaptativo. Cache de Markdown e reuso de componentes são upstream Pi 1.5.0.",
-			"sha256": "5d6369d6251da9d5006785e890143ca8fde7289c4e56c8253a6856401342579b",
+			"sha256": "7b15e319db53f976f06b81666409b34bce6075ab97989585bd136b651ffb43c9",
 			"tests": [
 				"packages/coding-agent/test/stream-markdown.test.ts",
 				"packages/coding-agent/test/garime-frame.test.ts",
@@ -60,7 +61,7 @@
 			"name": "agent-skill-curation",
 			"path": "overlay/agent-skill-curation.patch",
 			"description": "PI_AUTOMATIC_SKILLS opt-in: curadoria do anúncio no formatter compartilhado; catálogo e arquivos intactos.",
-			"sha256": "36827f3f462ab3cf312f62f1a399d41e8bd291ec23f2ff8bfbbe9152d514009c",
+			"sha256": "82f5f0d3f86bbbe0661adc6f37f87b461914b6b3dc76300a6e3fef243071d695",
 			"tests": [
 				"packages/coding-agent/test/skill-curation.test.ts",
 				"packages/coding-agent/test/skills.test.ts"
@@ -70,7 +71,7 @@
 			"name": "codemode-typed-results",
 			"path": "overlay/codemode-typed-results.patch",
 			"description": "Structured read/grep/find results in scripts; direct display text unchanged.",
-			"sha256": "f10452b930db0b6795ee61ffab7f50cdc09dbb179ee1f388de8b8006c98f403d",
+			"sha256": "9e42b798e884b014994b309897cb493630e0e31b71b288de767cca4c1343ec28",
 			"tests": [
 				"packages/coding-agent/test/codemode-typed-results.test.ts",
 				"packages/coding-agent/test/tools.test.ts",
@@ -81,7 +82,7 @@
 			"name": "codemode-background",
 			"path": "overlay/codemode-background.patch",
 			"description": "Background codemode runs after a five-minute wait, partial output, completion events and cancellation.",
-			"sha256": "75c6c51699fcff28ff86ec3470000011909ff8e1de58f5bcce4623a38ab47e5d",
+			"sha256": "2036e77e3d68a1bdfd4b2cb60713c894fe4ba800fb0a17fff6428d132f08e8dd",
 			"tests": [
 				"packages/coding-agent/test/codemode-background.test.ts",
 				"packages/coding-agent/test/codemode-worker-admission.test.ts",
@@ -101,13 +102,13 @@
 				"packages/coding-agent/test/suite/agent-session-prompt.test.ts",
 				"packages/coding-agent/test/suite/agent-session-mcp.test.ts"
 			],
-			"sha256": "0380c1a9af3b4d6d2defd63fe58c861e8f689d1f0b9772dbcb4bd0b071261cff"
+			"sha256": "8924e721860c5a93da1fcd6d10376d0828afd34df093c839a2465bf9daed6025"
 		},
 		{
 			"name": "cc-hidden-tool-names",
 			"path": "overlay/cc-hidden-tool-names.patch",
 			"description": "Lane OAuth Anthropic: o modelo chama tools pelo nome do Claude Code (Bash, Read). Quando a tool está escondida do request (codemode only), o nome volta em minúsculas em vez de dar 'Tool Bash not found'.",
-			"sha256": "083d4b7ec64c52dbd20fcbc13c227a360f1309b0d744ef16fc4bb9bf0a8dc05a",
+			"sha256": "4231f440e824880f4b0897eb7c8be5427574a2128c96b3a51c65af8953040268",
 			"tests": [
 				"packages/ai/test/cc-hidden-tool-names.test.ts",
 				"packages/ai/test/anthropic-claude-code.test.ts"
@@ -117,7 +118,7 @@
 			"name": "auth-guidance-short",
 			"path": "overlay/auth-guidance-short.patch",
 			"description": "Mensagens de falta de login/modelo/chave terminam em \"Use /login to log into a provider via OAuth or API key.\", sem \"See:\" nem os caminhos absolutos de docs/providers.md e docs/models.md.",
-			"sha256": "5482387ee5bf52d457936c686e0b54ef5da59ba05450f23ab4b5b1e42b1aa579",
+			"sha256": "12e3666c5ebd980091356eb5d62c5f0d72a31fec0f5ceb1a18769138fe0207b3",
 			"tests": [
 				"packages/coding-agent/test/auth-guidance-short.test.ts",
 				"packages/coding-agent/test/rpc-prompt-response-semantics.test.ts"
@@ -189,6 +190,11 @@
 			"officialVersion": "1.5.0",
 			"path": "overlay/model-data/1.5.0",
 			"manifestSha256": "cf17cbcc7bbf526c30f246c7574bc56e323d919177992785ca330cad1773d75b"
+		},
+		{
+			"officialVersion": "1.5.2",
+			"path": "overlay/model-data/1.5.2",
+			"manifestSha256": "ea7932c576dbd6cb73eb7ae4815e7b69806c4aa5b3606b00ecfff3b91fd24d6e"
 		}
 	],
 	"releaseOverlays": [

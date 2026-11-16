@@ -1,8 +1,8 @@
 diff --git a/packages/coding-agent/src/modes/interactive/interactive-mode.ts b/packages/coding-agent/src/modes/interactive/interactive-mode.ts
-index fd64e53f0f25ca2527e4e0cf3028972a29d84b4e..a8ef630c608573d43e84f99fbafdff3aef7b9b8f 100644
+index 7f3255a529ecc9c8802a1d289ed6eecf280dcfdc..5c8027cd3365cf01c609a849c5d01dee3e83a5b1 100644
 --- a/packages/coding-agent/src/modes/interactive/interactive-mode.ts
 +++ b/packages/coding-agent/src/modes/interactive/interactive-mode.ts
-@@ -196,6 +196,7 @@ import { getModelSearchText } from "./model-search.ts";
+@@ -205,6 +205,7 @@ import { getModelSearchText } from "./model-search.ts";
  import { type BlockedStatus, ProgramStatusReporter } from "./program-status-reporter.ts";
  import { FEEDBACK_ENTRY, RunFeedback } from "./run-feedback.ts";
  import { shareSession } from "./session-share.ts";
@@ -10,7 +10,7 @@ index fd64e53f0f25ca2527e4e0cf3028972a29d84b4e..a8ef630c608573d43e84f99fbafdff3a
  import {
  	getAvailableThemes,
  	getAvailableThemesWithPaths,
-@@ -527,6 +528,16 @@ export class InteractiveMode {
+@@ -538,6 +539,16 @@ export class InteractiveMode {
  	private streamingComponent: AssistantMessageComponent | undefined = undefined;
  	private readonly entriesRenderedByBoundaryCompaction = new Set<string>();
  	private streamingMessage: AssistantMessage | undefined = undefined;
@@ -27,7 +27,7 @@ index fd64e53f0f25ca2527e4e0cf3028972a29d84b4e..a8ef630c608573d43e84f99fbafdff3a
  
  	// Tool execution tracking: toolCallId -> component
  	private pendingTools = new Map<string, ToolExecutionComponent>();
-@@ -2333,7 +2344,27 @@ export class InteractiveMode {
+@@ -2359,7 +2370,27 @@ export class InteractiveMode {
  		return true;
  	}
  
@@ -55,7 +55,7 @@ index fd64e53f0f25ca2527e4e0cf3028972a29d84b4e..a8ef630c608573d43e84f99fbafdff3a
  		this.loadedResourcesContainer.clear();
  		this.chatContainer.clear();
  		this.feedbackTranscript?.clear();
-@@ -3663,11 +3694,13 @@ if (!dialogOpen) this.editorContainer.addChild(this.editor as Component);
+@@ -3727,11 +3758,13 @@ if (!dialogOpen) this.editorContainer.addChild(this.editor as Component);
  			case "message_update":
  				if (this.streamingComponent && event.message.role === "assistant") {
  					this.streamingMessage = event.message;
@@ -70,7 +70,7 @@ index fd64e53f0f25ca2527e4e0cf3028972a29d84b4e..a8ef630c608573d43e84f99fbafdff3a
  								const component = new ToolExecutionComponent(
  									content.name,
  									content.id,
-@@ -3692,12 +3725,14 @@ if (!dialogOpen) this.editorContainer.addChild(this.editor as Component);
+@@ -3756,12 +3789,14 @@ if (!dialogOpen) this.editorContainer.addChild(this.editor as Component);
  							}
  						}
  					}
@@ -86,7 +86,7 @@ index fd64e53f0f25ca2527e4e0cf3028972a29d84b4e..a8ef630c608573d43e84f99fbafdff3a
  				if (this.streamingComponent && event.message.role === "assistant") {
  					this.streamingMessage = event.message;
  					let errorMessage: string | undefined;
-@@ -3743,6 +3778,7 @@ if (!dialogOpen) this.editorContainer.addChild(this.editor as Component);
+@@ -3807,6 +3842,7 @@ if (!dialogOpen) this.editorContainer.addChild(this.editor as Component);
  				break;
  
  			case "tool_execution_start": {
@@ -94,7 +94,7 @@ index fd64e53f0f25ca2527e4e0cf3028972a29d84b4e..a8ef630c608573d43e84f99fbafdff3a
  				// Nested calls (from codemode scripts) are shown inside their parent's row.
  				if (event.parentToolCallId) break;
  				let component = this.pendingTools.get(event.toolCallId);
-@@ -3790,6 +3826,7 @@ if (!dialogOpen) this.editorContainer.addChild(this.editor as Component);
+@@ -3854,6 +3890,7 @@ if (!dialogOpen) this.editorContainer.addChild(this.editor as Component);
  			}
  
  			case "agent_end":
@@ -301,7 +301,7 @@ index 8b4f9ea4a7269386418c8095ac269d01ed9a040b..5d1e4fda6c923295a59e40cff95a25a2
  	isViewportTUI,
  	type OverlayAnchor,
 diff --git a/packages/tui/src/tui.ts b/packages/tui/src/tui.ts
-index ad11a36c5f332e680661d66a6af301b556917357..43b0b56e2eefbd2d2b97193715a7f7b6ad03d68d 100644
+index fe0f2c7d839bd7794a3bc34da5b8de8a2084555b..67645a9afc0cea2e9e3cd766878f8a6377139c18 100644
 --- a/packages/tui/src/tui.ts
 +++ b/packages/tui/src/tui.ts
 @@ -488,6 +488,8 @@ export interface TUI extends Component {

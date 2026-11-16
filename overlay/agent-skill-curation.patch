@@ -1,5 +1,5 @@
 diff --git a/packages/coding-agent/src/core/skills.ts b/packages/coding-agent/src/core/skills.ts
-index 48df4536b9a62642855fdeed2ab44a6202968a96..be1d61329f14966e8791772bf80f46a9ccdf43a4 100644
+index 48df4536b9a62642855fdeed2ab44a6202968a96..64f50d7992a7b21fe5e68b859e8d9419e885715c 100644
 --- a/packages/coding-agent/src/core/skills.ts
 +++ b/packages/coding-agent/src/core/skills.ts
 @@ -344,6 +344,28 @@ function loadSkillFromFile(
@@ -45,7 +45,7 @@ index 48df4536b9a62642855fdeed2ab44a6202968a96..be1d61329f14966e8791772bf80f46a9
  		return "";
 diff --git a/packages/coding-agent/test/skill-curation.test.ts b/packages/coding-agent/test/skill-curation.test.ts
 new file mode 100644
-index 0000000000000000000000000000000000000000..97e3a94b7bf3c484dac6ee153bbac19f9abad85e
+index 0000000000000000000000000000000000000000..a4cdce2098ca9402dada5d8c90503caa103cad3b
 --- /dev/null
 +++ b/packages/coding-agent/test/skill-curation.test.ts
 @@ -0,0 +1,93 @@

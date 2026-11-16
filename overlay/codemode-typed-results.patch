@@ -20,10 +20,10 @@ index 6dd76cbad1f120fbf66ebbdea580b516cc51b08c..0cb6e6e86dda8b9b38a1c4b42f3ea467
  
  A call that fails, is blocked, or gets invalid arguments rejects with an `Error` that carries the tool's error text. Use `Promise.allSettled()` to keep the results of the calls that succeed.
 diff --git a/packages/coding-agent/src/core/tools/find.ts b/packages/coding-agent/src/core/tools/find.ts
-index 77ba1b356c9fc140ab6849dc0b76be403a968f8a..fa277e6c47a7987b241ce115c9b1b6865dda8768 100644
+index e86e1b4e4fdd6ea2a90f775b871af851fcf05faf..77f64c95dbf747227f08a7a635a44ce44eb50ec1 100644
 --- a/packages/coding-agent/src/core/tools/find.ts
 +++ b/packages/coding-agent/src/core/tools/find.ts
-@@ -77,6 +77,7 @@ export function createFindToolDefinition(
+@@ -78,6 +78,7 @@ export function createFindToolDefinition(
  		description: `Search for files by glob pattern. Returns matching file paths relative to the search directory. Respects .gitignore. Output is truncated to ${DEFAULT_LIMIT} results or ${DEFAULT_MAX_BYTES / 1024}KB (whichever is hit first).`,
  		promptSnippet: findToolSystemPromptContribution.snippet,
  		parameters: findSchema,
@@ -31,7 +31,7 @@ index 77ba1b356c9fc140ab6849dc0b76be403a968f8a..fa277e6c47a7987b241ce115c9b1b686
  		async execute(
  			_toolCallId,
  			{ pattern, path: searchDir, limit }: { pattern: string; path?: string; limit?: number },
-@@ -133,6 +134,7 @@ export function createFindToolDefinition(
+@@ -136,6 +137,7 @@ export function createFindToolDefinition(
  								settle(() =>
  									resolve({
  										content: [{ type: "text", text: "No files found matching pattern" }],
@@ -39,7 +39,7 @@ index 77ba1b356c9fc140ab6849dc0b76be403a968f8a..fa277e6c47a7987b241ce115c9b1b686
  										details: undefined,
  									}),
  								);
-@@ -161,6 +163,10 @@ export function createFindToolDefinition(
+@@ -166,6 +168,10 @@ export function createFindToolDefinition(
  							settle(() =>
  								resolve({
  									content: [{ type: "text", text: resultOutput }],
@@ -50,7 +50,7 @@ index 77ba1b356c9fc140ab6849dc0b76be403a968f8a..fa277e6c47a7987b241ce115c9b1b686
  									details: Object.keys(details).length > 0 ? details : undefined,
  								}),
  							);
-@@ -258,6 +264,7 @@ export function createFindToolDefinition(
+@@ -303,6 +309,7 @@ export function createFindToolDefinition(
  								settle(() =>
  									resolve({
  										content: [{ type: "text", text: "No files found matching pattern" }],
@@ -58,22 +58,22 @@ index 77ba1b356c9fc140ab6849dc0b76be403a968f8a..fa277e6c47a7987b241ce115c9b1b686
  										details: undefined,
  									}),
  								);
-@@ -293,6 +300,10 @@ export function createFindToolDefinition(
+@@ -335,6 +342,10 @@ export function createFindToolDefinition(
  							settle(() =>
  								resolve({
  									content: [{ type: "text", text: resultOutput }],
 +									structuredContent: {
-+										paths: relativized.filter((_, i) => i < truncation.outputLines),
++										paths: storedResults.filter((_, i) => i < truncation.outputLines),
 +										truncated: resultLimitReached || truncation.truncated,
 +									},
  									details: Object.keys(details).length > 0 ? details : undefined,
  								}),
  							);
 diff --git a/packages/coding-agent/src/core/tools/grep.ts b/packages/coding-agent/src/core/tools/grep.ts
-index e449e0898d0097ee84dbe8987b4ec323c6827374..d948accf95d3e709b73bb49f946b2bf52490c69c 100644
+index dcf685a35a2a9571cdb55922988e9283722b5f4b..6b7b05172745468aeb75dd3484e473e3ecf282c4 100644
 --- a/packages/coding-agent/src/core/tools/grep.ts
 +++ b/packages/coding-agent/src/core/tools/grep.ts
-@@ -77,6 +77,10 @@ export function createGrepToolDefinition(
+@@ -90,6 +90,10 @@ export function createGrepToolDefinition(
  		description: `Search file contents for a pattern. Returns matching lines with file paths and line numbers. Respects .gitignore. Output is truncated to ${DEFAULT_LIMIT} matches or ${DEFAULT_MAX_BYTES / 1024}KB (whichever is hit first). Long lines are truncated to ${GREP_MAX_LINE_LENGTH} chars.`,
  		promptSnippet: grepToolSystemPromptContribution.snippet,
  		parameters: grepSchema,
@@ -84,7 +84,7 @@ index e449e0898d0097ee84dbe8987b4ec323c6827374..d948accf95d3e709b73bb49f946b2bf5
  		async execute(
  			_toolCallId,
  			{
-@@ -175,6 +179,7 @@ export function createGrepToolDefinition(
+@@ -184,6 +188,7 @@ export function createGrepToolDefinition(
  						let aborted = false;
  						let killedDueToLimit = false;
  						const outputLines: string[] = [];
@@ -92,7 +92,17 @@ index e449e0898d0097ee84dbe8987b4ec323c6827374..d948accf95d3e709b73bb49f946b2bf5
  
  						const cleanup = () => {
  							rl.close();
-@@ -256,13 +261,27 @@ export function createGrepToolDefinition(
+@@ -232,6 +237,9 @@ export function createGrepToolDefinition(
+ 							// outputBytes counts a newline after every line; the joined output has one fewer.
+ 							if (outputBytes - 1 <= DEFAULT_MAX_BYTES) outputLines.push(line);
+ 							outputBytes += Buffer.byteLength(line, "utf-8") + 1;
++							// Typed records keep only matches whose display line survives the byte cap.
++							if (isMatch && outputBytes - 1 <= DEFAULT_MAX_BYTES)
++								structuredMatches.push({ path: relativePath, line: lineNumber, text: truncatedText });
+ 							outputLineCount++;
+ 						};
+ 
+@@ -284,7 +292,11 @@ export function createGrepToolDefinition(
  							}
  							if (matchCount === 0) {
  								settle(() =>
@@ -105,33 +115,7 @@ index e449e0898d0097ee84dbe8987b4ec323c6827374..d948accf95d3e709b73bb49f946b2bf5
  								);
  								return;
  							}
- 
- 							// Format matches after streaming finishes so custom readFile() backends can be async.
-+							let outputBytes = 0;
- 							for (const match of matches) {
-+								const firstOutputLine = outputLines.length;
-+								const rawText =
-+									match.lineText ?? (await getFileLines(match.filePath))[match.lineNumber - 1] ?? "";
-+								const structuredMatch = {
-+									path: formatPath(match.filePath),
-+									line: match.lineNumber,
-+									text: truncateLine(rawText.replace(/\r\n/g, "\n").replace(/\r/g, "").replace(/\n$/, ""))
-+										.text,
-+								};
- 								if (contextValue === 0 && match.lineText !== undefined) {
- 									const relativePath = formatPath(match.filePath);
- 									const sanitized = match.lineText
-@@ -276,6 +295,9 @@ export function createGrepToolDefinition(
- 									const block = await formatBlock(match.filePath, match.lineNumber);
- 									outputLines.push(...block);
- 								}
-+								for (const line of outputLines.slice(firstOutputLine))
-+									outputBytes += Buffer.byteLength(line, "utf8") + 1;
-+								if (outputBytes - 1 <= DEFAULT_MAX_BYTES) structuredMatches.push(structuredMatch);
- 							}
- 
- 							const rawOutput = outputLines.join("\n");
-@@ -305,6 +327,10 @@ export function createGrepToolDefinition(
+@@ -318,6 +330,10 @@ export function createGrepToolDefinition(
  							settle(() =>
  								resolve({
  									content: [{ type: "text", text: output }],
@@ -143,10 +127,10 @@ index e449e0898d0097ee84dbe8987b4ec323c6827374..d948accf95d3e709b73bb49f946b2bf5
  								}),
  							);
 diff --git a/packages/coding-agent/src/core/tools/read.ts b/packages/coding-agent/src/core/tools/read.ts
-index 8fb93a679e5378150646d6503aa0ebd490ac7fac..510c1fa3d3ad161f9470707566b21c3d70d8ee22 100644
+index dd123cb4eb0373e4b97647a5a8b560d0f48b17cc..90185ae68814bd86edb5df27fea2afae6d734074 100644
 --- a/packages/coding-agent/src/core/tools/read.ts
 +++ b/packages/coding-agent/src/core/tools/read.ts
-@@ -24,12 +24,20 @@ export const readToolSystemPromptContribution = {
+@@ -25,12 +25,20 @@ export const readToolSystemPromptContribution = {
  export type ReadToolInput = Static<typeof readSchema>;
  
  /**
@@ -168,7 +152,7 @@ index 8fb93a679e5378150646d6503aa0ebd490ac7fac..510c1fa3d3ad161f9470707566b21c3d
  	Type.String(),
  	Type.Object({ type: Type.Literal("image"), data: Type.String(), mimeType: Type.String(), note: Type.String() }),
  ]);
-@@ -105,6 +113,7 @@ export function createReadToolDefinition(
+@@ -248,6 +256,7 @@ export function createReadToolDefinition(
  			_onUpdate?,
  			ctx?: ExtensionContext,
  		) {
@@ -176,7 +160,7 @@ index 8fb93a679e5378150646d6503aa0ebd490ac7fac..510c1fa3d3ad161f9470707566b21c3d
  			return new Promise<{ content: (TextContent | ImageContent)[]; details: ReadToolDetails | undefined }>(
  				(resolve, reject) => {
  					if (signal?.aborted) {
-@@ -201,6 +210,14 @@ export function createReadToolDefinition(
+@@ -340,6 +349,14 @@ export function createReadToolDefinition(
  									outputText = truncation.content;
  								}
  								content = [{ type: "text", text: outputText }];
@@ -191,7 +175,7 @@ index 8fb93a679e5378150646d6503aa0ebd490ac7fac..510c1fa3d3ad161f9470707566b21c3d
  							}
  
  							if (aborted) return;
-@@ -212,7 +229,7 @@ export function createReadToolDefinition(
+@@ -351,7 +368,7 @@ export function createReadToolDefinition(
  						}
  					})();
  				},
@@ -200,6 +184,19 @@ index 8fb93a679e5378150646d6503aa0ebd490ac7fac..510c1fa3d3ad161f9470707566b21c3d
  		},
  		...readRenderers,
  	};
+diff --git a/packages/coding-agent/src/modes/interactive/interactive-mode.ts b/packages/coding-agent/src/modes/interactive/interactive-mode.ts
+index 5c8027cd3365cf01c609a849c5d01dee3e83a5b1..52b8e1e10232de733e93e9015d5dae0c72a01686 100644
+--- a/packages/coding-agent/src/modes/interactive/interactive-mode.ts
++++ b/packages/coding-agent/src/modes/interactive/interactive-mode.ts
+@@ -3121,7 +3121,7 @@ export class InteractiveMode {
+ 			this.editor = this.defaultEditor;
+ 		}
+ 
+-if (!dialogOpen) this.editorContainer.addChild(this.editor as Component);
++		if (!dialogOpen) this.editorContainer.addChild(this.editor as Component);
+ 		if (this.activeStatusIndicator && this.activeStatusIndicator.kind !== "working") {
+ 			this.statusContainer.clear();
+ 			this.activeWorkingIndicatorEmbedded = this.setEditorWorkingStatusIndicator(this.activeStatusIndicator);
 diff --git a/packages/coding-agent/test/codemode-typed-results.test.ts b/packages/coding-agent/test/codemode-typed-results.test.ts
 new file mode 100644
 index 0000000000000000000000000000000000000000..e3158d7e29b1fa6091003493f33bd28a5d064a65
@@ -251,10 +248,10 @@ index 0000000000000000000000000000000000000000..e3158d7e29b1fa6091003493f33bd28a
 +	}
 +});
 diff --git a/packages/coding-agent/test/suite/agent-session-codemode.test.ts b/packages/coding-agent/test/suite/agent-session-codemode.test.ts
-index 3e062063523d192e6af738a8f69733ad6ab37052..150c4078d2772a33a130a08853fe1cee716b915e 100644
+index 0ea7fb7914a667367315aaa0f7e06c3bd78eb26c..deedfef42d5b711d8b27f12aa3b3dcaaee47e84d 100644
 --- a/packages/coding-agent/test/suite/agent-session-codemode.test.ts
 +++ b/packages/coding-agent/test/suite/agent-session-codemode.test.ts
-@@ -624,7 +624,7 @@ describe("codemode options and store", () => {
+@@ -668,7 +668,7 @@ describe("codemode options and store", () => {
  	});
  
  	// https://github.com/earendil-works/pi/issues/10251
@@ -263,7 +260,7 @@ index 3e062063523d192e6af738a8f69733ad6ab37052..150c4078d2772a33a130a08853fe1cee
  		const harness = await createHarness({
  			initialActiveToolNames: ["codemode", "read"],
  			extensionFactories: [createCodemodeExtension()],
-@@ -634,7 +634,7 @@ describe("codemode options and store", () => {
+@@ -678,7 +678,7 @@ describe("codemode options and store", () => {
  		writeFileSync(join(harness.tempDir, "pixel.png"), Buffer.from(TINY_PNG_BASE64, "base64"));
  		const result = await run(
  			harness,
@@ -273,10 +270,10 @@ index 3e062063523d192e6af738a8f69733ad6ab37052..150c4078d2772a33a130a08853fe1cee
  		expect(result.isError).toBe(false);
  		expect(checkSavedImages(resultText(result))).toBe(
 diff --git a/packages/coding-agent/test/tools.test.ts b/packages/coding-agent/test/tools.test.ts
-index a096c2f917cfb9ef9414e99bb7b270d2fbe006f0..9a16b82e516a98780788c952a9e769d4fbf28fbe 100644
+index 7ceb5ef66bf0dc09f0c514c2a19e06d32427c127..4fc0b1a4110fd6cb2ed373372360f22448747bbb 100644
 --- a/packages/coding-agent/test/tools.test.ts
 +++ b/packages/coding-agent/test/tools.test.ts
-@@ -89,7 +89,13 @@ describe("Coding Agent Tools", () => {
+@@ -95,7 +95,13 @@ describe("Coding Agent Tools", () => {
  			// No truncation message since file fits within limits
  			expect(getTextOutput(result)).not.toContain("Use offset=");
  			expect(result.details).toBeUndefined();

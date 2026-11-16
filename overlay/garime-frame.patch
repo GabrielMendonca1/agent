@@ -120,20 +120,20 @@ index 81d381ee94066682c74deeadda55791f4ed7b18e..ae08a864aa5fccb93a48fa662cd0c257
  	}
  }
 diff --git a/packages/coding-agent/src/modes/interactive/components/custom-message.ts b/packages/coding-agent/src/modes/interactive/components/custom-message.ts
-index 6dcddf402d936921599bcabaf0f80fb8c5b7bcef..428c0f91a898541befe3912154e699bb4ffa8d93 100644
+index a49df0bc8b0f0bd82a5a6173655fdc30eda21cb4..e12584d511419868c11b36728110f00f8daa74de 100644
 --- a/packages/coding-agent/src/modes/interactive/components/custom-message.ts
 +++ b/packages/coding-agent/src/modes/interactive/components/custom-message.ts
 @@ -4,6 +4,7 @@ import { Box, Container, Markdown, type MarkdownTheme, Spacer, Text } from "@ear
- import type { MessageRenderer } from "../../../core/extensions/types.ts";
+ import type { MarkdownTransformer, MessageRenderer } from "../../../core/extensions/types.ts";
  import type { CustomMessage } from "../../../core/messages.ts";
  import { getMarkdownTheme, theme } from "../theme/theme.ts";
 +import { readTuiBlockGap } from "./inset-layout.ts";
  import { keyHint, keyText } from "./keybinding-hints.ts";
+ import { createMarkdownTransform } from "./markdown-transform.ts";
  
- /**
-@@ -31,7 +32,8 @@ export class CustomMessageComponent extends Container {
- 		this.markdownTheme = markdownTheme;
- 		this.outputPad = outputPad;
+@@ -41,7 +42,8 @@ export class CustomMessageComponent extends Container {
+ 		this.messageId = messageId;
+ 		this.timestamp = timestamp;
  
 -		this.addChild(new Spacer(1));
 +		// garime-frame: respiro entre blocos do transcript (PI_TUI_BLOCK_GAP).
@@ -346,10 +346,10 @@ index 6d691b426503fe51c36dc0aee3ca68c7d99bc812..74d3d5eda5a119e272c65d4c61e4f8b7
  		// Always create all shell variants. contentBox is used for default renderer-based composition.
  		// selfRenderContainer is used when the tool renders its own framing.
 diff --git a/packages/coding-agent/src/modes/interactive/interactive-mode.ts b/packages/coding-agent/src/modes/interactive/interactive-mode.ts
-index 6c6fbcf370a1795050aa6f363e7b0007c16f399b..36be8963b12dd250eeec8739fcdac989c4d98c40 100644
+index d8e2390c44392bca796a04901cf5600b74e37b45..33d2af8a2fcb29baf84fbfd02074e3459f56de14 100644
 --- a/packages/coding-agent/src/modes/interactive/interactive-mode.ts
 +++ b/packages/coding-agent/src/modes/interactive/interactive-mode.ts
-@@ -151,6 +151,13 @@ import { ExtensionEditorComponent } from "./components/extension-editor.ts";
+@@ -159,6 +159,13 @@ import { ExtensionEditorComponent } from "./components/extension-editor.ts";
  import { ExtensionInputComponent } from "./components/extension-input.ts";
  import { ExtensionSelectorComponent } from "./components/extension-selector.ts";
  import { FooterComponent, formatTokens } from "./components/footer.ts";
@@ -362,8 +362,8 @@ index 6c6fbcf370a1795050aa6f363e7b0007c16f399b..36be8963b12dd250eeec8739fcdac989
 +} from "./components/inset-layout.ts";
  import { formatKeyText, keyDisplayText, keyHint, keyText, rawKeyHint } from "./components/keybinding-hints.ts";
  import { LoginDialogComponent } from "./components/login-dialog.ts";
- import { createMermaidMarkdownTransformer } from "./components/mermaid.ts";
-@@ -647,6 +654,8 @@ export class InteractiveMode {
+ import { createMarkdownTransform } from "./components/markdown-transform.ts";
+@@ -665,6 +672,8 @@ export class InteractiveMode {
  		this.documentContainer.addChild(this.headerContainer);
  		this.documentContainer.addChild(this.loadedResourcesContainer);
  		this.documentContainer.addChild(this.chatContainer);
@@ -372,7 +372,7 @@ index 6c6fbcf370a1795050aa6f363e7b0007c16f399b..36be8963b12dd250eeec8739fcdac989
  		this.pendingMessagesContainer = new Container();
  		this.statusContainer = new Container();
  		this.widgetContainerAbove = new Container();
-@@ -1002,7 +1011,8 @@ export class InteractiveMode {
+@@ -1018,7 +1027,8 @@ export class InteractiveMode {
  			scrollbarThumbStyle: (text) => theme.fg("scrollbarThumb", text),
  		});
  		this.transcriptScrollView = viewport.transcript;
@@ -382,7 +382,7 @@ index 6c6fbcf370a1795050aa6f363e7b0007c16f399b..36be8963b12dd250eeec8739fcdac989
  		this.mountInteractiveTui(this.renderer, [
  			this.documentContainer,
  			this.pendingMessagesContainer,
-@@ -2589,7 +2599,8 @@ export class InteractiveMode {
+@@ -2630,7 +2640,8 @@ export class InteractiveMode {
  	 */
  	private renderWidgets(): void {
  		if (!this.widgetContainerAbove || !this.widgetContainerBelow) return;
@@ -392,7 +392,7 @@ index 6c6fbcf370a1795050aa6f363e7b0007c16f399b..36be8963b12dd250eeec8739fcdac989
  		this.renderWidgetContainer(this.widgetContainerBelow, this.extensionWidgetsBelow, false, false);
  		this.ui.requestRender();
  	}
-@@ -3977,7 +3988,8 @@ export class InteractiveMode {
+@@ -4047,7 +4058,8 @@ export class InteractiveMode {
  				break;
  			}
  			case "compactionSummary": {
@@ -402,7 +402,7 @@ index 6c6fbcf370a1795050aa6f363e7b0007c16f399b..36be8963b12dd250eeec8739fcdac989
  				const component = new CompactionSummaryMessageComponent(
  					message,
  					this.getMarkdownThemeWithSettings(),
-@@ -3988,7 +4000,8 @@ export class InteractiveMode {
+@@ -4061,7 +4073,8 @@ export class InteractiveMode {
  				break;
  			}
  			case "branchSummary": {
@@ -412,7 +412,7 @@ index 6c6fbcf370a1795050aa6f363e7b0007c16f399b..36be8963b12dd250eeec8739fcdac989
  				const component = new BranchSummaryMessageComponent(
  					message,
  					this.getMarkdownThemeWithSettings(),
-@@ -4004,7 +4017,10 @@ export class InteractiveMode {
+@@ -4080,7 +4093,10 @@ export class InteractiveMode {
  				const textContent = this.getUserMessageText(message);
  				if (textContent) {
  					if (this.chatContainer.children.length > 0) {
@@ -424,7 +424,7 @@ index 6c6fbcf370a1795050aa6f363e7b0007c16f399b..36be8963b12dd250eeec8739fcdac989
  					}
  					const skillBlock = parseSkillBlock(textContent);
  					if (skillBlock) {
-@@ -4018,7 +4034,8 @@ export class InteractiveMode {
+@@ -4097,7 +4113,8 @@ export class InteractiveMode {
  						this.chatContainer.addChild(component);
  						// Render user message separately if present
  						if (skillBlock.userMessage) {
@@ -505,10 +505,10 @@ index a291cf134825f0a95296e6958c3b0dc7fdecb65d..a9a3bbdd09b926530df1ef058f03197a
  	mdCodeBlockBorder: { slot: "foreground", description: "Markdown code block fences" },
  	mdQuote: { slot: "foreground", description: "Markdown blockquote text" },
 diff --git a/packages/coding-agent/src/modes/interactive/theme/theme.ts b/packages/coding-agent/src/modes/interactive/theme/theme.ts
-index 922b23d9ffce12c368c93987c9ff7968ba9f64e1..9a6ca14318c48c8840d430c50ae5ab26dea46e9b 100644
+index 8b43443f3fe947007ea45cba80795a97486afbc1..c6a0bb8be891b21518ed4e419367b19d8c296488 100644
 --- a/packages/coding-agent/src/modes/interactive/theme/theme.ts
 +++ b/packages/coding-agent/src/modes/interactive/theme/theme.ts
-@@ -1064,6 +1064,10 @@ export function getMarkdownTheme(): MarkdownTheme {
+@@ -1068,6 +1068,10 @@ export function getMarkdownTheme(): MarkdownTheme {
  		link: (text: string) => theme.fg("mdLink", text),
  		linkUrl: (text: string) => theme.fg("mdLinkUrl", text),
  		code: (text: string) => theme.fg("mdCode", text),
@@ -713,10 +713,10 @@ index 0000000000000000000000000000000000000000..b8ea046374583f4e43e04b72a7ccc3ad
 +	});
 +});
 diff --git a/packages/tui/src/components/markdown.ts b/packages/tui/src/components/markdown.ts
-index a21f75181bf5302376ff72deeae7673df1b82a89..c9f13fca1e593bb07639cec7c2c687df75135fce 100644
+index c684c39c7ec7b7b71c58234861bcd266cd898e68..7fc43ea4f002c82026429f0164d03e775e533926 100644
 --- a/packages/tui/src/components/markdown.ts
 +++ b/packages/tui/src/components/markdown.ts
-@@ -234,6 +234,16 @@ export interface MarkdownTheme {
+@@ -264,6 +264,16 @@ export interface MarkdownTheme {
  	link: (text: string) => string;
  	linkUrl: (text: string) => string;
  	code: (text: string) => string;
@@ -733,7 +733,7 @@ index a21f75181bf5302376ff72deeae7673df1b82a89..c9f13fca1e593bb07639cec7c2c687df
  	codeBlock: (text: string) => string;
  	codeBlockBorder: (text: string) => string;
  	quote: (text: string) => string;
-@@ -261,6 +271,15 @@ export interface MarkdownOptions {
+@@ -291,6 +301,15 @@ export interface MarkdownOptions {
  	renderLatex?: boolean;
  }
  
@@ -749,7 +749,7 @@ index a21f75181bf5302376ff72deeae7673df1b82a89..c9f13fca1e593bb07639cec7c2c687df
  interface InlineStyleContext {
  	applyText: (text: string) => string;
  	stylePrefix: string;
-@@ -736,6 +755,22 @@ export class Markdown implements Component {
+@@ -767,6 +786,22 @@ export class Markdown implements Component {
  		return lines;
  	}
  
@@ -772,7 +772,7 @@ index a21f75181bf5302376ff72deeae7673df1b82a89..c9f13fca1e593bb07639cec7c2c687df
  	private renderInlineTokens(tokens: Token[], styleContext?: InlineStyleContext): string {
  		let result = "";
  		const resolvedStyleContext = styleContext ?? this.getDefaultInlineStyleContext();
-@@ -788,7 +823,7 @@ export class Markdown implements Component {
+@@ -827,7 +862,7 @@ export class Markdown implements Component {
  				}
  
  				case "codespan":

@@ -102,7 +102,7 @@ index 0cb6e6e86dda8b9b38a1c4b42f3ea467975b7acb..0684c15e32272798eff15d8e1aee7f07
 +
 +The extension emits `codemode:job` with `{ jobId, status, result, sessionId }` when a background run settles (`done`, `failed`, or `cancelled`), and `status: "running"` when it detaches. Emit `codemode:job:cancel` with `{ jobId }` to stop it. Session shutdown stops background runs. Background runs hold worker slots (default two per process); `PI_CODEMODE_MAX_WORKERS` sets the capacity. Store writes apply when the script completes.
 diff --git a/packages/coding-agent/src/extensions/codemode/execute.ts b/packages/coding-agent/src/extensions/codemode/execute.ts
-index b3635999f7c8bcd73253f3813149ee18a5cea8a7..ab8fa076faa956b7bada83b538734aa1e0234244 100644
+index 2dc8804277c4e8fbdb9910c54c5b58bdcc1239e5..104e45c3037c6347b36d29aefb1cd4e8b80685b2 100644
 --- a/packages/coding-agent/src/extensions/codemode/execute.ts
 +++ b/packages/coding-agent/src/extensions/codemode/execute.ts
 @@ -1,3 +1,4 @@
@@ -508,7 +508,7 @@ index 67492b65b653d7ca243e430e288afecc479f9e46..1e4a5a3a8de5c3034da8409ad1a38b1f
  				models: options.models ?? true,
  				getToolNamespace: (name) => pi.getAllTools().find((tool) => tool.name === name)?.namespace,
 diff --git a/packages/coding-agent/src/extensions/codemode/tool.ts b/packages/coding-agent/src/extensions/codemode/tool.ts
-index 648ba610930531eaddd8e107e3202aab91d0dfbb..fcbad28da2930ad618d40471ea57352ad13ec2da 100644
+index e046e0255b3f74c07b9edf50cd0f749631ab06e7..71bf455a649f8014a8e814696e64b711e303bcd1 100644
 --- a/packages/coding-agent/src/extensions/codemode/tool.ts
 +++ b/packages/coding-agent/src/extensions/codemode/tool.ts
 @@ -22,7 +22,7 @@
@@ -518,9 +518,9 @@ index 648ba610930531eaddd8e107e3202aab91d0dfbb..fcbad28da2930ad618d40471ea57352a
 -import type { AgentTool } from "@earendil-works/pi-agent-core";
 +import type { AgentTool, AgentToolResult } from "@earendil-works/pi-agent-core";
  import type { CodemodeJsonSchema, CodemodeTool } from "@earendil-works/pi-codemode";
- import { renderToolOutputType, renderToolSample, toCodemodeIdentifier } from "@earendil-works/pi-codemode/declarations";
- import { CODEMODE_SOURCE_GRAMMAR } from "@earendil-works/pi-codemode/source";
-@@ -53,6 +53,8 @@ export type CodemodeModelRuntime = Pick<
+ import {
+ 	renderToolOutputType,
+@@ -58,6 +58,8 @@ export type CodemodeModelRuntime = Pick<
  >;
  
  export interface CodemodeToolOptions {
@@ -615,10 +615,10 @@ index 0000000000000000000000000000000000000000..1a253ddb69052e75b7aa724c7d1e0de8
 +	expect(settled.mock.calls[0][1].isError).toBe(true);
 +});
 diff --git a/packages/coding-agent/test/suite/agent-session-codemode.test.ts b/packages/coding-agent/test/suite/agent-session-codemode.test.ts
-index 150c4078d2772a33a130a08853fe1cee716b915e..2b96461847d63c8976c3f2a187c88a5788f0adb7 100644
+index deedfef42d5b711d8b27f12aa3b3dcaaee47e84d..09ca8b799802878ca4c42975083edbc96f0613a3 100644
 --- a/packages/coding-agent/test/suite/agent-session-codemode.test.ts
 +++ b/packages/coding-agent/test/suite/agent-session-codemode.test.ts
-@@ -538,7 +538,7 @@ describe("codemode options and store", () => {
+@@ -582,7 +582,7 @@ describe("codemode options and store", () => {
  		expect(invalid.content).toEqual([
  			{
  				type: "text",
