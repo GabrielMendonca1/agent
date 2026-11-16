@@ -2822,8 +2822,12 @@ async function build(options, currentAtStart) {
 			? ["-t", `^(?!.*(?:${skipped.map((name) => name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join("|")})).*$`]
 			: [];
 		for (const name of skipped) console.log(`(pulando no ${process.platform}: ${name})`);
+		// Hermético: PI_*/MARK_* e NODE_OPTIONS de quem chama (ex.: PI_CACHE_RETENTION, PI_AUTOMATIC_SKILLS de
+		// uma sessão de agente) mudam o resultado dos testes upstream. `undefined` remove a chave no spawn.
+		const inherited = Object.keys(process.env).filter((key) => /^(PI_|MARK_)/.test(key) || key === "NODE_OPTIONS");
 		run("node", [join(sourceDir, "node_modules", "vitest", "dist", "cli.js"), "--run", ...skipArgs, ...overlayTests], {
 			cwd: sourceDir,
+			env: Object.fromEntries(inherited.map((key) => [key, undefined])),
 		});
 
 		const internalVersions = pinInternalPackages(sourceDir, manifest.officialPackage);
