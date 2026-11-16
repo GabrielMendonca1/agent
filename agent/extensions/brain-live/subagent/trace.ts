@@ -22,8 +22,28 @@ function usageLine(u: { input: number; output: number; cacheRead: number; cacheW
 	return `in ${u.input} out ${u.output} cacheRead ${u.cacheRead} cacheWrite ${u.cacheWrite} $${u.cost.toFixed(4)}`;
 }
 
+/**
+ * `legacy`: record written before per-task audit, real state unknown. A task still
+ * `running` in a finished job lost its parent before recovery marked it.
+ */
 function taskState(record: JobRecord, task: JobTaskSpec): string {
-	return task.state ?? (record.status === "running" ? "pending" : "not_run");
+	if (task.state === "running" && record.status !== "running") return "interrupted";
+	return task.state ?? (record.status === "running" ? "pending" : "legacy");
+}
+
+/** Child session of a task; legacy records only had the job-level list, matched by index when unambiguous. */
+function taskSessionFile(record: JobRecord, index: number): string | undefined {
+	const task = record.tasks[index];
+	if (task.sessionFile || task.state) return task.sessionFile;
+	const files = record.sessionFiles ?? [];
+	return files.length === record.tasks.length ? files[index] : undefined;
+}
+
+/** Legacy job-level sessions that cannot be assigned to a task. */
+function unattributedSessions(record: JobRecord): string[] {
+	const files = record.sessionFiles ?? [];
+	const legacy = record.tasks.some((task) => !task.state && !task.sessionFile);
+	return legacy && files.length !== record.tasks.length ? files : [];
 }
 
 /** One line per task for action status: role, state, model, usage and child JSONL. */
@@ -32,10 +52,11 @@ export function taskStatusLines(record: JobRecord): string[] {
 		const parts = [`task ${i + 1} ${task.agent}`, taskState(record, task)];
 		if (task.model) parts.push(`${task.model}${task.thinking ? ` thinking ${task.thinking}` : ""}`);
 		if (task.usage) parts.push(`${task.usage.turns} turns ${usageLine(task.usage)}`);
-		if (task.sessionFile) parts.push(task.sessionFile);
+		const file = taskSessionFile(record, i);
+		if (file) parts.push(file);
 		if (task.error) parts.push(`error: ${cut(task.error, TEXT_CAP)}`);
 		return parts.join(" · ");
-	});
+	}).concat(unattributedSessions(record).map((file) => `job session (task unknown) · ${file}`));
 }
 
 function resultBytes(content: unknown): number {
@@ -107,10 +128,13 @@ export function traceJob(record: JobRecord, taskIndex?: number): { ok: true; tex
 	const indexes = taskIndex === undefined ? record.tasks.map((_, i) => i) : [taskIndex - 1];
 	const sections = indexes.map((i) => {
 		const task = record.tasks[i];
-		const head = `## task ${i + 1} · ${task.agent} · ${taskState(record, task)}${task.sessionFile ? ` · ${task.sessionFile}` : ""}`;
-		const body = task.sessionFile ? traceSession(task.sessionFile) : ["(no child session)"];
+		const file = taskSessionFile(record, i);
+		const head = `## task ${i + 1} · ${task.agent} · ${taskState(record, task)}${file ? ` · ${file}` : ""}`;
+		const body = file ? traceSession(file) : ["(no child session)"];
 		if (task.error) body.push(`error: ${cut(task.error, TEXT_CAP)}`);
 		return [head, ...body].join("\n");
 	});
+	const loose = unattributedSessions(record);
+	if (loose.length) sections.push(["## job sessions (legacy record; not attributed to tasks)", ...loose].join("\n"));
 	return { ok: true, text: `job ${record.jobId} (${record.status})\n\n${sections.join("\n\n")}` };
 }

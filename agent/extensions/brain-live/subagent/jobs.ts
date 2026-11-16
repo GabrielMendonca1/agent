@@ -123,8 +123,11 @@ export interface JobTaskSpec {
 	error?: string;
 }
 
-/** `not_run`: the job ended before this task started (chain stop, abort, sibling exception). */
-export type TaskState = "running" | "completed" | "failed" | "not_run";
+/**
+ * `not_run`: the job ended before this task started (chain stop, abort).
+ * `interrupted`: the parent died while this task ran; its session file is kept.
+ */
+export type TaskState = "running" | "completed" | "failed" | "not_run" | "interrupted";
 
 /**
  * Config própria do papel (`roleModels` no models.json do usuário), quando existe.
@@ -337,8 +340,16 @@ export function markInterrupted(baseDir: string, record: JobRecord): JobRecord {
 	// Unnotified on purpose: the parent still deserves one "interrupted" notice on
 	// the resumed session/branch. It is never respawned.
 	const exhausted = (record.runs ?? []).some((run) => !run.done && (run.resumes ?? 0) >= MAX_RESUMES);
+	// Records written before per-task audit have no task state: leave them as they are.
+	const audited = record.tasks.some((task) => task.state);
+	const tasks = audited
+		? record.tasks.map((task) =>
+				task.state === "running" ? { ...task, state: "interrupted" as const } : task.state ? task : { ...task, state: "not_run" as const },
+			)
+		: record.tasks;
 	const updated: JobRecord = {
 		...record,
+		tasks,
 		status: "interrupted",
 		finishedAt: record.finishedAt ?? Date.now(),
 		error:
@@ -375,6 +386,8 @@ interface ActiveJob {
 	started: Map<number, SingleResult>;
 	/** Results that tasks actually returned. */
 	returned: Map<number, SingleResult>;
+	/** Tasks that threw, with the message. */
+	thrown: Map<number, string>;
 }
 
 export type LaunchOutcome = { ok: true; record: JobRecord; resultPath: string } | { ok: false; error: string };
@@ -497,6 +510,7 @@ export class SubagentJobManager {
 			done: Promise.resolve(),
 			started: new Map(),
 			returned: new Map(),
+			thrown: new Map(),
 		};
 		if (spec.timeoutSeconds > 0) {
 			job.timer = setTimeout(() => {
@@ -538,10 +552,10 @@ export class SubagentJobManager {
 			},
 			{ maxConcurrent: MAX_CONCURRENCY, signal },
 		);
+		// A task that threw is already settled by runTask; its siblings ran to the end.
 		const out: SingleResult[] = new Array(spec.tasks.length);
-		results.forEach((r: { status: string; value?: SingleResult; reason?: unknown }, i: number) => {
-			if (r.status === "rejected") throw r.reason;
-			out[i] = r.value as SingleResult;
+		results.forEach((r: { status: string; value?: SingleResult }, i: number) => {
+			if (r.status === "fulfilled") out[i] = r.value as SingleResult;
 		});
 		return out;
 	}
@@ -613,9 +627,28 @@ export class SubagentJobManager {
 			onStart: (result: SingleResult) => this.taskStarted(job, slot, result),
 		};
 		const taskText = task.worktree ? `You are in an isolated worktree ${task.worktree} on branch ${task.branch}; commit your work there; do not touch ${task.sourceCwd}.\n${opts.taskText}` : opts.taskText;
-		const result = await runSingleAgent({ ...common, task: taskText, parentSession: spec.dispatchDefaults.parentSession });
+		let result: SingleResult;
+		try {
+			result = await runSingleAgent({ ...common, task: taskText, parentSession: spec.dispatchDefaults.parentSession });
+		} catch (e) {
+			job.thrown.set(slot, e instanceof Error ? e.message : String(e));
+			this.settleTask(job, slot);
+			this.persist(job.record);
+			throw e;
+		}
 		job.returned.set(slot, result);
+		this.settleTask(job, slot);
+		this.persist(job.record);
 		return result;
+	}
+
+	/** Parallel tasks never reject: an exception is recorded on its task and siblings keep running. */
+	private async runParallelTask(job: ActiveJob, spec: LaunchSpec, opts: Parameters<SubagentJobManager["runTask"]>[2]): Promise<SingleResult | undefined> {
+		try {
+			return await this.runTask(job, spec, opts);
+		} catch {
+			return undefined;
+		}
 	}
 
 	/** The child session exists and its model is resolved: record both before the child runs. */
@@ -631,28 +664,40 @@ export class SubagentJobManager {
 		this.persist(job.record);
 	}
 
-	/** Per-task audit at the end of the job; the job aggregate is the sum of these. */
+	/**
+	 * Final state, usage and error of one task, written as soon as it returns or throws.
+	 * `error` names the job-level cause for a task that never returned.
+	 */
+	private settleTask(job: ActiveJob, index: number, error?: string): void {
+		const task = job.record.tasks[index];
+		if (!task) return;
+		const returned = job.returned.get(index);
+		const result = returned ?? job.started.get(index);
+		if (!result) {
+			task.state = "not_run";
+			return;
+		}
+		task.usage = { ...result.usage };
+		task.sessionFile ??= result.sessionFile;
+		task.model ??= result.model;
+		task.thinking ??= result.thinking;
+		if (returned && !isFailedResult(returned)) task.state = "completed";
+		else {
+			task.state = "failed";
+			task.error = returned
+				? returned.errorMessage || returned.stopReason || returned.stderr.slice(0, 500) || "failed"
+				: `did not finish: ${job.thrown.get(index) ?? error ?? "job stopped"}`;
+		}
+	}
+
+	/** Tasks still unsettled at the end of the job; the job aggregate is the sum of all tasks. */
 	private settleTasks(job: ActiveJob, error: string | undefined): { usage: UsageStats; sessionFiles: string[] } {
 		const usage = emptyUsage();
 		const sessionFiles: string[] = [];
 		job.record.tasks.forEach((task, index) => {
-			const returned = job.returned.get(index);
-			const result = returned ?? job.started.get(index);
-			if (!result) {
-				task.state = "not_run";
-				return;
-			}
-			task.usage = { ...result.usage };
-			task.sessionFile ??= result.sessionFile;
-			task.model ??= result.model;
-			task.thinking ??= result.thinking;
-			if (returned && !isFailedResult(returned)) task.state = "completed";
-			else {
-				task.state = "failed";
-				task.error = returned
-					? returned.errorMessage || returned.stopReason || returned.stderr.slice(0, 500) || "failed"
-					: `did not finish: ${error ?? "job stopped"}`;
-			}
+			if (!job.returned.has(index) && !job.thrown.has(index)) this.settleTask(job, index, error);
+			const result = job.returned.get(index) ?? job.started.get(index);
+			if (!result) return;
 			if (task.sessionFile) sessionFiles.push(task.sessionFile);
 			usage.input += result.usage.input;
 			usage.output += result.usage.output;
@@ -716,7 +761,7 @@ export class SubagentJobManager {
 						spec.tasks,
 						MAX_CONCURRENCY,
 						(t, index) =>
-							this.runTask(job, spec, {
+							this.runParallelTask(job, spec, {
 								slot: index,
 								task: t,
 								taskText: t.task,
@@ -725,20 +770,30 @@ export class SubagentJobManager {
 							}),
 						() => signal.aborted,
 					);
-				const done = results.filter(Boolean);
+				// Every sibling has settled here, including those of a task that threw.
+				const done = results.filter(Boolean) as SingleResult[];
 				const successCount = done.filter((r) => !isFailedResult(r)).length;
 				// Full outputs are stored: only previews are bounded, elsewhere.
-				const summaries = done.map((r) => {
-					const status = isFailedResult(r)
-						? `failed${r.stopReason && r.stopReason !== "end" ? ` (${r.stopReason})` : ""}`
-						: "completed";
-					return `### [${r.agent}] ${status}${r.sandbox ? ` · sandbox=${r.sandbox}` : ""}\n\n${getResultOutput(r)}`;
+				const summaries: string[] = [];
+				spec.tasks.forEach((t, i) => {
+					const r = results[i];
+					const threw = job.thrown.get(i);
+					if (r) {
+						const status = isFailedResult(r)
+							? `failed${r.stopReason && r.stopReason !== "end" ? ` (${r.stopReason})` : ""}`
+							: "completed";
+						summaries.push(`### [${r.agent}] ${status}${r.sandbox ? ` · sandbox=${r.sandbox}` : ""}\n\n${getResultOutput(r)}`);
+					} else if (threw !== undefined) summaries.push(`### [${t.agent}] failed (exception)\n\n${threw}`);
 				});
 				output = `Parallel: ${successCount}/${spec.tasks.length} succeeded\n\n${summaries.join("\n\n---\n\n")}`;
 				// Any failed child fails the job; every result and the usage are still kept.
-				const failedNames = done.filter((r) => isFailedResult(r)).map((r) => r.agent);
+				const failedNames = [
+					...done.filter((r) => isFailedResult(r)).map((r) => r.agent),
+					...[...job.thrown.keys()].map((i) => spec.tasks[i].agent),
+				];
+				const thrown = [...job.thrown].map(([i, message]) => `task ${i + 1} (${spec.tasks[i].agent}) threw: ${message}`);
 				if (failedNames.length > 0)
-					error = `${failedNames.length}/${spec.tasks.length} parallel task(s) failed: ${[...new Set(failedNames)].join(", ")}.`;
+					error = `${failedNames.length}/${spec.tasks.length} parallel task(s) failed: ${[...new Set(failedNames)].join(", ")}.${thrown.length ? ` ${thrown.join("; ")}.` : ""}`;
 				else if (done.length < spec.tasks.length)
 					error = `${spec.tasks.length - done.length} parallel task(s) never ran.`;
 			} else {

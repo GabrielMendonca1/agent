@@ -82,7 +82,7 @@ export default function (pi) {
         const { appendFileSync } = await import('node:fs');
         const log = (what) => appendFileSync(process.env.FG_LOG, JSON.stringify({ tag, what, t: Date.now() }) + '\\n');
         log('start');
-        const delay = Number(process.env.FG_DELAY || 400);
+        const delay = Number(process.env['FG_DELAY_' + tag] || process.env.FG_DELAY || 400);
         const text = 'FILHO-' + tag;
         const partial = { role: 'assistant', content: [], api: model.api, provider: model.provider, model: model.id, timestamp: Date.now(), stopReason: 'stop', usage: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0, totalTokens: 2, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } } };
         s.push({ type: 'start', partial });
@@ -427,6 +427,62 @@ try {
   }
   console.log('ok bounded dispatch: ceiling, queued cancellation, session ownership, memory pressure');
 
+  // Paralelo com uma tarefa que lança exceção: os irmãos terminam (o job fica vivo e
+  // cancelável até lá) e cada tarefa grava estado/usage no momento em que retorna ou lança.
+  {
+    const { taskStatusLines } = await jiti.import(join(repo, 'agent/extensions/brain-live/subagent/trace.ts'));
+    const invocation = runner.runnerHooks.getPiInvocation;
+    runner.runnerHooks.getPiInvocation = args => {
+      if (String(args.at(-1)).includes('tarefa-b')) throw new Error('spawn exploded');
+      return invocation(args);
+    };
+    Object.assign(process.env, { FG_LOG: join(root, 'settle.log'), FG_DELAY_a: '300', FG_DELAY_c: '2000' });
+    try {
+      // shared=false: mapWithConcurrencyLimit; shared=true: leque escalonado do mesmo papel.
+      for (const shared of [false, true]) {
+        let settled, childrenAtEnd;
+        const mgr = new BudgetManager({ baseDir: join(root, 'settle-jobs'), onComplete: record => { settled = record; childrenAtEnd = mgr.activeChildren(); } });
+        const names = shared ? ['readonly-0', 'readonly-0', 'readonly-0'] : ['readonly-0', 'readonly-1', 'readonly-2'];
+        const out = mgr.launch({ ...spec, tasks: ['a', 'b', 'c'].map((x, i) => ({ agent: names[i], task: 'tarefa-' + x })) });
+        assert.ok(out.ok, out.error);
+        const jobId = out.record.jobId;
+        const disk = () => JSON.parse(readFileSync(join(root, 'settle-jobs/owner', jobId + '.json'), 'utf8'));
+        await waitUntil(() => disk().tasks[0].state === 'completed');
+        const mid = disk();
+        assert.equal(mid.status, 'running', `exceção de um irmão não encerra o job (shared=${shared})`);
+        assert.equal(mgr.activeCount(), 1);
+        assert.deepEqual(mid.tasks.map(t => t.state), ['completed', 'failed', 'running'], `estado por tarefa no disco (shared=${shared})`);
+        assert.equal(mid.tasks[0].usage.turns, 1, 'usage final gravado quando a tarefa retorna');
+        assert.match(mid.tasks[1].error, /^did not finish: spawn exploded/, 'erro gravado quando a tarefa lança');
+        assert.deepEqual(taskStatusLines(mgr.get('owner', jobId)).map(l => l.split(' · ')[1]), ['completed', 'failed', 'running']);
+        if (shared) assert.match(mgr.cancel('owner', jobId).message, /cancelling/, 'job com filho vivo continua cancelável');
+        await waitUntil(() => settled !== undefined);
+        assert.equal(childrenAtEnd, 0, 'job só termina depois que todos os filhos saíram');
+        assert.equal(mgr.activeChildren(), 0);
+        if (shared) {
+          assert.equal(settled.status, 'cancelled');
+          assert.deepEqual(settled.tasks.map(t => t.state), ['completed', 'failed', 'failed']);
+          assert.ok(settled.tasks[2].usage && settled.tasks[2].sessionFile);
+        } else {
+          assert.equal(settled.status, 'failed');
+          assert.match(settled.error, /1\/3 parallel task\(s\) failed: readonly-1\. task 2 \(readonly-1\) threw: spawn exploded/);
+          assert.deepEqual(settled.tasks.map(t => t.state), ['completed', 'failed', 'completed']);
+          assert.equal(settled.tasks[2].usage.turns, 1);
+          assert.match(settled.result, /^Parallel: 2\/3 succeeded/);
+          assert.match(settled.result, /FILHO-a/);
+          assert.match(settled.result, /\[readonly-1\] failed \(exception\)\n\nspawn exploded/);
+          assert.match(settled.result, /FILHO-c/, 'resultado inclui o irmão que terminou depois da exceção');
+          assert.equal(settled.usage.turns, 2);
+        }
+        await mgr.shutdown();
+      }
+    } finally {
+      runner.runnerHooks.getPiInvocation = invocation;
+      for (const k of ['FG_LOG', 'FG_DELAY_a', 'FG_DELAY_c']) delete process.env[k];
+    }
+    console.log('ok paralelo com exceção: irmãos terminam, job cancelável até o fim, estado/usage por tarefa gravados ao terminar');
+  }
+
   // Trilha de auditoria com filhos reais roteirizados pelo provider Anthropic falso:
   // chain [ok, exceção, nunca rodou] e um single que falha depois de agir.
   const fake = await startFakeAnthropic([
@@ -501,6 +557,34 @@ try {
     const page = sliceText(all, 0, 64);
     assert.ok(Buffer.byteLength(page.text) <= 64 && page.nextOffset > 0, 'trace pagina como result');
     assert.ok(Buffer.byteLength(sliceText(all, 0, 1e9).text) <= 8192, 'teto de bytes por chamada');
+
+    // Recuperação depois da queda do pai: tarefa em execução vira interrupted com o JSONL.
+    const { markInterrupted } = await jiti.import(join(repo, 'agent/extensions/brain-live/subagent/jobs.ts'));
+    const orphan = { ...record, jobId: 'orphan', status: 'running', finishedAt: undefined, error: undefined, parentPid: undefined, parentIdentity: undefined, runs: undefined,
+      tasks: [record.tasks[0], { ...record.tasks[1], state: 'running', error: undefined }, { agent: 'auditor', task: 'etapa-3' }] };
+    const recovered = markInterrupted(join(root, 'recovered-jobs'), orphan);
+    assert.equal(recovered.status, 'interrupted');
+    assert.deepEqual(recovered.tasks.map(t => t.state), ['completed', 'interrupted', 'not_run']);
+    assert.equal(recovered.tasks[1].sessionFile, record.tasks[1].sessionFile, 'JSONL preservado');
+    assert.deepEqual(JSON.parse(readFileSync(join(root, 'recovered-jobs/audit/orphan.json'), 'utf8')).tasks.map(t => t.state), ['completed', 'interrupted', 'not_run']);
+    assert.match(taskStatusLines(recovered)[1], /^task 2 auditor · interrupted · /);
+    assert.match(traceJob(recovered, 2).text, /## task 2 · auditor · interrupted · \S+\.jsonl\n/);
+
+    // Registro anterior à auditoria por tarefa: estado desconhecido, sessões só no job.
+    const [s1, s2] = record.sessionFiles;
+    const legacyJob = (sessionFiles) => ({ jobId: 'legacy', sessionId: 'audit', mode: 'chain', status: 'completed', agents: ['auditor', 'auditor'],
+      tasks: [{ agent: 'auditor', task: 'etapa-1' }, { agent: 'auditor', task: 'etapa-2' }], sessionFiles });
+    const paired = legacyJob([s1, s2]);
+    assert.deepEqual(taskStatusLines(paired), [`task 1 auditor · legacy · ${s1}`, `task 2 auditor · legacy · ${s2}`]);
+    const pairedTrace = traceJob(paired, 1).text;
+    assert.ok(pairedTrace.includes(`## task 1 · auditor · legacy · ${s1}\n1. call read`), pairedTrace);
+    assert.match(pairedTrace, /^3\. assistant: AUDIT-STEP-ONE done$/m);
+    const unpaired = legacyJob([s1]);
+    assert.deepEqual(taskStatusLines(unpaired), ['task 1 auditor · legacy', 'task 2 auditor · legacy', `job session (task unknown) · ${s1}`]);
+    const unpairedTrace = traceJob(unpaired).text;
+    assert.match(unpairedTrace, /## task 1 · auditor · legacy\n\(no child session\)/);
+    assert.ok(unpairedTrace.endsWith(`## job sessions (legacy record; not attributed to tasks)\n${s1}`), unpairedTrace);
+    assert.doesNotMatch(unpairedTrace + taskStatusLines(unpaired).join('\n'), /not_run/);
 
     // Tarefa que falha depois de agir: os passos continuam auditáveis.
     finished = undefined;
