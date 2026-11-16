@@ -1,8 +1,8 @@
-# Overlay do Agent — Pi oficial v1.5.0 clássico
+# Overlay do Agent — Pi oficial v1.5.2 clássico
 
 O entrypoint é o main oficial do Pi, com patches pequenos na ordem do manifesto:
 
-1. `pi-black` — lane OAuth Anthropic.
+1. `pi-black` — lane OAuth Anthropic (identidade Claude Code 2.1.322, sem message threads).
 2. `garime-frame` — margens, respiro e cores inline na TUI clássica.
 3. `pi-account-env` — conta por projeto e `--arca-capabilities` (`{"accountEnv":1}`).
 4. `transcript-feedback` — observador e widgets após o transcript clássico; até 3 tentativas de aviso por execução, a cada 3 resultados novos e 45 s por padrão.
@@ -15,6 +15,14 @@ O entrypoint é o main oficial do Pi, com patches pequenos na ordem do manifesto
 11. `auth-guidance-short` — avisos de falta de login, modelo ou chave terminam em "Use /login to log into a provider via OAuth or API key.", sem "See:" e sem os caminhos de `docs/providers.md` e `docs/models.md`.
 
 Total: 11 patches, além das extensões do Agent.
+
+## Port 1.5.2
+
+Base `b4afdddf44e059c67ccf5097e5317d913521b470`. Os 11 patches seguem; conflitos resolvidos em `pi-black` (`buildParams` recebe o objeto `flags`; `billingHeader` entrou em `BuildParamsFlags`), `codemode-typed-results` (`grep.ts` coleta o match estruturado em `pushLine`, porque o contexto agora vem do ripgrep; `find.ts` usa `storedResults`) e `cc-hidden-tool-names` (encolheu).
+
+Desde a 1.5.1 o provider `anthropic` usa message threads por padrão: o 2º turno vira `continue` sem `system`, e o fetch do `pi-black` exige o bloco de billing em `system[0]`. `pi-black` desliga as threads quando o request é OAuth (`threadSessionId` só sem OAuth); chave de API mantém as threads. `CLAUDE_CODE_VERSION` = 2.1.322, igual ao upstream 1.5.2; o fingerprint e o `cch` são os mesmos algoritmos de antes, só com a versão nova. `packages/ai/test/anthropic-message-threads.test.ts` entrou nos testes de `pi-black` e prova dois turnos OAuth com `sessionId` enviando o request completo, com billing e sem `thread`/beta de threads.
+
+`cacheWarming` passou a `idle` na 1.5.1. O `cache-keeper` do Agent responde `stop` a todo `cache_warming_decision`, inclusive com `AGENT_CACHE_KEEPER=0`; `scripts/test-cache-keeper.mjs` falha sem esse handler.
 
 ## Port 1.5.0
 
@@ -85,7 +93,7 @@ O bullet `⏺` e o cabeçalho `✻ Thinking…` continuam sendo texto da extens�
 
 ### Retomar uma sessão — `/resume` e `--session`
 
-São os comandos oficiais do Pi 1.5.0, com sessões JSONL oficiais. Não há dispatcher durável, `PI_DURABLE_HOST`, `durableSessions` nem resolução customizada de sessões SQLite.
+São os comandos oficiais do Pi 1.5.2, com sessões JSONL oficiais. Não há dispatcher durável, `PI_DURABLE_HOST`, `durableSessions` nem resolução customizada de sessões SQLite.
 
 ### Taxa de quadros — `PI_TUI_HZ`
 
@@ -141,15 +149,15 @@ Desde o respiro R3 há **dois** release overlays: `packages/ai` (Pi Black) e `pa
 
 `npm -w packages/ai run hydrate-model-data` busca o catálogo ao vivo (models.dev, openrouter, nvidia, vercel). Como esse catálogo muda sob uma tag congelada — provedores renomeados, ids de modelo trocados —, uma release que construía ontem passa a falhar hoje na hidratação ou nos testes upstream fixados naquela tag. O install deixa de ser reproduzível justamente quando um parceiro tenta instalar de uma máquina limpa.
 
-`overlay/model-data/<officialVersion>/` versiona um dataset já hidratado e aprovado no gate completo (42 JSON de provedores + `.manifest.json` no Pi 1.5.0). `manifest.json:modelData` declara `officialVersion`, `path` e o `manifestSha256` do `.manifest.json` — que por sua vez fixa o sha256 de cada arquivo de provedor, então um único checksum no manifesto trava todos os bytes do snapshot.
+`overlay/model-data/<officialVersion>/` versiona um dataset já hidratado e aprovado no gate completo (43 JSON de provedores + `.manifest.json` no Pi 1.5.2). `manifest.json:modelData` declara `officialVersion`, `path` e o `manifestSha256` do `.manifest.json` — que por sua vez fixa o sha256 de cada arquivo de provedor, então um único checksum no manifesto trava todos os bytes do snapshot.
 
-Depois de `npm ci --ignore-scripts`, quando existe entrada para a versão oficial resolvida e `--hydrate` não foi passado, o updater verifica os checksums, copia o snapshot para `packages/ai/src/providers/data/` e roda `npm -w packages/ai run check:model-data` (validação upstream: schemaVersion 6 no Pi 1.5.0 (manifest v2), structureHash contra `src/models.generated.ts` e sha256 por arquivo). O build usa então `npm run build:offline`, porque o `build` padrão regenera o catálogo pela rede e sobrescreveria tanto o snapshot quanto os shards de provedor fixados pela tag. Sem entrada correspondente, ou com `--hydrate`, o caminho continua sendo hidratação ao vivo + `npm run build`.
+Depois de `npm ci --ignore-scripts`, quando existe entrada para a versão oficial resolvida e `--hydrate` não foi passado, o updater verifica os checksums, copia o snapshot para `packages/ai/src/providers/data/` e roda `npm -w packages/ai run check:model-data` (validação upstream: schemaVersion 6 no Pi 1.5.2 (manifest v2), structureHash contra `src/models.generated.ts` e sha256 por arquivo). O build usa então `npm run build:offline`, porque o `build` padrão regenera o catálogo pela rede e sobrescreveria tanto o snapshot quanto os shards de provedor fixados pela tag. Sem entrada correspondente, ou com `--hydrate`, o caminho continua sendo hidratação ao vivo + `npm run build`.
 
 Para renovar o snapshot, use `--vendor-model-data` (só válido com `--check --hydrate`): depois de o gate passar, o updater copia o dataset recém-hidratado — os mesmos arquivos, inclusive o dotfile `.manifest.json` — para `overlay/model-data/<version>/` e cria ou substitui a entrada em `modelData` com o `manifestSha256` correto.
 
 ```sh
-node scripts/agent-update.mjs --check --hydrate --ref v1.5.0 --vendor-model-data
-node scripts/agent-update.mjs --check --ref v1.5.0   # agora offline, contra o snapshot
+node scripts/agent-update.mjs --check --hydrate --ref v1.5.2 --vendor-model-data
+node scripts/agent-update.mjs --check --ref v1.5.2   # agora offline, contra o snapshot
 ```
 
 Como o passo grava `overlay/manifest.json`, o fingerprint impresso naquele check é o de antes da gravação; o check offline seguinte é quem valida o snapshot já declarado. O caminho manual equivalente (copiar `…/releases/<releaseId>/lib/node_modules/@earendil-works/pi-coding-agent/node_modules/@earendil-works/pi-ai/dist/providers/data/` e recalcular o sha à mão) continua possível, mas não é mais necessário.
@@ -275,10 +283,10 @@ node scripts/agent-update.mjs --check --ref v0.85.1
 node scripts/agent-update.mjs --check --ref v0.85.1 --hydrate
 
 # Hidratar e vendorar o snapshot novo no checkout
-node scripts/agent-update.mjs --check --hydrate --ref v1.5.0 --vendor-model-data
+node scripts/agent-update.mjs --check --hydrate --ref v1.5.2 --vendor-model-data
 
 # Camadas opcionais
-node scripts/agent-update.mjs --check --ref v1.5.0 --with <camada>
+node scripts/agent-update.mjs --check --ref v1.5.2 --with <camada>
 
 # Construir, instalar e ativar
 node scripts/agent-update.mjs

@@ -134,16 +134,16 @@ Nenhum patch é necessário para as extensões carregarem; eles dão funcionalid
 
 | Patch | Função | Linhas | Fragilidade |
 |---|---|---|---|
-| `pi-black` | Lane Anthropic OAuth com identidade Claude Code. | +471/−9 | Média: arquivo novo, mas edita `anthropic-messages.ts`. |
+| `pi-black` | Lane Anthropic OAuth com identidade Claude Code (2.1.322), sem message threads. | +499/−15 | Média: arquivo novo, mas edita `anthropic-messages.ts`. |
 | `garime-frame` | Moldura, margens e tema da TUI. | +495/−31 | Alta: 13 arquivos, componentes e `interactive-mode.ts`. |
 | `pi-account-env` | Conta por projeto via `PI_ACCOUNT_<PROVIDER>`. | +887/−9 | Média: arquivo novo, mas edita `auth-storage.ts` e `model-runtime.ts`. |
 | `transcript-feedback` | Widgets e recap local após o transcript. | +2077/−17 | Alta: maior patch, 12 arquivos, `interactive-mode.ts`. |
 | `stream-markdown` | Agrupa deltas por quadro e `PI_TUI_HZ`. | +288/−6 | Alta: `interactive-mode.ts` e `tui.ts`. |
 | `agent-skill-curation` | Curadoria opt-in do anúncio de skills. | +119/−1 | Baixa: um arquivo de código. |
-| `codemode-typed-results` | Resultados estruturados de read/grep/find em scripts. | +113/−7 | Baixa: acréscimos nas tools. |
+| `codemode-typed-results` | Resultados estruturados de read/grep/find em scripts. | +104/−8 | Baixa: acréscimos nas tools. |
 | `codemode-background` | Codemode em segundo plano após 5 min, saída parcial e cancelamento. | +333/−149 | Alta: reescreve boa parte de `execute.ts`. |
 | `tool-load-append` | Tool carregada no meio da sessão não reescreve o system prompt. | +211/−26 | Média: `agent-session.ts`. |
-| `cc-hidden-tool-names` | No OAuth Anthropic, `Bash`/`Read` de tool escondida voltam em minúsculas. | +30/−3 | Baixa: poucas linhas, mas no mesmo arquivo de `pi-black`. |
+| `cc-hidden-tool-names` | No OAuth Anthropic, `Bash`/`Read` de tool escondida voltam em minúsculas. | +22/−2 | Baixa: poucas linhas, mas no mesmo arquivo de `pi-black`. |
 | `auth-guidance-short` | Avisos de falta de login/modelo/chave sem "See:" e sem os caminhos de `providers.md`/`models.md`. | +43/−9 | Baixa: uma função em `auth-guidance.ts`. |
 
 ## Avisos da TUI e como desligar
@@ -182,6 +182,8 @@ Chamadas pagas que não saem de uma mensagem sua. Todas usam a sua conta ou chav
 | Compactação ociosa | Contexto ≥ 200k tokens e o aquecimento acabou (janela fechada, ping pulado ou sem acerto), nunca antes de 54 min parado; agente ocioso, sem fila e editor vazio. Resume no modelo selecionado. | Ligada. | `AGENT_IDLE_COMPACT=0` |
 | Compactação por limiar | Fim de turno com contexto > 450k tokens em janelas ≥ 1M, ou > 90% da janela nas menores. Com cache quente pode ser adiada por alguns turnos, nunca além do limite duro (janela − max(64k, 10%)). Resume no modelo selecionado. | Ligada. | Não há variável. |
 | `web_search` | Cada chamada da tool, na sessão principal ou num subagente cujo papel a declara: uma inferência Gemini (`gemini-2.5-flash` com Google Search, fallback OpenRouter). | Até 20 buscas e 40 fetches por sessão. | `AGENT_WEB_MAX_SEARCHES=0` (`AGENT_WEB_MAX_FETCHES=0` para fetch) |
+
+O aquecedor nativo do Pi (`cacheWarming`) fica parado, inclusive com `AGENT_CACHE_KEEPER=0`; a lane OAuth Anthropic não usa message threads (cada request leva system, tools e a conversa inteira).
 
 Prompt cache: o launcher define `PI_CACHE_RETENTION=long` (TTL 1h) quando a variável não está definida; um valor do usuário, inclusive `none`, prevalece. Escrita de cache custa 2× a entrada com TTL 1h e 1,25× com 5 min; leitura, 0,1×. Medido na auditoria do commit 6f77207: o prefixo fixo da 1ª requisição tem 10,2 KB de system e 20,0 KB de tools (o schema de `subagent` ocupa 8,9 KB), idêntico entre requisições e processos; cada passo do modelo é uma requisição.
 
