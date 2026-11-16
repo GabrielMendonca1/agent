@@ -17,6 +17,8 @@
  * - Para no primeiro refresh que não acerta o cache, em qualquer entrada sua e no fim da sessão.
  * - Thinking: o replay segue `warmPlan` (cache-policy.mjs). Sem thinking/adaptive → max_tokens 1;
  *   thinking com budget B → max_tokens B+1 só se o pior caso couber no teto de custo, senão pula.
+ * - Message threads (chave de API Anthropic, beta `message-threads-*` no payload): não aquece e
+ *   mostra `cache ❄ (message-threads)` (ver `usesMessageThreads`).
  * - Contabilidade (ledger J): o ping vai pelo ModelRuntime com kind `cache-warm` (runtime.mjs);
  *   pausas, quebras de cache (com causa) e pulos vão ao ledger como números/enums, sem payload.
  * - D: compactação por limiar com o cache quente é adiada (`compactionDecision`); manual,
@@ -85,6 +87,19 @@ export function warmWindow(gaps: Gap[], ttl: number): number {
 }
 
 const MAX_PING_USD = Number(process.env.AGENT_CACHE_KEEPER_MAX_PING_USD ?? 0.5);
+
+/**
+ * Lane de message threads da Anthropic (chave de API, Pi ≥ 1.5.2): o payload guardado é o request
+ * completo (before_provider_request roda antes de o provider aplicar a thread) e leva o beta
+ * `message-threads-*` em `betas`. O request real seguinte sai como `thread: continue` só com as
+ * mensagens novas; o ping sairia completo e sem `thread`. Que esse ping aqueça o cache que a
+ * continuação lê não dá para provar sem chamada real, e um erro aqui paga escrita do contexto
+ * inteiro. Então o keeper não aquece nessa lane e diz por quê (`message-threads`).
+ * A lane OAuth (pi-black) não usa threads e não leva esse beta.
+ */
+export const usesMessageThreads = (p: Payload | undefined): boolean =>
+  !!p && ("thread" in p || (Array.isArray(p.betas) && p.betas.some((b: unknown) => typeof b === "string" && b.startsWith("message-threads-"))));
+const THREADS_SKIP = "message-threads";
 
 export default function cacheKeeper(pi: ExtensionAPI) {
   // O aquecedor nativo do Pi (`cacheWarming`, padrão "idle" desde a 1.5.1) fica parado sempre,
@@ -273,6 +288,10 @@ export default function cacheKeeper(pi: ExtensionAPI) {
       return false;
     }
     const snapshot = last.payload;
+    if (usesMessageThreads(snapshot)) {
+      lastSkip = THREADS_SKIP;
+      return false;
+    }
     const ttl = ttlOf(snapshot);
     const plan = warmPlan(snapshot, { model, promptTokens: ctx.getContextUsage?.()?.tokens ?? 0, ttlSeconds: ttl, maxPingUsd: MAX_PING_USD });
     if (plan.action === "skip") {
@@ -326,6 +345,11 @@ export default function cacheKeeper(pi: ExtensionAPI) {
     const window = warmWindow(loadGaps(ctx.cwd), ttl) * 1000;
     const base = warmUntil ?? last.at + ttl * 1000;
     const at = base - Math.max(10_000, ttl * 100); // 90% do TTL (margem ≥ 10 s)
+    if (usesMessageThreads(last.payload)) {
+      planIdleCompaction(ctx, at);
+      status(`cache até ${hhmm(base)} · ❄ (${THREADS_SKIP})` + (idleAt ? ` · resumo ${hhmm(idleAt)}` : ""));
+      return;
+    }
     if (at - idleSince > window) {
 
       planIdleCompaction(ctx, at);
@@ -484,7 +508,8 @@ export default function cacheKeeper(pi: ExtensionAPI) {
       const delay = Number(process.env.AGENT_CACHE_KEEPER_TEST_DELAY ?? 0) * 1000;
       if (delay) await new Promise((r) => setTimeout(r, delay));
       const ok = await refresh(ctx);
-      process.stderr.write(`cache-keeper test: ${ok ? "hit" : "miss"} (${stats.pings} ping)\n`);
+      process.stderr.write(`cache-keeper test: ${ok ? "hit" : "miss"} (${stats.pings} ping)${lastSkip ? ` skip=${lastSkip}` : ""}\n`);
+      lastSkip = undefined;
       return;
     }
     schedule(ctx);

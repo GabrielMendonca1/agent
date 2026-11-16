@@ -265,6 +265,29 @@ assert.ok(historyFp.messages.every(hash => /^[0-9a-f]{16}$/.test(hash)), 'only m
     const r = await scenario(base, 8000, lexed);
     assert.deepEqual(r.bodies[0].tools, lexed.tools, 'ping usa o corpo final'); assert.match(r.last, /hit/);
   }
+  // Lane de message threads (chave de API, Pi ≥ 1.5.2): o payload completo leva o beta de threads;
+  // o keeper não aquece (o ping não provaria o mesmo prefixo da continuação) e diz por quê.
+  {
+    const threaded = { ...base, betas: ['message-threads-2026-08-12'] };
+    prefixes.add(JSON.stringify((({ max_tokens, stream, ...k }) => k)(threaded)));
+    const r = await scenario(threaded, 8000);
+    assert.equal(r.bodies.length, 0, 'threads: nenhum ping'); assert.equal(r.opts.length, 0, 'threads: nenhum streamSimple');
+    assert.match(r.last, /miss \(0 ping\) skip=message-threads/, 'threads: motivo observável');
+    // Host normal (sem modo teste): nenhum timer de ping; a barra diz por quê.
+    delete process.env.AGENT_CACHE_KEEPER_TEST;
+    const h = {}; mod.default({ on: (n, f) => { (h[n] ??= []).push(f); }, registerCommand() {}, events: { emit() {} } });
+    const statuses = []; const calls = [];
+    const ctx = { sessionManager: {}, cwd: '/tmp/ck-threads', hasUI: true, model, ui: { setStatus: (_k, t) => statuses.push(t), notify() {} },
+      getContextUsage: () => ({ tokens: 8000, contextWindow: 1_000_000 }), modelRegistry: { streamSimple: (...a) => { calls.push(a); throw new Error('não deveria pingar'); } } };
+    h.session_start.forEach(f => f({}, ctx));
+    h.before_provider_request.forEach(f => f({ payload: threaded }, ctx));
+    for (const f of h.agent_settled) await f({}, ctx);
+    assert.match(statuses.at(-1), /❄ \(message-threads\)/, `status: ${statuses.at(-1)}`);
+    assert.equal(policy.sessionCachePolicy(ctx).cacheState().warm, true, 'request real ainda conta como cache quente');
+    h.session_shutdown.forEach(f => f({}, ctx));
+    assert.equal(calls.length, 0);
+    process.env.AGENT_CACHE_KEEPER_TEST = '1';
+  }
   const budget = { ...base, thinking: { type: 'enabled', budget_tokens: 2048 } };
   // Contexto pequeno: o pior caso (2049 tokens de saída) não compensa → nenhum request.
   const small = await scenario(budget, 8000);

@@ -77,6 +77,8 @@ const events = join(root, 'events.jsonl');
 // Providers falsos via models.json no host clássico.
 writeFileSync(join(agent, 'models.json'), JSON.stringify({ providers: {
   'fake-anth': { api: 'anthropic-messages', apiKey: 'offline', baseUrl: `http://127.0.0.1:${port}`, models: [model('claude-a'), model('claude-b')] },
+  // Mesmo servidor com message threads ligadas (como a chave de API em api.anthropic.com).
+  'fake-thr': { api: 'anthropic-messages', apiKey: 'offline', baseUrl: `http://127.0.0.1:${port}`, models: [{ ...model('claude-t'), compat: { supportsMessageThreads: true } }] },
   'fake-oai': { api: 'openai-responses', apiKey: 'offline', baseUrl: `http://127.0.0.1:${port}/v1`, models: [{ ...model('gpt-x'), cost: { input: 1.25, output: 10, cacheRead: 0.125, cacheWrite: 0 } }] },
 } }));
 // "Léxico" que muda as tools DEPOIS do keeper
@@ -143,6 +145,19 @@ if (!est.length) fail('troca de modelo não emitiu agent:cache-estimate');
 assert.equal(est[0].from, 'fake-anth/claude-a'); assert.equal(est[0].to, 'fake-anth/claude-b');
 assert.ok(est[0].tokens >= 460_000 && est[0].rebuildUsd > 0, JSON.stringify(est[0]));
 console.log('ok F: troca de modelo no Pi real emite a estimativa de reconstrução');
+
+// Message threads no Pi real: o 2º turno sai como `thread: continue` só com as mensagens novas;
+// o keeper guarda o request completo, mas não aquece nessa lane e registra o motivo.
+{
+  const before = bodies.length;
+  const thr = await runPi('oi', {}, 'fake-thr/claude-t');
+  const sent = bodies.slice(before);
+  if (thr.code !== 0) { console.error(thr.text.slice(-2000)); assert.fail(`threads: exit ${thr.code}`); }
+  assert.ok(sent.some(b => b.thread?.type === 'create') && sent.some(b => b.thread?.type === 'continue' && !('system' in b)), `lane de threads exercitada: ${JSON.stringify(sent.map(b => b.thread))}`);
+  assert.equal(sent.filter(b => b.max_tokens === 1).length, 0, 'threads: nenhum ping');
+  assert.match(thr.text, /cache-keeper test: miss \(0 ping\) skip=message-threads/, 'threads: motivo observável');
+  console.log('ok threads: continuação no Pi real, keeper não aquece e diz por quê');
+}
 
 // E — filho de prefetch no Pi real: 1 request (max_tokens 1, sem thinking, tools+system iguais
 // aos do filho normal), sai com 0 antes de o Pi tratar o `length` como recuperável.

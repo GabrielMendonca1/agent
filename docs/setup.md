@@ -194,6 +194,7 @@ Cache-keeper em detalhe:
 - Teto por ping: `AGENT_CACHE_KEEPER_MAX_PING_USD` (padrão 0.5), calculado a preço de leitura de cache. Um ping que erra o cache paga escrita antes de parar. Não há teto por sessão: o custo total é pings × janela.
 - Thinking com budget fixo B: o ping usa `max_tokens` B+1 e só sai se o pior caso couber no teto e em 25% da perda evitada; senão é pulado. Sem thinking, ou thinking adaptive, `max_tokens` 1.
 - Para no primeiro ping sem acerto, em qualquer entrada sua e no fim da sessão.
+- Message threads (chave de API Anthropic, padrão do Pi em `api.anthropic.com` desde a 1.5.2, ou `compat.supportsMessageThreads`): não aquece. O keeper guarda o request completo (o hook roda antes de o provider aplicar a thread), mas o request seguinte sai como `thread: continue` só com as mensagens novas, e o ping sairia completo e sem `thread`. Que um acerte o cache do outro não foi verificado com chamada real; um erro pagaria escrita do contexto inteiro. A barra mostra `cache ❄ (message-threads)` e a compactação ociosa segue o fim do TTL. A lane OAuth não usa threads e continua aquecendo.
 
 `AGENT_IDLE_COMPACT_MIN_TOKENS` ajusta o mínimo da compactação ociosa (piso 100k). `AGENT_CACHE_PREFETCH_NEXT=1` liga o prefetch do próximo papel de uma chain; é desligado por padrão e custa mais do que não aquecer.
 
