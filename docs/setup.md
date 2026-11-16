@@ -95,7 +95,7 @@ Requer Git, npm e Node >=22.19. `node scripts/agent-update.mjs --prepare` constr
 ### Skills, papéis e mídia
 
 - As skills de integração `peers`, `megamind`, `prometheus`, `tasks` e as de `agent/skills/system/` são automáticas. `design/` e `plan/` ficam sob demanda e geram uma linha curta por categoria no system prompt. A curadoria usa o formatter compartilhado entre os hosts.
-- `/skill` ou `/skill:` abre o catálogo agrupado por categoria, nos dois modos.
+- `/skill` ou `/skill:` abre o catálogo agrupado por categoria.
 - `/models` separa slots de execução e escolhas por papel e preserva as escolhas pessoais. O picker de um papel lista primeiro os pares autorizados e depois todo modelo disponível; escolher um novo o autoriza naquele papel com o thinking da preferência atual. `Esc Esc` abre só a lista de fork. Falha de quota/503 não troca modelo silenciosamente.
 - `read` é o nativo do Pi clássico: imagens, texto, offset/limit e cancelamento. O loadout controla quais papéis recebem `read`. Principal, scout e visual precisam de modelo capaz de receber imagens; anexos diretos continuam suportados.
 - `scout` não edita: tem `read, grep, find, ls, bash, web_search, web_fetch`, com `bash` sob sandbox de escrita. Transcrição que exija `ffmpeg`, Whisper ou outro executável que grave arquivos deve ir para um papel com `edit`/`write` (worker). Não se promete leitura/transcrição nativa de qualquer formato binário.
@@ -197,8 +197,9 @@ Cache-keeper em detalhe:
 
 ### Contrato
 
-- A tool `subagent` está sempre ligada na sessão principal. Não há modos, atalho, comando nem variável para ligar ou desligar.
+- A tool `subagent` está sempre ligada na sessão principal. Não há modos, atalho, comando nem variável para ligar ou desligar na sessão principal.
 - Filhos (`AGENT_CHILD=1`) não lançam subagentes.
+- Filhos também recebem `AGENT_NO_DELEGATE=1`, que o bash e o launcher preservam: um `agent` aberto de dentro de um filho não delega. Numa sessão humana aberta assim, remova a variável (`unset AGENT_NO_DELEGATE`) antes de abrir o `agent`.
 - O system prompt da sessão principal traz a diretriz de orquestrador: "Act as an orchestrator: delegate recon and bulk reading to scout, isolated implementation to worker, and review to reviewer; keep your own context for decisions and integration".
 - `.agent/workflow.md` não é criado automaticamente.
 - `<perfil>/agent-preferences.json` guarda só `supportModel`.
@@ -211,7 +212,7 @@ Ordem de decisão:
 2. Frontmatter do papel (`model`, `thinking`).
 3. Slot: `.agent/workflow.md`, se existir; senão scout=apoio e os demais=principal.
 
-O slot `apoio` usa o modelo de apoio; `principal`, o modelo da sessão. Não há classificador de dispatch. Sem modelo de apoio configurado, todos os filhos herdam o modelo principal. Risco de custo: configure o apoio em `/models`.
+O slot `apoio` usa o modelo de apoio; `principal`, o modelo da sessão. Não há classificador de dispatch. Sem modelo de apoio configurado, o slot `apoio` cai no modelo principal: papéis sem config própria em `/models` e sem `model` no frontmatter herdam o principal; os demais seguem os itens 1 e 2. Risco de custo: configure o apoio em `/models`.
 
 ### Isolamento
 
@@ -219,7 +220,7 @@ Cada filho é outro processo `pi -p`, com contexto próprio. Só o resultado vol
 
 ### O que o pai consegue auditar
 
-- **Registro do job:** `<perfil>/subagent-jobs/<sessionId>/<jobId>.json`, modo 0600, gravado atomicamente. Uma entrada por tarefa: papel, brief, `cwd`, modelo usado, thinking, usage e caminho do JSONL do filho. O caminho do JSONL entra no registro quando a tarefa começa. Tarefa que falhou também tem entrada; tarefa não executada fica marcada como tal.
+- **Registro do job:** `<perfil>/subagent-jobs/<sessionId>/<jobId>.json`, modo 0600, gravado atomicamente. Uma entrada por tarefa: papel, brief, `cwd`, modelo usado, thinking, usage e caminho do JSONL do filho. O caminho do JSONL entra no registro quando a tarefa começa. Estado por tarefa: `running`, `completed`, `failed`, `not_run` (o job parou antes dela) ou `interrupted` (o pai caiu com a tarefa rodando; o JSONL fica no registro). Estado e usage são gravados quando a tarefa termina, não só no fim do job. Num job `parallel`, uma tarefa que lança exceção não derruba as outras: o job espera todas, continua cancelável até lá e termina `failed` com o resultado das que concluíram. Registros anteriores a essa auditoria mostram `legacy`: `status`/`trace` associam as sessões do job às tarefas por índice quando as contagens batem; senão `trace` lista as sessões sem atribuí-las.
 - **Sessões filhas:** cada filho grava o JSONL oficial do Pi, com `parentSession` apontando para a sessão do pai. O JSONL tem mensagens, tool calls, resultados e uso por turno.
 - **Ações da tool**, sempre com `jobId` da sessão atual:
   - `status`: estado do job e, por tarefa, o caminho do JSONL, já durante a execução.
@@ -245,7 +246,7 @@ O código de `agent/` não depende de caminhos literais `/Users/biel` (só um ex
 | Extensão | Sem infraestrutura pessoal |
 |---|---|
 | vault-runtime | Somente com `AGENT_VAULT=1`. Sem opt-in mantém o prompt nativo e não depende de Vault. Nenhum dado pessoal é migrado. |
-| subagent | Papéis/modelos usam o perfil do Agent, não o Vault. Sem modelo de apoio configurado, o filho herda o modelo principal. Allowlists e confirmações de agentes do projeto continuam aplicáveis; falhas de quota não trocam o modelo silenciosamente. Gate Megamind explicitamente configurado continua falhando fechado. |
+| subagent | Papéis/modelos usam o perfil do Agent, não o Vault. Sem modelo de apoio configurado, papel sem config própria em `/models` e sem `model` no frontmatter herda o modelo principal. Allowlists e confirmações de agentes do projeto continuam aplicáveis; falhas de quota não trocam o modelo silenciosamente. Gate Megamind explicitamente configurado continua falhando fechado. |
 | models | `/model` mantém o seletor nativo. `/models` usa `agent-models.json` no perfil para escolhas por papel; `agent-preferences.json` guarda preferências de recursos, não contabilidade. Nenhuma configuração pessoal é distribuída. |
 | generate-image | Execução exige configuração do modelo de imagem no perfil e autenticação própria. Falta deles vira erro da tool, não erro de startup. |
 | compaction | Usa geração, prompt e validação nativos do Pi, sem impor Luna ou executar aprendizado auxiliar. O cache-keeper mantém suas proteções de compactação. |

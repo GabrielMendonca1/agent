@@ -36,8 +36,9 @@ decisão e integração. Isolamento, auditoria e lacunas: `docs/setup.md`,
 `workflow.mjs` lê `.agent/workflow.md` se existir; o arquivo não é criado
 automaticamente. Sem ele, scout=apoio e os demais papéis=principal. Ordem de
 decisão do modelo de um papel: config do papel em `/models` > frontmatter do
-papel > slot. Não há classificador de dispatch. Sem modelo de apoio, todo filho
-herda o modelo principal.
+papel > slot. Não há classificador de dispatch. Sem modelo de apoio, o slot
+`apoio` cai no principal: herdam o modelo principal os papéis sem config própria
+em `/models` e sem `model` no frontmatter.
 
 `projectRules` anexa as regras de `.agent/workflow.md` (até 8 KB; fonte acima de
 64 KB é ignorada) à tarefa de cada filho, como orientação.
