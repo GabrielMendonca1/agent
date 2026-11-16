@@ -62,7 +62,7 @@ const repo = new URL('..', import.meta.url).pathname.replace(/\/$/, '');
   assert.doesNotMatch(override, /Pi nativo ·/);
   const native = buildAgentDoctorReport({ ...input, settings: {}, mode: null });
   assert.match(native, /Modo Agent: não observado/);
-  assert.match(native, /Cache nativo: streaming \(padrão/);
+  assert.match(native, /Cache nativo: idle \(padrão do Pi 1\.5\.1\+\) \(configuração; o Agent para o aquecedor nativo/);
   const handlers = new Map();
   const forbidden = () => { throw new Error('diagnóstico tentou efeito colateral'); };
   register({

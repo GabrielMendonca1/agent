@@ -253,7 +253,7 @@ export function buildAgentDoctorReport(input: {
   const skills = commands.filter(command => command.source === "skill");
   // Nunca serializar settings: pode conter endpoints, comandos e dados privados.
   const warming = ["off", "streaming", "idle"].includes(String(input.settings.cacheWarming))
-    ? String(input.settings.cacheWarming) : "streaming (padrão do Pi 1.4)";
+    ? String(input.settings.cacheWarming) : "idle (padrão do Pi 1.5.1+)";
   const lines = [
     "AGENT · DIAGNÓSTICO DA SESSÃO",
     `Modo Agent: ${input.mode ?? "não observado"}`,
@@ -278,7 +278,7 @@ export function buildAgentDoctorReport(input: {
   lines.push("", `SKILLS COM COMANDO OBSERVADO: ${skills.length}`);
   for (const skill of skills) lines.push(`/${clean(skill.name)} · ${clean(skill.sourceInfo?.path)}`);
   lines.push("Skills sem comando não são enumeradas por esta API.", "", "CONFIGURAÇÃO E LIMITES",
-    `Cache nativo: ${warming} (configuração, não prova de refresh).`,
+    `Cache nativo: ${warming} (configuração; o Agent para o aquecedor nativo e usa o cache-keeper).`,
     "Hooks sem tool/comando: carregamento não observado por este relatório.",
     "Cache-keeper, compactação, aprendizado e observador podem consumir modelo; atividade e cobranças não observadas.",
     "Integração registrada não prova conexão, autenticação ou saúde.",
