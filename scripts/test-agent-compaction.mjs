@@ -619,7 +619,9 @@ assert.ok(existsSync(loaderEntry), 'loader real obrigatório');
   const { loadExtensions, createExtensionRuntime } = await import(pathToFileURL(loaderEntry).href);
   const { createEventBus } = await import(pathToFileURL(join(piRoot, 'dist/core/event-bus.js')).href);
   const paths = ['cache-keeper.ts', 'compaction.ts'].map((f) => join(repo, 'agent/extensions/brain-live', f));
-  const loaded = await loadExtensions(paths, vaultRoot, createEventBus(), createExtensionRuntime());
+  const runtime = createExtensionRuntime();
+  runtime.appendEntry = () => {}; // This loader-only fixture has no session writer.
+  const loaded = await loadExtensions(paths, vaultRoot, createEventBus(), runtime);
   assert.deepEqual(loaded.errors, [], 'extensões carregam no loader real');
   const chain = loaded.extensions.flatMap((ext) => [...(ext.handlers.get('session_before_compact') ?? [])]);
   assert.equal(chain.length, 2, 'as duas extensões registram o hook');

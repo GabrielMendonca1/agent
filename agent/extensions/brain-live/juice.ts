@@ -8,6 +8,7 @@ import { readNotesMetadata, unmappedDocs } from '../../juice/notes.mjs';
 import { existsSync, readFileSync, renameSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import { allowAutoCompaction } from '../../juice/cache-policy.mjs';
+import { clearBeforeAutoCompaction } from './compaction/tool-clear.ts';
 
 const COMPACT_AT_1M = 450_000;
 const TEAM_TOOL = 'subagent';
@@ -224,6 +225,7 @@ export default function (pi: ExtensionAPI) {
     const usage = ctx.getContextUsage();
     if (compacting || !usage || !(usage.tokens > compactThreshold(usage.contextWindow))) return;
     if (!allowAutoCompaction(ctx)) return;
+    if (clearBeforeAutoCompaction(ctx, compactThreshold(usage.contextWindow))) return;
     compacting = true;
     const done = () => { compacting = false; };
     try { ctx.compact({ onComplete: done, onError: done }); } catch { done(); }

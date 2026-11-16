@@ -43,6 +43,7 @@ import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-a
 import { bindSessionCachePolicy, breakCause, compactionDecision, idleCompactionAt, idleCompactionDecision, idleCompactMinTokens, fingerprint, firstChangedSegment, JUICE_KIND, modelSwitchEstimate, openaiCacheKey, prefetchPayload, warmPlan } from "../../juice/cache-policy.mjs";
 import { isChild } from "../../juice/client.mjs";
 import { CompactionEpoch, branchOf } from "./lib/compaction-epoch.ts";
+import { clearBeforeAutoCompaction, recordToolClearRequest } from './compaction/tool-clear.ts';
 
 const DEFAULT_WINDOW_S = 3 * 3600; // ótimo nas pausas do Gabriel pesadas por contexto (curva plana de 2,7 h a 9 h)
 const MAX_WINDOW_S = 24 * 3600;
@@ -222,6 +223,10 @@ export default function cacheKeeper(pi: ExtensionAPI) {
       idle: ctx.isIdle?.() ?? false, pending: ctx.hasPendingMessages?.() ?? false, editorText,
     });
     if (decision.action !== "compact") return;
+    if (clearBeforeAutoCompaction(ctx, idleMin - 1)) {
+      forget(); // A saved projection supersedes the old warmable payload.
+      return;
+    }
     idleCompacting = true;
     const runCycle = cycle;
     forget(); // o resumo muda o prefixo: o payload guardado não serve mais para aquecer
@@ -326,6 +331,7 @@ export default function cacheKeeper(pi: ExtensionAPI) {
       const hit = prompt > 0 && (u.cacheRead ?? 0) >= 0.9 * prompt;
       if (process.env.AGENT_CACHE_KEEPER_TEST === "1") process.stderr.write(`cache-keeper usage: ${JSON.stringify(u)} stop=${response?.stopReason} err=${response?.errorMessage ?? ""}\n`);
       if (!hit) stats.misses += 1;
+      if (hit) recordToolClearRequest(pi, ctx, ttl);
       return hit;
     } catch (error) {
       if (refreshCycle !== cycle) return false;
