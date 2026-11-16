@@ -207,6 +207,7 @@ Cache-keeper em detalhe:
 - Filhos (`AGENT_CHILD=1`) não lançam subagentes.
 - Filhos também recebem `AGENT_NO_DELEGATE=1`, que o bash e o launcher preservam: um `agent` aberto de dentro de um filho não delega. Numa sessão humana aberta assim, remova a variável (`unset AGENT_NO_DELEGATE`) antes de abrir o `agent`.
 - O system prompt da sessão principal traz a diretriz de orquestrador: "Act as an orchestrator: delegate recon and bulk reading to scout, isolated implementation to worker, and review to reviewer; keep your own context for decisions and integration".
+- Outra diretriz pede ao pai que solicite caminhos, linhas e trechos curtos no resultado e não releia arquivos que o filho já resumiu, salvo para verificar um ponto específico. Motivo: reler o que o filho leu paga a mesma entrada de novo no contexto mais caro, o do pai.
 - `.agent/workflow.md` não é criado automaticamente.
 - `<perfil>/agent-preferences.json` guarda só `supportModel`.
 

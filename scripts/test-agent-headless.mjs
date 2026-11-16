@@ -136,11 +136,13 @@ try {
 		assert.match(r.system, /subagent: Delegate reading, recon, review and self-contained implementation to subagents/, 'snippet de orquestrador');
 		assert.match(r.system, /Act as an orchestrator: delegate recon and bulk reading to `scout`, isolated implementation to `worker`, and review to `reviewer`/, 'diretriz de orquestrador no system');
 		assert.match(r.system, /only its result comes back, so delegated reading does not grow yours; to audit its steps and decisions use action `trace`/, 'guideline de auditoria');
+		assert.match(r.system, /Ask subagents to return paths, line numbers and short excerpts \(`brief.return_format`\); do not reread files a subagent already summarized unless you must verify one specific point/, 'no rereading what a child summarized');
 		assert.doesNotMatch(r.system, /Optional async subagents|only when the user enables them|AGENT_SUBAGENTS|\/subagents on/, 'sem texto de opt-in');
 	}
 	const subagentBytes = Buffer.byteLength(JSON.stringify(enabled.payloadTools.find((t) => t.name === 'subagent')));
 	// 8994 B antes da action trace; teto de +600 B porque o schema entra em toda requisição.
 	assert.ok(subagentBytes <= 8994 + 600, `schema de subagent cresceu demais: ${subagentBytes} B`);
+	assert.ok(subagentBytes <= 9400, `subagent schema over the 9,400 B budget: ${subagentBytes} B`);
 	ok(`política de autoridade e diretriz de orquestrador, sem modos nem inferência extra; schema subagent ${subagentBytes} B`);
 	assert.ok(enabled.bytes < fullRun.bytes, `headless (${enabled.bytes}) não é menor que o completo (${fullRun.bytes})`);
 	ok(`prompt: completo ${fullRun.bytes} B, headless ${enabled.bytes} B; schemas: completo ${fullRun.toolBytes} B, headless ${enabled.toolBytes} B`);

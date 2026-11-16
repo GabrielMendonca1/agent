@@ -617,6 +617,7 @@ export default function (pi: ExtensionAPI) {
 		promptGuidelines: [
 			"Act as an orchestrator: delegate recon and bulk reading to `scout`, isolated implementation to `worker`, and review to `reviewer`; keep your own context for decisions and integration. Use subagent action integrate to merge committed isolated work after review.",
 			"A subagent runs in its own context and only its result comes back, so delegated reading does not grow yours; to audit its steps and decisions use action `trace`.",
+			"Ask subagents to return paths, line numbers and short excerpts (`brief.return_format`); do not reread files a subagent already summarized unless you must verify one specific point.",
 			"Always delegate through the `brief` object instead of a prose task, and put what you already know (paths, findings, decisions) in `brief.context`; each role has required fields and the call fails before spawning if they are missing.",
 			"Subagent dispatch is asynchronous: after launching, report the jobId and continue with independent work. Never loop on `status` waiting for a job — the result is delivered to you automatically.",
 			"If a subagent reports quota/rate failure, do not assume its mutating task is safe to replay; explicitly choose another model listed for that role and redispatch only after accounting for partial work.",
