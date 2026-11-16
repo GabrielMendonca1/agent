@@ -8,7 +8,8 @@
  *
  * Storage: <baseDir>/<sessionId>/<jobId>.json, written atomically, mode 0600.
  * Only task metadata + final result/error/usage are stored — never transcripts,
- * thinking or tool messages.
+ * thinking or tool messages. Each task records its child's session JSONL path
+ * as soon as it starts; that file is the full audit trail (see trace.ts).
  */
 
 import * as fs from "node:fs";
@@ -115,7 +116,15 @@ export interface JobTaskSpec {
 	slot?: "apoio" | "principal";
 	/** Populated internally from the authorized model-role pair; never caller-controlled. */
 	thinking?: string;
+	/** Audit, written by the manager: per-task lifecycle, child session and usage. */
+	state?: TaskState;
+	sessionFile?: string;
+	usage?: UsageStats;
+	error?: string;
 }
+
+/** `not_run`: the job ended before this task started (chain stop, abort, sibling exception). */
+export type TaskState = "running" | "completed" | "failed" | "not_run";
 
 /**
  * Config própria do papel (`roleModels` no models.json do usuário), quando existe.
@@ -362,6 +371,10 @@ interface ActiveJob {
 	done: Promise<void>;
 	/** Aquecimentos de cache deste job: abortados e aguardados antes do estado terminal. */
 	warm?: { controller: AbortController; pending: Set<Promise<void>> };
+	/** Live result of each started task (by index), kept even if the task throws. */
+	started: Map<number, SingleResult>;
+	/** Results that tasks actually returned. */
+	returned: Map<number, SingleResult>;
 }
 
 export type LaunchOutcome = { ok: true; record: JobRecord; resultPath: string } | { ok: false; error: string };
@@ -482,6 +495,8 @@ export class SubagentJobManager {
 			cancelRequested: false,
 			timedOut: false,
 			done: Promise.resolve(),
+			started: new Map(),
+			returned: new Map(),
 		};
 		if (spec.timeoutSeconds > 0) {
 			job.timer = setTimeout(() => {
@@ -595,9 +610,59 @@ export class SubagentJobManager {
 			onProcessStarted: this.deps.onProcessStarted,
 			acquireSlot: (s?: AbortSignal) => this.slots.acquire(s),
 			onFirstToken,
+			onStart: (result: SingleResult) => this.taskStarted(job, slot, result),
 		};
 		const taskText = task.worktree ? `You are in an isolated worktree ${task.worktree} on branch ${task.branch}; commit your work there; do not touch ${task.sourceCwd}.\n${opts.taskText}` : opts.taskText;
-		return runSingleAgent({ ...common, task: taskText, parentSession: spec.dispatchDefaults.parentSession });
+		const result = await runSingleAgent({ ...common, task: taskText, parentSession: spec.dispatchDefaults.parentSession });
+		job.returned.set(slot, result);
+		return result;
+	}
+
+	/** The child session exists and its model is resolved: record both before the child runs. */
+	private taskStarted(job: ActiveJob, slot: number, result: SingleResult): void {
+		job.started.set(slot, result);
+		const task = job.record.tasks[slot];
+		if (!task) return;
+		task.state = "running";
+		task.sessionFile = result.sessionFile;
+		// Role frontmatter or parent defaults: the record names the model actually used.
+		task.model ??= result.model;
+		task.thinking ??= result.thinking;
+		this.persist(job.record);
+	}
+
+	/** Per-task audit at the end of the job; the job aggregate is the sum of these. */
+	private settleTasks(job: ActiveJob, error: string | undefined): { usage: UsageStats; sessionFiles: string[] } {
+		const usage = emptyUsage();
+		const sessionFiles: string[] = [];
+		job.record.tasks.forEach((task, index) => {
+			const returned = job.returned.get(index);
+			const result = returned ?? job.started.get(index);
+			if (!result) {
+				task.state = "not_run";
+				return;
+			}
+			task.usage = { ...result.usage };
+			task.sessionFile ??= result.sessionFile;
+			task.model ??= result.model;
+			task.thinking ??= result.thinking;
+			if (returned && !isFailedResult(returned)) task.state = "completed";
+			else {
+				task.state = "failed";
+				task.error = returned
+					? returned.errorMessage || returned.stopReason || returned.stderr.slice(0, 500) || "failed"
+					: `did not finish: ${error ?? "job stopped"}`;
+			}
+			if (task.sessionFile) sessionFiles.push(task.sessionFile);
+			usage.input += result.usage.input;
+			usage.output += result.usage.output;
+			usage.cacheRead += result.usage.cacheRead;
+			usage.cacheWrite += result.usage.cacheWrite;
+			usage.cost += result.usage.cost;
+			usage.turns += result.usage.turns;
+			usage.contextTokens = Math.max(usage.contextTokens, result.usage.contextTokens);
+		});
+		return { usage, sessionFiles };
 	}
 
 	private async run(job: ActiveJob, spec: LaunchSpec): Promise<void> {
@@ -610,19 +675,6 @@ export class SubagentJobManager {
 				projectAgentsDir: spec.projectAgentsDir,
 				results,
 			});
-		const usage = emptyUsage();
-		const sessionFiles: string[] = [];
-		const addUsage = (r: SingleResult) => {
-			if (r.sessionFile) sessionFiles.push(r.sessionFile);
-			usage.input += r.usage.input;
-			usage.output += r.usage.output;
-			usage.cacheRead += r.usage.cacheRead;
-			usage.cacheWrite += r.usage.cacheWrite;
-			usage.cost += r.usage.cost;
-			usage.turns += r.usage.turns;
-			usage.contextTokens = Math.max(usage.contextTokens, r.usage.contextTokens);
-		};
-
 		let output = "";
 		let error: string | undefined;
 
@@ -649,7 +701,6 @@ export class SubagentJobManager {
 						// Cache E: enquanto esta etapa roda, aquece o prefixo do próximo papel.
 						onFirstToken: next ? () => this.prefetchRole(job, spec, next, signal) : undefined,
 					});
-					addUsage(result);
 					const status = isFailedResult(result) ? "failed" : "completed";
 					output += `${output ? "\n\n---\n\n" : ""}## step ${i + 1} · ${step.agent} · ${status}${result.sandbox ? ` · sandbox=${result.sandbox}` : ""}\n\n${getResultOutput(result)}`;
 					if (isFailedResult(result)) {
@@ -675,7 +726,6 @@ export class SubagentJobManager {
 						() => signal.aborted,
 					);
 				const done = results.filter(Boolean);
-				for (const r of done) addUsage(r);
 				const successCount = done.filter((r) => !isFailedResult(r)).length;
 				// Full outputs are stored: only previews are bounded, elsewhere.
 				const summaries = done.map((r) => {
@@ -700,7 +750,6 @@ export class SubagentJobManager {
 					signal,
 					makeDetails: makeDetails("single"),
 				});
-				addUsage(result);
 				// O parcial vai em output; o erro guarda só a causa, sem duplicar o texto.
 				if (isFailedResult(result)) error = `Agent ${result.stopReason || "failed"}: ${result.errorMessage || result.stderr || "(no error message)"}`;
 				output = (result.sandbox ? `Sandbox: ${result.sandbox}\n\n` : "") + (result.finalText || (error ? "" : "(no output)"));
@@ -718,6 +767,7 @@ export class SubagentJobManager {
 			this.active.delete(job.record.jobId);
 		}
 
+		const { usage, sessionFiles } = this.settleTasks(job, error);
 		const isolated = worktreeSummary(job.record);
 		if (isolated) output = `${isolated}\n\n${output}`;
 		const outputBytes = Buffer.byteLength(output, "utf-8");
@@ -860,7 +910,15 @@ export function readResultSlice(
 	offset: number,
 	limit: number,
 ): { text: string; totalBytes: number; nextOffset: number | null } {
-	const full = resultBody(record);
+	return sliceText(resultBody(record), offset, limit);
+}
+
+/** One bounded page (≤ RESULT_READ_CAP bytes) of a text, on UTF-8 boundaries. */
+export function sliceText(
+	full: string,
+	offset: number,
+	limit: number,
+): { text: string; totalBytes: number; nextOffset: number | null } {
 	const buf = Buffer.from(full, "utf-8");
 	// Non-finite/NaN/fractional input must not become a NaN slice.
 	const rawOffset = Number.isFinite(offset) ? Math.trunc(offset) : 0;

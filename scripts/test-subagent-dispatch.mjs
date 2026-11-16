@@ -9,6 +9,7 @@ import { homedir, tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { createRequire } from 'node:module';
 import { fileURLToPath } from 'node:url';
+import { startFakeAnthropic } from './lib/fake-anthropic.mjs';
 
 const repo = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const piRoot = process.env.AGENT_PI_ROOT || join(homedir(), '.local/share/agent/current/lib/node_modules/@earendil-works/pi-coding-agent');
@@ -50,7 +51,15 @@ export default function (pi) {
       const lastUser = [...context.messages].reverse().find(m => m.role === 'user');
       const userText = lastUser ? (Array.isArray(lastUser.content) ? lastUser.content.map(p => p.text || '').join(' ') : String(lastUser.content)) : '';
       let content, stopReason = 'stop';
-      if (child && n === 0 && process.env.FG_SANDBOX_COMMAND) {
+      const launchedJob = () => {
+        const launch = context.messages.find(m => m.role === 'toolResult' && m.toolName === 'subagent');
+        return /Launched subagent job ([^ ]+)/.exec(launch?.content?.map(p => p.text || '').join(' ') || '')?.[1];
+      };
+      if (process.env.FG_CHILD_LAUNCH && n === 0) {
+        // Processo filho (AGENT_CHILD=1) tentando delegar.
+        content = [{ type: 'toolCall', id: 'call-child', name: 'subagent', arguments: { agent: 'worker', brief: { objective: 'o', context: 'c', scope: 's', done_when: 'd', stop_if: 'x' } } }];
+        stopReason = 'toolUse';
+      } else if (child && n === 0 && process.env.FG_SANDBOX_COMMAND) {
         content = [{ type: 'toolCall', id: 'call-sandbox', name: 'bash', arguments: { command: process.env.FG_SANDBOX_COMMAND } }];
         stopReason = 'toolUse';
       } else if (child && process.env.FG_WRITE) {
@@ -96,6 +105,15 @@ export default function (pi) {
         const names = process.env.FG_PARALLEL.split(',');
         content = [{ type: 'toolCall', id: 'call-p', name: 'subagent', arguments: { tasks: ['a', 'b', 'c'].map((x, i) => ({ agent: names[i % names.length], brief, task: 'tarefa-' + x })) } }];
         stopReason = 'toolUse';
+      } else if (!child && n === 1 && process.env.FG_AUDIT) {
+        content = [{ type: 'toolCall', id: 'audit-status', name: 'subagent', arguments: { action: 'status', jobId: launchedJob() } }];
+        stopReason = 'toolUse';
+      } else if (!child && n === 2 && process.env.FG_AUDIT) {
+        content = [{ type: 'toolCall', id: 'audit-wait', name: 'bash', arguments: { command: 'sleep 6' } }];
+        stopReason = 'toolUse';
+      } else if (!child && n === 3 && process.env.FG_AUDIT) {
+        content = [{ type: 'toolCall', id: 'audit-trace', name: 'subagent', arguments: { action: 'trace', jobId: launchedJob() } }];
+        stopReason = 'toolUse';
       } else if (!child && n === 1 && process.env.FG_KEEPALIVE) {
         // Mantém o pai vivo enquanto os filhos assíncronos correm.
         content = [{ type: 'toolCall', id: 'call-wait', name: 'bash', arguments: { command: 'sleep ' + process.env.FG_KEEPALIVE } }];
@@ -123,7 +141,7 @@ export default function (pi) {
 let runIndex = 0;
 function runPi(extraEnv) {
   const env = { ...process.env, HOME: home, USERPROFILE: home, PI_CODING_AGENT_DIR: agent, PI_OFFLINE: '1', PI_DURABLE_HOST: '0',
-    AGENT_RUNTIME_ENABLED: '1', AGENT_SUBAGENTS: '1', AGENT_PI_ROOT: piRoot,
+    AGENT_RUNTIME_ENABLED: '1', AGENT_PI_ROOT: piRoot,
     NODE_OPTIONS: '', PI_AUTOMATIC_SKILLS: 'fixture', AGENT_SUBAGENT_CHILD_EXTENSIONS: provider, ...extraEnv };
   const r = spawnSync(process.execPath, [cli, '-p', '--mode', 'json', '--session', join(root, `parent-${++runIndex}.jsonl`), '--no-extensions', '-e', provider, '-e', join(repo, 'agent/extensions/brain-live/subagent/index.ts'), '--model', 'fg-fake/fake', 'tarefa'],
     { cwd: root, env, encoding: 'utf8', timeout: 60000, maxBuffer: 16 * 1024 * 1024 });
@@ -192,7 +210,7 @@ assert.match(chainLaunch.content[0].text, /Launched subagent job .*chain/);
 assert.match(readFileSync(chainDump, 'utf8'), /FILHO-PRONTO/, 'chain forwards the previous result into the next brief');
 console.log('ok chain: async launch and previous result passed to next role');
 
-// Opt-in also works without the runtime preload.
+// Launch works without the runtime preload and without any flag.
 const bg = runPi({ AGENT_RUNTIME_ENABLED: '0' });
 const end3 = bg.find(e => e.type === 'tool_execution_end' && e.toolName === 'subagent');
 assert.match(end3.result.content[0].text, /Launched subagent job .* status running/, 'fora do piloto continua assíncrono');
@@ -202,25 +220,31 @@ mkdirSync(join(root, '.agent'), { recursive: true });
 writeFileSync(join(root, '.agent/workflow.md'), ['# Receita', '', 'versão: v1', '', '## Etapas (complex)',
   ...['worker', 'mutator', 'todoer', 'alltools', 'emptytools'].map((r, i) => `${i + 1}. ${r} · apoio · contrato`), ''].join('\n'));
 
-// Runtime opt-in: assíncrono como o Pi normal — a chamada volta
-//    com jobId na hora e o pai segue trabalhando.
+// Runtime: assíncrono como o Pi normal — a chamada volta
+//    com jobId na hora e o pai segue trabalhando; nenhuma flag de opt-in.
 const pilot = runPi({  });
 const end9 = pilot.find(e => e.type === 'tool_execution_end' && e.toolName === 'subagent');
 const t9 = end9.result.content[0].text;
 assert.match(t9, /Launched subagent job .* status running/, `complex é assíncrono: ${t9.slice(0, 200)}`);
 assert.equal(end9.result.details.job.status, 'running');
 assert.doesNotMatch(t9, /FILHO-PRONTO/, 'nada de resultado inline');
-console.log('ok runtime opt-in: dispatch assíncrono (jobId na hora)');
+console.log('ok runtime: dispatch assíncrono sem flag (jobId na hora)');
 
-// Opt-in is independent of the old session mode; disabled launches fail closed.
-for (const enabled of ['0', '1']) {
-  for (const savedMode of ['complex', 'simple', 'invalid']) {
-    const events = runPi({ AGENT_SUBAGENTS: enabled, FG_SESSION_MODE: savedMode });
-    const result = events.find(e => e.type === 'tool_execution_end' && e.toolName === 'subagent').result;
-    assert.match(result.content[0].text, enabled === '1' ? /Launched subagent job/ : /Subagents disabled/);
-  }
+// Sempre ligado, independente do modo legado salvo na sessão.
+for (const savedMode of ['complex', 'simple', 'invalid']) {
+  const events = runPi({ FG_SESSION_MODE: savedMode });
+  const result = events.find(e => e.type === 'tool_execution_end' && e.toolName === 'subagent').result;
+  assert.match(result.content[0].text, /Launched subagent job/, `modo legado ${savedMode}`);
 }
-console.log('ok opt-in independente de modos legados');
+// Processo filho nunca lança subagente: guarda explícita, nada é despachado.
+const childJobs = join(agent, 'subagent-jobs');
+const jobsBefore = existsSync(childJobs) ? readdirSync(childJobs, { recursive: true }).length : 0;
+const childEvents = runPi({ AGENT_CHILD: '1', FG_CHILD_LAUNCH: '1' });
+const childLaunch = childEvents.find(e => e.type === 'tool_execution_end' && e.toolName === 'subagent').result;
+assert.equal(childLaunch.isError, true);
+assert.match(childLaunch.content[0].text, /This process is a subagent \(AGENT_CHILD=1\); subagents cannot launch subagents\./);
+assert.equal(existsSync(childJobs) ? readdirSync(childJobs, { recursive: true }).length : 0, jobsBefore, 'filho não cria job');
+console.log('ok sempre ligado: independente de modos legados; filho bloqueado com mensagem clara');
 
 // Slot do apoio vem da receita explícita, sem inferência classificadora.
 writeFileSync(join(agent, 'agent-preferences.json'), JSON.stringify({ supportModel: 'fg-fake/cheap' }));
@@ -242,6 +266,29 @@ assert.equal(starts11.length, 3, `três filhos nasceram: ${JSON.stringify(ev11)}
 const firstToken = Math.min(...ev11.filter(e => e.what === 'token').map(e => e.t));
 assert.ok(starts11.every(e => e.t < firstToken), `filhos concorrentes: ${JSON.stringify(ev11)}`);
 console.log('ok assíncrono: tasks[] de papéis distintos correm concorrentes');
+
+// Auditoria pela própria tool: status mostra o JSONL do filho enquanto ele roda;
+// trace resume os passos depois; o registro guarda modelo e usage por tarefa.
+const auditEvents = runPi({ FG_AUDIT: '1', FG_LOG: join(root, 'audit.log'), FG_DELAY: '1500' });
+const auditEnds = auditEvents.filter(e => e.type === 'tool_execution_end' && e.toolName === 'subagent');
+assert.equal(auditEnds.length, 3, 'launch, status e trace');
+const auditJob = auditEnds[0].result.details.job;
+const statusText = auditEnds[1].result.content[0].text;
+assert.match(statusText, new RegExp(`job ${auditJob.jobId}: running`), `status durante a execução: ${statusText}`);
+const runningSession = /^task 1 worker · running · fg-fake\/fake thinking \w+ · (\S+\.jsonl)$/m.exec(statusText)?.[1];
+assert.ok(runningSession && existsSync(runningSession), `status mostra o JSONL do filho em execução: ${statusText}`);
+const traceText = auditEnds[2].result.content[0].text;
+assert.ok(Buffer.byteLength(traceText) <= 8192 + 200, 'trace respeita o teto por chamada');
+assert.match(traceText, new RegExp(`^job ${auditJob.jobId} \\(completed\\)`), traceText);
+assert.ok(traceText.includes(`## task 1 · worker · completed · ${runningSession}`), traceText);
+assert.match(traceText, /^1\. assistant: FILHO-\?$/m, traceText);
+assert.match(traceText, /^model fg-fake\/fake thinking \w+ · 1 turns · in 1 out 1 cacheRead 0 cacheWrite 0 \$0\.0000$/m, traceText);
+assert.doesNotMatch(traceText, /Task: |## Objective/, 'trace não devolve o brief nem o contexto do filho');
+const auditRecordPath = readdirSync(join(agent, 'subagent-jobs'), { recursive: true }).find(p => p.endsWith(auditJob.jobId + '.json'));
+const auditRecord = JSON.parse(readFileSync(join(agent, 'subagent-jobs', auditRecordPath), 'utf8'));
+assert.deepEqual(auditRecord.tasks.map(t => [t.agent, t.state, t.model, t.sessionFile, t.usage.turns]), [['worker', 'completed', 'fg-fake/fake', runningSession, 1]]);
+assert.deepEqual(auditRecord.sessionFiles, [runningSession]);
+console.log('ok auditoria via tool: status com JSONL em execução, trace linear, registro por tarefa');
 
 // Descrição e guidelines não prometem foreground nem citam o limite.
 // A receita do projeto ganha uma regra aprendida: o principal não pode vê-la.
@@ -368,6 +415,103 @@ try {
     runner.runnerHooks.hostFreePercent = () => 100;
   }
   console.log('ok bounded dispatch: ceiling, queued cancellation, session ownership, memory pressure');
+
+  // Trilha de auditoria com filhos reais roteirizados pelo provider Anthropic falso:
+  // chain [ok, exceção, nunca rodou] e um single que falha depois de agir.
+  const fake = await startFakeAnthropic([
+    { tool: { name: 'read', input: { path: 'dirty.txt' } } },
+    { text: 'AUDIT-STEP-ONE done' },
+    { tool: { name: 'bash', input: { command: 'printf audit > dirty.txt' } } },
+    { text: 'AUDIT-WROTE' },
+  ]);
+  const auditAgent = join(root, 'audit-agent');
+  mkdirSync(auditAgent, { recursive: true });
+  writeFileSync(join(auditAgent, 'settings.json'), JSON.stringify({ packages: [], extensions: [], skills: [], retry: { enabled: false }, quietStartup: true }));
+  writeFileSync(join(auditAgent, 'models.json'), JSON.stringify({ providers: { anthropic: { baseUrl: fake.baseUrl, apiKey: 'audit-test-not-a-key' } } }));
+  const piInvocation = runner.runnerHooks.getPiInvocation;
+  try {
+    Object.assign(process.env, { PI_CODING_AGENT_DIR: auditAgent, AGENT_TEST_SANDBOX_NONE: '1' });
+    delete process.env.AGENT_SUBAGENT_CHILD_EXTENSIONS;
+    let spawns = 0;
+    runner.runnerHooks.getPiInvocation = args => {
+      if (++spawns === 2) throw new Error('spawn exploded');
+      return { command: process.execPath, args: [cli, ...args] };
+    };
+    const { taskStatusLines, traceJob } = await jiti.import(join(repo, 'agent/extensions/brain-live/subagent/trace.ts'));
+    const { sliceText } = await jiti.import(join(repo, 'agent/extensions/brain-live/subagent/jobs.ts'));
+    // Modelo vem do frontmatter do papel (sem roleModels): o registro tem de nomeá-lo.
+    const auditor = { name: 'auditor', source: 'user', tools: ['read', 'bash'], model: 'anthropic/claude-sonnet-4-5', systemPrompt: 'fixture' };
+    let finished;
+    const audits = new BudgetManager({ baseDir: join(root, 'audit-jobs'), onComplete: record => { finished = record; } });
+    const auditSpec = { sessionId: 'audit', sessionGeneration: 0, agents: [auditor], agentScope: 'user', projectAgentsDir: null,
+      dispatchDefaults: { model: 'fg-fake/fake', thinkingLevel: 'low', resources: { slots: {} } }, cwd: sandboxCwd, timeoutSeconds: 60 };
+    const chain = audits.launch({ ...auditSpec, mode: 'chain', tasks: [1, 2, 3].map(i => ({ agent: 'auditor', task: 'etapa-' + i })) });
+    assert.ok(chain.ok, chain.error);
+    const jobId = chain.record.jobId;
+    // Durante a execução: status já lista o JSONL da tarefa 1, gravado também no disco.
+    const live = audits.get('audit', jobId);
+    assert.equal(live.status, 'running');
+    assert.equal(live.tasks[0].state, 'running');
+    assert.ok(live.tasks[0].sessionFile?.endsWith('.jsonl') && existsSync(live.tasks[0].sessionFile));
+    assert.equal(live.tasks[0].model, 'anthropic/claude-sonnet-4-5', 'modelo do frontmatter no registro');
+    const onDisk = JSON.parse(readFileSync(join(root, 'audit-jobs/audit', jobId + '.json'), 'utf8'));
+    assert.equal(onDisk.tasks[0].sessionFile, live.tasks[0].sessionFile, 'JSONL persistido quando a tarefa começa');
+    const lines = taskStatusLines(live);
+    assert.equal(lines[0], `task 1 auditor · running · anthropic/claude-sonnet-4-5 · ${live.tasks[0].sessionFile}`);
+    assert.deepEqual(lines.slice(1), ['task 2 auditor · pending', 'task 3 auditor · pending']);
+    assert.match(traceJob(live, 1).text, /## task 1 · auditor · running · /, 'trace parcial de job em andamento');
+    await waitUntil(() => finished !== undefined);
+    const record = finished;
+    assert.equal(record.status, 'failed');
+    assert.match(record.error, /spawn exploded/);
+    assert.deepEqual(record.tasks.map(t => t.state), ['completed', 'failed', 'not_run']);
+    assert.deepEqual(record.tasks[0].usage, { input: 20, output: 10, cacheRead: 0, cacheWrite: 0, cost: record.tasks[0].usage.cost, contextTokens: record.tasks[0].usage.contextTokens, turns: 2 });
+    assert.ok(record.tasks[1].sessionFile && existsSync(record.tasks[1].sessionFile), 'tarefa que lançou exceção mantém o JSONL');
+    assert.equal(record.tasks[1].usage.turns, 0);
+    assert.equal(record.tasks[1].model, 'anthropic/claude-sonnet-4-5');
+    assert.match(record.tasks[1].error, /^did not finish: spawn exploded/);
+    assert.equal(record.tasks[2].sessionFile, undefined);
+    assert.equal(record.tasks[2].usage, undefined);
+    assert.deepEqual(record.sessionFiles, [record.tasks[0].sessionFile, record.tasks[1].sessionFile]);
+    assert.equal(record.usage.turns, 2, 'agregado = soma das tarefas');
+    assert.equal(record.usage.input, 20);
+    const all = traceJob(record).text;
+    const step1 = traceJob(record, 1).text;
+    assert.ok(all.includes(step1.split('\n\n')[1]), 'trace completo contém o da tarefa 1');
+    const step1Lines = step1.split('\n');
+    assert.deepEqual(step1Lines.slice(0, 4), [`job ${jobId} (failed)`, '', `## task 1 · auditor · completed · ${record.tasks[0].sessionFile}`, '1. call read {"path":"dirty.txt"}'], step1);
+    assert.match(step1Lines[4], /^2\. result read ok \d+ B$/, step1);
+    assert.equal(step1Lines[5], '3. assistant: AUDIT-STEP-ONE done', step1);
+    assert.match(step1Lines[6], new RegExp(`^model anthropic/claude-sonnet-4-5(?: thinking \\w+)? · 2 turns · in 20 out 10 cacheRead 0 cacheWrite 0 \\$${record.tasks[0].usage.cost.toFixed(4)}$`), step1);
+    assert.equal(step1Lines.length, 7, step1);
+    assert.match(traceJob(record, 2).text, /## task 2 · auditor · failed · \S+\.jsonl\n\(no steps recorded yet\)\nmodel \S+(?: thinking \w+)? · 0 turns · in 0 out 0 cacheRead 0 cacheWrite 0 \$0\.0000\nerror: did not finish: spawn exploded/);
+    assert.match(traceJob(record, 3).text, /## task 3 · auditor · not_run\n\(no child session\)/);
+    assert.equal(traceJob(record, 4).ok, false);
+    const page = sliceText(all, 0, 64);
+    assert.ok(Buffer.byteLength(page.text) <= 64 && page.nextOffset > 0, 'trace pagina como result');
+    assert.ok(Buffer.byteLength(sliceText(all, 0, 1e9).text) <= 8192, 'teto de bytes por chamada');
+
+    // Tarefa que falha depois de agir: os passos continuam auditáveis.
+    finished = undefined;
+    const single = audits.launch({ ...auditSpec, mode: 'single', tasks: [{ agent: 'auditor', task: 'escreve' }] });
+    assert.ok(single.ok, single.error);
+    await waitUntil(() => finished !== undefined);
+    assert.equal(finished.status, 'failed');
+    assert.equal(finished.tasks[0].state, 'failed');
+    assert.match(finished.tasks[0].error, /read-only role modified the checkout: dirty.txt/);
+    assert.equal(finished.tasks[0].usage.turns, 2);
+    const failedTrace = traceJob(finished).text;
+    assert.match(failedTrace, /^1\. call bash \{"command":"printf audit > dirty.txt"\}$/m);
+    assert.match(failedTrace, /^2\. result bash ok \d+ B$/m);
+    assert.match(failedTrace, /^3\. assistant: AUDIT-WROTE$/m);
+    assert.match(failedTrace, /^error: read-only role modified the checkout: dirty.txt$/m);
+    assert.doesNotMatch(failedTrace, /Task: escreve|fixture/, 'sem prompt nem system do filho');
+    await audits.shutdown();
+    console.log('ok trace: passos de filho roteirizado, tarefa com exceção e não executada, falha após agir, modelo/usage por tarefa');
+  } finally {
+    runner.runnerHooks.getPiInvocation = piInvocation;
+    await fake.close();
+  }
 } finally {
   for (const key of Object.keys(process.env)) if (!(key in savedEnv)) delete process.env[key];
   Object.assign(process.env, savedEnv);
@@ -514,4 +658,4 @@ runPi({ FG_WRITE: singleLog, FG_KEEPALIVE: '4' });
 assert.equal(resolve(JSON.parse(readFileSync(singleLog, 'utf8').trim()).cwd).replace(/^\/private/, ''), root.replace(/^\/private/, ''), 'single mantém cwd');
 console.log('ok worktrees: isolamento paralelo, origem limpa, integração explícita e single intacto');
 rmSync(root, { recursive: true, force: true });
-console.log('ok subagent-dispatch: opt-in, slots, concorrência e isolamento da receita');
+console.log('ok subagent-dispatch: sempre ligado, auditoria, slots, concorrência e isolamento da receita');

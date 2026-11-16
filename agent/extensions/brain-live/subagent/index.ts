@@ -8,7 +8,7 @@ import { subagentMascots } from "../../agent/tui/status-line";
  * scoped to the originating session and branch.
  *
  * Modes (unchanged): single, parallel (tasks[]), chain ({previous} placeholder).
- * Control actions on the same tool: status | result | list | cancel (+ jobId).
+ * Control actions on the same tool: status | result | trace | list | cancel (+ jobId).
  *
  * Child processes still run `--no-extensions --no-skills` in JSON mode.
  */
@@ -44,10 +44,12 @@ import {
 	ownedByLiveForeignParent,
 	recoveryBlocker,
 	restoreInterrupted,
+	sliceText,
 	SubagentJobManager,
 	summarizeForNotification,
 	validateTimeoutSeconds,
 } from "./jobs.ts";
+import { taskStatusLines, traceJob } from "./trace.ts";
 import { type DispatchDefaults, type JobSummary, mapWithConcurrencyLimit, runnerHooks, sandboxForTools, type SubagentDetails, type UsageStats } from "./runner.ts";
 
 const STATUS_KEY = "subagents";
@@ -241,18 +243,18 @@ const AgentScopeSchema = StringEnum(["user", "project", "both"] as const, {
 	default: "user",
 });
 
-const ActionSchema = StringEnum(["launch", "status", "result", "list", "cancel", "integrate", "discard"] as const, {
+const ActionSchema = StringEnum(["launch", "status", "result", "trace", "list", "cancel", "integrate", "discard"] as const, {
 	description: 'What to do. Default "launch" (dispatch a background job). Others inspect, stop, integrate or discard jobs of this session.',
 	default: "launch",
 });
 
 const SubagentParams = Type.Object({
 	action: Type.Optional(ActionSchema),
-	taskIndex: Type.Optional(Type.Integer({ minimum: 1, description: "1-based task index for integrate/discard; omit for all" })),
+	taskIndex: Type.Optional(Type.Integer({ minimum: 1, description: "1-based task index for trace/integrate/discard; omit for all" })),
 	force: Type.Optional(Type.Boolean({ description: "Allow discard of uncommitted work (never applies to integrate)" })),
-	jobId: Type.Optional(Type.String({ description: 'Job id (required for action status|result|cancel|integrate|discard)' })),
-	offset: Type.Optional(Type.Number({ description: 'Byte offset for action "result" (default 0)' })),
-	limit: Type.Optional(Type.Number({ description: `Max bytes for action "result" (default/cap ${RESULT_READ_CAP})` })),
+	jobId: Type.Optional(Type.String({ description: 'Job id (required for action status|result|trace|cancel|integrate|discard)' })),
+	offset: Type.Optional(Type.Number({ description: 'Byte offset for action "result"/"trace" (default 0)' })),
+	limit: Type.Optional(Type.Number({ description: `Max bytes for action "result"/"trace" (default/cap ${RESULT_READ_CAP})` })),
 	agent: Type.Optional(Type.String({ description: "Name of the agent to invoke (for single mode)" })),
 	task: Type.Optional(Type.String({ description: "Free-form extra notes for the agent (for single mode)" })),
 	brief: Type.Optional(BriefSchema),
@@ -601,7 +603,8 @@ export default function (pi: ExtensionAPI) {
 			"ASYNC: the call returns a jobId immediately and the subagent keeps running in the background. Do NOT poll in a loop — continue with other work; the result arrives later as a `subagent-result` message.",
 			"Independent tasks go in one call as `tasks` (parallel), so they run at the same time instead of one after the other.",
 			'Parallel writers sharing a repository use isolated worktrees: inspect their commits, then explicitly integrate (jobId, optional 1-based taskIndex) or discard (force:true permits uncommitted deletion); merges are never automatic.',
-			'Control the job with the same tool: action "status" | "result" (jobId, optional offset/limit) | "list" | "cancel".',
+			'Control the job with the same tool: action "status" | "result" | "trace" (jobId, optional offset/limit) | "list" | "cancel".',
+			'Each task\'s full transcript stays in the child JSONL listed by status; "trace" summarizes its steps and decisions.',
 			"Modes: single (agent + brief), parallel (tasks array), chain (sequential with {previous} placeholder). Omit model to retain the role's configured model/thinking; otherwise the role uses its principal/apoio slot from /models. Explicit models must respect the role's allowed choices.",
 			SUBAGENT_CAPABILITY_RULE,
 			"Quota/rate failures are returned as failures and are never silently retried. For mutating work, inspect the failure and explicitly redispatch to an allowed alternative so partial work is not replayed automatically.",
@@ -684,9 +687,23 @@ export default function (pi: ExtensionAPI) {
 						content: [
 							{
 								type: "text",
-								text: `job ${record.jobId}: ${statusLabel(record)} (${record.mode}, ${record.agents.join(", ")}, ${age}s). Result file: ${resultPath}`,
+								text: [
+									`job ${record.jobId}: ${statusLabel(record)} (${record.mode}, ${record.agents.join(", ")}, ${age}s). Result file: ${resultPath}`,
+									...taskStatusLines(record),
+								].join("\n"),
 							},
 						],
+						details: controlDetails(toSummary(record, resultPath)),
+					};
+				}
+
+				if (action === "trace") {
+					const trace = traceJob(record, params.taskIndex);
+					if (!trace.ok) return fail(trace.error);
+					const page = sliceText(trace.text, Math.max(0, params.offset ?? 0), params.limit ?? RESULT_READ_CAP);
+					const more = page.nextOffset === null ? "" : `\n\n[more: ${page.totalBytes - page.nextOffset} bytes left, next offset ${page.nextOffset}]`;
+					return {
+						content: [{ type: "text", text: `${page.text}${more}` }],
 						details: controlDetails(toSummary(record, resultPath)),
 					};
 				}

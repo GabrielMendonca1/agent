@@ -473,6 +473,8 @@ export interface RunAgentOptions {
 	onFirstToken?: () => void;
 	/** Interno: filho de aquecimento (use prefetchAgent). */
 	prefetch?: boolean;
+	/** Called once with the live result (session file, model, thinking) before the child is spawned. */
+	onStart?: (result: SingleResult) => void;
 }
 
 interface ChildRunOptions {
@@ -831,6 +833,10 @@ export async function runSingleAgent(opts: RunAgentOptions): Promise<SingleResul
 			});
 		}
 	};
+
+	if (!opts.prefetch) {
+		try { opts.onStart?.(currentResult); } catch { /* audit bookkeeping must not break the run */ }
+	}
 
 	let tmpTaskPath: string | null = null;
 	try {
