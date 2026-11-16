@@ -9,7 +9,7 @@
 		{
 			"name": "pi-black",
 			"path": "overlay/pi-black.patch",
-			"sha256": "90d019304a3e6b31422e37af2f35d19829fe64268b09387ea2355373ee3f6bc0",
+			"sha256": "1fad30d74e9b7ec61c7abf19d0c4925bf21d6eea66eb33ffbddd81575c6f5fdf",
 			"tests": [
 				"packages/ai/test/anthropic-claude-code.test.ts",
 				"packages/ai/test/anthropic-auth-token.test.ts",

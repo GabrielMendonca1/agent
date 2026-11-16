@@ -134,7 +134,7 @@ Nenhum patch é necessário para as extensões carregarem; eles dão funcionalid
 
 | Patch | Função | Linhas | Fragilidade |
 |---|---|---|---|
-| `pi-black` | Lane Anthropic OAuth com identidade Claude Code (2.1.322), sem message threads. | +499/−15 | Média: arquivo novo, mas edita `anthropic-messages.ts`. |
+| `pi-black` | Lane Anthropic OAuth com identidade Claude Code (2.1.322), sem message threads. | +525/−15 | Média: arquivo novo, mas edita `anthropic-messages.ts`. |
 | `garime-frame` | Moldura, margens e tema da TUI. | +495/−31 | Alta: 13 arquivos, componentes e `interactive-mode.ts`. |
 | `pi-account-env` | Conta por projeto via `PI_ACCOUNT_<PROVIDER>`. | +887/−9 | Média: arquivo novo, mas edita `auth-storage.ts` e `model-runtime.ts`. |
 | `transcript-feedback` | Widgets e recap local após o transcript. | +2077/−17 | Alta: maior patch, 12 arquivos, `interactive-mode.ts`. |

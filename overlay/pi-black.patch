@@ -1,9 +1,9 @@
 diff --git a/packages/ai/src/api/anthropic-claude-code.ts b/packages/ai/src/api/anthropic-claude-code.ts
 new file mode 100644
-index 0000000000000000000000000000000000000000..da755cfb5adc0be903cbe2e0d6d39b62d3927664
+index 0000000000000000000000000000000000000000..071ea5482aef6971fe8d187d95ea21a3ddeea32b
 --- /dev/null
 +++ b/packages/ai/src/api/anthropic-claude-code.ts
-@@ -0,0 +1,253 @@
+@@ -0,0 +1,252 @@
 +import type { FetchFunction, Message } from "../types.ts";
 +
 +export const CLAUDE_CODE_VERSION = "2.1.322";
@@ -97,10 +97,7 @@ index 0000000000000000000000000000000000000000..da755cfb5adc0be903cbe2e0d6d39b62
 +	for (const message of messages) {
 +		if (message.role !== "user") continue;
 +		if (typeof message.content === "string") return message.content;
-+		return message.content
-+			.filter((block) => block.type === "text")
-+			.map((block) => block.text)
-+			.join("");
++		return message.content.find((block) => block.type === "text")?.text ?? "";
 +	}
 +	return "";
 +}
@@ -150,6 +147,8 @@ index 0000000000000000000000000000000000000000..da755cfb5adc0be903cbe2e0d6d39b62
 +	const normalized = structuredClone(body);
 +	normalized.model = "";
 +	delete normalized.max_tokens;
++	delete normalized.fallbacks;
++	delete normalized.fallback_credit_token;
 +	const hash = xxHash64(new TextEncoder().encode(JSON.stringify(normalized)), CCH_SEED);
 +	const cch = (hash & 0xfffffn).toString(16).padStart(5, "0");
 +	billingBlock.text = billingBlock.text.replace(CCH_PLACEHOLDER, `cch=${cch}`);
@@ -417,10 +416,10 @@ index a49108638ee1ed184024d126bb687169753ad986..83152aab29163874975a7a06ab6782e3
  	it("lets explicit request headers override ANTHROPIC_AUTH_TOKEN", async () => {
 diff --git a/packages/ai/test/anthropic-claude-code.test.ts b/packages/ai/test/anthropic-claude-code.test.ts
 new file mode 100644
-index 0000000000000000000000000000000000000000..009ed10bfdfa5d2fd87f7e4d6eb59b84cefa7b8f
+index 0000000000000000000000000000000000000000..58a02144ef0ab570f2d405a04b334266b95fa543
 --- /dev/null
 +++ b/packages/ai/test/anthropic-claude-code.test.ts
-@@ -0,0 +1,163 @@
+@@ -0,0 +1,190 @@
 +import { gunzipSync } from "node:zlib";
 +import { describe, expect, it, vi } from "vitest";
 +import {
@@ -450,10 +449,37 @@ index 0000000000000000000000000000000000000000..009ed10bfdfa5d2fd87f7e4d6eb59b84
 +		);
 +	});
 +
++	it("fingerprints only the first text block of the first user message", async () => {
++		const shortFirst: Message[] = [
++			{
++				role: "user",
++				content: [
++					{ type: "text", text: "Repl" },
++					{ type: "text", text: "y with exactly: PROBE_OK" },
++				],
++				timestamp: 1,
++			},
++		];
++		expect(await claudeCodeVersionFingerprint(shortFirst)).toBe(
++			await claudeCodeVersionFingerprint(promptMessages("Repl")),
++		);
++		expect(await claudeCodeVersionFingerprint(shortFirst)).not.toBe("42b");
++	});
++
 +	it("omits the model value and complete max_tokens member before seeded XXH64", () => {
 +		const body =
 +			'{"model":"claude-opus-5","messages":[{"role":"user","content":"A"}],"max_tokens":64000,"stream":true,"system":[{"type":"text","text":"x-anthropic-billing-header: cc_version=2.1.322.000; cc_entrypoint=sdk-cli; cch=00000;"}]}';
 +		expect(patchClaudeCodeCch(body)).toContain("cch=4f1be");
++	});
++
++	it("omits fallbacks and fallback_credit_token before seeded XXH64", () => {
++		const body =
++			'{"model":"claude-opus-5","messages":[{"role":"user","content":"A"}],"max_tokens":64000,"stream":true,"system":[{"type":"text","text":"x-anthropic-billing-header: cc_version=2.1.322.000; cc_entrypoint=sdk-cli; cch=00000;"}],"fallbacks":[{"model":"claude-sonnet-5"}],"fallback_credit_token":"tok"}';
++		const patched = patchClaudeCodeCch(body);
++		expect(patched).toContain("cch=4f1be");
++		const sent = JSON.parse(patched) as { fallbacks: unknown; fallback_credit_token: unknown };
++		expect(sent.fallbacks).toEqual([{ model: "claude-sonnet-5" }]);
++		expect(sent.fallback_credit_token).toBe("tok");
 +	});
 +
 +	it("patches only the billing block when user and nested fields collide", () => {
