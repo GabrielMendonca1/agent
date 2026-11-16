@@ -167,6 +167,41 @@ try {
     await assert.rejects(zero.search({ query: 'teste' }), /Limite/); await assert.rejects(zero.fetchPage({ url: base }), /Limite/);
     assert.throws(() => createWeb({ env: { AGENT_WEB_MAX_FETCHES: '-1' } }), /inválido/);
   });
+  await test('web_fetch prompt e skim url: resposta do modelo barato, fallback, erro sem a página', async () => {
+    const { createWebExtension } = await jiti.import(join(repo, 'agent/extensions/agent/web/index.ts'));
+    const { createSkimExtension } = await jiti.import(join(repo, 'agent/extensions/agent/skim/index.ts'));
+    const register = factory => { const tools = []; factory(() => createWeb(options))({ registerTool: t => tools.push(t), on() {} }); return tools; };
+    const fetchTool = register(createWebExtension).find(t => t.name === 'web_fetch');
+    const skimTool = register(createSkimExtension).find(t => t.name === 'skim');
+    assert.ok(fetchTool.parameters.properties.prompt);
+    const calls = []; let fail = new Set();
+    const usage = { input: 50, output: 5, cacheRead: 0, cacheWrite: 0, totalTokens: 55, cost: { input: 0.1, output: 0.2, cacheRead: 0, cacheWrite: 0, total: 0.3 } };
+    const modelRegistry = { find: (p, id) => ({ provider: p, id }), hasConfiguredAuth: () => true,
+      streamSimple: (model, context, opts) => ({ result: async () => {
+        calls.push({ ref: `${model.provider}/${model.id}`, text: context.messages[0].content[0].text, system: context.systemPrompt, opts });
+        return fail.has(model.provider) ? { stopReason: 'error', errorMessage: `${model.provider} down`, content: [] } : { stopReason: 'stop', usage, content: [{ type: 'text', text: 'Olá & mundo (http://public.example/html)' }] };
+      } }) };
+    const ctx = { modelRegistry, cwd: dir };
+    const r = await fetchTool.execute('id', { url: 'http://public.example/html', prompt: 'O que diz?' }, undefined, undefined, ctx);
+    assert.equal(calls.length, 1); assert.equal(calls[0].ref, 'openai/gpt-6-luna'); assert.equal(calls[0].opts.reasoning, 'minimal');
+    assert.match(calls[0].text, /# Título[\s\S]*Olá & mundo[\s\S]*Question: O que diz\?/);
+    assert.match(calls[0].system, /cite .*web pages by URL/); assert.match(calls[0].system, /does not contain the answer, say so explicitly/);
+    const text = r.content[0].text;
+    assert.match(text, /<untrusted-web-content source="http:\/\/public.example\/html">/);
+    assert.match(text, /Olá &amp; mundo/); assert.doesNotMatch(text, /Título/);
+    assert.match(text, /\[skim: http:\/\/public.example\/html · \d+ chars, \d+ lines · model openai\/gpt-6-luna\]/);
+    assert.deepEqual(r.usage, usage);
+    fail = new Set(['openai']); calls.length = 0;
+    const s = await skimTool.execute('id', { url: 'http://public.example/html', question: 'Q' }, undefined, undefined, ctx);
+    assert.deepEqual(calls.map(c => c.ref), ['openai/gpt-6-luna', 'anthropic/claude-haiku-4-5']);
+    assert.match(s.content[0].text, /model anthropic\/claude-haiku-4-5\]/);
+    fail = new Set(['openai', 'anthropic']);
+    await assert.rejects(fetchTool.execute('id', { url: 'http://public.example/html', prompt: 'Q' }, undefined, undefined, ctx),
+      e => /no cheap model answered \(openai\/gpt-6-luna: openai down; anthropic\/claude-haiku-4-5: anthropic down\)/.test(e.message) && !/Título/.test(e.message));
+    await assert.rejects(skimTool.execute('id', { url: 'http://public.example/html', path: 'x', question: 'Q' }, undefined, undefined, ctx), /exactly one/);
+    const plain = await fetchTool.execute('id', { url: 'http://public.example/html' }, undefined, undefined, ctx);
+    assert.match(plain.content[0].text, /# Título/); assert.equal(plain.usage, undefined);
+  });
   await test('registro real das tools e isolamento opt-in no bundle/settings', async () => {
     const tools = [], handlers = {};
     extension({ registerTool: t => tools.push(t), on: (name, fn) => { handlers[name] = fn; } });
