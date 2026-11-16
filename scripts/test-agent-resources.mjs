@@ -381,6 +381,61 @@ try {
 		assert.deepEqual(readJson(join(f.agentDir, "settings.json")), personal);
 	});
 
+	// ---- lean (manifest v3): default warnings.anthropicExtraUsage=false só quando ausente ----
+	const leanFixture = (label, extra) => {
+		const f = makeFixture(label);
+		writeJson(join(f.base, "artifact", "manifest.json"), { version: 3 });
+		if (extra) writeJson(join(f.agentDir, "settings.json"), { ...readJson(join(f.agentDir, "settings.json")), ...extra });
+		return f;
+	};
+	const leanApply = (f) => applyAgentResources({ plan: planAgentResources({ agentRoot: f.agentRoot, agentDir: f.agentDir, homeDir: f.home }), backupDir: f.backupDir });
+
+	test("lean: chave ausente vira false; rollback devolve o settings exato", () => {
+		const f = leanFixture("lean-warn-absent");
+		const original = readJson(join(f.agentDir, "settings.json"));
+		const applied = leanApply(f);
+		const settings = readJson(join(f.agentDir, "settings.json"));
+		assert.deepEqual(settings.warnings, { anthropicExtraUsage: false });
+		assert.ok(!existsSync(join(f.agentDir, "keybindings.json")), "lean não reserva Shift+Tab");
+		assert.deepEqual(readJson(applied.receiptPath).settings.find((e) => e.key === "warnings").leaves, { anthropicExtraUsage: false });
+		const again = leanApply(f);
+		assert.equal(again.changed, false);
+		assert.deepEqual(rollbackAgentResources({ receiptPath: applied.receiptPath }).conflicts, []);
+		assert.deepEqual(readJson(join(f.agentDir, "settings.json")), original);
+	});
+
+	for (const value of [true, false]) test(`lean: valor do usuário (${value}) nunca é sobrescrito nem removido`, () => {
+		const f = leanFixture(`lean-warn-user-${value}`, { warnings: { anthropicExtraUsage: value } });
+		const plan = planAgentResources({ agentRoot: f.agentRoot, agentDir: f.agentDir, homeDir: f.home });
+		assert.equal(plan.changes.settings.warnings, undefined);
+		const applied = applyAgentResources({ plan, backupDir: f.backupDir });
+		assert.deepEqual(readJson(join(f.agentDir, "settings.json")).warnings, { anthropicExtraUsage: value });
+		assert.deepEqual(rollbackAgentResources({ receiptPath: applied.receiptPath }).conflicts, []);
+		assert.deepEqual(readJson(join(f.agentDir, "settings.json")).warnings, { anthropicExtraUsage: value });
+	});
+
+	test("lean: outras chaves de warnings ficam; rollback tira só a folha", () => {
+		const f = leanFixture("lean-warn-merge", { warnings: { other: true } });
+		const applied = leanApply(f);
+		assert.deepEqual(readJson(join(f.agentDir, "settings.json")).warnings, { other: true, anthropicExtraUsage: false });
+		assert.deepEqual(rollbackAgentResources({ receiptPath: applied.receiptPath }).conflicts, []);
+		assert.deepEqual(readJson(join(f.agentDir, "settings.json")).warnings, { other: true });
+	});
+
+	test("lean: usuário muda a folha depois; reaplicar e rollback não conflitam nem sobrescrevem", () => {
+		const f = leanFixture("lean-warn-later");
+		leanApply(f);
+		const settingsPath = join(f.agentDir, "settings.json");
+		const edited = readJson(settingsPath);
+		edited.warnings = { anthropicExtraUsage: true, other: false };
+		writeJson(settingsPath, edited);
+		const again = leanApply(f);
+		assert.equal(readJson(again.receiptPath).settings.some((e) => e.key === "warnings"), false);
+		assert.deepEqual(readJson(settingsPath).warnings, edited.warnings);
+		assert.deepEqual(rollbackAgentResources({ receiptPath: again.receiptPath }).conflicts, []);
+		assert.deepEqual(readJson(settingsPath).warnings, edited.warnings);
+	});
+
 	test("plano recusa settings.json ilegível em vez de registrar errado", () => {
 		const broken = makeFixture("broken");
 		writeFileSync(join(broken.agentDir, "settings.json"), "{ nope");

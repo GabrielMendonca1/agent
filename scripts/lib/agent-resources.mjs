@@ -30,11 +30,14 @@
  *   symlink pessoal) e o nome não é de um tema do usuário; `settings.theme` e os temas pessoais
  *   nunca são tocados.
  *
- * Keybindings: apenas app.thinking.cycle/shift+tab é gerenciada reversivelmente
- * para alternar simple/complex. Ctrl+T permanece nativo do Pi.
+ * Keybindings: só o caminho legado (manifest < 3) gerencia app.thinking.cycle/shift+tab. A
+ * instalação por artefato (lean) não reserva tecla nenhuma. Ctrl+T permanece nativo do Pi.
+ *
+ * Default de settings (só lean): `warnings.anthropicExtraUsage: false` entra quando a chave está
+ * ausente. Valor do usuário nunca é sobrescrito; o rollback só remove o `false` que continua lá.
  *
  * Nada de SYSTEM.md/auth/Vault/models, defaults, papéis, rc de shell ou settings pessoais fora de
- * `extensions`/`skills` e das keybindings declaradas. O relatório carrega só caminhos e nomes —
+ * `extensions`/`skills`, do default acima e das keybindings declaradas. O relatório carrega só caminhos e nomes —
  * nunca o settings inteiro.
  */
 import { createHash } from "node:crypto";
@@ -64,7 +67,13 @@ export const RECEIPT_NAME = "agent-resources-receipt.json";
 export const RETIRED_EXTENSIONS = ["ipython", "read-media"];
 
 /** Chaves de settings que este helper pode escrever. Nada mais é lido para o plano nem gravado. */
-export const MANAGED_SETTINGS_KEYS = ["extensions", "skills"];
+export const MANAGED_SETTINGS_KEYS = ["extensions", "skills", "warnings"];
+/**
+ * Folhas aninhadas que o perfil lean recebe só quando ausentes: `chave.folha` → valor.
+ * O aviso de extra usage da Anthropic é ruído no Agent (Pi 1.5.0, interactive-mode.js).
+ */
+export const MANAGED_SETTINGS_LEAVES = { warnings: { anthropicExtraUsage: false } };
+const isPlainObject = (value) => Boolean(value) && typeof value === "object" && !Array.isArray(value);
 /** Arquivo e keybindings gerenciadas: ação reservada → tecla que o Agent assume. */
 export const KEYBINDINGS_FILE = "keybindings.json";
 export const MANAGED_SHORTCUTS = { "app.thinking.cycle": "shift+tab" };
@@ -535,6 +544,17 @@ export function planAgentResources({ agentRoot, agentDir, homeDir }) {
 	const changes = { settings: {}, copyFiles, keybindings: keybindings.changes };
 	if (addPaths.length || addExclusions.length) changes.settings.extensions = { add: addPaths, addExclusions: [...new Set(addExclusions)] };
 	if (skillsRegister.length) changes.settings.skills = { add: skillsRegister };
+	if (lean) {
+		for (const [key, leaves] of Object.entries(MANAGED_SETTINGS_LEAVES)) {
+			const current = settings[key];
+			if (current !== undefined && !isPlainObject(current)) {
+				limitations.push(`settings.${key} não é objeto; default ${Object.keys(leaves).map((leaf) => `${key}.${leaf}`).join(", ")} não aplicado`);
+				continue;
+			}
+			const set = Object.fromEntries(Object.entries(leaves).filter(([leaf]) => !(current && Object.hasOwn(current, leaf))));
+			if (Object.keys(set).length) changes.settings[key] = { set };
+		}
+	}
 
 	const cas = {
 		keybindings: keybindings.cas,
@@ -634,6 +654,23 @@ export function applyAgentResources({ plan, backupDir }) {
 	const settingsEntries = [];
 	let changed = false;
 	for (const [key, change] of Object.entries(plan.changes.settings)) {
+		if (change.set) {
+			// Folhas só-se-ausentes: CAS no objeto inteiro entre plano e apply; o recibo guarda só as
+			// folhas escritas, e o rollback remove cada uma enquanto ela tiver o valor do Agent.
+			const currentHash = hashValue(settings[key]);
+			if (currentHash !== plan.cas.settings.keys[key]?.hash) {
+				throw new Error(`settings.${key} mudou depois do plano (${plan.settingsPath}); replaneje antes de aplicar`);
+			}
+			const beforeAbsent = !(key in settings);
+			const next = { ...(settings[key] ?? {}), ...change.set };
+			const carried = previousSettings.get(key);
+			const stillOurs = Object.entries(carried?.leaves ?? {}).filter(([leaf, value]) => Object.hasOwn(next, leaf) && hashValue(next[leaf]) === hashValue(value));
+			const leaves = { ...Object.fromEntries(stillOurs), ...change.set };
+			settings[key] = next;
+			settingsEntries.push({ key, leaves, beforeAbsent: carried?.leaves ? carried.beforeAbsent : beforeAbsent, reapplied: false });
+			changed = true;
+			continue;
+		}
 		const current = asList(settings[key]).slice();
 		const additions = [...(change.addExclusions ?? []), ...(change.add ?? [])];
 		const missing = additions.filter((entry) => !current.includes(entry));
@@ -669,6 +706,12 @@ export function applyAgentResources({ plan, backupDir }) {
 	// pelo estado anterior dela.
 	for (const carried of previousSettings.values()) {
 		if (settingsEntries.some((entry) => entry.key === carried.key)) continue;
+		if (carried.leaves) {
+			// Folha que o usuário mudou ou removeu passa a ser dele: sai do recibo, sem conflito.
+			const owned = Object.fromEntries(Object.entries(carried.leaves).filter(([leaf, value]) => isPlainObject(settings[carried.key]) && Object.hasOwn(settings[carried.key], leaf) && hashValue(settings[carried.key][leaf]) === hashValue(value)));
+			if (Object.keys(owned).length) settingsEntries.push({ ...carried, leaves: owned, reapplied: true });
+			continue;
+		}
 		const hash = hashValue(settings[carried.key]);
 		if (hash !== carried.afterHash) {
 			if (hash === carried.beforeHash) continue;
@@ -820,6 +863,26 @@ export function rollbackAgentResources({ receiptPath }) {
 		const mode = statSync(receipt.settingsPath).mode & 0o777;
 		let changed = false;
 		for (const entry of receipt.settings) {
+			if (entry.leaves) {
+				const container = settings[entry.key];
+				let removed = false;
+				for (const [leaf, value] of Object.entries(entry.leaves)) {
+					const name = `${entry.key}.${leaf}`;
+					if (!isPlainObject(container) || !Object.hasOwn(container, leaf)) skipped.push({ key: name, reason: "já ausente" });
+					else if (hashValue(container[leaf]) !== hashValue(value)) skipped.push({ key: name, reason: "valor do usuário preservado" });
+					else {
+						delete container[leaf];
+						restored.push({ key: name });
+						removed = true;
+						changed = true;
+					}
+				}
+				if (removed && entry.beforeAbsent && isPlainObject(container) && Object.keys(container).length === 0) {
+					delete settings[entry.key];
+					changed = true;
+				}
+				continue;
+			}
 			const currentHash = hashValue(settings[entry.key]);
 			if (currentHash === entry.beforeHash) {
 				skipped.push({ key: entry.key, reason: "já estava no estado anterior" });
@@ -848,7 +911,7 @@ export function rollbackAgentResources({ receiptPath }) {
 		if (changed) writes.push({ path: receipt.settingsPath, value: settings, mode });
 	} else if (receipt.settings.length > 0) {
 		for (const entry of receipt.settings) {
-			if (entry.beforeAbsent) skipped.push({ key: entry.key, reason: "já estava ausente antes da aplicação" });
+			if (entry.leaves || entry.beforeAbsent) skipped.push({ key: entry.key, reason: "já estava ausente antes da aplicação" });
 			else conflicts.push({ key: entry.key, reason: `settings ausente: ${receipt.settingsPath}` });
 		}
 	}

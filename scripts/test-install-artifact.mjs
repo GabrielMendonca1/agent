@@ -75,6 +75,7 @@ try {
   assert.ok(settings.extensions.includes('-'+personal));
   assert.ok(settings.extensions.some(p=>p.endsWith('/extensions/agent/demo')));
   assert.ok(settings.skills.some(p=>p.endsWith('/agent/skills')));
+  assert.deepEqual(settings.warnings,{anthropicExtraUsage:false});assert.equal(existsSync(join(env.PI_CODING_AGENT_DIR,'keybindings.json')),false);
   assert.ok(!existsSync(join(env.HOME,'.pi')));assert.ok(!existsSync(join(env.HOME,'.agent-juice')));
   assert.ok(!existsSync(join(env.HOME,'.bashrc')));assert.ok(!existsSync(join(env.HOME,'.zshrc')));
   const r=run(launcher,['--mode','json','-p','hello']);const observed=JSON.parse(r.stdout);
@@ -146,6 +147,7 @@ try {
  });
  test('explicit runtime opt-out survives artifact updates without legacy profile sync',()=>{
   run(launcher,['overlay-update','--agent-disable']);
+  assert.equal(load(join(env.PI_CODING_AGENT_DIR,'settings.json')).warnings,undefined);
   const before=readFileSync(join(env.PI_CODING_AGENT_DIR,'settings.json'),'utf8');
   run(process.execPath,[updater,'--install-artifact',archive(outA),'--adopt-launcher']);
   assert.equal(config().enabled,false);assert.equal(readFileSync(join(env.PI_CODING_AGENT_DIR,'settings.json'),'utf8'),before);
