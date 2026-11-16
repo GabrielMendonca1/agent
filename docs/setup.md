@@ -186,7 +186,7 @@ Chamadas pagas que não saem de uma mensagem sua. Todas usam a sua conta ou chav
 
 O aquecedor nativo do Pi (`cacheWarming`) fica parado, inclusive com `AGENT_CACHE_KEEPER=0`; a lane OAuth Anthropic não usa message threads (cada request leva system, tools e a conversa inteira).
 
-Prompt cache: o launcher define `PI_CACHE_RETENTION=long` (TTL 1h) quando a variável não está definida; um valor do usuário, inclusive `none`, prevalece. Escrita de cache custa 2× a entrada com TTL 1h e 1,25× com 5 min; leitura, 0,1×. Medido na auditoria do commit 6f77207: o prefixo fixo da 1ª requisição tem 10,2 KB de system e 20,0 KB de tools (o schema de `subagent` ocupa 8,9 KB), idêntico entre requisições e processos; cada passo do modelo é uma requisição.
+Prompt cache: o launcher define `PI_CACHE_RETENTION=long` (TTL 1h) quando a variável não está definida; um valor do usuário, inclusive `none`, prevalece. Isso vale para a sessão principal; subagentes usam 5 min (ver Custo dos filhos). Escrita de cache custa 2× a entrada com TTL 1h e 1,25× com 5 min; leitura, 0,1×. Medido na auditoria do commit 6f77207: o prefixo fixo da 1ª requisição tem 10,2 KB de system e 20,0 KB de tools (o schema de `subagent` ocupa 8,9 KB), idêntico entre requisições e processos; cada passo do modelo é uma requisição.
 
 Cache-keeper em detalhe:
 
@@ -227,6 +227,7 @@ Cada filho é outro processo `pi -p`, com contexto próprio. Só o resultado vol
 ### Custo dos filhos
 
 - `AGENT_CHILD_TOOL_OUTPUT_MAX` (padrão 8000 caracteres; `0` desliga): saída de `bash`/`read`/`grep`/`find`/`ls` maior que isso chega ao filho como cabeça (~6k) + cauda (~2k) e uma linha com o total omitido e o arquivo com a saída completa (`$TMPDIR/agent-child-output/<sessão>/`). Motivo: saídas acima de 10k caracteres nos filhos custaram ~US$ 327 no 1º envio e ~US$ 390 em leitura de cache nos turnos seguintes em 30 dias. `read` com `limit` ≤ 200 linhas não é cortado. Os papéis pedem `rg -n` e trechos de até ~150 linhas.
+- `AGENT_CHILD_CACHE_RETENTION` (padrão `short`, TTL 5 min; `long` = 1h): retenção de cache dos filhos, independente do `PI_CACHE_RETENTION=long` da sessão principal; `none` herdado continua `none`. Motivo: 100% da escrita de cache dos filhos Anthropic era TTL 1h (2× a entrada contra 1,25×), sobrepreço de ~US$ 198 contra ~US$ 45 de releitura perdida em 30 dias. O prefetch usa o TTL do filho.
 
 ### O que o pai consegue auditar
 

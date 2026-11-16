@@ -50,9 +50,20 @@ export function userCommandEnv(env = process.env) {
  */
 export const NO_DELEGATE_ENV = 'AGENT_NO_DELEGATE';
 
+/**
+ * Cache retention a child runs with. Children default to `short` (Anthropic 5 min, write 1.25x)
+ * even when the session runs `long` (1h, write 2x): pauses of 5-60 min inside a child are rare,
+ * so 1h writes cost ~4x what they save. AGENT_CHILD_CACHE_RETENTION overrides; an inherited
+ * `none` (cache disabled by the user) is kept.
+ */
+export function childCacheRetention(env = process.env) {
+  if (env.AGENT_CHILD_CACHE_RETENTION) return env.AGENT_CHILD_CACHE_RETENTION;
+  return env.PI_CACHE_RETENTION === 'none' ? 'none' : 'short';
+}
+
 /** Agent children retain the preload and skill policy, but no legacy accounting env. */
 export function subagentEnv(env = process.env) {
-  const copy = { ...env, AGENT_CHILD: '1', [NO_DELEGATE_ENV]: '1' };
+  const copy = { ...env, AGENT_CHILD: '1', [NO_DELEGATE_ENV]: '1', PI_CACHE_RETENTION: childCacheRetention(env) };
   if (copy.AGENT_RUNTIME_ENABLED === undefined && copy.AGENT_JUICE_ENABLED !== undefined) copy.AGENT_RUNTIME_ENABLED = copy.AGENT_JUICE_ENABLED;
   if (!copy.AGENT_PI_ROOT && copy.AGENT_JUICE_PI_ROOT) copy.AGENT_PI_ROOT = copy.AGENT_JUICE_PI_ROOT;
   for (const key of Object.keys(copy)) {

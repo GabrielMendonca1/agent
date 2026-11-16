@@ -26,6 +26,7 @@ import {
 import { ownerMayBeAlive, readProcessIdentity, type ProcessIdentity } from "./process-owner.ts";
 // @ts-ignore — módulo JS do juice, sem tipos
 import { staggeredFanout } from "../../../juice/cache-policy.mjs";
+import { childCacheRetention } from "../../../juice/child-env.mjs";
 import {
 	ChildSlots,
 	type DispatchDefaults,
@@ -52,9 +53,13 @@ export function prefixKey(task: JobTaskSpec, defaultCwd: string): string {
 	return JSON.stringify([task.agent, task.model ?? null, task.thinking ?? null, task.sourceCwd ?? task.cwd ?? defaultCwd]);
 }
 
-/** TTL do cache Anthropic que o Pi pede: 1 h com PI_CACHE_RETENTION=long, senão 5 min. */
+/**
+ * TTL do cache Anthropic que o FILHO pede: o runner lança filhos com a retenção de
+ * `childCacheRetention` (5 min por padrão, mesmo com a sessão principal em long), então
+ * prefetch e "filho real recente" usam esse TTL, não o do pai.
+ */
 export function cacheTtlSeconds(env: NodeJS.ProcessEnv = process.env): number {
-	return env.PI_CACHE_RETENTION === "long" ? 3600 : 300;
+	return childCacheRetention(env) === "long" ? 3600 : 300;
 }
 
 /** Estado por prefixo: aquecimento em voo, e até quando o cache está quente. */

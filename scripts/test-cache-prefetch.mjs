@@ -186,6 +186,12 @@ r = await runParent({ PI_CACHE_RETENTION: 'long' });
 assert.equal(r.code, 0, r.err.slice(-2000));
 assert.match(r.out, /BETA-OK/);
 assert.equal(requests.filter(q => q.kind === 'prefetch').length, 0, 'sem flag e sem TTL longo não aquece');
+// Session long (1h) stays in the parent; children write the 5 min cache.
+const ttls = (q) => [...(q.body.system ?? []), ...(q.body.tools ?? [])].map(b => b.cache_control).filter(Boolean).map(c => c.ttl ?? '5m');
+const parentTtls = requests.filter(q => q.role === 'parent').flatMap(ttls);
+const childTtls = requests.filter(q => q.role === 'alpha' || q.role === 'beta').flatMap(ttls);
+assert.ok(parentTtls.length && parentTtls.every(t => t === '1h'), `parent keeps 1h: ${parentTtls}`);
+assert.ok(childTtls.length && childTtls.every(t => t === '5m'), `children use 5 min: ${childTtls}`);
 ok('(f) sem AGENT_CACHE_PREFETCH_NEXT=1 não há prefetch (nem com TTL longo)');
 
 // ---- (i) etapa falha com aquecimento em voo: o warm morre com o job, nada depois ----

@@ -48,6 +48,10 @@ assert.equal(child.PI_AUTOMATIC_SKILLS, 'peers', 'Agent child retains skill poli
 assert.equal(child.AGENT_JUICE_STATE, undefined, 'no accounting env');
 assert.equal(child.AGENT_JUICE_SKILLS_BEFORE, 'null');
 assert.equal(parent.AGENT_CHILD, undefined, 'parent env not mutated');
+assert.equal(child.PI_CACHE_RETENTION, 'short', 'children default to the 5 min cache');
+assert.equal(subagentEnv({ PI_CACHE_RETENTION: 'long' }).PI_CACHE_RETENTION, 'short', 'session long does not reach children');
+assert.equal(subagentEnv({ PI_CACHE_RETENTION: 'long', AGENT_CHILD_CACHE_RETENTION: 'long' }).PI_CACHE_RETENTION, 'long', 'explicit child override wins');
+assert.equal(subagentEnv({ PI_CACHE_RETENTION: 'none' }).PI_CACHE_RETENTION, 'none', 'cache disabled by the user stays disabled');
 console.log('ok userCommandEnv');
 
 const store = process.env.AGENT_STORE ? resolve(process.env.AGENT_STORE) : join(homedir(), '.local/share/agent');

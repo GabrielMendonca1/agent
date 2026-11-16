@@ -407,7 +407,9 @@ try {
   delete process.env.FG_SANDBOX_COMMAND;
   process.env.FG_LOG = join(root, 'bounded.log');
   process.env.FG_DELAY = '10000';
-  const { SubagentJobManager: BudgetManager, MAX_PARALLEL_TASKS } = await jiti.import(join(repo, 'agent/extensions/brain-live/subagent/jobs.ts'));
+  const { SubagentJobManager: BudgetManager, MAX_PARALLEL_TASKS, cacheTtlSeconds } = await jiti.import(join(repo, 'agent/extensions/brain-live/subagent/jobs.ts'));
+  assert.equal(cacheTtlSeconds({ PI_CACHE_RETENTION: 'long' }), 300, 'prefetch/warm window uses the child TTL, not the session one');
+  assert.equal(cacheTtlSeconds({ PI_CACHE_RETENTION: 'long', AGENT_CHILD_CACHE_RETENTION: 'long' }), 3600);
   let terminal;
   const budget = new BudgetManager({ baseDir: join(root, 'budget-jobs'), childLimit: 2, onComplete: record => { terminal = record; } });
   const spec = { sessionId: 'owner', sessionGeneration: 0, mode: 'parallel',
