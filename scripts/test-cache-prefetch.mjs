@@ -125,7 +125,7 @@ writeFileSync(join(agentDir, 'models.json'), JSON.stringify({ providers: {
 const ledger = join(root, 'run.v3.json');
 const baseEnv = {
   ...process.env, HOME: home, USERPROFILE: home, PI_CODING_AGENT_DIR: agentDir, PI_OFFLINE: '1', PI_DURABLE_HOST: '0',
-  AGENT_SUBAGENTS: '1', AGENT_RUNTIME_ENABLED: '1', AGENT_JUICE_STATE: ledger, AGENT_JUICE_HOME: root, AGENT_PI_ROOT: piRoot,
+  AGENT_RUNTIME_ENABLED: '1', AGENT_JUICE_STATE: ledger, AGENT_JUICE_HOME: root, AGENT_PI_ROOT: piRoot,
   NODE_OPTIONS: `--import=${pathToFileURL(join(repo, 'agent/juice/runtime.mjs')).href}`,
 };
 // O processo desta fixture usa dist/cli.js (clássico), não o bundle do pai real.

@@ -27,7 +27,7 @@ export function opsSkills(commands: ReadonlySet<string>, env: NodeJS.ProcessEnv 
 export function headerTips(theme: LogoTheme, opts: { skills: readonly string[]; juice: boolean }): string[] {
  const hint = opts.skills.length
   ? `Use ${opts.skills.map(name => `/skill:${name}`).join(" ou ")} para operar o projeto`
-  : opts.juice ? "/subagents on ativa a equipe opcional" : "/ comandos · /hotkeys atalhos";
+  : "/ comandos · /hotkeys atalhos";
  return [theme.fg("muted", hint)];
 }
 

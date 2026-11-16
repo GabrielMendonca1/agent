@@ -263,14 +263,8 @@ async function run({ label, colorfgbg, expectTheme, bg, swapTo }) {
       check(!/simple|complex/.test(term.screen()), `${id}/no-legacy-mode`, 'sem modos legados no rodapé');
     };
     checkNative(first.name, label);
-    // The native editor border represents thinking, not Agent authorization mode.
-    const beforeMode = borderOf();
-    term.keys('-l', '/subagents on'); term.keys('Enter');
-    await term.waitScreen(/(?<!\/)subagents on/, `${label}: opt-in`);
-    check(eq(borderOf(), beforeMode), `${label}/opt-in-preserves-native-border`, '/subagents não redesenha o editor');
-    term.keys('-l', '/subagents off'); term.keys('Enter');
-    await sleep(750);
-    check(!/(?<!\/)subagents on/.test(term.screen()), `${label}/opt-out`, 'equipe opcional desativada');
+    // The native editor border represents thinking; there is no subagent opt-in status.
+    check(!/(?<!\/)subagents on/.test(term.screen()), `${label}/no-opt-in-status`, 'subagentes sempre ligados, sem status de opt-in');
     term.keys('-l', 'oi');
     await term.waitScreen(/oi/, `${label}: texto no editor`);
     term.keys('Enter');

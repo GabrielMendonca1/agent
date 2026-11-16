@@ -5,7 +5,7 @@
  * fora de um diretório temporário é escrito.
  *
  * Compara recursos temporários e instalados, schemas no payload, exposição,
- * política estável, bloqueio opt-in de subagent e ausência de ledger. Fixtures sem auth.
+ * política estável, subagent sempre ligado (filho não lança) e ausência de ledger. Fixtures sem auth.
  *
  * `node scripts/test-agent-host.mjs [classic]`
  */
@@ -132,13 +132,13 @@ async function runHost(host) {
     assert.equal(info.exposure, 'direct');
     assert.ok(!existsSync(join(info.agentDir, 'auth.json')));
     const fake = await startFakeAnthropic([
-      { tool: { name: 'subagent', input: { agent: 'scout', task: 'x' } } },
-      { tool: { name: 'codemode', input: { code: 'const r = await tools.subagent({agent: "scout", task: "x"}); console.log(JSON.stringify(r));' } } },
+      { tool: { name: 'subagent', input: { agent: 'missing-fixture-role', task: 'x' } } },
+      { tool: { name: 'codemode', input: { code: 'const r = await tools.subagent({agent: "missing-fixture-role", task: "x"}); console.log(JSON.stringify(r));' } } },
       { text: 'feito' },
       { text: 'resumed' },
       { tool: { name: 'subagent', input: { agent: 'missing-fixture-role', task: 'x' } } },
       { tool: { name: 'codemode', input: { code: 'const r = await tools.subagent({agent: "missing-fixture-role", task: "x"}); console.log(JSON.stringify(r));' } } },
-      { text: 'opt-in checked' },
+      { text: 'child checked' },
     ]);
     try {
       rmSync(join(info.agentDir, 'auth.json'), { force: true });
@@ -218,9 +218,13 @@ async function runHost(host) {
       const events = result.out.split('\n').filter(Boolean).map(l => { try { return JSON.parse(l); } catch { return {}; } });
       const ends = events.filter(e => e.type === 'tool_execution_end');
       const text = (e) => JSON.stringify(e?.result?.content ?? '');
-      assert.match(text(ends.find(e => e.toolName === 'subagent')), /Subagents disabled/, `${host}: sem opt-in bloqueia subagent`);
+      // Sem flag nenhuma: o launch chega ao dispatcher (papel inexistente: nenhum filho nasce).
+      for (const toolName of ['subagent', 'codemode']) {
+        const content = text(ends.find(e => e.toolName === toolName));
+        assert.match(content, /Unknown agent\(s\): missing-fixture-role/, `${host}/${toolName}: launch sem flag chega ao dispatcher`);
+        assert.doesNotMatch(content, /Subagents disabled|AGENT_SUBAGENTS|\/subagents on/, `${host}/${toolName}: sem opt-in`);
+      }
       assert.ok(!names(1).includes('generate_image'), 'classic: imagem continua deferred');
-      assert.match(text(ends.find(e => e.toolName === 'codemode')), /Subagents disabled/, 'classic codemode: nested subagent sem opt-in é bloqueado');
       // Prompt único: preamble e skills uma vez só; sem seções nativas de tools/rules.
       const system = (i) => fake.messages()[i].system.map(b => b.text).join('\n');
       const count = (text, re) => (text.match(re) ?? []).length;
@@ -230,7 +234,10 @@ async function runHost(host) {
       assert.equal(count(sys0, /<agent_skill_categories>/g), 1, `${host}: categorias uma vez no system real`);
       assert.ok(sys0.includes(categoryPrompt()), `${host}: uma linha determinística por pasta não-system`);
       assert.equal(count(sys0, /<agent_complex>/g), 0, `${host}: sem política complex`);
-      assert.doesNotMatch(sys0, /Complex mode: delegate by role|Delegate independent reading and recon in parallel|Use structured briefs with objective, context/, `${host}: descrição da tool não impõe delegação`);
+      assert.doesNotMatch(sys0, /Complex mode: delegate by role|Delegate independent reading and recon in parallel|Use structured briefs with objective, context/, `${host}: sem texto de modo complex`);
+      // Este Vault de fixture lista só os snippets; as guidelines são provadas no prompt padrão (agent-headless).
+      assert.equal(count(sys0, /subagent: Delegate reading, recon, review and self-contained implementation to subagents/g), 1, `${host}: snippet de orquestrador uma vez`);
+      assert.doesNotMatch(sys0, /Optional async subagents|only when the user enables them/, `${host}: sem texto de opt-in`);
       // Receita do projeto é interna: o modelo principal não vê o bloco nem as etapas.
       assert.equal(count(sys0, /^<\/?agent_workflow>$/gm), 0, `${host}: receita fora do system prompt`);
       assert.equal(count(sys0, /Receita deste projeto|Regras aprendidas aqui|Projeto agent, receita/g), 0, `${host}: nada do conteúdo da receita no system prompt`);
@@ -246,21 +253,21 @@ async function runHost(host) {
       // não uma reconstrução: na 1ª requisição de uma sessão nova ele é idêntico ao que foi pela rede.
       assert.equal(result.observed.length, requests.length, `${host}: uma observação por requisição`);
       assert.equal(result.observed[0], sys0, `${host}: ctx.getSystemPrompt() == system da 1ª requisição (observação não finge)`);
-      // Políticas no system efetivo, requisição por requisição, com e sem opt-in.
+      // Políticas no system efetivo, requisição por requisição.
       const policyCounts = (text) => ({
         autonomy: count(text, /<agent_autonomy>/g),
         complex: count(text, /<agent_complex>/g),
         autonomyBody: count(text, new RegExp(AUTONOMY_POLICY.split('\n')[0].replace(/[().*+?^${}|[\]\\]/g, '\\$&'), 'g')),
       });
       // Corpo efetivo da política: o que o modelo lê, sem a parte volátil (nada aqui) —
-      // serve para provar que dois turnos com o MESMO opt-in mandam exatamente o mesmo prefixo.
+      // serve para provar que dois turnos mandam exatamente o mesmo prefixo.
       const checkPhase = (label, observed) => {
         assert.ok(observed.length > 0, `${host}/${label}: nenhuma requisição observada`);
         for (const [i, text] of observed.entries()) {
           const c = policyCounts(text);
           assert.deepEqual(c, { autonomy: 1, complex: 0, autonomyBody: 1 },
             `${host}/${label}: requisição ${i} deveria ter autonomia 1 e complex 0 (sem acumular blocos)`);
-          // Nem receita nem regras aprendidas chegam ao principal, com ou sem opt-in.
+          // Nem receita nem regras aprendidas chegam ao principal.
           assert.equal(count(text, /^<\/?agent_workflow>$/gm), 0, `${host}/${label}: receita fora do system efetivo`);
           assert.equal(count(text, /Receita deste projeto|Regras aprendidas aqui/g), 0, `${host}/${label}: conteúdo de receita no system efetivo`);
           assert.doesNotMatch(text, /Modo complex \(vale só enquanto/, `${host}/${label}: política de delegação obrigatória no system`);
@@ -275,19 +282,16 @@ async function runHost(host) {
       assert.ok(fake.messages().length > before, `${host}: resume chamou o provider`);
       assert.equal(system(before), sys0, `${host}: resume mantém o system`);
       checkPhase('run2-off', resumed.observed);
-      assert.equal(resumed.observed.at(-1), result.observed.at(-1), `${host}: resume sem mudança de opt-in repete o system efetivo (prefixo estável)`);
-      // O opt-in não remove políticas de autoridade nem muda o prefixo de cache.
-      // Mesmo ambiente preparado, só a flag documentada muda; não roda child real.
-      const opted = await runPi('equipe opcional', 'opt-in', { AGENT_SUBAGENTS: '1' });
-      assert.equal(opted.code, 0, opted.err);
-      checkPhase('opt-in', opted.observed);
-      const optedEnds = opted.out.split('\n').flatMap(line => { try { const event = JSON.parse(line); return event.type === 'tool_execution_end' ? [event] : []; } catch { return []; } });
+      assert.equal(resumed.observed.at(-1), result.observed.at(-1), `${host}: resume repete o system efetivo (prefixo estável)`);
+      // Processo filho (AGENT_CHILD=1) nunca lança subagente, direto ou via codemode.
+      const childRun = await runPi('sou um filho', 'child', { AGENT_CHILD: '1' });
+      assert.equal(childRun.code, 0, childRun.err);
+      const childEnds = childRun.out.split('\n').flatMap(line => { try { const event = JSON.parse(line); return event.type === 'tool_execution_end' ? [event] : []; } catch { return []; } });
       for (const toolName of ['subagent', 'codemode']) {
-        const content = text(optedEnds.find(event => event.toolName === toolName));
-        assert.match(content, /Unknown agent\(s\): missing-fixture-role/, `${toolName}: opt-in chega ao dispatcher sem lançar child`);
-        assert.doesNotMatch(content, /Subagents disabled/);
+        const content = text(childEnds.find(event => event.toolName === toolName));
+        assert.match(content, /subagents cannot launch subagents/, `${toolName}: filho bloqueado com mensagem clara`);
+        assert.doesNotMatch(content, /Unknown agent|Launched subagent job/, `${toolName}: filho não chega ao dispatch`);
       }
-      assert.equal(opted.observed[0], sys0, 'opt-in preserva o prompt sem impor delegação');
       assert.match(sys0, /Quem decide é o seu usuário/);
       assert.match(sys0, /push, merge, deploy, ação destrutiva ou efeito em terceiros/);
       // Volta à semente e aplica o contrato de instalação no mesmo HOME isolado.
@@ -309,8 +313,8 @@ async function runHost(host) {
       assert.equal(existsSync(join(info.root, 'run.v3.json')), false);
       assert.equal(env.AGENT_JUICE_HOME, undefined);
       assert.equal(env.AGENT_JUICE_STATE, undefined);
-      assert.equal(fake.messages().length, 8, '3 bloqueadas + resume + 3 opt-in + instalado; sem inferência extra');
-      console.log(`ok ${host}: prompt único (${sys0.length} chars), bloqueio direto/codemode, resume, opt-in, autoridade e zero inferência extra`);
+      assert.equal(fake.messages().length, 8, '3 dispatch + resume + 3 filho + instalado; sem inferência extra');
+      console.log(`ok ${host}: prompt único (${sys0.length} chars), dispatch sem flag direto/codemode, resume, filho bloqueado, orquestrador, autoridade e zero inferência extra`);
     } finally { await fake.close(); }
   } finally { rmSync(parent, { recursive: true, force: true }); }
 }

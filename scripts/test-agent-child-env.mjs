@@ -31,20 +31,20 @@ for (const snapshot of ['{', '{}', '1', 'true']) {
 }
 const parent = {
   NODE_OPTIONS: url, AGENT_RUNTIME_ENABLED: '1', AGENT_PI_ROOT: '/pi',
-  AGENT_SUBAGENTS: '1', AGENT_CACHE_PREFETCH: '1', AGENT_JUICE_STATE: '/legacy',
+  AGENT_CACHE_PREFETCH: '1', AGENT_JUICE_STATE: '/legacy',
   AGENT_JUICE_SKILLS_BEFORE: 'null', PI_AUTOMATIC_SKILLS: 'peers', KEEP: 'yes',
 };
 assert.deepEqual(run({ ...parent, AGENT_CHILD: '1' }), { KEEP: 'yes' });
 const child = subagentEnv(parent);
 assert.equal(child.NODE_OPTIONS, url, 'Agent child retains preload');
 assert.equal(child.AGENT_CHILD, '1');
-assert.equal(child.AGENT_SUBAGENTS, '0', 'no recursive delegation');
+assert.equal(child.AGENT_SUBAGENTS, undefined, 'no opt-in variable; AGENT_CHILD alone blocks recursive delegation');
 assert.equal(child.AGENT_RUNTIME_ENABLED, '1');
 assert.equal(child.AGENT_PI_ROOT, '/pi');
 assert.equal(child.PI_AUTOMATIC_SKILLS, 'peers', 'Agent child retains skill policy');
 assert.equal(child.AGENT_JUICE_STATE, undefined, 'no accounting env');
 assert.equal(child.AGENT_JUICE_SKILLS_BEFORE, 'null');
-assert.equal(parent.AGENT_SUBAGENTS, '1', 'parent opt-in remains intact');
+assert.equal(parent.AGENT_CHILD, undefined, 'parent env not mutated');
 console.log('ok userCommandEnv');
 
 const store = process.env.AGENT_STORE ? resolve(process.env.AGENT_STORE) : join(homedir(), '.local/share/agent');
@@ -67,7 +67,6 @@ try {
   process.env.AGENT_JUICE_SKILLS_BEFORE = 'null';
   process.env.AGENT_RUNTIME_ENABLED = '1';
   process.env.AGENT_PI_ROOT = piRoot;
-  process.env.AGENT_SUBAGENTS = '1';
   process.env.AGENT_CHILD = '1';
   process.env.AGENT_CACHE_PREFETCH = '1';
 
@@ -83,7 +82,7 @@ try {
   const shell = await jiti.import(join(repo, 'agent/extensions/brain-live/shell-runtime.ts'));
   const display = await jiti.import(join(repo, 'agent/extensions/agent/tui/claude-cards.ts'));
 
-  const probe = `node -e 'console.log(JSON.stringify({o:process.env.NODE_OPTIONS??null,s:process.env.PI_AUTOMATIC_SKILLS??null,j:Object.keys(process.env).filter(k=>k.startsWith("AGENT_JUICE_")||["AGENT_RUNTIME_ENABLED","AGENT_PI_ROOT","AGENT_CHILD","AGENT_SUBAGENTS","AGENT_CACHE_PREFETCH"].includes(k))}))'`;
+  const probe = `node -e 'console.log(JSON.stringify({o:process.env.NODE_OPTIONS??null,s:process.env.PI_AUTOMATIC_SKILLS??null,j:Object.keys(process.env).filter(k=>k.startsWith("AGENT_JUICE_")||["AGENT_RUNTIME_ENABLED","AGENT_PI_ROOT","AGENT_CHILD","AGENT_CACHE_PREFETCH"].includes(k))}))'`;
   for (const compact of ['1', '0', 'absent']) {
     process.env.GARIME_CLAUDE_STYLE = compact === '0' ? '0' : '1';
     const tools = new Map();

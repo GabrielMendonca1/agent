@@ -1,4 +1,4 @@
-// Stable safety policy; delegation is optional and independent of legacy modes.
+// Stable safety policy; delegation is always available and independent of legacy modes.
 
 /** Ponteiro por sessão; metadados vêm do chamador, nunca do cwd ou relógio aqui. */
 export function notesSection({ count, ageDays }) {
@@ -18,7 +18,7 @@ export const AUTONOMY_POLICY = [
   '- Quem decide é o seu usuário (a pessoa nesta sessão): pergunte a ele, não a terceiros. Aprovação e instrução explícita dele vencem esta autonomia; nunca inicie ação de terceiros por conta própria.',
 ].join('\n');
 
-/** Compatibility: delegation is optional, never a required session mode. */
+/** Compatibility: delegation guidance lives in the subagent tool, never in a session mode. */
 export const COMPLEX_POLICY = '';
 export function policySections(_mode = undefined) {
   return { [AUTONOMY_SECTION]: AUTONOMY_POLICY };

@@ -39,14 +39,14 @@ export function userCommandEnv(env = process.env) {
   // Invalid policy snapshots fail visibly, never restore the unsafe inherited env.
   restoreSkillPolicyEnvironment(copy);
   for (const key of Object.keys(copy)) {
-    if (key.startsWith('AGENT_JUICE_') || ['AGENT_RUNTIME_ENABLED', 'AGENT_PI_ROOT', 'AGENT_CHILD', 'AGENT_SUBAGENTS', 'AGENT_CACHE_PREFETCH'].includes(key)) delete copy[key];
+    if (key.startsWith('AGENT_JUICE_') || ['AGENT_RUNTIME_ENABLED', 'AGENT_PI_ROOT', 'AGENT_CHILD', 'AGENT_CACHE_PREFETCH'].includes(key)) delete copy[key];
   }
   return copy;
 }
 
 /** Agent children retain the preload and skill policy, but no legacy accounting env. */
 export function subagentEnv(env = process.env) {
-  const copy = { ...env, AGENT_CHILD: '1', AGENT_SUBAGENTS: '0' };
+  const copy = { ...env, AGENT_CHILD: '1' };
   if (copy.AGENT_RUNTIME_ENABLED === undefined && copy.AGENT_JUICE_ENABLED !== undefined) copy.AGENT_RUNTIME_ENABLED = copy.AGENT_JUICE_ENABLED;
   if (!copy.AGENT_PI_ROOT && copy.AGENT_JUICE_PI_ROOT) copy.AGENT_PI_ROOT = copy.AGENT_JUICE_PI_ROOT;
   for (const key of Object.keys(copy)) {

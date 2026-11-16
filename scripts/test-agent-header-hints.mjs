@@ -68,7 +68,8 @@ try {
     assert.equal(full[0], '✳ Agent');
     assert.equal(full.length, 2, 'marca e uma dica');
     if (opts.skills.length) for (const name of opts.skills) assert.match(full[1], new RegExp('/skill:' + name));
-    else assert.match(full[1], opts.juice ? /\/subagents on/ : /\/hotkeys/);
+    else assert.match(full[1], /\/hotkeys/);
+    assert.doesNotMatch(full[1], /\/subagents/, 'sem opt-in: subagentes sempre ligados');
     for (const w of [0, 1, 5, 20, 40, 100]) for (const line of logo.headerLines(w, theme, { tips })) assert.ok(visibleWidth(line) <= w);
   }
   const handlers = new Map();

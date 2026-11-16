@@ -26,7 +26,7 @@ import {
 import { type Component, Container, Markdown, Spacer, Text, truncateToWidth } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
 import { formatRoleModelChoices, getRoleModelChoices } from "../lib/tiers.ts";
-import { getAgentPreferences, subagentsEnabled } from "../../../juice/client.mjs";
+import { getAgentPreferences, isChild } from "../../../juice/client.mjs";
 import { parseWorkflow, readWorkflow } from "../../../juice/workflow.mjs";
 import { type AgentConfig, type AgentScope, discoverAgents } from "./agents.ts";
 import {
@@ -602,16 +602,17 @@ export default function (pi: ExtensionAPI) {
 			"Independent tasks go in one call as `tasks` (parallel), so they run at the same time instead of one after the other.",
 			'Parallel writers sharing a repository use isolated worktrees: inspect their commits, then explicitly integrate (jobId, optional 1-based taskIndex) or discard (force:true permits uncommitted deletion); merges are never automatic.',
 			'Control the job with the same tool: action "status" | "result" (jobId, optional offset/limit) | "list" | "cancel".',
-			"Optional: launch requires AGENT_SUBAGENTS=1 or /subagents on. Modes: single (agent + brief), parallel (tasks array), chain (sequential with {previous} placeholder). Omit model to retain the role's configured model/thinking; otherwise the role uses its principal/apoio slot from /models. Explicit models must respect the role's allowed choices.",
+			"Modes: single (agent + brief), parallel (tasks array), chain (sequential with {previous} placeholder). Omit model to retain the role's configured model/thinking; otherwise the role uses its principal/apoio slot from /models. Explicit models must respect the role's allowed choices.",
 			SUBAGENT_CAPABILITY_RULE,
 			"Quota/rate failures are returned as failures and are never silently retried. For mutating work, inspect the failure and explicitly redispatch to an allowed alternative so partial work is not replayed automatically.",
 			`Available agents and model choices: ${describeUserAgents()}.`,
 			`Default agent scope is "user" (from ${path.join(getAgentDir(), "agents")}).`,
 			`To enable project-local agents in ${CONFIG_DIR_NAME}/agents, set agentScope: "both" (or "project").`,
 		].join(" "),
-		promptSnippet: "Optional async subagents: launch returns a jobId; independent tasks run in parallel",
+		promptSnippet: "Delegate reading, recon, review and self-contained implementation to subagents (async: returns a jobId, result arrives later)",
 		promptGuidelines: [
-			"Use subagents only when the user enables them. Select the role for the task and review results before explicit integration.",
+			"Act as an orchestrator: delegate recon and bulk reading to `scout`, isolated implementation to `worker`, and review to `reviewer`; keep your own context for decisions and integration. Use subagent action integrate to merge committed isolated work after review.",
+			"A subagent runs in its own context and only its result comes back, so delegated reading does not grow yours; to audit its steps and decisions use action `trace`.",
 			"Always delegate through the `brief` object instead of a prose task, and put what you already know (paths, findings, decisions) in `brief.context`; each role has required fields and the call fails before spawning if they are missing.",
 			"Subagent dispatch is asynchronous: after launching, report the jobId and continue with independent work. Never loop on `status` waiting for a job — the result is delivered to you automatically.",
 			"If a subagent reports quota/rate failure, do not assume its mutating task is safe to replay; explicitly choose another model listed for that role and redispatch only after accounting for partial work.",
@@ -716,7 +717,8 @@ export default function (pi: ExtensionAPI) {
 				model: ctx.model ? `${ctx.model.provider}/${ctx.model.id}` : undefined,
 				thinkingLevel: ctx.thinkingLevel,
 			};
-			if (!subagentsEnabled(ctx)) return fail("Subagents disabled. Enable AGENT_SUBAGENTS=1 or /subagents on.");
+			// A subagent never delegates further: only the main session launches.
+			if (isChild()) return fail("This process is a subagent (AGENT_CHILD=1); subagents cannot launch subagents.");
 			try {
 				dispatchDefaults.resources = { supportModel: getAgentPreferences().supportModel ?? undefined, slots: {} };
 			} catch (error) {

@@ -8,18 +8,6 @@ import { withDirectoryLock } from './lock.mjs';
 export const runtimeEnabled = () => (process.env.AGENT_RUNTIME_ENABLED ?? process.env.AGENT_JUICE_ENABLED) === '1';
 export const juiceEnabled = runtimeEnabled;
 export const isChild = () => (process.env.AGENT_CHILD ?? process.env.AGENT_JUICE_CHILD) === '1';
-const sessionSwitches = new WeakMap();
-export function subagentsEnabled(ctx) {
-  if (isChild()) return false;
-  const manager = ctx?.sessionManager;
-  const saved = manager && sessionSwitches.get(manager);
-  if (saved && saved.sessionId === manager.getSessionId?.()) return saved.enabled;
-  return process.env.AGENT_SUBAGENTS === '1';
-}
-export function setSessionSubagents(ctx, enabled) {
-  if (isChild()) throw new Error('Agent children cannot enable delegation');
-  sessionSwitches.set(ctx.sessionManager, { sessionId: ctx.sessionManager.getSessionId?.(), enabled });
-}
 export const preferencesPath = () => join(process.env.PI_CODING_AGENT_DIR || join(homedir(), '.agent'), 'agent-preferences.json');
 function readPreferences() {
   try { return JSON.parse(readFileSync(preferencesPath(), 'utf8')); }

@@ -16,7 +16,7 @@
  *    idempotentes) e as políticas chegam ao modelo EFETIVO: `agent_autonomy` sempre, `agent_complex`
  *    não exigem modo complex — lido no corpo que foi pela rede ao provider falso;
  *  - nenhum ledger é criado; um ledger legado corrompido/bloqueado é ignorado e preservado;
- *    relançamentos e opt-in de subagentes preservam preferências;
+ *    relançamentos (subagentes sempre ligados) preservam preferências;
  *  - `rollbackAgentResources` + opt-out devolvem o settings pessoal e o launcher ao modo legado,
  *    sem nenhuma `AGENT_JUICE_*`.
  *
@@ -311,8 +311,8 @@ try {
 	})());
 
 	const afterDefault = fake.messages().length;
-	const enabledSubagents = await runPi("agora com a equipe opcional", "run3-opt-in", { AGENT_SUBAGENTS: "1" });
-	test("subagentes opt-in não exigem comando complex nem trocam modelo pessoal", (() => {
+	const enabledSubagents = await runPi("agora com a equipe", "run3-team");
+	test("subagentes sempre ligados não exigem comando complex nem trocam modelo pessoal", (() => {
 		assert.equal(enabledSubagents.code, 0, enabledSubagents.err);
 		assert.ok(enabledSubagents.observed.length > 0);
 		for (const payload of fake.messages().slice(afterDefault)) assert.ok(String(payload.model).includes("haiku"));
@@ -320,7 +320,7 @@ try {
 		return true;
 	})());
 	const back = await runPi("sozinho de novo", "run4-default");
-	test("novo processo volta ao opt-in padrão sem criar modo ou contabilidade", (() => {
+	test("novo processo não cria modo ou contabilidade", (() => {
 		assert.equal(back.code, 0, back.err);
 		assert.ok(back.observed.length > 0);
 		for (const text of back.observed) assert.equal(count(text, /<agent_complex>/g), 0);
@@ -329,7 +329,7 @@ try {
 		return true;
 	})());
 
-	test("arquivos pessoais intactos depois dos opt-ins e relançamentos instalados", (() => {
+	test("arquivos pessoais intactos depois dos relançamentos instalados", (() => {
 		assert.equal(readFileSync(join(agentDir, "SYSTEM.md"), "utf8"), PERSONAL.system);
 		// keybindings.json: só o delta GERENCIADO (a ação reservada que bloqueava o atalho do Agent)
 		// aparece; o atalho sentinela e o valor pessoal de app.thinking.cycle seguem exatos.

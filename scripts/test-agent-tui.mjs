@@ -222,9 +222,7 @@ try {
     assert.doesNotMatch(screen(), /┌─|└─|Dicas/);
   }
   assert.equal(fake.messages().length, 0, 'startup não consulta modelo');
-  tmux('send-keys', '-t', session, '-l', '/subagents on');
-  tmux('send-keys', '-t', session, 'Enter');
-  await waitScreen(/(?<!\/)subagents on/, 'opt-in no rodapé');
+  assert.doesNotMatch(screen(), /(?<!\/)subagents on/, 'sem status de opt-in: subagentes sempre ligados');
   tmux('send-keys', '-t', session, '-l', 'oi');
   await waitScreen(/oi/, 'texto no editor nativo');
   tmux('send-keys', '-t', session, 'Enter');
@@ -370,13 +368,6 @@ async function runHotSwitch(host) {
       }
       return observed().slice(before);
     };
-    const toggle = async (to) => {
-      const on = to === 'on';
-      term.keys('-l', `/subagents ${to}`); term.keys('Enter');
-      await term.waitGone(/^\s*\/subagents (on|off)\s*$/m, `${host}: comando consumido`);
-      if (on) await term.waitScreen(/(?<!\/)subagents on/, `${host}: opt-in`);
-      else await term.waitGone(/(?<!\/)subagents on/, `${host}: opt-out`);
-    };
 
     await term.waitScreen(/claude-haiku-5-5/, `${host}: TUI subiu`);
 
@@ -475,7 +466,7 @@ async function runHotSwitch(host) {
     console.log(`ok roles ${host}: cinco papéis, origem/thinking, picker autorizado; cancelar preserva arquivo e sessão`);
 
     // ---- escolha manual de modelo + thinking (bug relatado) ---------------
-    // `/thinking <nível>` é do Pi; o opt-in do Agent não pode desfazer nem levar o modelo
+    // `/thinking <nível>` é do Pi; o Agent não pode desfazer nem levar o modelo
     // com ele. O rodapé nativo mostra modelo e nível.
     {
       const footerLine = () => term.screen().split('\n').filter(l => /claude-haiku-5-5/.test(l)).at(-1) ?? '';
@@ -485,22 +476,16 @@ async function runHotSwitch(host) {
       // (níveis de thinking): insiste até o comando sair do input.
       for (let i = 0; i < 6 && /\/thinking/.test(term.screen()); i++) { term.keys('Enter'); await sleep(500); }
       await term.waitScreen(/claude-haiku-5-5.*high/, `${host}: /thinking high aplicado no rodapé`);
-      await toggle('on');
-      assert.match(footerLine(), /claude-haiku-5-5.*high/, `${host}: Opt-in mexeu no thinking/modelo escolhidos:\n${footerLine()}`);
-      await toggle('off');
-      assert.match(footerLine(), /claude-haiku-5-5.*high/, `${host}: Opt-out mexeu no thinking/modelo escolhidos:\n${footerLine()}`);
-      console.log(`ok manual ${host}: /thinking high persiste e o modelo não troca em off⇄on`);
+      assert.match(footerLine(), /claude-haiku-5-5.*high/, `${host}: Agent mexeu no thinking/modelo escolhidos:\n${footerLine()}`);
+      console.log(`ok manual ${host}: /thinking high persiste e o modelo não troca`);
     }
 
     const phases = [];
-    phases.push({ label: 'turno1-off', obs: await turn('oi', 'turno1-off') });
-    // Troca A QUENTE: /subagents real no mesmo painel, sem reiniciar nada.
-    await toggle('on');
-    phases.push({ label: 'turno2-on', obs: await turn('com a equipe', 'turno2-on') });
-    // Segundo turno com o MESMO opt-in: sem acumular bloco e com o mesmo prefixo.
-    phases.push({ label: 'turno3-on', obs: await turn('continue', 'turno3-on') });
-    await toggle('off');
-    phases.push({ label: 'turno4-off', obs: await turn('sozinho de novo', 'turno4-off') });
+    // Quatro turnos no mesmo processo: subagentes sempre ligados, sem acumular bloco.
+    phases.push({ label: 'turno1', obs: await turn('oi', 'turno1') });
+    phases.push({ label: 'turno2', obs: await turn('com a equipe', 'turno2') });
+    phases.push({ label: 'turno3', obs: await turn('continue', 'turno3') });
+    phases.push({ label: 'turno4', obs: await turn('sozinho de novo', 'turno4') });
 
     // MESMO PROCESSO: um único PID e um contador que nunca reinicia (relançar zeraria os dois).
     const all = observed();
@@ -533,12 +518,13 @@ async function runHotSwitch(host) {
     const wire = hotFake.messages()[0].system;
     assert.equal(all[0].system, Array.isArray(wire) ? wire.map(b => b.text).join('\n') : wire, `${host}: observado == system da 1ª requisição`);
     const [p1, p2, p3, p4] = phases;
-    assert.equal(p3.obs.at(-1).system, p2.obs.at(-1).system, `${host}: dois turnos on seguidos mandam o mesmo system efetivo (sem acúmulo)`);
-    assert.equal(p4.obs.at(-1).system, p1.obs.at(-1).system, `${host}: opt-out a quente preserva o system efetivo inicial`);
-    assert.equal(p2.obs.at(-1).system, p1.obs.at(-1).system, `${host}: opt-in preserva o system efetivo`);
+    assert.equal(p3.obs.at(-1).system, p2.obs.at(-1).system, `${host}: turnos seguidos mandam o mesmo system efetivo (sem acúmulo)`);
+    assert.equal(p4.obs.at(-1).system, p1.obs.at(-1).system, `${host}: quarto turno preserva o system efetivo inicial`);
+    assert.equal(p2.obs.at(-1).system, p1.obs.at(-1).system, `${host}: segundo turno preserva o system efetivo`);
     assert.match(p1.obs[0].system, /Quem decide é o seu usuário/);
+    assert.match(p1.obs[0].system, /Act as an orchestrator: delegate recon and bulk reading to `scout`/, `${host}: diretriz de orquestrador no system`);
     assert.equal(hotFake.messages().length, 4, `quatro turnos, sem inferência auxiliar: ${JSON.stringify(hotFake.messages().map(p => ({ model: p.model, max_tokens: p.max_tokens })))}`);
-    console.log(`ok hot ${host}: /subagents ao vivo (PID ${pids[0]}, ${all.length} observações seq 1..${all.length}) off→on→on→off — autoridade estável, sem delegação obrigatória ou inferência extra`);
+    console.log(`ok hot ${host}: subagentes sempre ligados (PID ${pids[0]}, ${all.length} observações seq 1..${all.length}) em 4 turnos — autoridade e diretriz de orquestrador estáveis, sem inferência extra`);
   } finally {
     term.tmux('kill-server');
     await hotFake.close();

@@ -1,6 +1,6 @@
 import type { ExtensionAPI, ExtensionContext, Theme } from '@earendil-works/pi-coding-agent';
 import { agentStatus, shortModel, type ModeFooterState, type TeamStatus } from '../../juice/panel.ts';
-import { runtimeEnabled, isChild, subagentsEnabled, setSessionSubagents } from '../../juice/client.mjs';
+import { runtimeEnabled, isChild } from '../../juice/client.mjs';
 import { categoryPrompt } from '../../juice/skill-categories.mjs';
 import { companySkillDirs } from '../../juice/companies.mjs';
 import { appendPolicy, policySections, POLICY_SECTIONS, notesSection } from '../../juice/policy.mjs';
@@ -100,12 +100,11 @@ export default function (pi: ExtensionAPI) {
     },
   });
 
-  // Compatibility readers remain read-only; native footer receives mode and /next hint.
+  // Compatibility readers remain read-only; native footer receives the /next hint.
   let snapshot: ModeFooterState | undefined;
   const render = () => {
     snapshot = undefined;
     if (statusContext?.mode === 'tui') {
-      statusContext.ui.setStatus('agent-mode', subagentsEnabled(statusContext) ? 'subagents on' : undefined);
       statusContext.ui.setStatus('agent-next', state.nextHint ? '/next encerra a tarefa' : undefined);
     }
   };
@@ -143,7 +142,6 @@ export default function (pi: ExtensionAPI) {
     render();
   }
   function dispose() {
-    statusContext?.ui.setStatus('agent-mode', undefined);
     statusContext?.ui.setStatus('agent-next', undefined);
     statusContext = undefined;
   }
@@ -171,7 +169,7 @@ export default function (pi: ExtensionAPI) {
   });
   pi.on('model_select', async (_event, ctx) => { applyTools(); refresh(ctx); });
   // Tools register in extension order; re-apply right before each run so the
-  // schema stays stable; dispatch checks the optional feature flag.
+  // schema stays stable; subagents are always available to the main session.
   pi.on('before_agent_start', async (event, ctx) => {
     applyTools();
     const opts = event.systemPromptOptions;
@@ -262,15 +260,6 @@ export default function (pi: ExtensionAPI) {
         'Documentos sem linha no mapa:',
         ...files.map(file => `- ${file}`),
       ].join('\n'), { deliverAs: 'followUp' });
-    },
-  });
-  pi.registerCommand('subagents', {
-    description: 'Subagentes opcionais: on | off (nesta sessão)',
-    handler: async (args, ctx) => {
-      if (isChild()) return ctx.ui.notify('Subagentes não podem habilitar delegação.', 'error');
-      if (!['on', 'off'].includes(args.trim())) return ctx.ui.notify('Use /subagents on ou /subagents off', 'info');
-      setSessionSubagents(ctx, args.trim() === 'on');
-      refresh(ctx);
     },
   });
 }

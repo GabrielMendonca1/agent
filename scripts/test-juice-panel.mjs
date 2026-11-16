@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import './lib/hermetic-test-env.mjs';
-// Runtime enxuto com loader real: opt-in de subagentes, política de autoridade,
+// Runtime enxuto com loader real: subagentes sempre ligados (sem opt-in), política de autoridade,
 // modelo/thinking manuais, categorias, notas, rodapé nativo e compactação. Sem rede/modelo.
 import assert from 'node:assert/strict';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
@@ -9,7 +9,7 @@ import { basename, dirname, join, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 const repo = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const root = join(process.env.AGENT_STORE || join(homedir(), '.local/share/agent'), 'current/lib/node_modules/@earendil-works/pi-coding-agent');
-const { subagentsEnabled } = await import('../agent/juice/client.mjs');
+const client = await import('../agent/juice/client.mjs');
 const load = async p => import(pathToFileURL(p).href);
 const { loadExtensions, createExtensionRuntime } = await load(join(root, 'dist/core/extensions/loader.js'));
 const { createEventBus } = await load(join(root, 'dist/core/event-bus.js'));
@@ -63,16 +63,17 @@ try {
   assert.equal(loaded.extensions[0].shortcuts.size, 0);
   console.log('ok desligado: sem hooks, comandos ou atalhos');
 
-  Object.assign(process.env, { AGENT_RUNTIME_ENABLED: '1', AGENT_PI_ROOT: root, PI_CODING_AGENT_DIR: dir, AGENT_SUBAGENTS: '0' });
+  Object.assign(process.env, { AGENT_RUNTIME_ENABLED: '1', AGENT_PI_ROOT: root, PI_CODING_AGENT_DIR: dir });
   save();
   loaded = await loadExtensions([juicePath], dir, bus, runtime);
   assert.deepEqual(loaded.errors, []);
   extension = loaded.extensions[0];
   assert.equal(extension.shortcuts.has('shift+tab'), false, 'sem atalho de modos');
   assert.equal(extension.commands.has('mode'), false, 'sem /mode');
-  assert.ok(extension.commands.has('subagents'));
+  assert.equal(extension.commands.has('subagents'), false, 'sem /subagents: subagentes sempre ligados');
   assert.ok(!extension.commands.has('juice') && !extension.commands.has('mass'));
-  const setTeam = value => extension.commands.get('subagents').handler(value, ctx);
+  assert.equal(client.subagentsEnabled, undefined, 'sem chave de opt-in');
+  assert.equal(client.setSessionSubagents, undefined, 'sem chave de opt-in por sessão');
   await emit('session_start');
   assert.ok(!existsSync(join(dir, '.agent')), 'startup não cria receita');
   mkdirSync(join(dir, '.agent'));
@@ -81,19 +82,15 @@ try {
   assert.equal(notices.length, 0, 'início silencioso');
   assert.equal(thinkingWrites, 0);
   assert.equal(modelWrites, 0);
-  assert.ok(active.includes('subagent'), 'schema estável mesmo sem opt-in');
-  assert.equal(subagentsEnabled(ctx), false);
-  assert.equal(text(), '');
+  assert.ok(active.includes('subagent'), 'schema estável: subagent sempre ativo');
+  assert.equal(text(), '', 'sem status de modo ou opt-in');
   assert.equal(statuses.size, 0, 'sem status legado ou estatísticas duplicadas');
   assert.equal(observed().usd, undefined, 'nenhum ledger no estado observado');
-  await setTeam('on');
-  assert.equal(subagentsEnabled(ctx), true);
-  assert.equal(text(), 'subagents on');
-  assert.equal(branch.length, 0, 'opt-in é da sessão, não escreve modo no branch');
+  assert.equal(branch.length, 0, 'nada de modo escrito no branch');
   assert.equal(JSON.parse(readFileSync(statePath, 'utf8')).mode, 'simple', 'estado legado intacto');
-  assert.equal(existsSync(join(dir, 'agent-preferences.json')), false, 'opt-in não grava defaults');
+  assert.equal(existsSync(join(dir, 'agent-preferences.json')), false, 'startup não grava defaults');
   assert.equal(thinking, 'medium');
-  console.log('ok opt-in: schema estável, sem modo/ledger, modelo e thinking intactos');
+  console.log('ok sempre ligado: schema estável, sem /subagents, sem modo/ledger, modelo e thinking intactos');
 
   // Juice não intercepta tools extras; admissão fica no dispatcher de subagent.
   assert.equal((await emitResult('tool_call', { toolName: 'generate_image', input: {} }))?.block, undefined);
@@ -103,7 +100,7 @@ try {
   assert.match(categoryEvent.systemPromptOptions.sections.agent_skill_categories, /^design: a11y,/);
   assert.match(categoryEvent.systemPromptOptions.sections.agent_skill_categories, /\ndev: debug, tdd —[^\n]*\nplan: rea —/);
   const again = await emitResult('before_agent_start', categoryEvent);
-  assert.equal(again?.message, undefined, 'opt-in não injeta nota');
+  assert.equal(again?.message, undefined, 'runtime não injeta nota');
 
   // Leitor de compatibilidade ainda expõe observações, mas não instala rodapé.
   const agentLine = globalThis[Symbol.for('agent.footer.line')];
@@ -114,10 +111,6 @@ try {
   assert.match(line2, /^clássico · cache — ttl (5m|1h) · API≈US\$ 0\.00 · sob demanda (off|—|\d+\/\d+) · prefetch off$/, line2);
   await emit('message_end', { message: { role: 'assistant', usage: { input: 100, cacheRead: 900, cacheWrite: 0, output: 5 } } });
   assert.match(plain(agentLine(theme)), /cache 90%/, 'hit do último turno');
-  const beforeMode = renders;
-  await setTeam('off');
-  await setTeam('on');
-  assert.ok(renders >= beforeMode + 2, 'mode changes publish native status');
 
   // A extensão escuta agent:team pelo pi.events; emitimos pelo mesmo barramento.
   const emitTeam = (agents, status) => bus.emit('agent:team', { id: 'j1', agents, status });
@@ -134,16 +127,11 @@ try {
   assert.equal(text(), duringTeam);
   console.log('ok team structured, single status, no ledger watcher');
 
-  await setTeam('off');
-  assert.equal(subagentsEnabled(ctx), false);
-  await setTeam('x');
-  assert.match(notices.at(-1).text, /Use \/subagents on ou \/subagents off/);
-  assert.equal(subagentsEnabled(ctx), false, 'argumento inválido não autoriza');
   const opts = () => ({ selectedTools: [], hiddenTools: [], toolSnippets: {}, toolGuidelines: {}, promptGuidelines: [], appendSystemPrompt: '', sections: {}, contextFiles: [], skills: [], cwd: dir });
   let run = { systemPromptOptions: opts() };
   await emit('before_agent_start', run);
   assert.equal(run.systemPromptOptions.sections.agent_workflow, undefined);
-  console.log('ok /subagents on|off, argumento inválido não concede permissão');
+  console.log('ok before_agent_start sem receita');
 
   // Regressão (bug relatado): modelo e thinking são escolha do humano e PERSISTEM em tudo
   // que o modo faz — trocar o thinking não troca o modelo, e trocar de modo/modelo não
@@ -158,17 +146,16 @@ try {
     assert.deepEqual(ctx.model, chosen, 'nada troca o modelo escolhido');
     await emit('before_agent_start', { systemPromptOptions: opts() });
     assert.equal(thinking, 'xhigh', 'before_agent_start não reescreve o thinking');
-    await setTeam('off');
-    await setTeam('on');
-    assert.equal(thinking, 'xhigh', 'ida e volta do opt-in preserva o thinking');
-    assert.deepEqual(ctx.model, chosen, 'ida e volta do opt-in preserva o modelo');
+    await emit('before_agent_start', { systemPromptOptions: opts() });
+    assert.equal(thinking, 'xhigh', 'segundo run preserva o thinking');
+    assert.deepEqual(ctx.model, chosen, 'segundo run preserva o modelo');
     assert.equal(thinkingWrites, writes, 'extensão runtime nunca chama setThinkingLevel');
     assert.equal(modelWrites, 0, 'extensão runtime nunca chama setModel');
-    assert.equal(text(), 'subagents on', 'status independe do modelo');
+    assert.equal(text(), '', 'nenhum status de modo');
     ctx.model = { provider: 'fixture', id: 'fable-5.1' };
     await emit('model_select', { model: ctx.model });
     thinking = 'medium';
-    console.log('ok modelo e thinking manuais sobrevivem ao opt-in, model_select e cada run');
+    console.log('ok modelo e thinking manuais sobrevivem a model_select e a cada run');
   }
 
   // Receita invisível: regra nova, equipe customizada e prompt forçado do Vault nunca
@@ -176,10 +163,9 @@ try {
   writeFileSync(wf, readFileSync(wf, 'utf8')
     .replace('(nenhuma ainda)', '- teste roda com `node scripts/test-*.mjs`')
     .replace('3. reviewer · principal', '3. reviewer · apoio'));
-  await setTeam('on');
   run = { systemPromptOptions: opts() };
   let out = await emitResult('before_agent_start', run);
-  assert.equal(run.systemPromptOptions.sections.agent_workflow, undefined, 'opt-in não manda a receita');
+  assert.equal(run.systemPromptOptions.sections.agent_workflow, undefined, 'principal não recebe a receita');
   assert.doesNotMatch(out?.message?.content ?? '', /Receita|workflow\.md|scout|reviewer/, 'receita não vira nota na conversa');
   run = { systemPromptOptions: opts() };
   out = await emitResult('before_agent_start', run);
@@ -214,14 +200,13 @@ try {
   assert.deepEqual(onlyRead.promptGuidelines, both.promptGuidelines, 'guidelines não dependem das ativas');
   assert.equal(renderSystemPrompt('base', vault, onlyRead), renderSystemPrompt('base', vault, both), 'prompt idêntico com qualquer conjunto ativo');
   const notes = [];
-  for (const value of ['off', 'off', 'on', 'on', 'off']) {
-    await setTeam(value);
+  for (let turn = 0; turn < 5; turn++) {
     notes.push((await emitResult('before_agent_start', { systemPromptOptions: opts() }))?.message ?? null);
   }
-  assert.deepEqual(notes, [null, null, null, null, null], 'opt-in não insere notas ou turnos');
+  assert.deepEqual(notes, [null, null, null, null, null], 'runs não inserem notas ou turnos');
   console.log('ok vault-runtime: seções e tools estáveis, sem notas de modo');
 
-  // Políticas GLOBAIS no system prompt: autoridade em on e off; sem delegação obrigatória.
+  // Políticas GLOBAIS no system prompt: autoridade estável; sem seção de modo.
   // Usa o montador de prompt do Pi clássico e prompts forçados por extensões
   // para medir o texto que o modelo vê de fato.
   {
@@ -229,8 +214,7 @@ try {
     const AUT = 'Política de trabalho:';
     const CPX = 'Modo complex (vale só enquanto o modo for complex):';
     const count = (text, needle) => text.split(needle).length - 1;
-    const run = async (mode, extra = {}) => {
-      await setTeam(mode);
+    const run = async (extra = {}) => {
       const options = { ...opts(), ...extra };
       const out = await emitResult('before_agent_start', { systemPromptOptions: options });
       if (out?.systemPrompt !== undefined) options.forceSystemPrompt = out.systemPrompt; // o runner do Pi faz isso
@@ -238,32 +222,22 @@ try {
     };
 
     // Clássico (prompt montado por seções).
-    const off = await run('off');
-    assert.deepEqual(Object.keys(off.options.sections), ['agent_skill_categories', 'agent_autonomy'], 'off: categorias e autoridade');
-    assert.equal(count(off.prompt, AUT), 1, 'off: autonomia exatamente uma vez');
-    assert.equal(count(off.prompt, CPX), 0, 'off: nenhuma instrução de complex');
-    assert.equal(count(off.prompt, 'subagent'), 0, 'off: nada de equipe no system');
-    const offAgain = await run('off');
-    assert.equal(offAgain.prompt, off.prompt, 'mesmo opt-in, mesmo texto (prefixo de cache intacto)');
-    const on = await run('on');
-    assert.deepEqual(Object.keys(on.options.sections), ['agent_skill_categories', 'agent_autonomy'], 'on: categorias e autoridade');
-    assert.equal(count(on.prompt, AUT), 1, 'on: autonomia uma vez');
-    assert.equal(count(on.prompt, CPX), 0, 'on: sem política complex');
-    assert.equal(on.prompt, off.prompt, 'opt-in preserva exatamente o prompt');
-    assert.equal((await run('on')).prompt, on.prompt, 'on estável entre turnos');
-    const back = await run('off');
-    assert.equal(back.prompt, off.prompt, 'opt-out devolve o prompt inicial');
-    const patch = diffSystemPromptSections(buildSystemPromptSections(on.options), buildSystemPromptSections(back.options));
-    assert.equal(patch, undefined, 'opt-in não muda as seções de política');
+    const first = await run();
+    assert.deepEqual(Object.keys(first.options.sections), ['agent_skill_categories', 'agent_autonomy'], 'categorias e autoridade');
+    assert.equal(count(first.prompt, AUT), 1, 'autonomia exatamente uma vez');
+    assert.equal(count(first.prompt, CPX), 0, 'nenhuma instrução de complex');
+    assert.doesNotMatch(first.prompt, /<agent_complex>/, 'sem seção agent_complex');
+    const back = await run();
+    assert.equal(back.prompt, first.prompt, 'mesmo texto entre turnos (prefixo de cache intacto)');
+    const patch = diffSystemPromptSections(buildSystemPromptSections(first.options), buildSystemPromptSections(back.options));
+    assert.equal(patch, undefined, 'turnos não mudam as seções de política');
     assert.match(back.prompt, /Quem decide é o seu usuário/);
     assert.match(back.prompt, /push, merge, deploy, ação destrutiva ou efeito em terceiros/);
 
     // Prompt forçado (Vault no clássico): as políticas entram no texto, uma vez.
-    const forcedOn = await run('on', { forceSystemPrompt: 'PROMPT DO VAULT' });
-    assert.match(forcedOn.prompt, /^PROMPT DO VAULT\n\n<agent_autonomy>\n[\s\S]*\n<\/agent_autonomy>\n\n<agent_skill_categories>[\s\S]*<\/agent_skill_categories>$/, forcedOn.prompt);
-    const forcedOff = await run('off', { forceSystemPrompt: 'PROMPT DO VAULT' });
-    assert.match(forcedOff.prompt, /^PROMPT DO VAULT\n\n<agent_autonomy>\n[\s\S]*\n<\/agent_autonomy>\n\n<agent_skill_categories>[\s\S]*<\/agent_skill_categories>$/, forcedOff.prompt);
-    assert.equal(count(forcedOff.prompt, CPX), 0, 'forçado em off: sem complex');
+    const forced = await run({ forceSystemPrompt: 'PROMPT DO VAULT' });
+    assert.match(forced.prompt, /^PROMPT DO VAULT\n\n<agent_autonomy>\n[\s\S]*\n<\/agent_autonomy>\n\n<agent_skill_categories>[\s\S]*<\/agent_skill_categories>$/, forced.prompt);
+    assert.equal(count(forced.prompt, CPX), 0, 'forçado: sem complex');
 
     // Ordem dos handlers: juice antes OU depois do vault-runtime, no clássico. A
     // política tem de aparecer exatamente uma vez no prompt que sai (risco real de
@@ -281,14 +255,13 @@ try {
     try {
       for (const [first, second] of [[juicePath, vaultPath], [vaultPath, juicePath]]) {
         for (const host of ['clássico']) {
-          for (const mode of ['off', 'on']) {
-            const where = `${basename(first)} primeiro, ${host}, ${mode}`;
+          {
+            const where = `${basename(first)} primeiro, ${host}`;
             const rt = createExtensionRuntime();
             Object.assign(rt, { setThinkingLevel() {}, getThinkingLevel: () => 'low', getActiveTools: () => [...active], getAllTools: all, setActiveTools() {}, appendEntry: runtime.appendEntry });
             const pack = await loadExtensions([first, second], dir, createEventBus(), rt);
             assert.deepEqual(pack.errors, [], where);
             branch = [];
-            process.env.AGENT_SUBAGENTS = mode === 'on' ? '1' : '0';
             for (const ext of pack.extensions) for (const h of ext.handlers.get('session_start') || []) await h({ reason: 'startup' }, ctx);
             const options = opts();
             for (const ext of pack.extensions) for (const h of ext.handlers.get('before_agent_start') || []) {
@@ -309,7 +282,6 @@ try {
     } finally {
       delete process.env.PI_SYSTEM_DIR;
       delete process.env.AGENT_VAULT;
-      process.env.AGENT_SUBAGENTS = '0';
       rmSync(join(dir, '.agent/notes.md'));
       for (const [key, value] of ownedGlobals) globalThis[key] = value;
     }
@@ -317,12 +289,11 @@ try {
     // Filho (subagente) não recebe política do principal.
     process.env.AGENT_CHILD = '1';
     try {
-      const child = await run('on', { forceSystemPrompt: 'PROMPT DO FILHO' });
+      const child = await run({ forceSystemPrompt: 'PROMPT DO FILHO' });
       assert.equal(child.prompt, 'PROMPT DO FILHO', 'filho: prompt intacto');
       assert.deepEqual(Object.keys(child.options.sections), [], 'filho: nenhuma seção de política');
     } finally { delete process.env.AGENT_CHILD; }
-    await setTeam('off');
-    console.log('ok políticas globais: autoridade com opt-in on/off, sem política complex (clássico e forçado)');
+    console.log('ok políticas globais: autoridade estável, sem política complex (clássico e forçado)');
   }
   await emit('session_start');
 
@@ -446,39 +417,12 @@ try {
   await emit('agent_settled'); assert.equal(compacted, 2, 'menores compactam faltando 10%');
   console.log('ok compactação: 450k em 1M, 10% nas menores');
 
-  // Opt-in é por identidade da sessão, não por dados legados nem persistência de branch.
-  {
-    const { SessionManager } = await load(join(root, 'dist/core/session-manager.js'));
-    const manager = SessionManager.inMemory(dir);
-    const own = { ...ctx, sessionManager: manager };
-    const command = value => extension.commands.get('subagents').handler(value, own);
-    manager.appendCustomEntry('agent-mode', { version: 1, mode: 'complex' });
-    assert.equal(subagentsEnabled(own), false, 'complex legado não concede delegação');
-    await command('on');
-    assert.equal(subagentsEnabled(own), true);
-    assert.equal(subagentsEnabled({ ...ctx, sessionManager: SessionManager.inMemory(dir) }), false, 'outra sessão não herda opt-in');
-    await command('off');
-    process.env.AGENT_SUBAGENTS = '1';
-    assert.equal(subagentsEnabled(own), false, '/subagents off vence env');
-    manager.newSession();
-    assert.equal(subagentsEnabled(own), true, 'nova identidade usa opt-in de env');
-    process.env.AGENT_CHILD = '1';
-    assert.equal(subagentsEnabled(own), false, 'filho nunca delega mesmo com env');
-    await command('on');
-    assert.match(notices.at(-1).text, /não podem habilitar/);
-    assert.equal(subagentsEnabled(own), false);
-    delete process.env.AGENT_CHILD;
-    process.env.AGENT_SUBAGENTS = '0';
-    assert.equal(subagentsEnabled(own), false, 'comando negado ao filho não deixa autorização residual');
-    console.log('ok autoridade opt-in: isolamento, env, off explícito, nova sessão e filho fail-closed');
-  }
-
   await emit('session_shutdown');
   const stopped = renders;
   snapshot.usd = 9; save(); await new Promise(r => setTimeout(r, 160));
   assert.equal(renders, stopped, 'shutdown não repinta status após mudança do ledger');
   assert.equal(statuses.has('agent-mode'), false, 'shutdown clears session status');
-  console.log('PASS runtime (loader real, opt-in; sem ledger ou chamadas de modelo)');
+  console.log('PASS runtime (loader real, subagentes sempre ligados; sem ledger ou chamadas de modelo)');
 } finally {
   if (extension) await emit('session_shutdown');
   for (const key of Object.keys(process.env)) if (!(key in saved)) delete process.env[key];

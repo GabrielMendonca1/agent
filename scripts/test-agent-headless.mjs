@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 /**
  * Perfil Agent headless (scripts/lib/agent-headless.mjs): `pi -p --mode json` com provider falso numa HOME
- * temporária. Prova política estável com subagentes opt-in, sem ledger,
+ * temporária. Prova política estável com subagentes sempre ligados (diretriz de orquestrador), sem ledger,
  * que nada de TUI/peers/megamind/brain-live extra entra, e
  * que o prompt de sistema é menor que o do perfil completo (bytes impressos).
  *
@@ -63,7 +63,7 @@ function spawnAsync(cmd, args, options) {
 const preload = pathToFileURL(join(repo, 'agent/juice/runtime.mjs')).href;
 
 /** `pi -p --mode json` com Juice ligado; devolve o payload enviado ao provider. */
-async function run(agent, enabled, label) {
+async function run(agent, label, extraEnv = {}) {
 	const juiceHome = join(root, `juice-${label}`);
 	mkdirSync(juiceHome, { recursive: true, mode: 0o700 });
 	writeFileSync(join(juiceHome, 'preferences.v3.json'), `${JSON.stringify({ mode: 'complex', supportModel: null })}\n`);
@@ -75,8 +75,8 @@ async function run(agent, enabled, label) {
 			PATH: process.env.PATH, HOME: h, USERPROFILE: h, TMPDIR: root, XDG_CONFIG_HOME: join(h, '.config'),
 			PI_CODING_AGENT_DIR: agent.agentDir, PI_ACCOUNTS_MIRROR: '0', ORCA_BACKGROUND_LAUNCH: '1',
 			AGENT_RUNTIME_ENABLED: '1', AGENT_PI_ROOT: piRoot, AGENT_CHILD: '0',
-			AGENT_SUBAGENTS: enabled ? '1' : '0',
 			NODE_OPTIONS: `--import=${preload}`,
+			...extraEnv,
 		},
 	});
 	const output = result.output;
@@ -88,7 +88,7 @@ async function run(agent, enabled, label) {
 	const system = typeof payload.system === 'string' ? payload.system : JSON.stringify(payload.system);
 	const tools = (payload.tools ?? []).map((t) => t.name);
 	assert.ok(!existsSync(join(juiceHome, 'run.v3.json')), 'runtime não cria ledger');
-	return { system, tools, bytes: Buffer.byteLength(system), toolBytes: Buffer.byteLength(JSON.stringify(payload.tools ?? [])), output };
+	return { system, tools, payloadTools: payload.tools ?? [], bytes: Buffer.byteLength(system), toolBytes: Buffer.byteLength(JSON.stringify(payload.tools ?? [])), output };
 }
 
 try {
@@ -113,9 +113,10 @@ try {
 	assert.equal(headless.settings.theme, undefined);
 	ok('settings headless: só juice e subagent; tui/peers/megamind fora');
 
-	const fullRun = await run(full, false, 'full-off');
-	const enabled = await run(headless, true, 'headless-on');
-	const disabled = await run(headless, false, 'headless-off');
+	const fullRun = await run(full, 'full-default');
+	const enabled = await run(headless, 'headless-default');
+	// Segundo processo idêntico: prompt e schema não dependem de estado ou chave.
+	const disabled = await run(headless, 'headless-again');
 
 	for (const r of [enabled, disabled]) {
 		assert.ok(r.tools.includes('subagent'), `subagent ausente: ${r.tools}`);
@@ -126,11 +127,21 @@ try {
 	assert.ok(!fullRun.tools.some((t) => /^peers_|^megamind_(?!read$)/.test(t)), `peers/megamind deveriam estar deferred: ${fullRun.tools}`);
 	ok(`tools headless: ${enabled.tools.join(', ')}`);
 
-	assert.equal(enabled.system, disabled.system, 'opt-in não obriga delegação nem muda a política');
-	assert.deepEqual(enabled.tools, disabled.tools, 'schema estável ao mudar opt-in');
+	assert.equal(enabled.system, disabled.system, 'mesma política entre processos');
+	assert.deepEqual(enabled.tools, disabled.tools, 'schema estável');
+	assert.equal(enabled.toolBytes, disabled.toolBytes, 'bytes do schema estáveis');
 	assert.doesNotMatch(enabled.system, /<agent_complex>|Modo complex/);
 	assert.match(enabled.system, /Quem decide é o seu usuário/);
-	ok('política de autoridade preservada, sem modos nem inferência extra');
+	for (const r of [enabled, fullRun]) {
+		assert.match(r.system, /subagent: Delegate reading, recon, review and self-contained implementation to subagents/, 'snippet de orquestrador');
+		assert.match(r.system, /Act as an orchestrator: delegate recon and bulk reading to `scout`, isolated implementation to `worker`, and review to `reviewer`/, 'diretriz de orquestrador no system');
+		assert.match(r.system, /only its result comes back, so delegated reading does not grow yours; to audit its steps and decisions use action `trace`/, 'guideline de auditoria');
+		assert.doesNotMatch(r.system, /Optional async subagents|only when the user enables them|AGENT_SUBAGENTS|\/subagents on/, 'sem texto de opt-in');
+	}
+	const subagentBytes = Buffer.byteLength(JSON.stringify(enabled.payloadTools.find((t) => t.name === 'subagent')));
+	// 8994 B antes da action trace; teto de +600 B porque o schema entra em toda requisição.
+	assert.ok(subagentBytes <= 8994 + 600, `schema de subagent cresceu demais: ${subagentBytes} B`);
+	ok(`política de autoridade e diretriz de orquestrador, sem modos nem inferência extra; schema subagent ${subagentBytes} B`);
 	assert.ok(enabled.bytes < fullRun.bytes, `headless (${enabled.bytes}) não é menor que o completo (${fullRun.bytes})`);
 	ok(`prompt: completo ${fullRun.bytes} B, headless ${enabled.bytes} B; schemas: completo ${fullRun.toolBytes} B, headless ${enabled.toolBytes} B`);
 	console.log(`${checks} checks passed`);
