@@ -27,6 +27,7 @@ import { type Component, Container, Markdown, Spacer, Text, truncateToWidth } fr
 import { Type } from "typebox";
 import { formatRoleModelChoices, getRoleModelChoices } from "../lib/tiers.ts";
 import { getAgentPreferences, isChild } from "../../../juice/client.mjs";
+import { NO_DELEGATE_ENV } from "../../../juice/child-env.mjs";
 import { parseWorkflow, readWorkflow } from "../../../juice/workflow.mjs";
 import { type AgentConfig, type AgentScope, discoverAgents } from "./agents.ts";
 import {
@@ -736,6 +737,9 @@ export default function (pi: ExtensionAPI) {
 			};
 			// A subagent never delegates further: only the main session launches.
 			if (isChild()) return fail("This process is a subagent (AGENT_CHILD=1); subagents cannot launch subagents.");
+			// Sticky marker: survives bash and the launcher, so `agent -p` run by a child cannot delegate.
+			if (process.env[NO_DELEGATE_ENV] === "1")
+				return fail(`This process descends from a subagent (${NO_DELEGATE_ENV}=1); it cannot launch subagents. If this is a human session opened from inside a subagent, unset ${NO_DELEGATE_ENV} and restart it.`);
 			try {
 				dispatchDefaults.resources = { supportModel: getAgentPreferences().supportModel ?? undefined, slots: {} };
 			} catch (error) {

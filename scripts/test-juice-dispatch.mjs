@@ -103,6 +103,7 @@ try {
   assert.equal(captured.opts.env.AGENT_RUNTIME_ENABLED, '1');
   assert.equal(captured.opts.env.AGENT_SUBAGENTS, undefined, 'sem variável de opt-in');
   assert.equal(captured.opts.env.AGENT_CHILD, '1');
+  assert.equal(captured.opts.env.AGENT_NO_DELEGATE, '1', 'marcador anti-recursão pegajoso');
   assert.equal(captured.args[captured.args.indexOf('--model') + 1], 'test/economico');
   assert.ok(!captured.args.includes('--no-skills'));
   checks++; console.log('ok filho remove estado de accounting e preserva skills');
@@ -202,7 +203,7 @@ try {
   await runner.runSingleAgent({ defaultCwd: root, dispatchDefaults: { model: 'test/principal' }, agents: [agent], agentName: 'scout', task: 'fixture', makeDetails: (results) => ({ mode: 'single', agentScope: 'user', projectAgentsDir: null, results }) });
   // Sem recursos explícitos, filho ainda recebe isolamento e catálogo de skills.
   const sandbox = runner.sandboxForTools(agent.tools);
-  assert.deepEqual(captured.opts.env, { ...process.env, AGENT_CHILD: '1', AGENT_BASH_SANDBOX: sandbox === 'none' ? '' : sandbox, AGENT_SANDBOX_CWD: sandbox === 'none' ? '' : root });
+  assert.deepEqual(captured.opts.env, { ...process.env, AGENT_CHILD: '1', AGENT_NO_DELEGATE: '1', AGENT_BASH_SANDBOX: sandbox === 'none' ? '' : sandbox, AGENT_SANDBOX_CWD: sandbox === 'none' ? '' : root });
   assert.ok(!captured.args.includes('--no-skills'));
   checks++; console.log('ok dispatch sem recursos mantém isolamento e catálogo de skills');
 

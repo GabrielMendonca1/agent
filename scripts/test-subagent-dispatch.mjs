@@ -10,6 +10,8 @@ import { dirname, join, resolve } from 'node:path';
 import { createRequire } from 'node:module';
 import { fileURLToPath } from 'node:url';
 import { startFakeAnthropic } from './lib/fake-anthropic.mjs';
+import { buildAgentLaunch } from './lib/agent-runtime.mjs';
+import { subagentEnv, userCommandEnv } from '../agent/juice/child-env.mjs';
 
 const repo = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const piRoot = process.env.AGENT_PI_ROOT || join(homedir(), '.local/share/agent/current/lib/node_modules/@earendil-works/pi-coding-agent');
@@ -139,10 +141,10 @@ export default function (pi) {
 `);
 
 let runIndex = 0;
-function runPi(extraEnv) {
-  const env = { ...process.env, HOME: home, USERPROFILE: home, PI_CODING_AGENT_DIR: agent, PI_OFFLINE: '1', PI_DURABLE_HOST: '0',
-    AGENT_RUNTIME_ENABLED: '1', AGENT_PI_ROOT: piRoot,
-    NODE_OPTIONS: '', PI_AUTOMATIC_SKILLS: 'fixture', AGENT_SUBAGENT_CHILD_EXTENSIONS: provider, ...extraEnv };
+const piEnv = (extraEnv) => ({ ...process.env, HOME: home, USERPROFILE: home, PI_CODING_AGENT_DIR: agent, PI_OFFLINE: '1', PI_DURABLE_HOST: '0',
+  AGENT_RUNTIME_ENABLED: '1', AGENT_PI_ROOT: piRoot,
+  NODE_OPTIONS: '', PI_AUTOMATIC_SKILLS: 'fixture', AGENT_SUBAGENT_CHILD_EXTENSIONS: provider, ...extraEnv });
+function runPi(extraEnv, env = piEnv(extraEnv)) {
   const r = spawnSync(process.execPath, [cli, '-p', '--mode', 'json', '--session', join(root, `parent-${++runIndex}.jsonl`), '--no-extensions', '-e', provider, '-e', join(repo, 'agent/extensions/brain-live/subagent/index.ts'), '--model', 'fg-fake/fake', 'tarefa'],
     { cwd: root, env, encoding: 'utf8', timeout: 60000, maxBuffer: 16 * 1024 * 1024 });
   assert.equal(r.status, 0, r.stderr);
@@ -244,7 +246,16 @@ const childLaunch = childEvents.find(e => e.type === 'tool_execution_end' && e.t
 assert.equal(childLaunch.isError, true);
 assert.match(childLaunch.content[0].text, /This process is a subagent \(AGENT_CHILD=1\); subagents cannot launch subagents\./);
 assert.equal(existsSync(childJobs) ? readdirSync(childJobs, { recursive: true }).length : 0, jobsBefore, 'filho não cria job');
-console.log('ok sempre ligado: independente de modos legados; filho bloqueado com mensagem clara');
+// `agent -p` rodado pelo bash de um filho: bash e launcher tiram AGENT_CHILD, o processo
+// relançado é pai do run, mas o marcador pegajoso ainda impede delegar.
+const relaunch = buildAgentLaunch({ store: join(root, 'no-agent-store'), env: userCommandEnv(subagentEnv(piEnv({ FG_CHILD_LAUNCH: '1' }))), args: [] });
+assert.equal(relaunch.env.AGENT_CHILD, undefined, 'launcher remove AGENT_CHILD');
+const relaunchEvents = runPi({}, relaunch.env);
+const relaunched = relaunchEvents.find(e => e.type === 'tool_execution_end' && e.toolName === 'subagent').result;
+assert.equal(relaunched.isError, true, 'descendente de subagente relançado pelo launcher não delega');
+assert.match(relaunched.content[0].text, /descends from a subagent \(AGENT_NO_DELEGATE=1\).*unset AGENT_NO_DELEGATE/);
+assert.equal(existsSync(childJobs) ? readdirSync(childJobs, { recursive: true }).length : 0, jobsBefore, 'descendente não cria job');
+console.log('ok sempre ligado: independente de modos legados; filho e descendente relançado bloqueados com mensagem clara');
 
 // Slot do apoio vem da receita explícita, sem inferência classificadora.
 writeFileSync(join(agent, 'agent-preferences.json'), JSON.stringify({ supportModel: 'fg-fake/cheap' }));

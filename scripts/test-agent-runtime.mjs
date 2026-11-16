@@ -534,6 +534,12 @@ test("o ambiente real do usuário passa intacto: HOME, agent dir, modelos, think
 	assert.equal(buildAgentLaunch({ store, env: { ...personal, PI_CACHE_RETENTION: "none" }, args: [] }).env.PI_CACHE_RETENTION, "none");
 	// AGENT_JUICE_CHILD herdado sairia como "filho sem pai": este processo é o pai do run.
 	assert.equal("AGENT_JUICE_CHILD" in spec.env, false);
+	// `agent` relançado do bash de um filho: AGENT_CHILD sai, o marcador anti-recursão fica.
+	const fromChild = { ...personal, AGENT_CHILD: "1", AGENT_NO_DELEGATE: "1" };
+	for (const relaunched of [buildAgentLaunch({ store, env: fromChild, args: [] }), buildAgentLaunch({ store, env: { ...fromChild, [DISABLE_ENV]: "1" }, args: [] })]) {
+		assert.equal("AGENT_CHILD" in relaunched.env, false, `${relaunched.mode}: processo relançado é pai do run`);
+		assert.equal(relaunched.env.AGENT_NO_DELEGATE, "1", `${relaunched.mode}: descendente de subagente continua sem delegar`);
+	}
 });
 
 test("NODE_OPTIONS do usuário é preservado e o preload entra uma única vez", () => {

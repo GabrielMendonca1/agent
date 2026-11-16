@@ -44,9 +44,15 @@ export function userCommandEnv(env = process.env) {
   return copy;
 }
 
+/**
+ * Sticky anti-recursion marker. Unlike AGENT_CHILD, neither userCommandEnv nor the launcher
+ * removes it, so `agent -p` run from a child's bash still cannot delegate.
+ */
+export const NO_DELEGATE_ENV = 'AGENT_NO_DELEGATE';
+
 /** Agent children retain the preload and skill policy, but no legacy accounting env. */
 export function subagentEnv(env = process.env) {
-  const copy = { ...env, AGENT_CHILD: '1' };
+  const copy = { ...env, AGENT_CHILD: '1', [NO_DELEGATE_ENV]: '1' };
   if (copy.AGENT_RUNTIME_ENABLED === undefined && copy.AGENT_JUICE_ENABLED !== undefined) copy.AGENT_RUNTIME_ENABLED = copy.AGENT_JUICE_ENABLED;
   if (!copy.AGENT_PI_ROOT && copy.AGENT_JUICE_PI_ROOT) copy.AGENT_PI_ROOT = copy.AGENT_JUICE_PI_ROOT;
   for (const key of Object.keys(copy)) {
