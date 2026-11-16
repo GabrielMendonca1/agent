@@ -15,7 +15,7 @@ import * as path from "node:path";
 import { fileURLToPath } from "node:url";
 import type { AgentToolResult, ThinkingLevel } from "@earendil-works/pi-agent-core";
 import type { Message } from "@earendil-works/pi-ai";
-import { getPackageDir, SessionManager, withFileMutationQueue } from "@earendil-works/pi-coding-agent";
+import { getAgentDir, getPackageDir, loadProjectContextFiles, SessionManager, withFileMutationQueue } from "@earendil-works/pi-coding-agent";
 import { resolveModelRef } from "../lib/tiers.ts";
 import { subagentEnv } from "../../../juice/child-env.mjs";
 import { projectRules } from "../../../juice/workflow.mjs";
@@ -245,6 +245,24 @@ const WEB_EXTENSION_PATH = path.join(path.dirname(fileURLToPath(import.meta.url)
 const WEB_TOOLS = new Set(["web_search", "web_fetch"]);
 /** Child-only cap for large tool outputs (AGENT_CHILD_TOOL_OUTPUT_MAX). */
 const CHILD_OUTPUT_CAP_PATH = path.join(path.dirname(fileURLToPath(import.meta.url)), "child-output-cap.ts");
+/** Child-only: Anthropic system cache breakpoint before the trailing <cwd> section. */
+const CHILD_CACHE_PREFIX_PATH = path.join(path.dirname(fileURLToPath(import.meta.url)), "child-cache-prefix.ts");
+
+/**
+ * AGENTS.md/CLAUDE.md the child's Pi would load for `cwd` (same discovery: global agent dir
+ * plus ancestors, worktree shadowing), rendered for the task message. Children run with
+ * `--no-context-files`, so these files reach them exactly once, outside the system prompt:
+ * the system then holds only role + skills + cwd and stays identical across worktrees.
+ */
+export function contextFilesMessage(cwd: string, agentDir = getAgentDir()): string {
+	const files = loadProjectContextFiles({ cwd, agentDir });
+	if (!files.length) return "";
+	return [
+		"## Project instructions",
+		"Project-specific instructions and guidelines:",
+		...files.map(({ path: file, content }) => `<project_instructions path="${file}">\n${content}\n</project_instructions>`),
+	].join("\n\n");
+}
 
 export type SandboxMode = "seatbelt" | "bwrap" | "none";
 let probedSandbox: SandboxMode | undefined;
@@ -760,8 +778,9 @@ export async function runSingleAgent(opts: RunAgentOptions): Promise<SingleResul
 	}
 
 	// Garime: filho enxuto. Sem extensões (presence, relay, vault, kernel…) nem skills;
-	// AGENTS.md/CLAUDE.md continuam valendo. Só as tools do frontmatter.
-	const args: string[] = ["--mode", "json", "-p", "--no-extensions"];
+	// AGENTS.md/CLAUDE.md continuam valendo, na mensagem da tarefa (contextFilesMessage),
+	// não no system. Só as tools do frontmatter.
+	const args: string[] = ["--mode", "json", "-p", "--no-extensions", "--no-context-files"];
 	const cwd = opts.cwd ?? opts.defaultCwd;
 	const sandbox = sandboxForTools(agent.tools);
 	const extraEnv: Record<string, string> = { AGENT_BASH_SANDBOX: "", AGENT_SANDBOX_CWD: "" };
@@ -787,6 +806,7 @@ export async function runSingleAgent(opts: RunAgentOptions): Promise<SingleResul
 	// Every child keeps cache keys, limits and the skill catalog, without warming timers.
 	if (fs.existsSync(CACHE_KEEPER_PATH)) args.push("-e", CACHE_KEEPER_PATH);
 	if (fs.existsSync(CHILD_OUTPUT_CAP_PATH)) args.push("-e", CHILD_OUTPUT_CAP_PATH);
+	if (fs.existsSync(CHILD_CACHE_PREFIX_PATH)) args.push("-e", CHILD_CACHE_PREFIX_PATH);
 	// Explicit child extensions can provide an offline
 	// provider in checks. Never inherit the parent's whole profile.
 	for (const ext of (process.env.AGENT_SUBAGENT_CHILD_EXTENSIONS ?? "").split(":").filter(Boolean)) {
@@ -857,10 +877,11 @@ export async function runSingleAgent(opts: RunAgentOptions): Promise<SingleResul
 		// no registro do job, no brief persistido, nem em nada que volte ao pai.
 		// Aquecimento (tarefa ".") fica de fora.
 		const guidance = opts.prefetch ? "" : projectRules(opts.sourceCwd ?? cwd);
+		const instructions = opts.prefetch ? "" : contextFilesMessage(cwd);
 		// argv is a hard OS limit (E2BIG): a big task goes to a file read by the
 		// child as `@path` (pi CLI file argument), never into the command line.
 		const sandboxNotice = sandbox === "none" ? "\n\nSandbox: none on this platform; writes are detected after the run and fail the task." : "";
-		const inlineTask = (guidance ? `Task: ${task}\n\n${guidance}` : `Task: ${task}`) + sandboxNotice;
+		const inlineTask = [`Task: ${task}`, instructions, guidance].filter(Boolean).join("\n\n") + sandboxNotice;
 		if (Buffer.byteLength(inlineTask, "utf-8") > ARG_INLINE_CAP) {
 			let messagePath: string;
 			const tmp = await writePromptToTempFile(`${agent.name}-task`, inlineTask, tmpPromptDir ?? undefined);

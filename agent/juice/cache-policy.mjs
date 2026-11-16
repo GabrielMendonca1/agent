@@ -202,8 +202,18 @@ export function openaiCacheKey(payload, { child = false } = {}) {
   if (!payload || typeof payload !== 'object' || !Array.isArray(payload.input)) return undefined;
   if (process.env.PI_CACHE_RETENTION === 'none') return undefined; // cache desligado pelo usuário
   if (payload.prompt_cache_key && !child) return undefined;
-  const prefix = JSON.stringify([payload.model ?? '', payload.instructions ?? '', payload.tools ?? []]);
+  const instructions = child ? childInstructions(payload.instructions ?? '') : payload.instructions ?? '';
+  const prefix = JSON.stringify([payload.model ?? '', instructions, payload.tools ?? []]);
   return `agent-${fnv64(prefix)}`;
+}
+
+/**
+ * Filho: a chave ignora as seções que variam por checkout (`<cwd>` e, se houver,
+ * `<project_context>` com caminhos absolutos), para filhos do mesmo papel/modelo em worktrees
+ * diferentes caírem no mesmo grupo de cache. O texto enviado não muda.
+ */
+function childInstructions(text) {
+  return String(text).replace(/\n*<(cwd|project_context)>\n[\s\S]*?\n<\/\1>/g, '');
 }
 
 /**

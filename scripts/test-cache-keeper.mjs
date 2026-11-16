@@ -102,6 +102,14 @@ const k1 = policy.openaiCacheKey(resp);
 assert.match(k1, /^agent-[0-9a-f]{16}$/);
 assert.equal(policy.openaiCacheKey({ ...resp, input: [{ role: 'user', content: 'outra tarefa' }], prompt_cache_key: 'sess-2' }, { child: true }), k1, 'filhos do mesmo papel compartilham chave');
 assert.notEqual(policy.openaiCacheKey({ ...resp, instructions: 'papel Y' }), k1);
+// Codex children of one role in different worktrees: instructions differ only in <cwd> (and a
+// legacy <project_context> with absolute paths); the key must not.
+const codexChild = (cwd, role = 'papel X') => ({ ...resp, prompt_cache_key: `sess-${cwd}`, input: [{ role: 'user', content: `Task in ${cwd}` }],
+  instructions: `${role}\n\n<project_context>\nProject-specific instructions and guidelines:\n\n<project_instructions path="${cwd}/AGENTS.md">\nregras\n</project_instructions>\n</project_context>\n\n<skills>\ncatalog\n</skills>\n\n<cwd>\n${cwd}\n</cwd>` });
+const kA = policy.openaiCacheKey(codexChild('/w/a'), { child: true });
+assert.equal(policy.openaiCacheKey(codexChild('/w/b'), { child: true }), kA, 'Codex children in different cwds share prompt_cache_key');
+assert.notEqual(policy.openaiCacheKey(codexChild('/w/b', 'papel Y'), { child: true }), kA, 'other role, other key');
+assert.notEqual(policy.openaiCacheKey({ ...codexChild('/w/a'), instructions: codexChild('/w/a').instructions.replace('catalog', 'outro') }, { child: true }), kA, 'skills stay in the key');
 assert.equal(policy.openaiCacheKey(payload), undefined, 'Anthropic não muda');
 // J: causa da quebra, sem conteúdo.
 const fp = policy.fingerprint(payload);

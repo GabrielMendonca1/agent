@@ -402,6 +402,50 @@ try {
   assert.equal(bashResult().trimEnd(), seqOut.trimEnd(), 'AGENT_CHILD_TOOL_OUTPUT_MAX=0 disables the cap');
   console.log('ok child output cap: bash head+tail with full-output path; read with small limit untouched; 0 disables');
 
+  // Stable child prefix: two children of one role in different worktrees, real Anthropic
+  // payloads. AGENTS.md leaves the system (--no-context-files) and reaches the child once, in
+  // the task message; the system breakpoint sits before <cwd>, the only part that differs.
+  const anth = await startFakeAnthropic([{ text: 'ok' }]);
+  const repoFixture = join(root, 'prefix-repo');
+  mkdirSync(repoFixture);
+  const gitIn = (...a) => assert.equal(spawnSync('git', a, { cwd: repoFixture }).status, 0, a.join(' '));
+  gitIn('init', '-q');
+  writeFileSync(join(repoFixture, 'AGENTS.md'), '# Regras\n- PROJECT-RULES-FIXTURE\n');
+  gitIn('add', 'AGENTS.md');
+  gitIn('-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.invalid', 'commit', '-qm', 'init');
+  const trees = ['prefix-wt-a', 'prefix-wt-b'].map(name => join(root, name));
+  for (const tree of trees) gitIn('worktree', 'add', '-q', tree);
+  writeFileSync(join(agent, 'AGENTS.md'), 'GLOBAL-RULES-FIXTURE\n');
+  writeFileSync(join(agent, 'models.json'), JSON.stringify({ providers: { fa: { baseUrl: anth.baseUrl, api: 'anthropic-messages', apiKey: 'offline',
+    models: [{ id: 'claude-x', name: 'claude-x', reasoning: false, input: ['text'], cost: { input: 1, output: 1, cacheRead: 0.1, cacheWrite: 1.25 }, contextWindow: 200000, maxTokens: 8000 }] } } }));
+  delete process.env.FG_SANDBOX_COMMAND;
+  try {
+    const prefixRole = { name: 'prefixrole', source: 'user', tools: ['read'], systemPrompt: 'PREFIX-ROLE-PROMPT' };
+    for (const tree of trees) {
+      const r = await runner.runSingleAgent({ defaultCwd: tree, agents: [prefixRole], agentName: prefixRole.name, task: 'fixture', dispatchDefaults: { model: 'fa/claude-x', resources: { slots: {} } }, makeDetails: results => ({ mode: 'single', agentScope: 'user', projectAgentsDir: null, results }) });
+      assert.equal(r.exitCode, 0, r.errorMessage || r.stderr);
+    }
+    const [a, b] = anth.messages();
+    assert.equal(anth.messages().length, 2);
+    assert.equal(JSON.stringify(a.tools), JSON.stringify(b.tools), 'tools identical');
+    for (const [p, tree] of [[a, trees[0]], [b, trees[1]]]) {
+      assert.equal(p.system.length, 2, 'system split before <cwd>');
+      assert.ok(p.system[0].cache_control && !p.system[1].cache_control, 'system breakpoint sits before <cwd>');
+      assert.equal(p.system[1].text, `\n\n<cwd>\n${tree}\n</cwd>`, 'second block is only the cwd section');
+      assert.match(p.system[0].text, /^PREFIX-ROLE-PROMPT/);
+      assert.doesNotMatch(JSON.stringify(p.system), /project_context|RULES-FIXTURE/, 'no context files in the system');
+      const sent = JSON.stringify(p);
+      for (const marker of ['PROJECT-RULES-FIXTURE', 'GLOBAL-RULES-FIXTURE']) assert.equal(sent.split(marker).length - 1, 1, `${marker} reaches the child exactly once`);
+      assert.ok(sent.includes(`<project_instructions path=\\"${join(tree, 'AGENTS.md')}\\">`), 'with its own path');
+    }
+    assert.equal(JSON.stringify(a.system[0]), JSON.stringify(b.system[0]), 'system byte-identical up to <cwd> across worktrees');
+    console.log(`ok stable child prefix: system ${Buffer.byteLength(a.system[0].text)} B shared across worktrees, breakpoint before <cwd>, AGENTS.md once in the task`);
+  } finally {
+    rmSync(join(agent, 'AGENTS.md'), { force: true });
+    rmSync(join(agent, 'models.json'), { force: true });
+    await anth.close();
+  }
+
   // Exercise the actual spawn queue: two live children, remaining tasks queued,
   // cancellation owned by the launching session, and no spawn under pressure.
   delete process.env.FG_SANDBOX_COMMAND;
