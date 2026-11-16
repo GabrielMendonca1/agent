@@ -589,6 +589,9 @@ export function buildAgentLaunch({ store, env = process.env, args = [] } = {}) {
 	// Cache Anthropic de 1 h: com o cache-keeper (ping a 90% do TTL) custa ~45% menos que 5 min
 	// nas pausas reais do Gabriel. Valor já definido pelo usuário (inclusive `none`) prevalece.
 	if (!nextEnv.PI_CACHE_RETENTION) nextEnv.PI_CACHE_RETENTION = "long";
+	// O aviso "Update Available" do Pi upstream é enganoso aqui: o Pi do Agent só muda por artefato
+	// (`agent update`). Valor do usuário prevalece; vazio religa a checagem.
+	if (nextEnv.PI_SKIP_VERSION_CHECK === undefined) nextEnv.PI_SKIP_VERSION_CHECK = "1";
 	nextEnv.NODE_OPTIONS = mergeNodeOptions(passthrough.NODE_OPTIONS, preload, warnings);
 	return {
 		mode: "agent",

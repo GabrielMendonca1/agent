@@ -150,7 +150,7 @@ Nenhum patch é necessário para as extensões carregarem; eles dão funcionalid
 | Aviso | Desligar |
 |---|---|
 | "Anthropic subscription auth is active. Third-party harness usage draws from extra usage..." | `warnings.anthropicExtraUsage: false` no settings, ou `/settings`. Instalação por artefato já grava `false` se a chave faltar. |
-| "Update Available ... Run agent update" | `PI_SKIP_VERSION_CHECK=1`, ou `PI_OFFLINE=1` / `--offline`. |
+| "Update Available ... Run agent update" | Já desligado: o launcher do Agent exporta `PI_SKIP_VERSION_CHECK=1` quando a variável não está definida. `PI_SKIP_VERSION_CHECK=` (vazio) religa. |
 | "Package Updates Available" | Só `PI_OFFLINE=1` ou `--offline`. |
 | Changelog após troca de versão do Pi | Não desliga. `collapseChangelog: true` reduz a uma linha. Só aparece em sessão nova. |
 | Cabeçalho e detalhes de startup | `quietStartup: true` esconde os dois; `"header"` mantém o cabeçalho e esconde os detalhes. |
@@ -165,7 +165,7 @@ Nenhum patch é necessário para as extensões carregarem; eles dão funcionalid
 ```
 
 - O aviso de versão é enganoso no Agent: `agent update` só traz Pi novo quando houver artefato novo.
-- `PI_OFFLINE=1` também desliga o refresh do catálogo de modelos no startup e a checagem de pacotes. Use `PI_SKIP_VERSION_CHECK=1` se quiser calar só o aviso de versão.
+- `PI_OFFLINE=1` também desliga o refresh do catálogo de modelos no startup e a checagem de pacotes; não é necessário para o aviso de versão.
 - `-whimsical` só vale quando o plano de recursos roda. Com o Agent já instalado: `agent overlay-update --agent-disable`, acrescente `"-whimsical"` em `extensions[]`, `agent overlay-update --agent-enable`. Editar `extensions[]` com o Agent ligado faz o próximo `agent update` recusar por conflito no recibo.
 - O banner "pi has joined Earendil" não é automático; só aparece por comando.
 - Custo em USD no rodapé é preço de lista calculado localmente, não fatura. Com assinatura, representa consumo de cota.

@@ -525,7 +525,10 @@ test("o ambiente real do usuário passa intacto: HOME, agent dir, modelos, think
 	}
 	// Nada de transplante do piloto nem de preferência imposta.
 	const added = Object.keys(spec.env).filter((key) => !(key in personal));
-	assert.deepEqual(added.sort(), ["AGENT_ARTIFACT", "AGENT_PI_ROOT", "AGENT_RUNTIME_ENABLED", "NODE_OPTIONS", "PI_CACHE_RETENTION", "PI_DURABLE_HOST"]);
+	assert.deepEqual(added.sort(), ["AGENT_ARTIFACT", "AGENT_PI_ROOT", "AGENT_RUNTIME_ENABLED", "NODE_OPTIONS", "PI_CACHE_RETENTION", "PI_DURABLE_HOST", "PI_SKIP_VERSION_CHECK"]);
+	// Aviso de versão do Pi upstream calado por padrão; valor do usuário (inclusive vazio) prevalece.
+	assert.equal(spec.env.PI_SKIP_VERSION_CHECK, "1");
+	assert.equal(buildAgentLaunch({ store, env: { ...personal, PI_SKIP_VERSION_CHECK: "" }, args: [] }).env.PI_SKIP_VERSION_CHECK, "");
 	// Cache de 1 h por padrão; valor do usuário prevalece.
 	assert.equal(spec.env.PI_CACHE_RETENTION, "long");
 	assert.equal(buildAgentLaunch({ store, env: { ...personal, PI_CACHE_RETENTION: "none" }, args: [] }).env.PI_CACHE_RETENTION, "none");

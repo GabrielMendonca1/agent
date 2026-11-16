@@ -15,7 +15,8 @@ for (let i=0;i<args.length;i++) {
  else throw new Error(`Unknown distribution option: ${args[i]}`);
 }
 requireNode();
-const temp=mkdtempSync(join(tmpdir(),'agent-dist-'));
+// realpath: no macOS tmpdir() é /var/... (symlink de /private/var); sem isso o bin/pi da release preparada "escapa" da árvore.
+const temp=realpathSync(mkdtempSync(join(tmpdir(),'agent-dist-')));
 try {
  const home=join(temp,'home'), store=join(temp,'store'); mkdirSync(home);
  const env={...process.env,HOME:home,USERPROFILE:home,PI_CODING_AGENT_DIR:join(home,'.agent'),AGENT_STORE:store,AGENT_DIST:'1',AGENT_WARM_START:'0'};
