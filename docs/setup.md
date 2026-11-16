@@ -227,6 +227,27 @@ Cache-keeper em detalhe:
 
 `AGENT_IDLE_COMPACT_MIN_TOKENS` ajusta o mínimo da compactação ociosa (piso 100k). `AGENT_CACHE_PREFETCH_NEXT=1` liga o prefetch do próximo papel de uma chain; é desligado por padrão e custa mais do que não aquecer.
 
+### Limpeza local de resultados antigos
+
+Não chama modelo nem resume conteúdo. Antes de enviar o histórico, a sessão principal pode substituir resultados antigos de `bash`, `read`, `grep`, `find`, `ls`, `codemode`, `skim` e `web_fetch` por um marcador com tool, argumentos resumidos (até 160 caracteres), tamanho original e “rode de novo se precisar”. Só resultados inteiramente textuais e ligados à chamada original são elegíveis. Imagens, mensagens do usuário, texto do assistente, chamadas de tools, `edit`/`write`, `ask_user` e resultados de subagentes ficam intactos.
+
+- Exige contexto ≥ 150k tokens **e** economia estimada ≥ 40k tokens no lote; preserva os últimos 3 turnos, contados pelas mensagens do usuário, inclusive o turno atual. Estimativa da economia: diferença de caracteres / 4, descontando os marcadores; não é um tokenizer.
+- Cache quente: só tenta no lugar de uma compactação automática já autorizada pelo gate de cache (por limiar ou ociosa). Se o contexto restante cabe abaixo do limiar daquela compactação, adia o resumo; caso contrário, a compactação nativa continua. `/compact` manual e recuperação de overflow não iniciam lotes.
+- Cache frio: pode limpar no próximo envio após expirar o TTL ou trocar de modelo. Consulta o estado do keeper, incluindo refreshes; grava também relógio/modelo dos requests e dos refreshes para a retomada. Sem estado conhecido, não presume cache frio: sessões antigas sem esses registros esperam uma observação nova. O relógio de fallback usa 1h com `PI_CACHE_RETENTION=long`, 5 min nos demais casos; não mede o TTL efetivo do OpenAI.
+- Mesma transformação local para Anthropic e OpenAI, antes da serialização do provider. Não usa context management/betas da API Anthropic nem pressupõe compatibilidade dessa API com OAuth. Alterar o prefixo pode exigir reescrita do cache; a política evita fazê-lo gratuitamente com cache quente.
+- Cada lote `agent-tool-clear` é anexado ao branch ativo **antes** do envio, com IDs, hashes dos resultados originais e marcadores exatos. Turnos seguintes, reload, fork e retomada reaplicam os mesmos marcadores sem regravar o lote. A compactação também recebe esses marcadores. Os resultados originais continuam no journal: a economia é de contexto enviado, não de disco. A economia pendente só é descontada dos gatilhos até a próxima resposta com usage.
+
+| Variável | Padrão | Efeito |
+|---|---|---|
+| `AGENT_TOOL_CLEAR` | ligada | `0` impede novos lotes; lotes já salvos continuam sendo reaplicados. |
+| `AGENT_TOOL_CLEAR_MIN_TOKENS` | `150000` | Contexto mínimo para um lote. |
+| `AGENT_TOOL_CLEAR_MIN_SAVINGS` | `40000` | Economia mínima estimada, já descontados os marcadores. |
+| `AGENT_TOOL_CLEAR_KEEP_TURNS` | `3` | Turnos recentes preservados; nunca menos de 1. |
+
+Valores numéricos inválidos, não inteiros ou ≤ 0 voltam ao padrão. `AGENT_CHILD=1` não instala os hooks de limpeza nem de replay.
+
+Verificação offline: `scripts/test-tool-clear.mjs`, no portão de checks, usa Pi 1.5.2, perfil temporário sem credenciais e fake Anthropic em loopback; verifica também o serializador OpenAI. Na sessão sintética, o payload completo caiu de ~490.432 para ~249.305 tokens estimados por caracteres/4 (−241.127, ~49%). Com entrada a US$5/M, isso equivale a US$4,90 → US$2,49 numa escrita integral Anthropic de 1h e ~US$0,121 de leitura evitada por request seguinte; entrada OpenAI a US$1,25/M: ~US$0,301 evitado sem cache. São cenários de preço de lista, não usage medido nem cobrança. O controle com limpeza desligada preserva a saída original; mutações que retiram limpeza, replay, gate de cache quente ou compartilhamento entre loaders fazem os asserts falharem.
+
 ### skim e web_fetch com prompt
 
 `skim` não roda sem prompt: só quando o agente chama a tool (sessão principal; filhos `scout`, `reviewer`, `planner`, `worker`). `web_fetch` com `prompt` faz o mesmo sobre a página inteira. Cada chamada é uma inferência num modelo barato com a sua conta; a resposta é curta, cita trechos com linha (`L<n>`) ou URL, diz quando a resposta não está na fonte e termina com `[skim: fonte · tamanho · model …]`. Não há resumo automático de saídas.
