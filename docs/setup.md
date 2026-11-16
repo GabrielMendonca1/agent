@@ -144,7 +144,7 @@ Nenhum patch é necessário para as extensões carregarem; eles dão funcionalid
 | `codemode-background` | Codemode em segundo plano após 5 min, saída parcial e cancelamento. | +333/−149 | Alta: reescreve boa parte de `execute.ts`. |
 | `tool-load-append` | Tool carregada no meio da sessão não reescreve o system prompt. | +211/−26 | Média: `agent-session.ts`. |
 | `cc-hidden-tool-names` | No OAuth Anthropic, `Bash`/`Read` de tool escondida voltam em minúsculas. | +22/−2 | Baixa: poucas linhas, mas no mesmo arquivo de `pi-black`. |
-| `auth-guidance-short` | Avisos de falta de login/modelo/chave sem "See:" e sem os caminhos de `providers.md`/`models.md`. | +43/−9 | Baixa: uma função em `auth-guidance.ts`. |
+| `auth-guidance-short` | Avisos de falta de login/modelo/chave e diálogo de login do Bedrock sem "See:" e sem os caminhos de `providers.md`/`models.md`. | +43/−12 | Baixa: uma função em `auth-guidance.ts` e três linhas em `interactive-mode.ts`. |
 
 ## Avisos da TUI e como desligar
 
@@ -157,6 +157,7 @@ Nenhum patch é necessário para as extensões carregarem; eles dão funcionalid
 | Cabeçalho e detalhes de startup | `quietStartup: true` esconde os dois; `"header"` mantém o cabeçalho e esconde os detalhes. |
 | Frases enquanto o modelo pensa ("Schlepping...") | Extensão `whimsical`: `"-whimsical"` em `extensions[]`. Ver abaixo. |
 | "No models available. Use /login to log into a provider via OAuth or API key." | Some ao fazer `/login` ou configurar uma chave. Os caminhos de `docs/providers.md` e `docs/models.md` que vinham abaixo foram removidos pelo patch `auth-guidance-short`. |
+| "You can also use an AWS profile, IAM keys, or role-based credentials." (`/login` do Amazon Bedrock) | Só aparece nesse diálogo. O "See:" e o caminho de `docs/providers.md` que vinham abaixo foram removidos pelo patch `auth-guidance-short`. |
 
 ```json
 {

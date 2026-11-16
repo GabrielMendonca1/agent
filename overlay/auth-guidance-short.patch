@@ -18,6 +18,27 @@ index 9782cdaffa30bf598f11fd662ea024119d972346..bd8f44fcbaee4216368109ff95b178ea
  }
  
  export function formatNoModelsAvailableMessage(): string {
+diff --git a/packages/coding-agent/src/modes/interactive/interactive-mode.ts b/packages/coding-agent/src/modes/interactive/interactive-mode.ts
+index 52b8e1e10232de733e93e9015d5dae0c72a01686..64537aac64d104e945480f08249e067f8b9510ce 100644
+--- a/packages/coding-agent/src/modes/interactive/interactive-mode.ts
++++ b/packages/coding-agent/src/modes/interactive/interactive-mode.ts
+@@ -63,7 +63,6 @@ import {
+ 	getAgentDir,
+ 	getAuthPath,
+ 	getDebugLogPath,
+-	getDocsPath,
+ 	VERSION,
+ } from "../../config.ts";
+ import { type AgentSession, type AgentSessionEvent, parseSkillBlock } from "../../core/agent-session.ts";
+@@ -6551,8 +6550,6 @@ export class InteractiveMode {
+ 		if (providerId === "amazon-bedrock") {
+ 			dialog.showDetails([
+ 				theme.fg("text", "You can also use an AWS profile, IAM keys, or role-based credentials."),
+-				theme.fg("muted", "See:"),
+-				theme.fg("accent", `  ${path.join(getDocsPath(), "providers.md")}`),
+ 			]);
+ 		}
+ 
 diff --git a/packages/coding-agent/test/auth-guidance-short.test.ts b/packages/coding-agent/test/auth-guidance-short.test.ts
 new file mode 100644
 index 0000000000000000000000000000000000000000..b0d86af37405120a524046ca8b28ac7dca668d9e

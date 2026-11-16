@@ -117,8 +117,8 @@
 		{
 			"name": "auth-guidance-short",
 			"path": "overlay/auth-guidance-short.patch",
-			"description": "Mensagens de falta de login/modelo/chave terminam em \"Use /login to log into a provider via OAuth or API key.\", sem \"See:\" nem os caminhos absolutos de docs/providers.md e docs/models.md.",
-			"sha256": "12e3666c5ebd980091356eb5d62c5f0d72a31fec0f5ceb1a18769138fe0207b3",
+			"description": "Mensagens de falta de login/modelo/chave terminam em \"Use /login to log into a provider via OAuth or API key.\", sem \"See:\" nem os caminhos absolutos de docs/providers.md e docs/models.md; o diálogo de /login do Amazon Bedrock também perde o \"See:\" e o caminho de docs/providers.md.",
+			"sha256": "1fc5a191452fd48a748c79dd3fec4e83a06e3326683165d33b0925f7641c31d1",
 			"tests": [
 				"packages/coding-agent/test/auth-guidance-short.test.ts",
 				"packages/coding-agent/test/rpc-prompt-response-semantics.test.ts"
