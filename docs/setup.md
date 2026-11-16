@@ -98,7 +98,7 @@ Requer Git, npm e Node >=22.19. `node scripts/agent-update.mjs --prepare` constr
 - `/skill` ou `/skill:` abre o catálogo agrupado por categoria.
 - `/models` separa slots de execução e escolhas por papel e preserva as escolhas pessoais. O picker de um papel lista primeiro os pares autorizados e depois todo modelo disponível; escolher um novo o autoriza naquele papel com o thinking da preferência atual. `Esc Esc` abre só a lista de fork. Falha de quota/503 não troca modelo silenciosamente.
 - `read` é o nativo do Pi clássico: imagens, texto, offset/limit e cancelamento. O loadout controla quais papéis recebem `read`. Principal, scout e visual precisam de modelo capaz de receber imagens; anexos diretos continuam suportados.
-- `scout` não edita: tem `read, grep, find, ls, bash, web_search, web_fetch`, com `bash` sob sandbox de escrita. Transcrição que exija `ffmpeg`, Whisper ou outro executável que grave arquivos deve ir para um papel com `edit`/`write` (worker). Não se promete leitura/transcrição nativa de qualquer formato binário.
+- `scout` não edita: tem `read, grep, find, ls, bash, skim, web_search, web_fetch`, com `bash` sob sandbox de escrita. Transcrição que exija `ffmpeg`, Whisper ou outro executável que grave arquivos deve ir para um papel com `edit`/`write` (worker). Não se promete leitura/transcrição nativa de qualquer formato binário.
 - JEV e cache observam compactação confirmada no branch para resetar sua época; pedido, cancelamento, queda de tokens ou erro não contam como compactação concluída. Nenhum evento sintético por correlação FIFO é usado.
 
 ## Estado da instalação e limpeza
@@ -199,6 +199,15 @@ Cache-keeper em detalhe:
 
 `AGENT_IDLE_COMPACT_MIN_TOKENS` ajusta o mínimo da compactação ociosa (piso 100k). `AGENT_CACHE_PREFETCH_NEXT=1` liga o prefetch do próximo papel de uma chain; é desligado por padrão e custa mais do que não aquecer.
 
+### skim e web_fetch com prompt
+
+`skim` não roda sem prompt: só quando o agente chama a tool (sessão principal; filhos `scout`, `reviewer`, `planner`, `worker`). `web_fetch` com `prompt` faz o mesmo sobre a página inteira. Cada chamada é uma inferência num modelo barato com a sua conta; a resposta é curta, cita trechos com linha (`L<n>`) ou URL, diz quando a resposta não está na fonte e termina com `[skim: fonte · tamanho · model …]`. Não há resumo automático de saídas.
+
+- `AGENT_SKIM_MODEL` (padrão `openai/gpt-6-luna,anthropic/claude-haiku-4-5`): lista `provider/id` em ordem de preferência. Modelo desconhecido, sem credencial ou com erro passa ao próximo; se todos falham, a tool devolve erro com o motivo de cada um, nunca a fonte. Thinking `minimal`, até 2000 tokens de saída, 120 s por tentativa.
+- `AGENT_SKIM_MAX_CHARS` (padrão 400000, mínimo 1000): teto da fonte enviada. Acima disso vai cabeça (3/4) + cauda (1/4) com marcador, numeração de linha original, e o rodapé diz o corte. A 400k caracteres (~100k tokens) uma chamada custa ~US$ 0,01 no gpt-6-luna (US$ 0,10/M de entrada) e ~US$ 0,10 no Haiku 4.5 (US$ 1/M).
+- `command` roda pela tool `bash` da própria sessão (`ctx.executeTool`): mesmos hooks, permissões e sandbox somente leitura dos filhos. A saída lida é a completa do bash (até 1 MiB), não o corte de 2000 linhas nem o corte dos filhos.
+- Custo: o uso do modelo barato vai no resultado da tool, que o Pi soma no custo da sessão (rodapé e `/session`, bucket "Tools/summaries"); nos filhos, o runner soma esse custo ao do filho.
+
 ## Subagentes: sempre ligados, isolamento e auditoria
 
 ### Contrato
@@ -227,7 +236,7 @@ Cada filho é outro processo `pi -p`, com contexto próprio. Só o resultado vol
 
 ### Custo dos filhos
 
-- `AGENT_CHILD_TOOL_OUTPUT_MAX` (padrão 8000 caracteres; `0` desliga): saída de `bash`/`read`/`grep`/`find`/`ls` maior que isso chega ao filho como cabeça (~6k) + cauda (~2k) e uma linha com o total omitido e o arquivo com a saída completa (`$TMPDIR/agent-child-output/<sessão>/`). Motivo: saídas acima de 10k caracteres nos filhos custaram ~US$ 327 no 1º envio e ~US$ 390 em leitura de cache nos turnos seguintes em 30 dias. `read` com `limit` ≤ 200 linhas não é cortado. Os papéis pedem `rg -n` e trechos de até ~150 linhas.
+- `AGENT_CHILD_TOOL_OUTPUT_MAX` (padrão 8000 caracteres; `0` desliga): saída de `bash`/`read`/`grep`/`find`/`ls` maior que isso chega ao filho como cabeça (~6k) + cauda (~2k) e uma linha com o total omitido e o arquivo com a saída completa (`$TMPDIR/agent-child-output/<sessão>/`); com `skim` no papel, a linha sugere `skim path=<arquivo>`. A chamada de `bash` feita pelo próprio `skim` não é cortada. Motivo: saídas acima de 10k caracteres nos filhos custaram ~US$ 327 no 1º envio e ~US$ 390 em leitura de cache nos turnos seguintes em 30 dias. `read` com `limit` ≤ 200 linhas não é cortado. Os papéis pedem `rg -n` e trechos de até ~150 linhas.
 - `AGENT_CHILD_CACHE_RETENTION` (padrão `short`, TTL 5 min; `long` = 1h): retenção de cache dos filhos, independente do `PI_CACHE_RETENTION=long` da sessão principal; `none` herdado continua `none`. Motivo: 100% da escrita de cache dos filhos Anthropic era TTL 1h (2× a entrada contra 1,25×), sobrepreço de ~US$ 198 contra ~US$ 45 de releitura perdida em 30 dias. O prefetch usa o TTL do filho.
 - Prefixo estável: o filho roda com `--no-context-files`; o runner carrega os mesmos AGENTS.md/CLAUDE.md (perfil e ancestrais do `cwd` do filho, pela função do Pi) e os põe uma vez na mensagem da tarefa. O system fica papel + skills + `<cwd>`, e uma extensão do filho move o breakpoint de cache Anthropic para antes de `<cwd>`. Em Codex/OpenAI, a `prompt_cache_key` dos filhos ignora `<cwd>`/`<project_context>`: mesmo papel e modelo, mesma chave. Motivo: o 1º request de cada filho Codex acertava 3% do cache, e caminhos de worktree no meio do system impediam o reuso entre filhos.
 
