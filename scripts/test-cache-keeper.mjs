@@ -49,6 +49,22 @@ const payload = { system: [{ type: 'text', text: 'x', cache_control: { type: 'ep
 assert.equal(handlers.before_provider_request[0]({ payload }), undefined);
 assert.equal(handlers.before_provider_request[0]({ payload: { messages: [] } }), undefined);
 
+// O aquecedor nativo do Pi (cacheWarming "idle") fica parado: com o keeper ligado, desligado e em filho.
+const nativeWarmerStops = async (env) => {
+  const saved = { AGENT_CACHE_KEEPER: process.env.AGENT_CACHE_KEEPER, AGENT_CHILD: process.env.AGENT_CHILD };
+  for (const [key, value] of Object.entries(env)) { if (value === undefined) delete process.env[key]; else process.env[key] = value; }
+  const seen = {};
+  try { mod.default({ on: (name, fn) => { (seen[name] ??= []).push(fn); }, registerCommand: () => {} }); }
+  finally { for (const [key, value] of Object.entries(saved)) { if (value === undefined) delete process.env[key]; else process.env[key] = value; } }
+  const decide = seen.cache_warming_decision ?? [];
+  assert.equal(decide.length, 1, `cache_warming_decision registrado (${JSON.stringify(env)})`);
+  assert.deepEqual(await decide[0]({ type: 'cache_warming_decision', warmCost: 0.01, missCost: 1, continuationProbability: 0.9, action: 'warm' }), { action: 'stop' });
+};
+await nativeWarmerStops({ AGENT_CACHE_KEEPER: undefined, AGENT_CHILD: undefined });
+await nativeWarmerStops({ AGENT_CACHE_KEEPER: '0', AGENT_CHILD: undefined });
+await nativeWarmerStops({ AGENT_CACHE_KEEPER: undefined, AGENT_CHILD: '1' });
+assert.ok(handlers.cache_warming_decision, 'cache_warming_decision na sessão principal');
+
 // ---- cache-policy (backend D/E/F/H/J + aquecimento seguro) ----
 const policy = await import(pathToFileURL(join(repo, 'agent/juice/cache-policy.mjs')).href);
 const opus = { api: 'anthropic-messages', provider: 'anthropic', id: 'claude-opus-5-5', cost: { input: 5, output: 25, cacheRead: 0.5, cacheWrite: 6.25 } };
@@ -165,7 +181,7 @@ assert.ok(historyFp.messages.every(hash => /^[0-9a-f]{16}$/.test(hash)), 'only m
   process.env.AGENT_CHILD = '1';
   const hc = {}; mod.default({ on: (n, f) => { (hc[n] ??= []).push(f); }, registerCommand: () => {} });
   delete process.env.AGENT_CHILD;
-  assert.deepEqual(Object.keys(hc), ['before_provider_request'], 'filho: só a chave OpenAI');
+  assert.deepEqual(Object.keys(hc), ['cache_warming_decision', 'before_provider_request'], 'filho: aquecedor nativo parado e só a chave OpenAI');
   assert.match(hc.before_provider_request[0]({ payload: { ...resp, prompt_cache_key: 'sess-9' } }).prompt_cache_key, /^agent-/);
 }
 

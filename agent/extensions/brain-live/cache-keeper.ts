@@ -29,6 +29,8 @@
  *   piso 100K), compacta antes do cache esfriar, nunca antes de 54 min parado. Só com o agente
  *   ocioso, sem fila e com o editor vazio. Desliga: AGENT_IDLE_COMPACT=0.
  *
+ * O aquecedor nativo do Pi fica parado sempre (handler `cache_warming_decision` → stop).
+ *
  * Desliga: AGENT_CACHE_KEEPER=0. Teste: AGENT_CACHE_KEEPER_TEST=1 faz um refresh já no agent_settled.
  */
 import { createHash } from "node:crypto";
@@ -85,6 +87,9 @@ export function warmWindow(gaps: Gap[], ttl: number): number {
 const MAX_PING_USD = Number(process.env.AGENT_CACHE_KEEPER_MAX_PING_USD ?? 0.5);
 
 export default function cacheKeeper(pi: ExtensionAPI) {
+  // O aquecedor nativo do Pi (`cacheWarming`, padrão "idle" desde a 1.5.1) fica parado sempre,
+  // inclusive com AGENT_CACHE_KEEPER=0: desligar o keeper não pode ligar outro aquecedor pago.
+  pi.on("cache_warming_decision", async () => ({ action: "stop" as const }));
   if (process.env.AGENT_CACHE_KEEPER === "0") return;
   const child = isChild();
 
