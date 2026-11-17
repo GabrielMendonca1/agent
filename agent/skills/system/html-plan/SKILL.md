@@ -1,6 +1,6 @@
 ---
 name: html-plan
-description: "HTML plan — implementation plan as one interactive HTML page: a tree of claims, each proved by a mockup, state machine, call stack, schema or code, with decisions placed where they matter. Use before building something that touches more than a couple of files."
+description: "HTML plan — implementation plan as one interactive HTML page: a tree of claims, each proved by a mockup, state machine, call stack, schema or code, with decisions placed where they matter. Use only when the user explicitly asks for a plan (for example /skill:html-plan or \"faça um plano\"). Never on your own initiative and never inside a subagent: there, a brief is an approved task, so implement it."
 ---
 
 # html-plan
