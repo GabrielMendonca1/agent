@@ -1,8 +1,6 @@
-// Receita do projeto: `.agent/workflow.md`, ao lado do AGENTS.md.
-// Texto legível e editável. O Agent lê no início de cada run e, mais tarde,
-// escreve nela o que aprendeu. Só I/O explícito: read/write do arquivo e, para
-// manter `.agent` fora do git nos projetos que não o versionam, `git` em leitura.
-// A receita é interna ao agente principal: nada aqui vai ao prompt dele.
+// Project recipe slots now live in .agent/rules.md; workflow.md is a legacy fallback.
+// Legacy learning helpers below retain their on-disk format for rollback only.
+import { hasRules, sourceContext } from './project-context.mjs';
 import { execFileSync } from 'node:child_process';
 import { appendFileSync, closeSync, constants, existsSync, fstatSync, mkdirSync, openSync, readFileSync, readSync, writeFileSync } from 'node:fs';
 import { basename, dirname, isAbsolute, join } from 'node:path';
@@ -119,6 +117,7 @@ function readRulesSource(cwd) {
 export function projectRules(cwd) {
   try {
     if (!cwd) return '';
+    if (hasRules(cwd)) return sourceContext(cwd).map(({ path, content }) => `## ${path}\n${content}`).join('\n\n');
     const text = readRulesSource(cwd);
     if (!text) return '';
     const rules = parseWorkflow(text).rules.filter((r) => r && !/^\(nenhuma/i.test(r));
@@ -197,6 +196,6 @@ export function ensureWorkflow(cwd) {
 }
 
 export function readWorkflow(cwd) {
-  const file = join(cwd, WORKFLOW_DIR, WORKFLOW_FILE);
+  const file = join(cwd, WORKFLOW_DIR, hasRules(cwd) ? 'rules.md' : WORKFLOW_FILE);
   return existsSync(file) ? readFileSync(file, 'utf8') : null;
 }
