@@ -88,26 +88,26 @@
       "tags": ["integration", "slow"]
     },
     {
-      "name": "juice-dispatch",
-      "cmd": "node scripts/test-juice-dispatch.mjs",
+      "name": "agent-dispatch",
+      "cmd": "node scripts/test-agent-dispatch.mjs",
       "tags": [
-        "juice",
+        "runtime",
         "integration"
       ]
     },
     {
-      "name": "juice-wire",
-      "cmd": "node scripts/test-juice-wire.mjs",
+      "name": "agent-wire",
+      "cmd": "node scripts/test-agent-wire.mjs",
       "tags": [
-        "juice",
+        "runtime",
         "integration"
       ]
     },
     {
-      "name": "juice-panel",
-      "cmd": "node scripts/test-juice-panel.mjs",
+      "name": "agent-panel",
+      "cmd": "node scripts/test-agent-panel.mjs",
       "tags": [
-        "juice",
+        "runtime",
         "integration"
       ]
     },
@@ -256,7 +256,7 @@
       "name": "cache-keeper",
       "cmd": "node scripts/test-cache-keeper.mjs",
       "tags": [
-        "juice",
+        "runtime",
         "fast"
       ]
     },

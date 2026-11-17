@@ -427,9 +427,9 @@ export function rollbackAgentResources({ receiptPath }) {
 	const registryOf = (home) => join(home, ".pi", "agent", "agent-registry.json");
 	function host(label) {
 		const home = mkdtempSync(join(root, `home-${label}-`));
-		const juice = join(home, "juice");
-		mkdirSync(juice, { recursive: true });
-		return { home, juice, env: agentEnv(home) };
+		const legacyHome = join(home, "legacy");
+		mkdirSync(legacyHome, { recursive: true });
+		return { home, legacyHome, env: agentEnv(home) };
 	}
 	function promoted(optional = false) {
 		const f = make(optional);
@@ -496,7 +496,7 @@ export function rollbackAgentResources({ receiptPath }) {
 			rmSync(f.receipt);
 			api.writePrepared(f.store, f.release, f.metadata, null, provenance);
 			cliWith(f.store, ["--promote", f.id], hostEnv);
-			cliWith(f.store, ["--agent-enable", "--juice-home", h.juice], hostEnv);
+			cliWith(f.store, ["--agent-enable", "--juice-home", h.legacyHome], hostEnv);
 			const originalArtifact = agentConfig(f.store).artifactId;
 			writeFileSync(join(fixture, "agent-input"), "second artifact");
 			git("add", "agent-input");
@@ -514,7 +514,7 @@ export function rollbackAgentResources({ receiptPath }) {
 				assert.equal(staleAhead(f.store), 0);
 				assert.deepEqual(load(join(f.release, "agent-release.json")), f.metadata);
 			};
-			cliWith(f.store, ["--agent-enable", "--juice-home", h.juice], hostEnv);
+			cliWith(f.store, ["--agent-enable", "--juice-home", h.legacyHome], hostEnv);
 			assert.notEqual(agentConfig(f.store).artifactId, originalArtifact);
 			assertCurrentSource();
 			writeFileSync(join(fixture, "agent-input"), "third artifact");
@@ -524,7 +524,7 @@ export function rollbackAgentResources({ receiptPath }) {
 			assertCurrentSource();
 			// Running the installed bundle cannot infer a newer checkout or restore the Pi build's old origin.
 			const bundle = load(join(f.store, "active.json")).overlayRepo;
-			const bundled = spawnSync(process.execPath, [join(bundle, "scripts", "agent-update.mjs"), "--store", f.store, "--agent-enable", "--juice-home", h.juice], { env: hostEnv, encoding: "utf8" });
+			const bundled = spawnSync(process.execPath, [join(bundle, "scripts", "agent-update.mjs"), "--store", f.store, "--agent-enable", "--juice-home", h.legacyHome], { env: hostEnv, encoding: "utf8" });
 			assert.equal(bundled.status, 0, bundled.stdout + bundled.stderr);
 			assertCurrentSource();
 		} finally {
@@ -536,7 +536,7 @@ export function rollbackAgentResources({ receiptPath }) {
 		const f = promoted();
 		const h = host("enable-fail");
 		for (const fault of ["prepare", "validate", "apply", "apply-partial", "config"]) {
-			const result = cliWith(f.store, ["--agent-enable", "--juice-home", h.juice], { ...h.env, AGENT_TEST_FAIL: fault }, false);
+			const result = cliWith(f.store, ["--agent-enable", "--juice-home", h.legacyHome], { ...h.env, AGENT_TEST_FAIL: fault }, false);
 			const output = result.stdout + result.stderr;
 			assert.match(output, /Agent was NOT enabled/, `${fault}: ${output}`);
 			assert.equal(existsSync(join(f.store, "runtime", "config.json")), false, `${fault} wrote a config`);
@@ -544,7 +544,7 @@ export function rollbackAgentResources({ receiptPath }) {
 		}
 		// Helper que aplica recursos e não devolve recibo: impossível desfazer pelo updater. A feature
 		// fica desligada e o que sobrou é relatado, nunca declarado como limpo.
-		const orphan = cliWith(f.store, ["--agent-enable", "--juice-home", h.juice], { ...h.env, AGENT_TEST_FAIL: "no-receipt" }, false);
+		const orphan = cliWith(f.store, ["--agent-enable", "--juice-home", h.legacyHome], { ...h.env, AGENT_TEST_FAIL: "no-receipt" }, false);
 		const orphanOutput = orphan.stdout + orphan.stderr;
 		assert.match(orphanOutput, /no absolute receiptPath/);
 		assert.match(orphanOutput, /Agent was NOT enabled/);
@@ -553,26 +553,26 @@ export function rollbackAgentResources({ receiptPath }) {
 		rmSync(registryOf(h.home), { force: true });
 		// Store sem release ativa: nada a habilitar.
 		const empty = realpathSync(mkdtempSync(join(root, "store-empty-")));
-		assert.match(cliWith(empty, ["--agent-enable", "--juice-home", h.juice], h.env, false).stderr, /No active release/);
+		assert.match(cliWith(empty, ["--agent-enable", "--juice-home", h.legacyHome], h.env, false).stderr, /No active release/);
 		// Store isolado não autoriza escrita no perfil real.
 		const bare = { ...h.env };
 		// undefined removes the key from spawn's env; deleting an override would inherit env's value.
 		bare.PI_CODING_AGENT_DIR = undefined;
-		assert.match(cliWith(f.store, ["--agent-enable", "--juice-home", h.juice], bare, false).stderr, /PI_CODING_AGENT_DIR/);
+		assert.match(cliWith(f.store, ["--agent-enable", "--juice-home", h.legacyHome], bare, false).stderr, /PI_CODING_AGENT_DIR/);
 		assert.equal(existsSync(join(f.store, "runtime", "config.json")), false);
 	});
 	test("re-enable is idempotent and a failed re-enable never undoes the live opt-in", () => {
 		const f = promoted();
 		const h = host("re-enable");
-		cliWith(f.store, ["--agent-enable", "--juice-home", h.juice], h.env);
+		cliWith(f.store, ["--agent-enable", "--juice-home", h.legacyHome], h.env);
 		const first = agentConfig(f.store);
-		const failed = cliWith(f.store, ["--agent-enable", "--juice-home", h.juice], { ...h.env, AGENT_TEST_FAIL: "config" }, false);
+		const failed = cliWith(f.store, ["--agent-enable", "--juice-home", h.legacyHome], { ...h.env, AGENT_TEST_FAIL: "config" }, false);
 		const output = failed.stdout + failed.stderr;
 		assert.match(output, /was KEPT/);
 		assert.match(output, /opt-in it already had/);
 		assert.deepEqual(agentConfig(f.store), first);
 		assert.ok(existsSync(registryOf(h.home)), "a failed re-enable must not strip the live opt-in's registrations");
-		cliWith(f.store, ["--agent-enable", "--juice-home", h.juice], h.env);
+		cliWith(f.store, ["--agent-enable", "--juice-home", h.legacyHome], h.env);
 		assert.deepEqual(agentConfig(f.store), first);
 		assert.ok(existsSync(registryOf(h.home)));
 	});
@@ -599,7 +599,7 @@ export function rollbackAgentResources({ receiptPath }) {
 	test("promote with Agent prepares the new pair before switching, preserves the opt-in and skips the legacy agent-setup sync", () => {
 		const f = promoted();
 		const h = host("pair");
-		cliWith(f.store, ["--agent-enable", "--juice-home", h.juice], h.env);
+		cliWith(f.store, ["--agent-enable", "--juice-home", h.legacyHome], h.env);
 		const first = agentConfig(f.store);
 		const next = prepareSibling(f, "agent-next");
 		// Par novo impossível: a troca é recusada antes de qualquer ponteiro.
@@ -685,7 +685,7 @@ export function rollbackAgentResources({ receiptPath }) {
 			writeFileSync(personalIpython, "// personal ipython\n");
 		}
 		writeFileSync(join(fixture, "agent-input"), "with-ipython");
-		cliWith(f.store, ["--agent-enable", "--juice-home", h.juice], hostEnv);
+		cliWith(f.store, ["--agent-enable", "--juice-home", h.legacyHome], hostEnv);
 		const first = agentConfig(f.store);
 		assert.ok(loadsDemo(h.home, f.store, first.artifactId), `${label}: N1 path is not registered`);
 		assert.ok(entriesOf(h.home).includes("~/personal/own.ts"), `${label}: personal entry was dropped`);
@@ -738,7 +738,7 @@ export function rollbackAgentResources({ receiptPath }) {
 		const f = promoted();
 		const h = host("conflict");
 		seedPersonal(h, { collision: false });
-		cliWith(f.store, ["--agent-enable", "--juice-home", h.juice], h.env);
+		cliWith(f.store, ["--agent-enable", "--juice-home", h.legacyHome], h.env);
 		const first = agentConfig(f.store);
 		prepareSibling(f, "conflict-next");
 		const result = cliWith(f.store, ["--promote", "conflict-next", "--adopt-launcher"], { ...h.env, AGENT_TEST_FAIL: "conflict" }, false);
@@ -756,7 +756,7 @@ export function rollbackAgentResources({ receiptPath }) {
 		const f = promoted();
 		const h = host("no-receipt-update");
 		seedPersonal(h, { collision: false });
-		cliWith(f.store, ["--agent-enable", "--juice-home", h.juice], h.env);
+		cliWith(f.store, ["--agent-enable", "--juice-home", h.legacyHome], h.env);
 		const first = agentConfig(f.store);
 		rmSync(first.resourceReceipt);
 		prepareSibling(f, "orphan-next");
@@ -770,7 +770,7 @@ export function rollbackAgentResources({ receiptPath }) {
 	test("agent disable closes the opt-out first, then rolls back the resource delta, and keeps the artifact", () => {
 		const f = promoted();
 		const h = host("disable");
-		cliWith(f.store, ["--agent-enable", "--juice-home", h.juice], h.env);
+		cliWith(f.store, ["--agent-enable", "--juice-home", h.legacyHome], h.env);
 		const config = agentConfig(f.store);
 		assert.ok(existsSync(registryOf(h.home)));
 		// Falha no rollback dos recursos: o opt-out já está fechado e a retentativa é explícita.
@@ -820,7 +820,7 @@ export function rollbackAgentResources({ receiptPath }) {
 		const f = promoted();
 		assert.match(await api.agentStatusReport(f.store), /Agent: not configured/);
 		const h = host("status");
-		cliWith(f.store, ["--agent-enable", "--juice-home", h.juice], h.env);
+		cliWith(f.store, ["--agent-enable", "--juice-home", h.legacyHome], h.env);
 		const status = await api.agentStatusReport(f.store);
 		assert.match(status, /Agent: enabled/);
 		assert.match(status, /artifact valid/);
@@ -837,7 +837,7 @@ export function rollbackAgentResources({ receiptPath }) {
 		writeFileSync(join(lib, "real-runtime.mjs"), runtimeText);
 		// Historical producer is fixture-only; production prepare remains classic-only.
 		writeFileSync(join(lib, "historical-runtime.mjs"), runtimeText.replace(
-			'export const PI_ENTRY = "dist/cli.js";', 'export const PI_ENTRY = "dist/bundle/cli.js";'));
+			'export const PI_ENTRY = "dist/cli.js";', 'export const PI_ENTRY = "dist/bundle/cli.js";').replace('export const RUNTIME_PRELOAD = "core/runtime.mjs";', 'export const RUNTIME_PRELOAD = "juice/runtime.mjs";'));
 		writeFileSync(join(lib, "agent-runtime.mjs"), runtimeText);
 		copyFileSync(join(repo, "scripts/agent-launch.mjs"), join(fixture, "scripts/agent-launch.mjs"));
 		const runtime = await import(pathToFileURL(join(lib, "real-runtime.mjs")));
@@ -879,9 +879,11 @@ export function rollbackAgentResources({ receiptPath }) {
 		chmodSync(old.manifestPath, 0o644); json(old.manifestPath, legacy);
 		renameSync(old.artifactRoot, join(dirname(old.artifactRoot), legacy.artifactId));
 		old = runtime.validateAgentArtifact({ store: f.store, artifactId: legacy.artifactId });
+		// The checkout has moved to the new path; the installed historical artifact stays intact.
+		renameSync(join(agent, "juice"), join(agent, "core"));
 		const resources = await import(pathToFileURL(join(lib, "agent-resources.mjs")));
 		const applied = resources.applyAgentResources({ plan: resources.planAgentResources({ agentRoot: old.agentRoot, agentDir: join(h.home, ".pi/agent"), homeDir: h.home }), backupDir: join(f.store, "initial-receipt") });
-		runtime.writeAgentConfig({ store: f.store, config: { version: 1, enabled: true, artifactId: old.artifactId, piRoot: f.pkg, juiceHome: h.juice, resourceReceipt: applied.receiptPath } });
+		runtime.writeAgentConfig({ store: f.store, config: { version: 1, enabled: true, artifactId: old.artifactId, piRoot: f.pkg, juiceHome: h.legacyHome, resourceReceipt: applied.receiptPath } });
 		const next = prepareSibling(f, "classic-migration");
 		const nextPkg = join(next, "lib/node_modules/fixture-pi");
 		preparePi(nextPkg, "dist/cli.js");

@@ -1,6 +1,6 @@
-# agent/juice — contrato do runtime
+# agent/core — contrato do runtime
 
-O diretório mantém o nome `juice` por compatibilidade de caminhos e imports.
+Módulos compartilhados pelas extensões, launcher e subagentes.
 Não há ledger, contabilidade, grant nem teto de custo no runtime atual.
 
 ## Preload
@@ -9,7 +9,7 @@ Não há ledger, contabilidade, grant nem teto de custo no runtime atual.
 `AGENT_RUNTIME_ENABLED=1` e exige `AGENT_PI_ROOT` absoluto. Envolve
 `ModelRuntime.prepareRequest` do Pi apenas para entregar o payload final ao
 cache-keeper; stream, erros, cancelamento e uso voltam inalterados. Também instala
-a política de skills. `installJuiceGate` é alias de `installAgentRuntime`.
+a política de skills.
 
 ## Preferências e processo
 
@@ -19,8 +19,7 @@ a política de skills. `installJuiceGate` é alias de `installAgentRuntime`.
 - `isChild()`: `AGENT_CHILD=1`. Filho não lança subagentes nem altera preferências.
 - Preferências em `<perfil>/agent-preferences.json` (`PI_CODING_AGENT_DIR`, padrão
   `~/.agent`): só `supportModel` (modelo de apoio, `provider/id` ou `null`).
-  Escrita sob trava e rename atômico. `getJuicePreferences`/`setJuicePreferences`
-  são aliases.
+  Escrita sob trava de preferências e rename atômico.
 
 ## Subagentes
 
@@ -55,30 +54,23 @@ subagentes: plano de ping (`warmPlan`), adiamento da compactação por limiar
 causa de quebra de cache e leque escalonado. Não guarda texto de payload. Custos,
 gatilhos e variáveis: `docs/setup.md`, "Custo: o que roda sem prompt".
 
-## Removido
+## Compatibilidade de leitura
 
-Ledger e accounting Juice, aprendizado/mineração automáticos e recaps por modelo.
-`learn.mjs` e `mine.mjs` continuam na árvore, mas o runtime não os importa.
+Não há ledger, aprendizado, mineração nem state lock no runtime atual.
+A trava de `lock.mjs` protege apenas a atualização de preferências.
 
-## Histórico: contrato v1/v2
+O launcher valida e lança artefatos imutáveis antigos com o preload declarado
+`agent/juice/runtime.mjs`, sem reescrevê-los. Configs v1 mantêm `juiceHome` para
+rollback; somente esses artefatos recebem o ambiente `AGENT_JUICE_*` histórico.
+A limpeza de processos/ambiente reconhece esses nomes para não vazar ativação,
+preloads ou curadoria para comandos do usuário. A leitura de
+`AGENT_JUICE_SKILLS_BEFORE` restaura snapshots de processos antigos; novos snapshots
+usam `AGENT_SKILLS_BEFORE`. Os leitores de ativação ainda aceitam env legado.
 
-Vale só para artefatos v1/v2 com config v1 (rollback). Não descreve o runtime atual.
-
-- `client.mjs` mantinha preferências em `AGENT_JUICE_HOME/preferences.v3.json`
-  (o launcher define `AGENT_JUICE_HOME` a partir de `juiceHome` na config v1;
-  instalações do Agent usam `~/.agent-juice`) e contabilidade em `AGENT_JUICE_STATE`
-  (padrão `<home>/run.v3.json`), opt-in por `AGENT_JUICE_ENABLED=1`. A geração
-  Rust/v1 usava `run.json` e `preferences.json`.
-- Escrita sob trava de diretório com dono PID/nonce e rename atômico; schema v2.
-- Exportações: `juiceOperation`, `getJuiceSnapshot(Async)`, `getJuiceReport`,
-  `recordJuiceCacheEvent`, `getJuiceReceipts`, `setJuiceMode`, `formatJuiceStatus`.
-  Operações `init`, `mode`, `reserve`, `settle`, `cancel`, `unknown`, `snapshot`,
-  `report`, `cache` e `receipts`.
-- O preload reservava e liquidava cada chamada no ledger, compartilhado por pai e
-  subagentes.
-- O modo ficava numa entrada `custom` `agent-mode` (`{ version: 1, mode }`) no branch.
-- Após run com checks verdes, o modelo de apoio escrevia 0–3 regras em
-  `.agent/workflow.md` (`[by: Agent; proven: no]`) e `.agent/history.json`.
+`project-prompt` reconhece o nome pessoal/settings `juice` somente para respeitar
+opt-out e excluir a cópia antiga durante o registro novo (recibo reversível).
+Não são criados aliases de arquivo no artefato novo. A instalação anterior
+continua usando seus próprios arquivos até a troca; rollback usa seu manifesto.
 
 ## Contexto do projeto
 
@@ -89,7 +81,7 @@ Vale só para artefatos v1/v2 com config v1 (rollback). Não descreve o runtime 
 - AGENTS.md sem marcador nunca é sobrescrito pelo montador; entra inteiro no
   contexto, com dica de `/rules init`. Esse comando pede ao agente a migração
   explícita, incluindo o workflow legado.
-- `juice.ts` instala `lib/project-context.ts`: remonta no session_start e fixa
+- `project-prompt.ts` instala `lib/project-context.ts`: remonta no session_start e fixa
   `systemPromptOptions.contextFiles` pelo SDK do Pi 1.5.2. AGENTS.md gerado vira
   rules + header inteiros e ponteiro absoluto para o arquivo completo; notes e
   STATUS são ponteiros, não corpos. A descoberta de ancestrais e shadowing é do Pi.

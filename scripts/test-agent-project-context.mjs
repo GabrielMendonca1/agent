@@ -8,8 +8,8 @@ import { homedir, tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { startFakeAnthropic } from './lib/fake-anthropic.mjs';
-import { GENERATED_MARKER, rebuildAgents, renderAgents, selectProjectContext } from '../agent/juice/project-context.mjs';
-import { projectRules, readWorkflow } from '../agent/juice/workflow.mjs';
+import { GENERATED_MARKER, rebuildAgents, renderAgents, selectProjectContext } from '../agent/core/project-context.mjs';
+import { projectRules, readWorkflow } from '../agent/core/workflow.mjs';
 
 const repo = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const piRoot = process.env.AGENT_PI_ROOT || join(process.env.AGENT_STORE || join(homedir(), '.local/share/agent'), 'current/lib/node_modules/@earendil-works/pi-coding-agent');
@@ -79,11 +79,11 @@ try {
   writeFileSync(join(profile, 'settings.json'), JSON.stringify({ packages: [], skills: [], extensions: [], compaction: { enabled: false }, retry: { enabled: false }, cacheWarming: 'off' }));
   writeFileSync(join(profile, 'models.json'), JSON.stringify({ providers: { fake: { api: 'anthropic-messages', apiKey: 'offline', baseUrl: fake.baseUrl, models: [{ id: 'context', name: 'context', reasoning: false, input: ['text'], contextWindow: 200000, maxTokens: 1000, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 } }] } } }));
   const extension = join(root, 'probe.ts');
-  writeFileSync(extension, `import juice from ${JSON.stringify(join(repo, 'agent/extensions/brain-live/juice.ts'))};
+  writeFileSync(extension, `import projectPrompt from ${JSON.stringify(join(repo, 'agent/extensions/brain-live/project-prompt.ts'))};
 import { readFileSync, writeFileSync } from 'node:fs';
 export default function(pi) {
  const commands = {}; const proxy = new Proxy(pi, { get(target, key) { if(key === 'registerCommand') return (name, cmd) => { commands[name] = cmd; target.registerCommand(name, cmd); }; return Reflect.get(target, key); } });
- juice(proxy);
+ projectPrompt(proxy);
  let done = false;
  pi.on('tool_result', (event, ctx) => {
    if (!event.isError && ['edit', 'write'].includes(event.toolName)) {
@@ -125,7 +125,7 @@ export default function(pi) {
   assert.equal(rebuildAgents(project), false);
   assert.equal(readFileSync(join(project, 'AGENTS.md'), 'utf8'), manual);
   const count = fake.messages().length;
-  await run(project, [join(repo, 'agent/extensions/brain-live/juice.ts')]);
+  await run(project, [join(repo, 'agent/extensions/brain-live/project-prompt.ts')]);
   const manualPrompt = system(fake.messages()[count]);
   assert.ok(manualPrompt.includes(manual)); assert.ok(manualPrompt.includes('/rules init'));
   assert.ok(manualPrompt.includes('- PERSONAL_REMEMBERED'), 'new session refreshes personal snapshot');

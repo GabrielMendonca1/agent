@@ -41,7 +41,7 @@ const fake = await startFakeAnthropic([
   { text: 'Vou levantar o que a TUI já mostra e atualizar o input.', usage: { input: 100, cacheRead: 900, output: 3 } },
 ]);
 try {
-  const prep = spawnSync(process.execPath, [join(repo, 'scripts/prepare-juice-test.mjs'), '--temp-parent', parent], { encoding: 'utf8', env: { ...process.env, NODE_OPTIONS: '' } });
+  const prep = spawnSync(process.execPath, [join(repo, 'scripts/prepare-agent-test.mjs'), '--temp-parent', parent], { encoding: 'utf8', env: { ...process.env, NODE_OPTIONS: '' } });
   if (prep.status !== 0) throw new Error(prep.stderr);
   const info = JSON.parse(prep.stdout);
   rmSync(join(info.agentDir, 'auth.json'), { force: true });

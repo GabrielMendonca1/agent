@@ -17,7 +17,7 @@
 import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
 import { getSelectListTheme } from "@earendil-works/pi-coding-agent";
 import { Container, fuzzyFilter, Input, Key, matchesKey, type SelectItem, SelectList, Spacer, Text, truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
-import { getAgentPreferences, runtimeEnabled, setAgentPreferences } from "../../juice/client.mjs";
+import { getAgentPreferences, runtimeEnabled, setAgentPreferences } from "../../core/client.mjs";
 import { loadRoleModels, loadTiers, MODELS_FILE, ROLE_NAMES, type RoleModelChoice, saveTiers, setRolePreference, TIER_NAMES, type Tier, type TierName, type TiersFile } from "./lib/tiers.ts";
 
 const THINKING = ["off", "minimal", "low", "medium", "high", "xhigh"];

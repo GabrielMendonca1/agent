@@ -1,5 +1,5 @@
 import { createCodemodeExtension, type ExtensionAPI, type ExtensionContext } from '@earendil-works/pi-coding-agent';
-import { codemodeModeFor } from '../../juice/codemode-policy.mjs';
+import { codemodeModeFor } from '../../core/codemode-policy.mjs';
 
 export default function (pi: ExtensionAPI) {
   let model: ExtensionContext['model'];

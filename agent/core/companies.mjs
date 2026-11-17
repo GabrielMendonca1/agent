@@ -3,7 +3,7 @@
  *
  * `agent/company-skills/<empresa>/<skill>/SKILL.md` fica FORA de `agent/skills` (que o updater
  * registra para todo mundo em `settings.skills`): cada pasta só entra na sessão, via
- * `resources_discover` (juice.ts), para quem tem o enrollment daquela empresa.
+ * `resources_discover` (project-prompt.ts), para quem tem o enrollment daquela empresa.
  */
 import { existsSync } from 'node:fs';
 import { homedir } from 'node:os';

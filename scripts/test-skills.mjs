@@ -5,8 +5,8 @@ import { homedir, tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { ensureSettingsEntry, skillFiles, skillNames, syncAgentSkills } from "./lib/skills.mjs";
-import { loadSkillCategories, loadCompanySkillCategories, categoryPrompt } from "../agent/juice/skill-categories.mjs";
-import { COMPANY_SKILLS_DIR, companySkillDirs, userCompanies } from "../agent/juice/companies.mjs";
+import { loadSkillCategories, loadCompanySkillCategories, categoryPrompt } from "../agent/core/skill-categories.mjs";
+import { COMPANY_SKILLS_DIR, companySkillDirs, userCompanies } from "../agent/core/companies.mjs";
 const categories = loadSkillCategories();
 const categoryOf = name => categories.find(c => c.skills.includes(name))?.name;
 const agentNames = () => categories.flatMap(c => c.skills).sort();
@@ -175,7 +175,7 @@ try {
             assert.doesNotMatch(text.split('\n---')[0], /disable-model-invocation/, `${name}: skill de empresa é automática`);
         }
     });
-    const sdkRoot = process.env.AGENT_JUICE_PI_ROOT || join(homedir(), '.local/share/agent/current/lib/node_modules/@earendil-works/pi-coding-agent');
+    const sdkRoot = process.env.AGENT_PI_ROOT || join(homedir(), '.local/share/agent/current/lib/node_modules/@earendil-works/pi-coding-agent');
     const { loadSkills } = await import(pathToFileURL(join(sdkRoot, 'dist/index.js')).href);
     test("Pi instalado descobre as três categorias e preserva flags", () => {
         const result = loadSkills({ cwd: root, agentDir: root, skillPaths: [join(repo, 'agent/skills')], includeDefaults: false });

@@ -66,7 +66,7 @@ await nativeWarmerStops({ AGENT_CACHE_KEEPER: undefined, AGENT_CHILD: '1' });
 assert.ok(handlers.cache_warming_decision, 'cache_warming_decision na sessão principal');
 
 // ---- cache-policy (backend D/E/F/H/J + aquecimento seguro) ----
-const policy = await import(pathToFileURL(join(repo, 'agent/juice/cache-policy.mjs')).href);
+const policy = await import(pathToFileURL(join(repo, 'agent/core/cache-policy.mjs')).href);
 const opus = { api: 'anthropic-messages', provider: 'anthropic', id: 'claude-opus-5-5', cost: { input: 5, output: 25, cacheRead: 0.5, cacheWrite: 6.25 } };
 const sonnet = { api: 'anthropic-messages', provider: 'anthropic', id: 'claude-sonnet-5-5', cost: { input: 3, output: 15, cacheRead: 0.3, cacheWrite: 3.75 } };
 const codex = { api: 'openai-codex-responses', provider: 'openai-codex', id: 'gpt-6-sol', cost: { input: 1.25, output: 10, cacheRead: 0.125 } };
@@ -264,7 +264,7 @@ assert.ok(historyFp.messages.every(hash => /^[0-9a-f]{16}$/.test(hash)), 'only m
     assert.equal(r.bodies.length, 1, name); assert.equal(r.bodies[0].max_tokens, 1, name);
     assert.deepEqual({ ...r.bodies[0], max_tokens: 0 }, { ...real, max_tokens: 0 }, `${name}: corpo idêntico salvo max_tokens`);
     assert.match(r.last, /hit/, name);
-    assert.equal(r.opts[0][policy.JUICE_KIND], 'cache-warm', `${name}: ping marcado para não substituir o payload real`);
+    assert.equal(r.opts[0][policy.CALL_KIND], 'cache-warm', `${name}: ping marcado para não substituir o payload real`);
   }
   // Extensão depois do keeper muda o corpo (ex.: tool-lexicon): o ping reenvia o corpo FINAL.
   {
@@ -348,8 +348,8 @@ assert.ok(historyFp.messages.every(hash => /^[0-9a-f]{16}$/.test(hash)), 'only m
   const { existsSync, mkdtempSync, readFileSync, writeFileSync, readdirSync, rmSync } = await import('node:fs');
   const { createHash } = await import('node:crypto');
   const { tmpdir } = await import('node:os');
-  const runtime = await import(pathToFileURL(join(repo, 'agent/juice/runtime.mjs')).href);
-  const client = await import(pathToFileURL(join(repo, 'agent/juice/client.mjs')).href);
+  const runtime = await import(pathToFileURL(join(repo, 'agent/core/runtime.mjs')).href);
+  const client = await import(pathToFileURL(join(repo, 'agent/core/client.mjs')).href);
   const home = mkdtempSync(join(isolated, 'ck-ledger-'));
   Object.assign(process.env, { AGENT_RUNTIME_ENABLED: '1', AGENT_JUICE_HOME: home, AGENT_JUICE_STATE: join(home, 'run.json') });
   const broker = join(home, 'run.json'), legacyPrefs = join(home, 'preferences.json');
@@ -381,7 +381,7 @@ assert.ok(historyFp.messages.every(hash => /^[0-9a-f]{16}$/.test(hash)), 'only m
     const message = { role: 'assistant', stopReason: 'length', usage: { input: 3, output: 1, cacheRead: 8000, cacheWrite: 0, totalTokens: 8004, cost: { total: 0.004 } } };
     return { result: async () => message, async *[Symbol.asyncIterator]() { yield { type: 'done', message }; } };
   } } }; } }
-  runtime.installJuiceGate(FakeRuntime);
+  runtime.installAgentRuntime(FakeRuntime);
   const rt = new FakeRuntime();
   // Runtime entrega ao keeper o corpo final da cadeia onPayload (não nos pings).
   {
@@ -392,11 +392,11 @@ assert.ok(historyFp.messages.every(hash => /^[0-9a-f]{16}$/.test(hash)), 'only m
       const done = Promise.resolve(o.onPayload?.({ step: 0 })).then(() => message);
       return { result: () => done, async *[Symbol.asyncIterator]() { yield { type: 'done', message: await done }; } };
     } } }; } }
-    runtime.installJuiceGate(Rt2);
+    runtime.installAgentRuntime(Rt2);
     const p2 = await new Rt2().prepareRequest({ provider: 'anthropic', id: 'x', maxTokens: 5 }, { onPayload: async (p) => ({ ...p, step: 1 }) });
     await p2.provider.streamSimple(p2.model, {}, p2.options).result();
     assert.deepEqual(got, [{ step: 1 }], 'corpo final entregue');
-    const p3 = await new Rt2().prepareRequest({ provider: 'anthropic', id: 'x', maxTokens: 5 }, { onPayload: async (p) => ({ ...p, step: 2 }), [policy.JUICE_KIND]: 'cache-warm' });
+    const p3 = await new Rt2().prepareRequest({ provider: 'anthropic', id: 'x', maxTokens: 5 }, { onPayload: async (p) => ({ ...p, step: 2 }), [policy.CALL_KIND]: 'cache-warm' });
     await p3.provider.streamSimple(p3.model, {}, p3.options).result();
     assert.equal(got.length, 1, 'ping não sobrescreve');
     globalThis[key] = saved;
@@ -414,7 +414,7 @@ assert.ok(historyFp.messages.every(hash => /^[0-9a-f]{16}$/.test(hash)), 'only m
       [method]: (_m, _c, o) => { received = o; if (o.fail) throw failure; return native; },
     } }; } }
     assert.equal(runtime.installAgentRuntime(NativeRuntime), true);
-    assert.equal(runtime.installJuiceGate(NativeRuntime), true, 'alias idempotente');
+    assert.equal(runtime.installAgentRuntime(NativeRuntime), true, 'instalação idempotente');
     const options = { signal: controller.signal, maxTokens: 32000 };
     const p = await new NativeRuntime().prepareRequest(opus, options);
     const actual = p.provider[method](p.model, {}, p.options);
@@ -426,7 +426,7 @@ assert.ok(historyFp.messages.every(hash => /^[0-9a-f]{16}$/.test(hash)), 'only m
     controller.abort(failure);
     await assert.rejects(actual.result(), e => e === failure);
   }
-  const prepared = await rt.prepareRequest({ provider: 'anthropic', id: 'claude-test', maxTokens: 10 }, { maxTokens: 1, [policy.JUICE_KIND]: 'cache-warm' });
+  const prepared = await rt.prepareRequest({ provider: 'anthropic', id: 'claude-test', maxTokens: 10 }, { maxTokens: 1, [policy.CALL_KIND]: 'cache-warm' });
   await prepared.provider.streamSimple(prepared.model, {}, prepared.options).result();
   // Hooks mantêm os diagnósticos locais sem escrever accounting.
   const h = {}; const cmds = {};

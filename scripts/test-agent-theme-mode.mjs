@@ -48,7 +48,7 @@ const KEEP = process.env.KEEP === '1';
  * `agent/extensions/agent/tui`). Com um diretório, mede ESSA cópia — serve para
  * reproduzir o estado de um commit sem mexer na árvore de ninguém, por exemplo:
  *   mkdir -p /tmp/head && git archive HEAD agent | tar -x -C /tmp/head   # `agent/` inteiro: o
- *   # a Agent TUI importa `../../../juice/client.mjs`, então a cópia precisa da mesma vizinhança
+ *   # a Agent TUI importa `../../../core/client.mjs`, então a cópia precisa da mesma vizinhança
  *   AGENT_THEME_TUI_SRC=/tmp/head/agent/extensions/agent/tui node scripts/test-agent-theme-mode.mjs
  */
 const TUI_SRC = process.env.AGENT_THEME_TUI_SRC ? join(process.env.AGENT_THEME_TUI_SRC) : '';
@@ -191,7 +191,7 @@ async function run({ label, colorfgbg, expectTheme, bg, swapTo }) {
     // Deferred permanece ligado: desligá-lo esconderia colisões com a release global.
     const seed = join(parent, 'seed'); mkdirSync(seed);
     writeFileSync(join(seed, 'settings.json'), JSON.stringify({ theme: PAIR, lastChangelogVersion: JSON.parse(readFileSync(join(piRoot, 'package.json'), 'utf8')).version }));
-    const prep = spawnSync(process.execPath, [join(repo, 'scripts/prepare-juice-test.mjs'), '--temp-parent', parent, '--agent-dir', seed, '--pi-root', piRoot], { encoding: 'utf8', env: { ...process.env, NODE_OPTIONS: '' } });
+    const prep = spawnSync(process.execPath, [join(repo, 'scripts/prepare-agent-test.mjs'), '--temp-parent', parent, '--agent-dir', seed, '--pi-root', piRoot], { encoding: 'utf8', env: { ...process.env, NODE_OPTIONS: '' } });
     if (prep.status !== 0) {
       throw new Error(prep.stderr);
     }

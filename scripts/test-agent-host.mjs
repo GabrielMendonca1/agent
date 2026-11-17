@@ -16,8 +16,8 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync,
 import { homedir, tmpdir } from 'node:os';
 import { createRequire } from 'node:module';
 import { join } from 'node:path';
-import { categoryPrompt } from '../agent/juice/skill-categories.mjs';
-import { AUTONOMY_POLICY } from '../agent/juice/policy.mjs';
+import { categoryPrompt } from '../agent/core/skill-categories.mjs';
+import { AUTONOMY_POLICY } from '../agent/core/policy.mjs';
 import { applyAgentResources, planAgentResources, rollbackAgentResources } from './lib/agent-resources.mjs';
 import { startFakeAnthropic } from './lib/fake-anthropic.mjs';
 
@@ -94,7 +94,7 @@ const repo = new URL('..', import.meta.url).pathname.replace(/\/$/, '');
     const vault = join(parent, 'vault'); mkdirSync(vault);
     const prep = (...extra) => {
       const out = join(parent, `p${extra.length}`); mkdirSync(out);
-      const r = spawnSync(process.execPath, [join(repo, 'scripts/prepare-juice-test.mjs'), '--pi-root', piRoot, '--temp-parent', out, '--agent-dir', seed, '--vault-pi', vault, ...extra], { encoding: 'utf8', env: { PATH: process.env.PATH, HOME: fakeHome, USERPROFILE: fakeHome } });
+      const r = spawnSync(process.execPath, [join(repo, 'scripts/prepare-agent-test.mjs'), '--pi-root', piRoot, '--temp-parent', out, '--agent-dir', seed, '--vault-pi', vault, ...extra], { encoding: 'utf8', env: { PATH: process.env.PATH, HOME: fakeHome, USERPROFILE: fakeHome } });
       assert.equal(r.status, 0, `prepare ${extra.join(' ') || '(sem flag)'} falhou: ${(r.stderr.split('\n').find(l => /Error/.test(l)) ?? r.stderr.trim().split('\n').at(-1))?.replaceAll(process.env.HOME ?? '\0', '~')}`);
       const env = JSON.parse(readFileSync(join(JSON.parse(r.stdout).root, 'environment.json'), 'utf8'));
       assert.equal(typeof env, 'object');
@@ -124,7 +124,7 @@ async function runHost(host) {
     const seed = join(parent, 'seed'); mkdirSync(seed);
     const vault = join(parent, 'vault'); mkdirSync(vault);
     writeFileSync(join(vault, 'system-prompt.md'), 'You are an expert coding assistant.\n\nAvailable tools:\n{{PI_EXTRA_TOOLS}}\n\n{{PI_SKILLS}}\n{{PI_PROJECT_CONTEXT}}\n');
-    const prep = spawnSync(process.execPath, [join(repo, 'scripts/prepare-juice-test.mjs'), '--pi-root', piRoot, '--temp-parent', parent, '--host', host, '--agent-dir', seed, '--vault-pi', vault], { encoding: 'utf8', env: { PATH: process.env.PATH, HOME: parent, USERPROFILE: parent } });
+    const prep = spawnSync(process.execPath, [join(repo, 'scripts/prepare-agent-test.mjs'), '--pi-root', piRoot, '--temp-parent', parent, '--host', host, '--agent-dir', seed, '--vault-pi', vault], { encoding: 'utf8', env: { PATH: process.env.PATH, HOME: parent, USERPROFILE: parent } });
     if (prep.status !== 0) {
       throw new Error(prep.stderr);
     }

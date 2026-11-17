@@ -115,7 +115,7 @@ if (process.env.AGENT_TEST_WAIT) {
 function fixtureSource(name = "src") {
 	const source = join(root, name);
 	const agent = join(source, AGENT_SUBDIR);
-	mkdirSync(join(agent, "juice"), { recursive: true });
+	mkdirSync(join(agent, "core"), { recursive: true });
 	writeFileSync(
 		join(agent, RUNTIME_PRELOAD),
 		`import { appendFileSync } from "node:fs";
@@ -123,9 +123,9 @@ if (process.env.AGENT_TEST_PRELOAD) appendFileSync(process.env.AGENT_TEST_PRELOA
 `,
 	);
 	// O nome entra no conteúdo: cada fixture é um artefato distinto (o digest é do conteúdo).
-	writeFileSync(join(agent, "juice", "client.mjs"), `export const juiceEnabled = () => true; // ${name}\n`);
+	writeFileSync(join(agent, "core", "client.mjs"), `export const runtimeEnabled = () => true; // ${name}\n`);
 	mkdirSync(join(agent, "extensions", "brain-live"), { recursive: true });
-	writeFileSync(join(agent, "extensions", "brain-live", "juice.ts"), "export default {};\n");
+	writeFileSync(join(agent, "extensions", "brain-live", "project-prompt.ts"), "export default {};\n");
 	mkdirSync(join(agent, "extensions", "agent", "tui"), { recursive: true });
 	writeFileSync(join(agent, "extensions", "agent", "tui", "compact-tools.ts"), "export const compactTools = true;\n");
 	writeFileSync(join(agent, "extensions", "run.sh"), "#!/bin/sh\nexit 0\n", { mode: 0o755 });
@@ -148,11 +148,22 @@ function fixtureStore(name, currentTarget) {
 	return store;
 }
 
+// Rewrite only fixtures to the immutable preload path used before the rename.
+function historicalPreload(artifact, manifest) {
+  const relative = 'juice/runtime.mjs';
+  mkdirSync(join(artifact.agentRoot, 'juice'), { recursive: true });
+  renameSync(join(artifact.agentRoot, RUNTIME_PRELOAD), join(artifact.agentRoot, relative));
+  manifest.files[relative] = manifest.files[RUNTIME_PRELOAD];
+  delete manifest.files[RUNTIME_PRELOAD];
+  manifest.runtimePreload = `agent/${relative}`;
+}
+
 // Legacy v1 fixture: the immutable manifest declares its native dependency.
 const BROKER_NAME = process.platform === 'win32' ? 'mark-juice.exe' : 'mark-juice';
 const BROKER_SUBDIR = 'broker';
 function legacyArtifact(artifact, store) {
 	const manifest = JSON.parse(readFileSync(artifact.manifestPath));
+  historicalPreload(artifact, manifest);
 	// v1 included the vendor sources: their hashes must still participate in validation.
 	mkdirSync(join(artifact.agentRoot, 'mass-core'));
 	writeFileSync(join(artifact.agentRoot, 'mass-core/Cargo.toml'), 'legacy vendor sources\n');
@@ -211,7 +222,7 @@ test("prepare instala o artefato completo, com agentRoot=artifactRoot/agent e ma
 	assert.equal(manifest.broker, undefined);
 	// A árvore viaja inteira; node_modules e .DS_Store ficam de fora.
 	assert.ok(manifest.files[RUNTIME_PRELOAD], "o preload tem de estar no manifesto");
-	assert.ok(manifest.files["extensions/brain-live/juice.ts"]);
+	assert.ok(manifest.files["extensions/brain-live/project-prompt.ts"]);
 	assert.ok(!Object.keys(manifest.files).some((file) => file.startsWith("node_modules/") || file.endsWith(".DS_Store")));
 	// Bit de execução preservado e registrado.
 	assert.match(manifest.files["extensions/run.sh"], /^x/);
@@ -253,8 +264,8 @@ test("prepare recusa piRoot mutável (current), sem ModelRuntime, e origem sem p
 	writeFileSync(join(classic, "dist", "cli.js"), "");
 	assert.throws(() => prepareAgentArtifact({ sourceRoot: source, store, piRoot: classic, ...quiet }), /CLI clássico e ModelRuntime/);
 	const bare = join(root, "src-sem-preload");
-	mkdirSync(join(bare, AGENT_SUBDIR, "juice"), { recursive: true });
-	writeFileSync(join(bare, AGENT_SUBDIR, "juice", "client.mjs"), "");
+	mkdirSync(join(bare, AGENT_SUBDIR, "core"), { recursive: true });
+	writeFileSync(join(bare, AGENT_SUBDIR, "core", "client.mjs"), "");
 	assert.throws(() => prepareAgentArtifact({ sourceRoot: bare, store, piRoot, ...quiet }), /sem o preload/);
 });
 
@@ -339,7 +350,7 @@ test("artefato durável histórico valida e lança bundle com ambiente antigo; p
 		assert.equal(spec.env.AGENT_JUICE_HOME, juiceHome);
 		assert.equal(spec.env.AGENT_JUICE_STATE, join(juiceHome, "run.json"));
 		assert.equal(spec.env.PI_DURABLE_HOST, durableHost);
-		assert.equal(spec.preload, `--import=${pathToFileURL(join(old.agentRoot, RUNTIME_PRELOAD)).href}`);
+		assert.equal(spec.preload, `--import=${pathToFileURL(old.runtimePreload).href}`);
 	}
 	const out = join(root, "durable-observed.json");
 	const launched = runLauncher(["--store", store, "--", "--version"], { ...baseEnv, AGENT_TEST_OUT: out });
@@ -373,11 +384,32 @@ test("artefato durável histórico valida e lança bundle com ambiente antigo; p
 	writeAgentConfig({ store, config: enabledConfig });
 });
 
-test("artefato v2 histórico continua com seu contrato Juice sem ser reescrito", () => {
+test("pre-rename v3 launches its declared preload without rewriting the manifest", () => {
+  const oldStore = fixtureStore("v3-before-rename");
+  const artifact = prepareAgentArtifact({ sourceRoot: source, store: oldStore, piRoot, ...quiet });
+  const manifest = JSON.parse(readFileSync(artifact.manifestPath));
+  historicalPreload(artifact, manifest);
+  const digest = createHash('sha256').update(`agent-artifact v3\0${process.platform}\0${process.arch}\0${manifest.piRoot}\0${manifest.piEntry}\0`);
+  for (const [file, value] of Object.entries(manifest.files).sort((a,b) => a[0] < b[0] ? -1 : 1)) digest.update(`F ${file}\0${value}\0`);
+  manifest.artifactId = digest.digest('hex');
+  chmodSync(artifact.manifestPath, 0o644);
+  writeFileSync(artifact.manifestPath, JSON.stringify(manifest));
+  const destination = join(dirname(artifact.artifactRoot), manifest.artifactId);
+  renameSync(artifact.artifactRoot, destination);
+  const before = readFileSync(join(destination, MANIFEST_FILE), 'utf8');
+  writeAgentConfig({ store: oldStore, config: { ...enabledConfig, artifactId: manifest.artifactId } });
+  const spec = buildAgentLaunch({ store: oldStore, env: baseEnv });
+  assert.equal(spec.preload, `--import=${pathToFileURL(join(destination, manifest.runtimePreload)).href}`);
+  assert.equal(spec.env.AGENT_RUNTIME_ENABLED, '1');
+  assert.equal(readFileSync(join(destination, MANIFEST_FILE), 'utf8'), before);
+});
+
+test("artefato v2 histórico continua com seu contrato de accounting histórico sem ser reescrito", () => {
 	const historicalStore = fixtureStore("v2-history");
 	const current = prepareAgentArtifact({ sourceRoot: source, store: historicalStore, piRoot, ...quiet });
 	const manifest = JSON.parse(readFileSync(current.manifestPath, "utf8"));
 	manifest.version = 2;
+  historicalPreload(current, manifest);
 	const digest = createHash("sha256").update(`agent-artifact v2\0${process.platform}\0${process.arch}\0${manifest.piRoot}\0${manifest.piEntry}\0`);
 	for (const [file, value] of Object.entries(manifest.files).sort((a,b) => a[0] < b[0] ? -1 : 1)) digest.update(`F ${file}\0${value}\0`);
 	manifest.artifactId = digest.digest("hex");
@@ -493,7 +525,7 @@ test(`${DISABLE_ENV}=1 volta ao legado e limpa contabilização fantasma herdada
 		AGENT_JUICE_SKILLS_BEFORE: JSON.stringify("minha-skill"),
 		PI_AUTOMATIC_SKILLS: "peers,megamind,tasks",
 		AGENT_ARTIFACT: "antigo",
-		NODE_OPTIONS: `--enable-source-maps --import=file:///velho/agent/juice/runtime.mjs`,
+		NODE_OPTIONS: `--enable-source-maps --import=file:///velho/agent/core/runtime.mjs`,
 	};
 	const spec = buildAgentLaunch({ store, env: dirty, args: ["chat"] });
 	assert.equal(spec.mode, "legacy");
@@ -530,7 +562,7 @@ test("habilitado: lança a entrada clássica da release física por process.exec
 	}
 });
 
-test("launcher novo descarta Juice herdado sem acessar ledger", () => {
+test("launcher novo descarta accounting herdado sem acessar ledger", () => {
 	writeAgentConfig({ store, config: enabledConfig });
 	const epHome = realpathSync(mkdtempSync(join(tmpdir(), "agent-ep-")));
 	const epState = join(epHome, "ledger.json");
@@ -582,7 +614,7 @@ test("NODE_OPTIONS do usuário é preservado e o preload entra uma única vez", 
 	assert.equal(second.env.NODE_OPTIONS, first.env.NODE_OPTIONS);
 	assert.equal(second.env.NODE_OPTIONS.split(ours).length - 1, 1);
 	// Preload de OUTRO Agent (piloto, artefato antigo) sai, com aviso explícito.
-	const third = buildAgentLaunch({ store, env: { ...baseEnv, NODE_OPTIONS: `--import=file:///perfil/piloto/agent/juice/runtime.mjs --trace-warnings` }, args: [] });
+	const third = buildAgentLaunch({ store, env: { ...baseEnv, NODE_OPTIONS: `--import=file:///perfil/piloto/agent/core/runtime.mjs --trace-warnings` }, args: [] });
 	assert.equal(third.env.NODE_OPTIONS, `--trace-warnings ${ours}`);
 	const quoted = buildAgentLaunch({ store, env: { ...baseEnv, NODE_OPTIONS: '--require "unrelated module with spaces.cjs" --import "file:///old path/juice/runtime.mjs" --trace-warnings' } });
 	assert.equal(quoted.env.NODE_OPTIONS, `--require "unrelated module with spaces.cjs" --trace-warnings ${ours}`);

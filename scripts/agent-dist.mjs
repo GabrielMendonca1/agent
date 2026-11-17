@@ -21,7 +21,7 @@ try {
  const home=join(temp,'home'), store=join(temp,'store'); mkdirSync(home);
  const env={...process.env,HOME:home,USERPROFILE:home,PI_CODING_AGENT_DIR:join(home,'.agent'),AGENT_STORE:store,AGENT_DIST:'1',AGENT_WARM_START:'0'};
  // No inherited authentication/profile state is copied. --prepare never launches inference.
- for (const key of Object.keys(env)) if (/TOKEN|SECRET|API_KEY|AUTH|NODE_OPTIONS|AGENT_JUICE/.test(key)) delete env[key];
+ for (const key of Object.keys(env)) if (/TOKEN|SECRET|API_KEY|AUTH|NODE_OPTIONS|AGENT_/.test(key)) delete env[key];
  if (!release) {
   const result=spawnSync(process.execPath,[join(repo,'scripts/agent-update.mjs'),'--prepare','--store',store],{env,stdio:'inherit'});
   if (result.status!==0) throw new Error('Distribution prepare failed');

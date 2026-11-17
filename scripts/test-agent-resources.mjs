@@ -86,6 +86,32 @@ try {
 		assert.ok(existsSync(entry));
 		assert.deepEqual(rollbackAgentResources({ receiptPath: applied.receiptPath }).conflicts, []);
 	});
+  test("project-prompt registers new path and reversibly excludes the old personal/settings name", () => {
+    const f = makeFixture("project-prompt-rename");
+    const entry = join(f.agentDir, "extensions", "juice.ts"); // Existing personal path: read compatibility only.
+    writeFileSync(entry, "export default function () {}\n");
+    const current = join(f.agentRoot, "extensions", "brain-live", "project-prompt.ts");
+    writeFileSync(current, "export default function () {}\n");
+    const settings = join(f.agentDir, "settings.json");
+    const before = readJson(settings);
+    before.extensions.push(entry);
+    writeJson(settings, before);
+    const plan = planAgentResources({ agentRoot: f.agentRoot, agentDir: f.agentDir, homeDir: f.home });
+    assert.deepEqual(plan.report.blocking, []);
+    const applied = applyAgentResources({ plan, backupDir: f.backupDir });
+    const after = readJson(settings).extensions;
+    assert.ok(after.includes(current));
+    assert.ok(after.includes(`-${entry}`));
+    assert.ok(after.includes('-extensions/juice.ts'));
+    assert.ok(existsSync(entry));
+    assert.deepEqual(rollbackAgentResources({ receiptPath: applied.receiptPath }).conflicts, []);
+    assert.deepEqual(readJson(settings), before);
+    before.extensions.push('-juice');
+    writeJson(settings, before);
+    const disabled = planAgentResources({ agentRoot: f.agentRoot, agentDir: f.agentDir, homeDir: f.home });
+    assert.equal(disabled.report.extensions.find(e => e.name === 'project-prompt').action, 'skipped-user-disabled');
+  });
+
 	for (const [name, relative] of [["ipython", "ipython/index.ts"], ["read-media", "read-media.ts"]]) {
 		test(`retired ${name} stays excluded; receipt undo restores personal settings`, () => {
 			const f = makeFixture(`retired-${name}`);
@@ -701,7 +727,7 @@ try {
 			const f = makeFixture(`shortcut-${release.slice(0, 12)}`, { settings: {} });
 			f.cwd = join(f.base, "cwd");
 			mkdirSync(f.cwd, { recursive: true });
-			// Extensão do artefato que registra o atalho do modo, como agent/extensions/brain-live/juice.ts.
+			// Extensão do artefato que registra o atalho do modo, como agent/extensions/brain-live/project-prompt.ts.
 			writeFileSync(
 				join(f.agentRoot, "extensions", "brain-live", "fresh", "index.ts"),
 				[

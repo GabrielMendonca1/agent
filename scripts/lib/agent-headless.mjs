@@ -1,20 +1,9 @@
-/**
- * Perfil "Agent headless": settings.json mínimo para `pi -p --mode json`.
- * Deriva do settings completo e mantém Juice, subagent e skills de engenharia.
- * O perfil é só outro settings.json no agent dir; não muda o overlay/updater.
- *
- * Carrega:   Juice (política simple/complex, ledger/orçamento) e `subagent`; skills de engenharia.
- * Não carrega: tui, editor/logo/hints, peers, megamind, whimsical, accounts,
- *             as demais extensões brain-live (ask-user, btw, cache-keeper, checks, ...),
- *             prompts/temas/pacotes.
- * O Juice em si (preload `runtime.mjs` + preferences.json em AGENT_JUICE_HOME) vem do launcher/env,
- * não do settings; `brain-live/juice.ts` é a extensão que aplica o modo no prompt.
- */
+/** Minimal headless resources: project policy and subagents, without interactive UI. */
 import { existsSync } from "node:fs";
 import { join } from "node:path";
 
 /** Entradas de `extensions[]` mantidas (casa por sufixo do caminho, sem `.ts`). */
-export const HEADLESS_EXTENSIONS = Object.freeze(["brain-live/juice", "brain-live/subagent"]);
+export const HEADLESS_EXTENSIONS = Object.freeze(["brain-live/project-prompt", "brain-live/subagent"]);
 /** Skills de engenharia mantidas (nome da pasta dentro de cada raiz de skills). */
 export const HEADLESS_SKILLS = Object.freeze(["debug", "tdd", "review", "pr", "handoff"]);
 /** Chaves de settings que só fazem sentido com TUI ou com recursos que o perfil não carrega. */

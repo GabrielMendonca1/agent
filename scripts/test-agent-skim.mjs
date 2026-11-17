@@ -24,7 +24,7 @@ const repo = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const store = process.env.AGENT_STORE ? resolve(process.env.AGENT_STORE) : join(homedir(), '.local/share/agent');
 const rel = 'lib/node_modules/@earendil-works/pi-coding-agent';
 const piRoot = (() => {
-  const explicit = process.env.AGENT_PI_ROOT || process.env.AGENT_JUICE_PI_ROOT;
+  const explicit = process.env.AGENT_PI_ROOT;
   if (explicit) return realpathSync(explicit);
   const candidates = [join(store, 'current', rel), ...(existsSync(join(store, 'releases')) ? readdirSync(join(store, 'releases')).sort().reverse().map(n => join(store, 'releases', n, rel)) : [])];
   const found = candidates.find(p => existsSync(join(p, 'dist/cli.js')));

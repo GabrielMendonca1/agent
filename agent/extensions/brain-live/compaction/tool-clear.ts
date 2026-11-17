@@ -1,7 +1,7 @@
 /** Local, branch-scoped tool-result projection. Originals remain in the session journal. */
 import { createHash } from 'node:crypto';
 import type { ExtensionAPI, ExtensionContext } from '@earendil-works/pi-coding-agent';
-import { sessionCachePolicy } from '../../../juice/cache-policy.mjs';
+import { sessionCachePolicy } from '../../../core/cache-policy.mjs';
 
 const BATCH = 'agent-tool-clear';
 const REQUEST = 'agent-tool-clear-request';

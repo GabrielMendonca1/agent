@@ -4,9 +4,9 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import type { BashToolOptions, ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { createBashToolDefinition, createLocalBashOperations, getAgentDir } from "@earendil-works/pi-coding-agent";
-import * as childEnvModule from "../../juice/child-env.mjs";
+import * as childEnvModule from "../../core/child-env.mjs";
 
-/** Env dos comandos do usuário/agente: sem preload do Juice nem curadoria de skills (best-effort). */
+/** Env dos comandos do usuário/agente: sem preload do Agent nem curadoria de skills (best-effort). */
 export function userCommandEnv(env: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
 	try {
 		return (childEnvModule as unknown as { userCommandEnv(e: NodeJS.ProcessEnv): NodeJS.ProcessEnv }).userCommandEnv(env);

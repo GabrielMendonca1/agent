@@ -18,14 +18,13 @@ Agent is the current Mark tree, renamed. Nothing else changes: no refactor, no n
 | `mark-pi`, `GabrielMendonca1/mark-pi` | `agent`, `GabrielMendonca1/agent` |
 | `Mark II`, `Mark` (product/persona, "O Mark") | `Agent` ("O Agent") |
 | `mark-ii`, `markII`, `MARK_II_*` | `agent`, `agent`, `AGENT_*` (no generation suffix) |
-| `MARK_*` env (`MARK_JUICE_*`, `MARK_DIR`, `MARK_TREE`, `MARK_WARM_START`…) | `AGENT_*` |
+| `MARK_*` env (`MARK_DIR`, `MARK_TREE`, `MARK_WARM_START`…) | `AGENT_*` |
 | tree `mark/`, `MARK_SUBDIR = "mark"` | `agent/`, `"agent"` (paths already moved) |
 | `mark/extensions/mark` (extension `mark`) | `agent/extensions/agent` (already moved) |
 | `mark-patches/` | `agent-patches/` (already moved) |
 | `.mark/`, `.mark-themes`, `.mark-agents.json` | `.agent/`, `.agent-themes`, `.agent-agents.json` |
 | prompt tags `mark_autonomy`, `mark_complex`, `mark_notes`, `mark_skill_categories`, `mark_tickets` | `agent_*` |
 | `mark-meta-peers`, `Symbol.for("mark.askUser.requests")` | `agent-meta-peers`, `"agent.askUser.requests"` |
-| `~/.mark-juice` | `~/.agent-juice` |
 | `PATH_MARKER` text `# mark-pi: …` | `# agent: …` |
 | themes `*-claude-cc-mark*.json` | `*-claude-cc-agent*.json` (files already moved) |
 | scripts `scripts/*mark*.mjs`, `scripts/lib/mark-*.mjs`, `mark-ii-launch.mjs`, `mark-ii-runtime.mjs`, `mark-ii-resources.mjs` | `agent-*`, `agent-launch.mjs`, `agent-runtime.mjs`, `agent-resources.mjs` (files already moved; imports must follow) |
@@ -51,7 +50,7 @@ The upstream `pi` executable stays inside `<store>/current/bin/pi`; the wrapper 
 
 ## Removed (vendor pipeline needs the old Git history)
 
-`scripts/vendor-gabriel-setup.mjs`, `scripts/regen-extensions-patch.mjs`, `scripts/test-regen-extensions-patch.mjs`, `scripts/lib/mark-closure.mjs`, `mark/juice/extensions.patch`, check `extensions-patch`. References to them are deleted, not renamed. This repository is the source of the code.
+`scripts/vendor-gabriel-setup.mjs`, `scripts/regen-extensions-patch.mjs`, `scripts/test-regen-extensions-patch.mjs`, `scripts/lib/mark-closure.mjs`, check `extensions-patch`. References to them are deleted, not renamed. This repository is the source of the code.
 
 ## Verification
 

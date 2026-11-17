@@ -25,7 +25,7 @@ A coluna "Hoje" descreve o que o Superagent lê agora, numa instalação feita c
 - `enabled`: `false` significa runtime desligado; o consumidor falha fechado.
 - `artifactId`: string `^[\w.-]+$`; nomeia o diretório em `releases/`.
 
-Configs v2 acompanham artefatos internos v3: não têm `juiceHome`. Configs v1 e artefatos v1/v2 são históricos e preservam o contrato Juice para rollback. `piRoot` e `resourceReceipt` pertencem ao updater; o consumidor não deve editá-los. O preload segue em `agent/juice/runtime.mjs`, mas v3 usa `AGENT_RUNTIME_ENABLED=1` e `AGENT_PI_ROOT` absoluto, sem accounting. Filhos usam `AGENT_CHILD=1`. A tool `subagent` está sempre ligada na sessão principal; filhos não lançam subagentes. Não há modo de sessão nem variável para desligar. Preferências (só `supportModel`) ficam em `PI_CODING_AGENT_DIR` (default `~/.agent`).
+Configs v2 acompanham artefatos internos v3: não têm `juiceHome`. Configs v1 e artefatos v1/v2 são históricos e preservam o contrato de accounting histórico para rollback. `piRoot` e `resourceReceipt` pertencem ao updater; o consumidor não deve editá-los. O preload novo fica em `agent/core/runtime.mjs`, mas v3 usa `AGENT_RUNTIME_ENABLED=1` e `AGENT_PI_ROOT` absoluto, sem accounting. Filhos usam `AGENT_CHILD=1`. A tool `subagent` está sempre ligada na sessão principal; filhos não lançam subagentes. Não há modo de sessão nem variável para desligar. Preferências (só `supportModel`) ficam em `PI_CODING_AGENT_DIR` (default `~/.agent`).
 
 ## Extensões de worker
 

@@ -61,8 +61,8 @@ delete process.env.AGENT_CACHE_KEEPER;
 const load = (rel) => import(pathToFileURL(join(repo, rel)).href);
 const compaction = await load('agent/extensions/brain-live/compaction.ts');
 const cacheKeeper = await load('agent/extensions/brain-live/cache-keeper.ts');
-const juice = await load('agent/extensions/brain-live/juice.ts');
-const policy = await load('agent/juice/cache-policy.mjs');
+const projectPrompt = await load('agent/extensions/brain-live/project-prompt.ts');
+const policy = await load('agent/core/cache-policy.mjs');
 
 let checks = 0;
 const falhas = [];
@@ -74,19 +74,19 @@ const test = async (name, fn) => {
 
 // ---------- /next: limites e elegibilidade do handoff ----------
 await test('/next: hint somente acima de 60k', () => {
-  assert.equal(juice.nextHint(60_000), false);
-  assert.equal(juice.nextHint(60_001), true);
-  assert.equal(juice.nextHint(undefined), false);
+  assert.equal(projectPrompt.nextHint(60_000), false);
+  assert.equal(projectPrompt.nextHint(60_001), true);
+  assert.equal(projectPrompt.nextHint(undefined), false);
 });
 
 await test('/next: handoff só no primeiro run de usuário e recente', () => {
   const input = { messageType: 'user', firstRun: true, mtime: 1_000, now: 600_999 };
-  assert.equal(juice.shouldInjectHandoff(input), true);
-  assert.equal(juice.shouldInjectHandoff({ ...input, messageType: undefined }), true);
-  assert.equal(juice.shouldInjectHandoff({ ...input, messageType: 'custom' }), false);
-  assert.equal(juice.shouldInjectHandoff({ ...input, firstRun: false }), false);
-  assert.equal(juice.shouldInjectHandoff({ ...input, now: 601_000 }), false);
-  assert.equal(juice.shouldInjectHandoff({ ...input, mtime: 601_000 }), false);
+  assert.equal(projectPrompt.shouldInjectHandoff(input), true);
+  assert.equal(projectPrompt.shouldInjectHandoff({ ...input, messageType: undefined }), true);
+  assert.equal(projectPrompt.shouldInjectHandoff({ ...input, messageType: 'custom' }), false);
+  assert.equal(projectPrompt.shouldInjectHandoff({ ...input, firstRun: false }), false);
+  assert.equal(projectPrompt.shouldInjectHandoff({ ...input, now: 601_000 }), false);
+  assert.equal(projectPrompt.shouldInjectHandoff({ ...input, mtime: 601_000 }), false);
 });
 
 // ---------- dublês ----------
@@ -137,8 +137,8 @@ function register(mod) {
 
 await test('learning removido mesmo com opt-in legado', async () => {
   process.env.AGENT_LEARN = '1';
-  const { handlers, commands } = register(juice);
-  assert.equal(juice.learnEligible, undefined);
+  const { handlers, commands } = register(projectPrompt);
+  assert.equal(projectPrompt.learnEligible, undefined);
   assert.equal(commands.learn, undefined);
   assert.equal(handlers.session_before_compact, undefined);
   const ctx = fakeCtx();
@@ -151,7 +151,7 @@ await test('learning removido mesmo com opt-in legado', async () => {
 });
 
 await test('/next: ocupado recusa sem enviar, esperar, compactar ou trocar', async () => {
-  const { commands, sent } = register(juice);
+  const { commands, sent } = register(projectPrompt);
   const ctx = fakeCtx();
   ctx.isIdle = () => false;
   ctx.waitForIdle = () => assert.fail('não deve esperar o turno anterior');
@@ -164,7 +164,7 @@ await test('/next: ocupado recusa sem enviar, esperar, compactar ou trocar', asy
 });
 
 await test('/next: espera handoff antes de trocar; preserva pai e não envia após troca', async () => {
-  const { handlers, commands, sent } = register(juice);
+  const { handlers, commands, sent } = register(projectPrompt);
   const order = [];
   const ctx = fakeCtx();
   ctx.sessionManager = { getSessionFile: () => '/parent.jsonl' };
@@ -191,7 +191,7 @@ await test('/next: espera handoff antes de trocar; preserva pai e não envia ap�
 });
 
 await test('/next --keep: compacta em vez de trocar sessão', async () => {
-  const { handlers, commands, sent } = register(juice);
+  const { handlers, commands, sent } = register(projectPrompt);
   const ctx = fakeCtx();
   let compacted = 0;
   ctx.waitForIdle = async () => {};
@@ -206,7 +206,7 @@ await test('/next --keep: compacta em vez de trocar sessão', async () => {
 });
 
 await test('/next: agente sem novo handoff não encerra a sessão', async () => {
-  const { handlers, commands } = register(juice);
+  const { handlers, commands } = register(projectPrompt);
   const ctx = fakeCtx();
   ctx.waitForIdle = async () => {};
   ctx.sessionManager = { getSessionFile: () => '/parent.jsonl' };
@@ -219,13 +219,13 @@ await test('/next: agente sem novo handoff não encerra a sessão', async () => 
 });
 
 await test('/next: agent_settled atualiza estado e formatadores de compatibilidade preservam hint', async () => {
-  const { handlers } = register(juice);
+  const { handlers } = register(projectPrompt);
   for (const tokens of [60_001, 60_000]) {
     const ctx = fakeCtx({ tokens });
     await handlers.agent_settled[0]({}, ctx);
     const state = globalThis[Symbol.for('agent.state')]();
     assert.equal(state.nextHint, tokens > 60_000);
-    const panel = await load('agent/juice/panel.ts');
+    const panel = await load('agent/core/panel.ts');
     const theme = { fg: (_c, text) => text };
     assert.equal(panel.footerLine(200, theme, state)[0].includes('· /next encerra a tarefa'), tokens > 60_000);
     assert.equal(panel.agentStatus(theme, state).includes('· /next encerra a tarefa'), tokens > 60_000);
@@ -234,7 +234,7 @@ await test('/next: agent_settled atualiza estado e formatadores de compatibilida
 
 await test('/next: run custom não consome elegibilidade do primeiro run de usuário', async () => {
   for (const messageType of ['user', undefined]) {
-    const { handlers } = register(juice);
+    const { handlers } = register(projectPrompt);
     const ctx = fakeCtx();
     const file = join(vaultRoot, '.agent/handoff.md');
     mkdirSync(dirname(file), { recursive: true });
@@ -250,7 +250,7 @@ await test('/next: run custom não consome elegibilidade do primeiro run de usu�
 });
 
 await test('/next: injeção invisível uma vez e consumo por rename', async () => {
-  const { handlers } = register(juice);
+  const { handlers } = register(projectPrompt);
   const ctx = fakeCtx();
   mkdirSync(join(vaultRoot, '.agent'), { recursive: true });
   writeFileSync(join(vaultRoot, '.agent/handoff.md'), 'DECISÃO do handoff');
@@ -389,14 +389,14 @@ await test('falha do runtime nativo propaga falha sem resumo parcial', async () 
   assert.equal(ctx.calls.length, 1);
 });
 
-// ---------- 3. gatilho automático por limiar (juice.ts) ----------
+// ---------- 3. gatilho automático por limiar (project-prompt.ts) ----------
 await test('limiar: 450k em 1M, 90% nas janelas menores', async () => {
-  assert.equal(juice.compactThreshold(1_000_000), 450_000);
-  assert.equal(juice.compactThreshold(200_000), 180_000);
+  assert.equal(projectPrompt.compactThreshold(1_000_000), 450_000);
+  assert.equal(projectPrompt.compactThreshold(200_000), 180_000);
 });
 
-function juiceSettled({ tokens, contextWindow = 1_000_000, gate }) {
-  const { handlers } = register(juice);
+function projectPromptSettled({ tokens, contextWindow = 1_000_000, gate }) {
+  const { handlers } = register(projectPrompt);
   const compactCalls = [];
   const ctx = {
     ...fakeCtx({ tokens, contextWindow }),
@@ -414,14 +414,14 @@ function juiceSettled({ tokens, contextWindow = 1_000_000, gate }) {
 }
 
 await test('abaixo do limiar não compacta', async () => {
-  const t = juiceSettled({ tokens: 100_000, gate: () => true });
+  const t = projectPromptSettled({ tokens: 100_000, gate: () => true });
   await t.run();
   assert.equal(t.compactCalls.length, 0);
   t.restore();
 });
 
 await test('acima do limiar com cache frio compacta uma vez', async () => {
-  const t = juiceSettled({ tokens: 460_000, gate: () => true });
+  const t = projectPromptSettled({ tokens: 460_000, gate: () => true });
   await t.run();
   assert.equal(t.compactCalls.length, 1);
   t.restore();
@@ -429,7 +429,7 @@ await test('acima do limiar com cache frio compacta uma vez', async () => {
 
 await test('acima do limiar com cache quente NÃO compacta: o gate do cache decide', async () => {
   let asked = 0;
-  const t = juiceSettled({ tokens: 460_000, gate: () => { asked += 1; return false; } });
+  const t = projectPromptSettled({ tokens: 460_000, gate: () => { asked += 1; return false; } });
   await t.run();
   assert.equal(asked, 1, 'o gatilho automático consulta a política de cache');
   assert.equal(t.compactCalls.length, 0, 'ctx.compact() viraria compactação "manual" e furaria a política');
@@ -437,14 +437,14 @@ await test('acima do limiar com cache quente NÃO compacta: o gate do cache deci
 });
 
 await test('sem cache-keeper o gatilho automático continua funcionando', async () => {
-  const t = juiceSettled({ tokens: 460_000, gate: undefined });
+  const t = projectPromptSettled({ tokens: 460_000, gate: undefined });
   await t.run();
   assert.equal(t.compactCalls.length, 1, 'ausência do hook não pode travar a compactação');
   t.restore();
 });
 
 await test('settled repetido não dispara compactações concorrentes', async () => {
-  const t = juiceSettled({ tokens: 460_000, gate: () => true });
+  const t = projectPromptSettled({ tokens: 460_000, gate: () => true });
   await t.run(); await t.run(); await t.run();
   assert.equal(t.compactCalls.length, 1, 'uma compactação em voo por vez');
   t.compactCalls[0].onComplete?.({ summary: 's' });
@@ -454,7 +454,7 @@ await test('settled repetido não dispara compactações concorrentes', async ()
 });
 
 await test('callbacks e eventos do Pi liberam o gatilho; queda de contexto não prova conclusão', async () => {
-  const t = juiceSettled({ tokens: 460_000, gate: () => true });
+  const t = projectPromptSettled({ tokens: 460_000, gate: () => true });
   await t.run();
   t.ctx.getContextUsage = () => ({ tokens: 120_000, contextWindow: 1_000_000 });
   await t.run();
@@ -568,7 +568,7 @@ await test('host durável: compactação concluída no branch libera o orçament
   branch = [...branch, { type: 'compaction', id: 'cmp-2' }];
   assert.equal(adiamentosAteLiberar(), 0, 'entrada sem resumo (pedido/falha) não libera orçamento');
 
-  // Gate do gatilho automático (juice.ts) vê a mesma época: nova compactação, novo orçamento.
+  // Gate do gatilho automático (project-prompt.ts) vê a mesma época: nova compactação, novo orçamento.
   branch = [...branch, { type: 'compaction', id: 'cmp-3', summary: 'segundo resumo', firstKeptEntryId: 'e9' }];
   const auto = policy.allowAutoCompaction;
   assert.equal(auto(ctx), false, 'cache quente + orçamento reiniciado → adia o gatilho automático');

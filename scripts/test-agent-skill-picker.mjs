@@ -12,8 +12,8 @@
  */
 import assert from 'node:assert/strict';
 
-import { AUTOMATIC_GLOBAL_SKILLS, isAutomaticSkill } from '../agent/juice/skill-policy.mjs';
-import { loadSkillCategories } from '../agent/juice/skill-categories.mjs';
+import { AUTOMATIC_GLOBAL_SKILLS, isAutomaticSkill } from '../agent/core/skill-policy.mjs';
+import { loadSkillCategories } from '../agent/core/skill-categories.mjs';
 const COMMON_SKILLS = [...AUTOMATIC_GLOBAL_SKILLS, 'personal'];
 import {
   AUTOMATIC_MARK,

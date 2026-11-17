@@ -5,22 +5,22 @@ import assert from 'node:assert/strict';
 import { join } from 'node:path';
 import { homedir } from 'node:os';
 import { pathToFileURL } from 'node:url';
-const root = process.env.AGENT_JUICE_PI_ROOT || join(homedir(), '.local/share/agent/current/lib/node_modules/@earendil-works/pi-coding-agent');
+const root = process.env.AGENT_PI_ROOT || join(homedir(), '.local/share/agent/current/lib/node_modules/@earendil-works/pi-coding-agent');
 const api = join(root, 'node_modules/@earendil-works/pi-ai/dist/api');
 const codex = await import(pathToFileURL(join(api, 'openai-codex-responses.js')).href);
 const responses = await import(pathToFileURL(join(api, 'openai-responses.js')).href);
 let network = 0;
 const originalFetch = globalThis.fetch;
-globalThis.fetch = async () => { network++; throw new Error('No network permitted in juice fixture'); };
-const jwt = ['fixture', Buffer.from(JSON.stringify({ 'https://api.openai.com/auth': { chatgpt_account_id: 'juice-fixture' } })).toString('base64'), 'fixture'].join('.');
+globalThis.fetch = async () => { network++; throw new Error('No network permitted in projectPrompt fixture'); };
+const jwt = ['fixture', Buffer.from(JSON.stringify({ 'https://api.openai.com/auth': { chatgpt_account_id: 'projectPrompt-fixture' } })).toString('base64'), 'fixture'].join('.');
 const base = { type:'chat', id:'gpt-5.4', name:'Fixture', provider:'openai', api:'openai-responses', baseUrl:'http://127.0.0.1:1/v1', reasoning:false, input:['text'], cost:{input:0,output:0,cacheRead:0,cacheWrite:0}, contextWindow:20000, maxTokens:4000 };
 async function payload(adapter, model, maxTokens, key) {
   let body;
-  const stream = adapter.streamSimple(model, { messages:[{role:'user',content:'fixture',timestamp:0}] }, { apiKey:key,maxTokens,reasoning:'off',transport:'sse',onPayload(value){ body=structuredClone(value); throw new Error('JUICE_PAYLOAD_CAPTURED'); } });
+  const stream = adapter.streamSimple(model, { messages:[{role:'user',content:'fixture',timestamp:0}] }, { apiKey:key,maxTokens,reasoning:'off',transport:'sse',onPayload(value){ body=structuredClone(value); throw new Error('AGENT_PAYLOAD_CAPTURED'); } });
   const result = await stream.result();
   assert.equal(result.stopReason,'error');
   assert.ok(body, result.errorMessage || 'Adapter did not reach onPayload');
-  assert.match(result.errorMessage,/JUICE_PAYLOAD_CAPTURED/);
+  assert.match(result.errorMessage,/AGENT_PAYLOAD_CAPTURED/);
   return body;
 }
 try {

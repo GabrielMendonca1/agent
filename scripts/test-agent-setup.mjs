@@ -73,7 +73,7 @@ try {
 		}
 		// Nada de segredo nem de sessão viaja.
 		assert.ok(!files.some((file) => /\/(?:auth\.json|accounts.*\.json|mcp\.json|models\.json)$|\.log$|\/durable-sessions\//.test(file)));
-		assert.ok(files.includes("agent/juice/client.mjs"), "cliente do piloto viaja com suas extensões");
+		assert.ok(files.includes("agent/core/client.mjs"), "cliente do piloto viaja com suas extensões");
 	});
 
 	test("o vault-runtime vendorizado degrada quieto sem ~/Sistema/Pi", () => {

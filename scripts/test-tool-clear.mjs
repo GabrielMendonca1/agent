@@ -16,7 +16,7 @@ process.on('exit', () => rmSync(root, { recursive: true, force: true }));
 process.env.HOME = root; process.env.PI_CODING_AGENT_DIR = join(root, 'profile');
 const mod = await import('../agent/extensions/brain-live/compaction/tool-clear.ts');
 const compaction = await import('../agent/extensions/brain-live/compaction.ts');
-const { bindSessionCachePolicy } = await import('../agent/juice/cache-policy.mjs');
+const { bindSessionCachePolicy } = await import('../agent/core/cache-policy.mjs');
 const text = s => [{ type: 'text', text: s }];
 const usage = { input: 600_000, cacheRead: 0, cacheWrite: 0, output: 1, totalTokens: 600_001, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } };
 const messages = [];
@@ -115,14 +115,14 @@ console.log('ok thresholds, cold/warm/unknown/model switch, selection, replay, d
   const t = fixture({ tokens: 460000, warm: true });
   const runtime = createExtensionRuntime();
   runtime.appendEntry = (customType, data) => t.entries.push({ type: 'custom', customType, data });
-  const loaded = await loadExtensions(['compaction.ts', 'juice.ts'].map(f => join(repo, 'agent/extensions/brain-live', f)), root, createEventBus(), runtime);
+  const loaded = await loadExtensions(['compaction.ts', 'project-prompt.ts'].map(f => join(repo, 'agent/extensions/brain-live', f)), root, createEventBus(), runtime);
   assert.deepEqual(loaded.errors, []);
   let compacts = 0;
   Object.assign(t.ctx, { cwd: root, hasUI: false, compact: () => compacts++ });
   bindSessionCachePolicy(t.ctx, { cacheState: () => ({ warm: true }), deferCompaction: () => false });
   for (const ext of loaded.extensions) for (const f of ext.handlers.get('session_start') ?? []) await f({}, t.ctx);
   for (const ext of loaded.extensions) for (const f of ext.handlers.get('agent_settled') ?? []) await f({}, t.ctx);
-  assert.equal(t.batches().length, 1, 'juice reaches compaction controller across real loaders');
+  assert.equal(t.batches().length, 1, 'projectPrompt reaches compaction controller across real loaders');
   assert.equal(compacts, 0, 'cleanup postponed the automatic summary');
   delete process.env.AGENT_RUNTIME_ENABLED;
 }

@@ -42,7 +42,7 @@ const PNG_1X1 = Buffer.from(
 
 function findPiRoot() {
   if (process.env.AGENT_PI_ROOT) return realpathSync(process.env.AGENT_PI_ROOT);
-  if (process.env.AGENT_JUICE_PI_ROOT) return realpathSync(process.env.AGENT_JUICE_PI_ROOT);
+  if (process.env.AGENT_PI_ROOT) return realpathSync(process.env.AGENT_PI_ROOT);
   const relative = join('lib/node_modules/@earendil-works/pi-coding-agent');
   const current = join(store, 'current', relative);
   if (existsSync(join(current, 'dist/cli.js'))) return realpathSync(current);

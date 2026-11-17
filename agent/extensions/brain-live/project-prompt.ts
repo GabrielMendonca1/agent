@@ -1,13 +1,13 @@
 import type { ExtensionAPI, ExtensionContext, Theme } from '@earendil-works/pi-coding-agent';
-import { agentStatus, shortModel, type ModeFooterState, type TeamStatus } from '../../juice/panel.ts';
-import { runtimeEnabled, isChild } from '../../juice/client.mjs';
-import { categoryPrompt } from '../../juice/skill-categories.mjs';
-import { companySkillDirs } from '../../juice/companies.mjs';
-import { appendPolicy, policySections, POLICY_SECTIONS, notesSection } from '../../juice/policy.mjs';
-import { readNotesMetadata, unmappedDocs } from '../../juice/notes.mjs';
+import { agentStatus, shortModel, type ModeFooterState, type TeamStatus } from '../../core/panel.ts';
+import { runtimeEnabled, isChild } from '../../core/client.mjs';
+import { categoryPrompt } from '../../core/skill-categories.mjs';
+import { companySkillDirs } from '../../core/companies.mjs';
+import { appendPolicy, policySections, POLICY_SECTIONS, notesSection } from '../../core/policy.mjs';
+import { readNotesMetadata, unmappedDocs } from '../../core/notes.mjs';
 import { existsSync, readFileSync, renameSync, statSync } from 'node:fs';
 import { join } from 'node:path';
-import { allowAutoCompaction } from '../../juice/cache-policy.mjs';
+import { allowAutoCompaction } from '../../core/cache-policy.mjs';
 import { installProjectContext } from './lib/project-context.ts';
 import { clearBeforeAutoCompaction } from './compaction/tool-clear.ts';
 

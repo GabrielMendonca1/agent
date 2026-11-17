@@ -17,9 +17,9 @@ import type { AgentToolResult, ThinkingLevel } from "@earendil-works/pi-agent-co
 import type { Message } from "@earendil-works/pi-ai";
 import { getAgentDir, getPackageDir, loadProjectContextFiles, SessionManager, withFileMutationQueue } from "@earendil-works/pi-coding-agent";
 import { resolveModelRef } from "../lib/tiers.ts";
-import { subagentEnv } from "../../../juice/child-env.mjs";
-import { hasRules, selectProjectContext } from "../../../juice/project-context.mjs";
-import { projectRules } from "../../../juice/workflow.mjs";
+import { subagentEnv } from "../../../core/child-env.mjs";
+import { hasRules, selectProjectContext } from "../../../core/project-context.mjs";
+import { projectRules } from "../../../core/workflow.mjs";
 import { readHostFreePercent, waitForHostMemory } from "./host-memory.ts";
 import { listDescendants, signalProcesses } from "./process-tree.ts";
 import type { AgentConfig, AgentScope } from "./agents.ts";

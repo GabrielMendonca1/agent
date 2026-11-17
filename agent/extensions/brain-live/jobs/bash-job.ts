@@ -1,6 +1,6 @@
 import { spawn } from "node:child_process";
 import { closeSync, createWriteStream, fchmodSync, openSync } from "node:fs";
-import { userCommandEnv } from "../../../juice/child-env.mjs";
+import { userCommandEnv } from "../../../core/child-env.mjs";
 
 export interface BashJob {
   done: Promise<{ status: "done" | "failed" | "cancelled"; exitCode: number | null; error?: string }>;

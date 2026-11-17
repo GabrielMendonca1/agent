@@ -10,7 +10,7 @@ import { fileURLToPath } from 'node:url';
 const repo = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const store = process.env.AGENT_STORE ? resolve(process.env.AGENT_STORE) : join(homedir(), '.local/share/agent');
 function findPiRoot() {
-  if (process.env.AGENT_JUICE_PI_ROOT) return realpathSync(process.env.AGENT_JUICE_PI_ROOT);
+  if (process.env.AGENT_PI_ROOT) return realpathSync(process.env.AGENT_PI_ROOT);
   const relative = 'lib/node_modules/@earendil-works/pi-coding-agent';
   const current = join(store, 'current', relative);
   if (existsSync(join(current, 'dist/index.js'))) return realpathSync(current);
@@ -56,10 +56,10 @@ try {
 
   // Compact header with exactly one capability-aware hint.
   for (const opts of [
-    { skills: ['arca-ops', 'omni-ops'], juice: true },
-    { skills: ['arca-ops'], juice: false },
-    { skills: [], juice: true },
-    { skills: [], juice: false },
+    { skills: ['arca-ops', 'omni-ops'] },
+    { skills: ['arca-ops'] },
+    { skills: [] },
+    { skills: [] },
   ]) {
     const tips = logo.headerTips(theme, opts);
     assert.doesNotMatch(tips.join(' '), /shift\+tab|simple|complex/i);

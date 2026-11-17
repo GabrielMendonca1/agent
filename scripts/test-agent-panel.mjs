@@ -9,7 +9,7 @@ import { basename, dirname, join, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 const repo = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const root = join(process.env.AGENT_STORE || join(homedir(), '.local/share/agent'), 'current/lib/node_modules/@earendil-works/pi-coding-agent');
-const client = await import('../agent/juice/client.mjs');
+const client = await import('../agent/core/client.mjs');
 const load = async p => import(pathToFileURL(p).href);
 const { loadExtensions, createExtensionRuntime } = await load(join(root, 'dist/core/extensions/loader.js'));
 const { createEventBus } = await load(join(root, 'dist/core/event-bus.js'));
@@ -18,7 +18,7 @@ const { initTheme } = await load(join(root, 'dist/modes/interactive/theme/theme.
 initTheme('dark', false);
 const dir = mkdtempSync(join(tmpdir(), 'agent-mode-'));
 const saved = { ...process.env };
-const juicePath = join(repo, 'agent/extensions/brain-live/juice.ts');
+const projectPromptPath = join(repo, 'agent/extensions/brain-live/project-prompt.ts');
 let agentLineText = () => '';
 const theme = { fg: (_color, text) => `\x1b[38;5;208m${text}\x1b[0m`, bold: text => text };
 const plain = text => text.replace(/\x1b\[[0-9;]*m/g, '');
@@ -42,7 +42,7 @@ const ctx = {
   modelRegistry: { find: (p, id) => ({ provider: p, id }), streamSimple: (_m, context) => ({ result: async () => { completions.push(context.messages[0].content[0].text); return { stopReason: 'stop', content: [{ type: 'text', text: answer }] }; } }) },
   model: { provider: 'fixture', id: 'fable-5.1' },
   getContextUsage: () => usage, compact: () => { compacted++; },
-  ui: { setFooter: () => assert.fail('Juice must not replace the native footer'),
+  ui: { setFooter: () => assert.fail('Agent must not replace the native footer'),
     setStatus: (key, value) => { renders++; if (value === undefined) statuses.delete(key); else statuses.set(key, value); }, notify: (text, level) => notices.push({ text, level }), confirm: async () => false },
 };
 const text = () => plain(statuses.get('agent-mode') ?? '');
@@ -56,7 +56,7 @@ function save() { writeFileSync(statePath, JSON.stringify(snapshot)); }
 try {
   delete process.env.AGENT_RUNTIME_ENABLED;
   delete process.env.AGENT_JUICE_ENABLED;
-  let loaded = await loadExtensions([juicePath], dir, bus, runtime);
+  let loaded = await loadExtensions([projectPromptPath], dir, bus, runtime);
   assert.deepEqual(loaded.errors, []);
   assert.equal(loaded.extensions[0].handlers.size, 0);
   assert.equal(loaded.extensions[0].commands.size, 0);
@@ -65,13 +65,13 @@ try {
 
   Object.assign(process.env, { AGENT_RUNTIME_ENABLED: '1', AGENT_PI_ROOT: root, PI_CODING_AGENT_DIR: dir });
   save();
-  loaded = await loadExtensions([juicePath], dir, bus, runtime);
+  loaded = await loadExtensions([projectPromptPath], dir, bus, runtime);
   assert.deepEqual(loaded.errors, []);
   extension = loaded.extensions[0];
   assert.equal(extension.shortcuts.has('shift+tab'), false, 'sem atalho de modos');
   assert.equal(extension.commands.has('mode'), false, 'sem /mode');
   assert.equal(extension.commands.has('subagents'), false, 'sem /subagents: subagentes sempre ligados');
-  assert.ok(!extension.commands.has('juice') && !extension.commands.has('mass'));
+  assert.ok(!extension.commands.has('mass'));
   assert.equal(client.subagentsEnabled, undefined, 'sem chave de opt-in');
   assert.equal(client.setSessionSubagents, undefined, 'sem chave de opt-in por sessão');
   await emit('session_start');
@@ -92,7 +92,7 @@ try {
   assert.equal(thinking, 'medium');
   console.log('ok sempre ligado: schema estável, sem /subagents, sem modo/ledger, modelo e thinking intactos');
 
-  // Juice não intercepta tools extras; admissão fica no dispatcher de subagent.
+  // Agent não intercepta tools extras; admissão fica no dispatcher de subagent.
   assert.equal((await emitResult('tool_call', { toolName: 'generate_image', input: {} }))?.block, undefined);
   assert.equal(extension.shortcuts.has('ctrl+t'), false);
   const categoryEvent = { systemPromptOptions: { sections: {}, selectedTools: [], toolSnippets: {}, promptGuidelines: [], cwd: dir } };
@@ -105,7 +105,7 @@ try {
   // Leitor de compatibilidade ainda expõe observações, mas não instala rodapé.
   const agentLine = globalThis[Symbol.for('agent.footer.line')];
   agentLineText = () => agentLine(theme).replace(/\x1b\[[0-9;]*m/g, '');
-  assert.equal(typeof agentLine, 'function', 'juice registra a linha do Agent');
+  assert.equal(typeof agentLine, 'function', 'projectPrompt registra a linha do Agent');
   const plain = (s) => s.replace(/\x1b\[[0-9;]*m/g, '');
   const line2 = plain(agentLine(theme));
   assert.match(line2, /^clássico · cache — ttl (5m|1h) · API≈US\$ 0\.00 · sob demanda (off|—|\d+\/\d+) · prefetch off$/, line2);
@@ -118,7 +118,7 @@ try {
   assert.ok(observed().team.some(item => item.agent === 'scout' || item.name === 'scout'), 'team remains structured');
   const duringTeam = text();
   emitTeam(['scout'], 'completed'); emitTeam(['worker'], 'running'); emitTeam(['worker'], 'failed');
-  assert.equal(text(), duringTeam, 'Juice does not duplicate mascot count in mode status');
+  assert.equal(text(), duringTeam, 'Agent does not duplicate mascot count in mode status');
   await emit('input', { text: 'nova tarefa' });
   assert.deepEqual(observed().team, [], 'new task clears team');
   snapshot.usd = 2.1; save();
@@ -239,7 +239,7 @@ try {
     assert.match(forced.prompt, /^PROMPT DO VAULT\n\n<agent_autonomy>\n[\s\S]*\n<\/agent_autonomy>\n\n<agent_skill_categories>[\s\S]*<\/agent_skill_categories>$/, forced.prompt);
     assert.equal(count(forced.prompt, CPX), 0, 'forçado: sem complex');
 
-    // Ordem dos handlers: juice antes OU depois do vault-runtime, no clássico. A
+    // Ordem dos handlers: projectPrompt antes OU depois do vault-runtime, no clássico. A
     // política tem de aparecer exatamente uma vez no prompt que sai (risco real de
     // duplicar pela seção + texto forçado, ou de sumir se ninguém a levar).
     const vaultPath = join(repo, 'agent/extensions/brain-live/vault-runtime.ts');
@@ -253,7 +253,7 @@ try {
     process.env.AGENT_VAULT = '1';
     writeFileSync(join(dir, '.agent/notes.md'), 'docs/private.md — privado\n');
     try {
-      for (const [first, second] of [[juicePath, vaultPath], [vaultPath, juicePath]]) {
+      for (const [first, second] of [[projectPromptPath, vaultPath], [vaultPath, projectPromptPath]]) {
         for (const host of ['clássico']) {
           {
             const where = `${basename(first)} primeiro, ${host}`;
@@ -299,7 +299,7 @@ try {
 
   // Mapa de notas: snapshot por sessão nas duas vias; /notes usa arquivos atuais.
   {
-    const { notesSection } = await import('../agent/juice/policy.mjs');
+    const { notesSection } = await import('../agent/core/policy.mjs');
     const map = join(dir, '.agent/notes.md');
     writeFileSync(map, 'docs/known.md — CONTEÚDO PRIVADO\n\n');
     await emit('session_start');
@@ -358,7 +358,7 @@ try {
     const line = () => agentLineText();
     // Custo da sessão continua estruturado; /cost mantém o ledger cumulativo.
     const agentStateFn = globalThis[Symbol.for('agent.state')];
-    assert.equal(typeof agentStateFn, 'function', 'juice publica o estado observado para a TUI do Agent');
+    assert.equal(typeof agentStateFn, 'function', 'projectPrompt publica o estado observado para a TUI do Agent');
     const sessionUsd = () => agentStateFn().sessionUsd;
     const spent = sessionUsd();
     await emit('message_end', { message: { role: 'assistant', usage: { input: 10, cacheRead: 90, cacheWrite: 0, cost: { total: 0.12 } } } });

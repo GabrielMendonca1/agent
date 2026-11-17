@@ -1,5 +1,4 @@
-import { juiceEnabled } from "../../../juice/client.mjs";
-import { userCompanies as companiesOf } from "../../../juice/companies.mjs";
+import { userCompanies as companiesOf } from "../../../core/companies.mjs";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { homedir } from "node:os";
 import { truncateToWidth } from "@earendil-works/pi-tui";
@@ -11,7 +10,7 @@ export interface LogoTheme {
 
 export type OpsCompany = "arca" | "omni";
 
-/** Empresas do usuário (critério em juice/companies.mjs, compartilhado com as skills de empresa). */
+/** Empresas do usuário (critério em core/companies.mjs, compartilhado com as skills de empresa). */
 export function userCompanies(env: NodeJS.ProcessEnv = process.env, home = homedir()): OpsCompany[] {
 	return companiesOf(env, home) as OpsCompany[];
 }
@@ -24,7 +23,7 @@ export function opsSkills(commands: ReadonlySet<string>, env: NodeJS.ProcessEnv 
 }
 
 /** One startup hint, selected from capabilities actually loaded in this session. */
-export function headerTips(theme: LogoTheme, opts: { skills: readonly string[]; juice: boolean }): string[] {
+export function headerTips(theme: LogoTheme, opts: { skills: readonly string[] }): string[] {
  const hint = opts.skills.length
   ? `Use ${opts.skills.map(name => `/skill:${name}`).join(" ou ")} para operar o projeto`
   : "/ comandos · /hotkeys atalhos";
@@ -42,7 +41,7 @@ export default function (pi: ExtensionAPI) {
   if (ctx.mode !== "tui") return;
   const skills = opsSkills(new Set((pi.getCommands?.() ?? []).map(command => command.name)));
   ctx.ui.setHeader((_tui, theme) => ({
-   render: (width: number) => headerLines(width, theme, { tips: headerTips(theme, { skills, juice: juiceEnabled() }) }),
+   render: (width: number) => headerLines(width, theme, { tips: headerTips(theme, { skills }) }),
    invalidate() {},
   }));
  });

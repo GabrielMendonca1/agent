@@ -35,7 +35,9 @@ export const AGENT_SUBDIR = "agent";
 const LEGACY_NATIVE_DIR = "broker";
 const LEGACY_NATIVE_NAME = process.platform === "win32" ? "mark-juice.exe" : "mark-juice";
 /** Preload estável do runtime, relativo a `agentRoot` (accounting só nos históricos). */
-export const RUNTIME_PRELOAD = "juice/runtime.mjs";
+export const RUNTIME_PRELOAD = "core/runtime.mjs";
+// Read-only compatibility: immutable installed manifests keep their original preload.
+const LEGACY_RUNTIME_PRELOAD = "juice/runtime.mjs";
 /** Classic CLI and its shared ModelRuntime module. */
 export const PI_ENTRY = "dist/cli.js";
 const DURABLE_PI_ENTRY = "dist/bundle/cli.js";
@@ -195,7 +197,7 @@ function sha256File(path) {
 	return createHash("sha256").update(readFileSync(path)).digest("hex");
 }
 
-/** Arquivos da árvore `agent/` do artefato: `{ "juice/runtime.mjs": "x<sha>" | "-<sha>" }`. */
+/** Arquivos da árvore `agent/` do artefato: `{ "core/runtime.mjs": "x<sha>" | "-<sha>" }`. */
 function hashTree(root, { strict = false } = {}) {
 	const files = {};
 	const walk = (relative) => {
@@ -357,11 +359,11 @@ export function validateAgentArtifact({ store, artifactId, piRoot } = {}) {
 	// Entradas conhecidas são relativas e confinadas ao piRoot físico. A entrada declarada
 	// já participa do digest v1: aceitar o host histórico não muda a identidade do artefato.
 	if (![PI_ENTRY, DURABLE_PI_ENTRY].includes(manifest.piEntry)) fail(`entrada do Pi não suportada: ${manifest.piEntry}`);
-	if (manifest.runtimePreload !== `${AGENT_SUBDIR}/${RUNTIME_PRELOAD}`) fail(`runtimePreload inesperado: ${manifest.runtimePreload}`);
+	if (![RUNTIME_PRELOAD, LEGACY_RUNTIME_PRELOAD].map(path => `${AGENT_SUBDIR}/${path}`).includes(manifest.runtimePreload)) fail(`runtimePreload inesperado: ${manifest.runtimePreload}`);
 
 	const agentRoot = join(artifactReal, manifest.agentSubdir === AGENT_SUBDIR ? AGENT_SUBDIR : fail(`agentSubdir inesperado: ${manifest.agentSubdir}`));
 	requireDirectory(agentRoot, "árvore agent/ do artefato");
-	if (!existsSync(join(agentRoot, RUNTIME_PRELOAD))) fail(`artefato sem ${AGENT_SUBDIR}/${RUNTIME_PRELOAD}: ${agentRoot}`);
+	if (!existsSync(join(artifactReal, manifest.runtimePreload))) fail(`artefato sem ${AGENT_SUBDIR}/${RUNTIME_PRELOAD}: ${agentRoot}`);
 	let brokerPath, brokerSha;
 	if (manifest.version === 1) {
 		brokerPath = join(artifactReal, LEGACY_NATIVE_DIR, LEGACY_NATIVE_NAME);
@@ -571,21 +573,22 @@ export function buildAgentLaunch({ store, env = process.env, args = [] } = {}) {
 		// O preload lembra o valor nativo antes da curadoria. O caminho legado não
 		// carrega o preload, portanto restaura aqui antes de limpar as chaves Agent. Este caminho é o
 		// escape do launcher: um snapshot ilegível vira aviso, nunca erro.
-		if (Object.hasOwn(cleaned, "AGENT_JUICE_SKILLS_BEFORE")) {
+		const snapshotKey = Object.hasOwn(cleaned, "AGENT_SKILLS_BEFORE") ? "AGENT_SKILLS_BEFORE" : "AGENT_JUICE_SKILLS_BEFORE";
+		if (Object.hasOwn(cleaned, snapshotKey)) {
 			let previous;
 			try {
-				previous = JSON.parse(cleaned.AGENT_JUICE_SKILLS_BEFORE);
+				previous = JSON.parse(cleaned[snapshotKey]);
 				if (previous !== null && typeof previous !== "string") throw new Error("não é string nem null");
 			} catch (error) {
 				previous = undefined;
-				warnings.push(`AGENT_JUICE_SKILLS_BEFORE ilegível (${error.message}): PI_AUTOMATIC_SKILLS mantido como veio`);
+				warnings.push(`${snapshotKey} ilegível (${error.message}): PI_AUTOMATIC_SKILLS mantido como veio`);
 			}
 			if (previous === null) delete cleaned.PI_AUTOMATIC_SKILLS;
 			else if (previous !== undefined) cleaned.PI_AUTOMATIC_SKILLS = previous;
 		}
 		// Nenhuma AGENT_JUICE_* herdada sobrevive ao caminho legado: um `pi` sem gate não pode
 		// aparentar estar contabilizando.
-		for (const key of Object.keys(cleaned)) if (key.startsWith("AGENT_JUICE_") || ["AGENT_ARTIFACT", "AGENT_RUNTIME_ENABLED", "AGENT_PI_ROOT", "AGENT_CHILD"].includes(key)) delete cleaned[key];
+		for (const key of Object.keys(cleaned)) if (key.startsWith("AGENT_JUICE_") || ["AGENT_SKILLS_BEFORE", "AGENT_ARTIFACT", "AGENT_RUNTIME_ENABLED", "AGENT_PI_ROOT", "AGENT_CHILD"].includes(key)) delete cleaned[key];
 		cleaned.NODE_OPTIONS = mergeNodeOptionsLegacy(cleaned.NODE_OPTIONS, warnings);
 		if (cleaned.NODE_OPTIONS === "") delete cleaned.NODE_OPTIONS;
 		const pi = legacyPiCommand(root);
@@ -616,7 +619,7 @@ export function buildAgentLaunch({ store, env = process.env, args = [] } = {}) {
 	const nextEnv = { ...passthrough };
 	// Filho herdado de outra sessão criaria um run novo (ou exigiria um pai que não existe): este
 	// processo é o pai do run.
-	for (const key of Object.keys(nextEnv)) if (key.startsWith("AGENT_JUICE_") || ["AGENT_RUNTIME_ENABLED", "AGENT_PI_ROOT", "AGENT_CHILD"].includes(key)) delete nextEnv[key];
+	for (const key of Object.keys(nextEnv)) if (key.startsWith("AGENT_JUICE_") || ["AGENT_RUNTIME_ENABLED", "AGENT_PI_ROOT", "AGENT_CHILD", "AGENT_SKILLS_BEFORE"].includes(key)) delete nextEnv[key];
 	if (lean) {
 		nextEnv.AGENT_RUNTIME_ENABLED = "1";
 		nextEnv.AGENT_PI_ROOT = artifact.piRoot;
@@ -671,7 +674,7 @@ function mergeNodeOptionsLegacy(value, warnings) {
 		const token = unquote(tokens[i]);
 		const separate = /^--(?:import|require|experimental-loader|loader)$/.test(token);
 		const target = separate ? unquote(tokens[i + 1] ?? "") : token.replace(/^--[^=]+=/, "");
-		if ((separate || /^--(?:import|require|experimental-loader|loader)=/.test(token)) && /juice[\\/]runtime\.mjs(?:$|[?#])/.test(target)) {
+		if ((separate || /^--(?:import|require|experimental-loader|loader)=/.test(token)) && /(?:core|juice)[\\/]runtime\.mjs(?:$|[?#])/.test(target)) {
 			warnings.push("NODE_OPTIONS: preload herdado do Agent removido");
 			if (separate) i++;
 			continue;

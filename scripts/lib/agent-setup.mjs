@@ -58,7 +58,8 @@ export const AGENT_TREE = "agent";
  * Nomes antigos de extensões renomeadas no Agent. A cópia pessoal do usuário (ainda `garime-tui`)
  * é a mesma extensão que `tui`: tratar como nome distinto carregaria as duas.
  */
-export const LEGACY_EXTENSION_NAMES = { tui: ["garime-tui"], megamind: ["arca-megamind"] };
+// Read-only alias for existing personal extension paths/settings.
+export const LEGACY_EXTENSION_NAMES = { "project-prompt": ["juice"], tui: ["garime-tui"], megamind: ["arca-megamind"] };
 export const legacyNamesOf = (name) => LEGACY_EXTENSION_NAMES[name] ?? [];
 /** Marcador da pasta de papéis: diz quais `.md` são do Agent e podem ser atualizados. */
 export const AGENTS_MARKER = ".agent-agents.json";

@@ -1,7 +1,7 @@
 import { fileURLToPath } from 'node:url';
 import { restoreSkillPolicyEnvironment } from './skill-policy.mjs';
 
-const PRELOAD = /(^|[\\/])agent[\\/]juice[\\/]runtime\.mjs$/;
+const PRELOAD = /(^|[\\/])agent[\\/](?:core|juice)[\\/]runtime\.mjs$/;
 const isPreload = (value) => {
   if (value.startsWith('file:')) {
     try { value = fileURLToPath(value); } catch { return false; }
@@ -39,7 +39,7 @@ export function userCommandEnv(env = process.env) {
   // Invalid policy snapshots fail visibly, never restore the unsafe inherited env.
   restoreSkillPolicyEnvironment(copy);
   for (const key of Object.keys(copy)) {
-    if (key.startsWith('AGENT_JUICE_') || ['AGENT_RUNTIME_ENABLED', 'AGENT_PI_ROOT', 'AGENT_CHILD', 'AGENT_CACHE_PREFETCH'].includes(key)) delete copy[key];
+    if (key.startsWith('AGENT_JUICE_') || ['AGENT_SKILLS_BEFORE', 'AGENT_RUNTIME_ENABLED', 'AGENT_PI_ROOT', 'AGENT_CHILD', 'AGENT_CACHE_PREFETCH'].includes(key)) delete copy[key];
   }
   return copy;
 }
@@ -66,8 +66,9 @@ export function subagentEnv(env = process.env) {
   const copy = { ...env, AGENT_CHILD: '1', [NO_DELEGATE_ENV]: '1', PI_CACHE_RETENTION: childCacheRetention(env) };
   if (copy.AGENT_RUNTIME_ENABLED === undefined && copy.AGENT_JUICE_ENABLED !== undefined) copy.AGENT_RUNTIME_ENABLED = copy.AGENT_JUICE_ENABLED;
   if (!copy.AGENT_PI_ROOT && copy.AGENT_JUICE_PI_ROOT) copy.AGENT_PI_ROOT = copy.AGENT_JUICE_PI_ROOT;
+  if (copy.AGENT_SKILLS_BEFORE === undefined && copy.AGENT_JUICE_SKILLS_BEFORE !== undefined) copy.AGENT_SKILLS_BEFORE = copy.AGENT_JUICE_SKILLS_BEFORE;
   for (const key of Object.keys(copy)) {
-    if (key.startsWith('AGENT_JUICE_') && key !== 'AGENT_JUICE_SKILLS_BEFORE') delete copy[key];
+    if (key.startsWith('AGENT_JUICE_')) delete copy[key];
   }
   return copy;
 }

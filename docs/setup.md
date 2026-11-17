@@ -61,11 +61,11 @@ O relatório textual/JSON separa `copied` (planejado no dry-run), `alreadyExiste
 
 ## Contrato do runtime novo e rollback histórico
 
-Novos artefatos internos têm manifesto **v3**, config **v2** e preload `agent/juice/runtime.mjs`. O nome do arquivo foi mantido por compatibilidade; não implica contabilidade. O launcher exporta `AGENT_RUNTIME_ENABLED=1` e `AGENT_PI_ROOT` físico/absoluto. Filhos usam `AGENT_CHILD=1`. A tool `subagent` fica sempre ligada na sessão principal; ver "Subagentes: sempre ligados, isolamento e auditoria". Preferências pertencem ao perfil `PI_CODING_AGENT_DIR`, não a Juice.
+Novos artefatos internos têm manifesto **v3**, config **v2** e preload `agent/core/runtime.mjs`. O launcher exporta `AGENT_RUNTIME_ENABLED=1` e `AGENT_PI_ROOT` físico/absoluto. Filhos usam `AGENT_CHILD=1`. A tool `subagent` fica sempre ligada na sessão principal; ver "Subagentes: sempre ligados, isolamento e auditoria". Preferências pertencem ao perfil `PI_CODING_AGENT_DIR`.
 
 Não há `juiceHome`, ledger, runId nem `AGENT_JUICE_HOME/STATE` no contrato novo. `--agent-enable` liga o runtime sobre a release ativa sem build; `--juice-home <absoluto>` ainda é aceito com aviso, mas é ignorado e não acessado para artefatos novos. `--agent-disable` fecha o opt-in e desfaz os recursos por recibo. `AGENT_DISABLED=1` é um escape por processo. Preloads herdados do Agent são removidos de NODE_OPTIONS (inclusive forma separada e com aspas); opções alheias são preservadas.
 
-Artefatos históricos **v1/v2** continuam imutáveis e usam config **v1**, com `juiceHome` e seu preload/entrada/broker declarados. O índice de pares guarda a config anterior para rollback. Voltar a eles pode religar contabilidade Juice; o updater avisa antes de ativar e recusa o rollback se o contrato antigo não puder ser recuperado. Não reescreve manifests, digests ou dados históricos.
+Artefatos históricos **v1/v2** continuam imutáveis e usam config **v1**, com `juiceHome` e seu preload/entrada/broker declarados. O índice de pares guarda a config anterior para rollback. Voltar a eles pode religar contabilidade histórica; o updater avisa antes de ativar e recusa o rollback se o contrato antigo não puder ser recuperado. Não reescreve manifests, digests ou dados históricos.
 
 ## Produzir e verificar sem instalar no host
 
@@ -132,7 +132,7 @@ agent overlay-gc                # apaga, guardando 1 item sem uso de cada tipo
 
 `/agent-doctor` mostra as tools registradas e declaradas na sessão, exposição (`direct`, `codemode`, `deferred`, etc.), origem real do registry e comandos/skills observados. Usa as APIs públicas do Pi; não adiciona tool ao prompt, não chama modelo, não faz probes e não altera settings. Na TUI/RPC abre o editor nativo como visualizador: o texto devolvido é descartado, nunca salvo ou enviado; em print escreve texto em stderr e em JSON emite `{ "type": "agent_doctor", "report": "..." }` em stderr, sem alterar o protocolo oficial em stdout. Funciona mesmo sem projeto Git. Configuração não prova atividade: hooks sem tool/comando e cobranças auxiliares ficam explicitamente como não observados; uma integração registrada não prova conexão. Para instalação use `agent overlay-status`; para recursos configurados, `agent config`; para uso/cache, `/session`, `/cost` e `/cache` quando disponíveis.
 
-O runtime novo não executa aprendizado/mineração automáticos nem chama modelos para recaps ou avisos semânticos. O recap usa apenas texto local; o chat, o mascaramento de dados e a compatibilidade de imagens históricas permanecem. Cache-keeper e prefetch continuam com seus limites próprios e sem ledger Juice. `/cache` mostra métricas da sessão; custos do provedor continuam nas métricas nativas do Pi.
+O runtime novo não executa aprendizado/mineração automáticos nem chama modelos para recaps ou avisos semânticos. O recap usa apenas texto local; o chat, o mascaramento de dados e a compatibilidade de imagens históricas permanecem. Cache-keeper e prefetch continuam com seus limites próprios e sem ledger. `/cache` mostra métricas da sessão; custos do provedor continuam nas métricas nativas do Pi.
 
 Instalações por artefato atualizam com `agent update`, não com commits do checkout. `agent overlay-update` continua sendo o caminho de desenvolvimento que reconstrói a release.
 

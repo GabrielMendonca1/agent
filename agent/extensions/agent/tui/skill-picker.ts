@@ -11,7 +11,7 @@
  * carregados simplesmente não aparece.
  *
  * Quem decide o que é automático é a curadoria (`isAutomaticSkill` em
- * agent/juice/skill-policy.mjs, injetada pelo editor). Esta UI não mantém lista
+ * agent/core/skill-policy.mjs, injetada pelo editor). Esta UI não mantém lista
  * própria de automáticas: sem a função, ninguém ganha o losango.
  *
  * Este módulo não importa nada (nem do SDK): é testável direto por API pública.

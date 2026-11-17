@@ -1,6 +1,6 @@
 /** Pi owns compaction, using the user's selected model, authentication and errors. */
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { sessionCachePolicy } from "../../juice/cache-policy.mjs";
+import { sessionCachePolicy } from "../../core/cache-policy.mjs";
 import { installToolClear, clearBeforeAutoCompaction, replayToolClears } from './compaction/tool-clear.ts';
 
 export default function compaction(pi: ExtensionAPI) {
