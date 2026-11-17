@@ -8,6 +8,7 @@ import { readNotesMetadata, unmappedDocs } from '../../juice/notes.mjs';
 import { existsSync, readFileSync, renameSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import { allowAutoCompaction } from '../../juice/cache-policy.mjs';
+import { installProjectContext } from './lib/project-context.ts';
 import { clearBeforeAutoCompaction } from './compaction/tool-clear.ts';
 
 const COMPACT_AT_1M = 450_000;
@@ -264,4 +265,5 @@ export default function (pi: ExtensionAPI) {
       ].join('\n'), { deliverAs: 'followUp' });
     },
   });
+  installProjectContext(pi);
 }

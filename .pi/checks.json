@@ -2,6 +2,7 @@
   "defaultTimeoutMs": 120000,
   "parallel": 4,
   "checks": [
+    { "name": "agent-project-context", "cmd": "node scripts/test-agent-project-context.mjs", "tags": ["integration", "agent"] },
     { "name": "tool-clear", "cmd": "node scripts/test-tool-clear.mjs", "tags": ["integration", "agent"] },
     {
       "name": "checks-runner",

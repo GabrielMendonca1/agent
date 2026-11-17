@@ -18,6 +18,7 @@ import type { Message } from "@earendil-works/pi-ai";
 import { getAgentDir, getPackageDir, loadProjectContextFiles, SessionManager, withFileMutationQueue } from "@earendil-works/pi-coding-agent";
 import { resolveModelRef } from "../lib/tiers.ts";
 import { subagentEnv } from "../../../juice/child-env.mjs";
+import { hasRules, selectProjectContext } from "../../../juice/project-context.mjs";
 import { projectRules } from "../../../juice/workflow.mjs";
 import { readHostFreePercent, waitForHostMemory } from "./host-memory.ts";
 import { listDescendants, signalProcesses } from "./process-tree.ts";
@@ -257,7 +258,7 @@ const CHILD_CACHE_PREFIX_PATH = path.join(path.dirname(fileURLToPath(import.meta
  * the system then holds only role + skills + cwd and stays identical across worktrees.
  */
 export function contextFilesMessage(cwd: string, agentDir = getAgentDir()): string {
-	const files = loadProjectContextFiles({ cwd, agentDir });
+	const files = selectProjectContext(loadProjectContextFiles({ cwd, agentDir }), cwd, agentDir);
 	if (!files.length) return "";
 	return [
 		"## Project instructions",
@@ -883,8 +884,10 @@ export async function runSingleAgent(opts: RunAgentOptions): Promise<SingleResul
 		// dele (projeto B nunca recebe as de A). Só na mensagem do filho — não entra
 		// no registro do job, no brief persistido, nem em nada que volte ao pai.
 		// Aquecimento (tarefa ".") fica de fora.
-		const guidance = opts.prefetch ? "" : projectRules(opts.sourceCwd ?? cwd);
 		const instructions = opts.prefetch ? "" : contextFilesMessage(cwd);
+		const sourceCwd = opts.sourceCwd ?? cwd;
+		const guidance = opts.prefetch || (path.resolve(sourceCwd) === path.resolve(cwd) && hasRules(cwd)
+			&& instructions.includes(`path="${path.join(cwd, ".agent", "rules.md")}"`)) ? "" : projectRules(sourceCwd);
 		// argv is a hard OS limit (E2BIG): a big task goes to a file read by the
 		// child as `@path` (pi CLI file argument), never into the command line.
 		const sandboxNotice = sandbox === "none" ? "\n\nSandbox: none on this platform; writes are detected after the run and fail the task." : "";
