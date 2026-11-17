@@ -27,7 +27,7 @@ Load only when creating or extending `<project>/.pi/goals/<id>/audit.html`.
  th,td{border:1px solid #d0d0d0;padding:.5rem .6rem;vertical-align:top;text-align:left}
  th{background:#f3f3f3;font-size:.85rem;text-transform:uppercase;letter-spacing:.03em}
  td.s{white-space:nowrap;font-weight:600}
- .pending{color:#8a6d00}.ok{color:#1d6f2a}.fail{color:#a01b1b}.blocked{color:#7a3ea1}
+ .pending{color:#8a6d00}.ok{color:#1d6f2a}.fail{color:#a01b1b}.adiado{color:#7a3ea1}
  tr:nth-child(even) td{background:#fafafa}
 </style>
 </head>
@@ -49,10 +49,10 @@ Load only when creating or extending `<project>/.pi/goals/<id>/audit.html`.
     <td class="s ok">ok</td></tr>
 <tr><td>2</td>
     <td>Rodar a migração de índice em produção.</td>
-    <td>Rodar sozinho: irreversível e fora do charter.</td>
+    <td>Rodar sem backup: linha vermelha (migração destrutiva).</td>
     <td>—</td>
     <td>2025-06-02 14:40</td>
-    <td class="s blocked">blocked</td></tr>
+    <td class="s adiado">adiado</td></tr>
 <tr><td>3</td>
     <td>Extrair <code>normalize()</code> para <code>lib/xml.ts</code>.</td>
     <td>Deixar inline: duplicaria em 3 chamadas.</td>
@@ -71,4 +71,4 @@ Load only when creating or extending `<project>/.pi/goals/<id>/audit.html`.
 <tr><td>N</td><td>&lt;o que foi feito e por quê, 1–2 frases&gt;</td><td>&lt;alternativa&gt;: &lt;motivo curto&gt;</td><td>pendente</td><td>YYYY-MM-DD HH:MM</td><td class="s pending">pending</td></tr>
 ```
 
-After verifying, replace only that row's last three cells: verification result, time of the result, and `class="s ok|fail|blocked"` with the matching word. A failed attempt keeps its row and gets a new row for the retry.
+After verifying, replace only that row's last three cells: verification result, time of the result, and `class="s ok|fail|adiado"` with the matching word. A failed attempt keeps its row and gets a new row for the retry.
