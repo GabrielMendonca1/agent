@@ -464,8 +464,21 @@ export function syncStableSkills(store, target) {
 	const link = join(store, "skills");
 	let old;
 	try { old = lstatSync(link); } catch (e) { if (e.code !== "ENOENT") throw e; }
-	if (old && !old.isSymbolicLink()) fail(`Refusing to replace non-symlink: ${link}`);
-	const previous = old ? readlinkSync(link) : null;
+	let backup = null;
+	if (old && !old.isSymbolicLink()) {
+		const known = new Set(readdirSync(target));
+		const legacy = old.isDirectory() && readdirSync(link, { withFileTypes: true })
+			.every(entry => entry.isDirectory() && known.has(entry.name));
+		backup = `${link}.before-agent-migration`;
+		for (let n = 1; ; n++) {
+			try { lstatSync(backup); }
+			catch (error) { if (error.code === "ENOENT") break; throw error; }
+			backup = `${link}.before-agent-migration-${n}`;
+		}
+		renameSync(link, backup);
+		if (!legacy) console.warn(`Pending: unrecognized skills content preserved at ${backup}; review manually`);
+	}
+	const previous = old?.isSymbolicLink() ? readlinkSync(link) : null;
 	if (previous && resolve(dirname(link), previous) === resolve(target)) return () => {};
 	mkdirSync(store, { recursive: true });
 	const replace = destination => {
@@ -473,8 +486,15 @@ export function syncStableSkills(store, target) {
 		symlinkSync(destination, temp, process.platform === "win32" ? "junction" : "dir");
 		try { renameSync(temp, link); } catch (e) { rmSync(temp, { force: true }); throw e; }
 	};
-	replace(resolve(target));
-	return () => { if (previous !== null) replace(previous); else rmSync(link, { force: true }); };
+	const undo = () => {
+		if (previous !== null) replace(previous);
+		else {
+			rmSync(link, { force: true });
+			if (backup) renameSync(backup, link);
+		}
+	};
+	try { replace(resolve(target)); } catch (error) { if (backup) renameSync(backup, link); throw error; }
+	return undo;
 }
 
 /** Escrita atômica da configuração validada. `resourceReceipt` do B é preservado como veio. */

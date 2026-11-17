@@ -81,8 +81,26 @@ try {
   assert.ok(!existsSync(join(links, 'prometheus'))); assert.equal(readlinkSync(join(links, 'custom')), '/unrelated');
   assert.ok(lstatSync(join(home, '.agents/mark-migration-backups/prometheus.before-agent-migration')).isSymbolicLink());
   const after = snapshot(home); assert.equal(run().copied.length, 0); assert.deepEqual(snapshot(home), after);
+  // Both a redirected root and project directory must skip durable publication with a pending item.
+  const planned = dry.copied.find(e => e.path.endsWith('_12345678-1234-4234-8234-123456789abc.jsonl')).path;
+  rmSync(planned);
+  rmSync(join(dest, 'sessions'), { recursive: true });
+  for (const redirected of [join(dest, 'sessions'), dirname(planned)]) {
+    mkdirSync(dirname(redirected), { recursive: true });
+    symlinkSync(join(source, 'sessions'), redirected);
+    const originBefore = snapshot(source), homeBefore = snapshot(home);
+    const redirectedDry = run('--dry-run');
+    assert.ok(redirectedDry.manual.some(e => /symlink in destination path/.test(e.reason)));
+    assert.deepEqual(snapshot(home), homeBefore, 'redirected dry-run must not write to either profile');
+    const redirectedReport = run();
+    assert.ok(redirectedReport.skipped.some(e => /symlink in destination path/.test(e.reason)));
+    assert.ok(redirectedReport.manual.some(e => /symlink in destination path/.test(e.reason)));
+    assert.deepEqual(snapshot(source), originBefore, 'redirected import must not alter Mark');
+    assert.ok(!existsSync(join(source, 'sessions', planned.split('/').pop())));
+    rmSync(redirected);
+  }
   // A destination symlink must never redirect credentials outside the fixture profile.
   rmSync(join(dest, 'auth.json')); symlinkSync(join(root, 'outside'), join(dest, 'auth.json'));
-  assert.equal(run().copied.length, 0); assert.ok(!existsSync(join(root, 'outside')));
+  assert.ok(!run().copied.some(e => e.path === join(dest, 'auth.json'))); assert.ok(!existsSync(join(root, 'outside')));
   console.log('ok Mark migration: isolated HOME, dry-run, copy, durable import, repeat, privacy, backups, skill realpath');
 } finally { rmSync(root, { recursive: true, force: true }); }

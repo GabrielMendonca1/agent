@@ -4,7 +4,7 @@
 // pi-durable entries.d.ts. Root conversation is 1; child task state is not a session.
 import { createHash } from 'node:crypto';
 import { closeSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, openSync,
-  readFileSync, readdirSync, readSync, rmSync, statSync, writeFileSync, linkSync } from 'node:fs';
+  readFileSync, readdirSync, readSync, rmSync, statSync, lstatSync, writeFileSync, linkSync } from 'node:fs';
 import { homedir, tmpdir } from 'node:os';
 import { basename, dirname, isAbsolute, join, resolve } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
@@ -44,6 +44,15 @@ function files(root, name) {
   return readdirSync(root, { withFileTypes: true }).sort((a, b) => a.name.localeCompare(b.name))
     .flatMap(e => e.isDirectory() ? files(join(root, e.name), name)
       : e.isFile() && name(e.name) ? [join(root, e.name)] : []);
+}
+// Check before scanning and again before every publication; never traverse a redirected profile.
+function redirected(path) {
+  const home = resolve(homedir());
+  for (let p = path; ; p = dirname(p)) {
+    try { if (lstatSync(p).isSymbolicLink()) return p; }
+    catch (e) { if (e.code !== 'ENOENT') throw e; }
+    if (p === home || dirname(p) === p) return null;
+  }
 }
 function existingIds() {
   const ids = new Set();
@@ -169,7 +178,8 @@ function convert(records, meta, id, path) {
     target: join(destination, slug, `${timestamp.replace(/[:.]/g, '-')}_${id}.jsonl`) };
 }
 
-const ids = existingIds();
+const rootRedirect = redirected(destination);
+const ids = rootRedirect ? new Set() : existingIds();
 const plans = [];
 // Preflight everything before publishing: partial-message input stops the entire import.
 for (const path of files(source, n => n === 'session.sqlite')) {
@@ -177,6 +187,7 @@ for (const path of files(source, n => n === 'session.sqlite')) {
   if (values.session && values.session !== id && values.session !== basename(dirname(path))) continue;
   report.found++;
   const skip = reason => { report.skipped++; console.log(JSON.stringify({ status: 'skipped', id, source: path, reason })); };
+  if (rootRedirect) { skip(`symlink in destination path: ${rootRedirect}`); continue; }
   if (basename(dirname(path)).endsWith('.lock')) { skip('lock artifact (not a session)'); continue; }
   if (ids.has(id)) { skip('same session id already exists'); continue; }
   if (plans.length >= limit) { skip('--limit'); continue; }
@@ -187,6 +198,8 @@ for (const path of files(source, n => n === 'session.sqlite')) {
     const meta = existsSync(metaPath) ? JSON.parse(readFileSync(metaPath, 'utf8')) : {};
     const result = convert(data.records, meta, id, path);
     if (result.skip) { skip(result.skip); continue; }
+    const redirect = redirected(result.target);
+    if (redirect) { skip(`symlink in destination path: ${redirect}`); continue; }
     if (existsSync(result.target)) { skip('target path exists (never overwritten)'); continue; }
     Object.assign(result.ignored, data.ignored);
     plans.push({ id, source: path, ...result }); ids.add(id);
@@ -197,8 +210,15 @@ for (const path of files(source, n => n === 'session.sqlite')) {
 }
 for (const plan of plans) {
   try {
+    const redirect = redirected(plan.target);
+    if (redirect) {
+      report.skipped++;
+      console.log(JSON.stringify({ status: 'skipped', target: plan.target, reason: `symlink in destination path: ${redirect}` }));
+      continue;
+    }
     if (!values['dry-run']) {
       mkdirSync(dirname(plan.target), { recursive: true });
+      if (redirected(plan.target)) throw new Error('Symlink in destination path before publication');
       // Publish atomically and exclusively. A crash cannot leave a partial JSONL marked imported.
       const temp = mkdtempSync(join(tmpdir(), 'pi-jsonl-import-'));
       try {

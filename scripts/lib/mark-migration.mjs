@@ -79,6 +79,7 @@ export function migrateFromMark({ dryRun = false, home = homedir(), store = proc
     {
       for (const line of (result.stdout || '').split('\n')) {
         let event; try { event = JSON.parse(line); } catch { continue; }
+        if (event.status === 'skipped' && /symlink in destination path/.test(event.reason)) record('manual', event.target || event.source || durable, event.reason);
         if (event.status) record(event.status === 'skipped' ? (/exists/.test(event.reason) ? 'alreadyExisted' : 'skipped') : 'copied', event.target || event.source || durable, event.reason || event.status);
       }
     }

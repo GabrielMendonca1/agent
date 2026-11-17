@@ -413,6 +413,36 @@ test("config: ausente é null, roundtrip atômico valida e preserva resourceRece
 	assert.equal("resourceReceipt" in readAgentConfig(fresh), false);
 });
 
+test("config: legacy skills directories are backed up, unknown content warned, failures rolled back", () => {
+	for (const kind of ["empty", "standard", "unknown", "rollback"]) {
+		const fresh = fixtureStore(`skills-${kind}`);
+		const target = join(fresh, "runtime/releases", enabledConfig.artifactId, "agent/skills/standard");
+		mkdirSync(join(target, "megamind"), { recursive: true });
+		const skills = join(fresh, "skills");
+		mkdirSync(skills);
+		if (kind === "standard") mkdirSync(join(skills, "megamind"));
+		if (kind === "unknown") writeFileSync(join(skills, "personal"), "preserve");
+		if (kind === "rollback") mkdirSync(agentConfigPath(fresh)); // force config rename failure
+		const warnings = [], warn = console.warn;
+		console.warn = message => warnings.push(message);
+		try {
+			if (kind === "rollback") {
+				assert.throws(() => writeAgentConfig({ store: fresh, config: enabledConfig }));
+				assert.ok(statSync(skills).isDirectory());
+				assert.equal(existsSync(`${skills}.before-agent-migration`), false);
+				assert.deepEqual(readdirSync(skills), []);
+			} else {
+				writeAgentConfig({ store: fresh, config: enabledConfig });
+				assert.equal(realpathSync(skills), realpathSync(target));
+				assert.ok(statSync(`${skills}.before-agent-migration`).isDirectory());
+				assert.equal(warnings.length, kind === "unknown" ? 1 : 0);
+				if (kind === "unknown") assert.equal(readFileSync(`${skills}.before-agent-migration/personal`, "utf8"), "preserve");
+				if (kind === "standard") assert.ok(statSync(`${skills}.before-agent-migration/megamind`).isDirectory());
+			}
+		} finally { console.warn = warn; }
+	}
+});
+
 test("config: schema fechado recusa preferência pessoal, caminho relativo e tipo errado", () => {
 	const fresh = fixtureStore("config-bad");
 	const cases = [
