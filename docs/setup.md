@@ -300,6 +300,8 @@ Ordem de decisão:
 
 O slot `apoio` usa o modelo de apoio; `principal`, o modelo da sessão. Não há classificador de dispatch. Sem modelo de apoio configurado, o slot `apoio` cai no modelo principal: papéis sem config própria em `/models` e sem `model` no frontmatter herdam o principal; os demais seguem os itens 1 e 2. Risco de custo: configure o apoio em `/models`.
 
+O repo não distribui uma lista padrão de modelos por papel. Instalações antigas liam `~/Sistema/Pi/models.json` (ou `$PI_SYSTEM_DIR/Pi/models.json`); o runtime atual não lê esse caminho. Para preservar as escolhas antigas, faça backup e copie a configuração para `<perfil>/agent-models.json`, mantendo `tiers` e `roleModels`. A primeira opção de cada papel é a preferida, com seu `thinking`.
+
 ### Isolamento
 
 Cada filho é outro processo `pi -p`, com contexto próprio. Só o resultado volta ao pai. O que o filho lê não entra no contexto nem no cache do pai.
