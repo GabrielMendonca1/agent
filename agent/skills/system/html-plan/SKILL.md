@@ -1,13 +1,15 @@
 ---
 name: html-plan
-description: "HTML plan — implementation plan as one interactive HTML page: a tree of claims, each proved by a mockup, state machine, call stack, schema or code, with decisions placed where they matter. Use only when the user explicitly asks for a plan (for example /skill:html-plan or \"faça um plano\"). Never on your own initiative and never inside a subagent: there, a brief is an approved task, so implement it."
+description: "HTML plan — implementation plan as one interactive HTML page: a tree of claims, each proved by a mockup, state machine, call stack, schema or code, with decisions placed where they matter. Use before building something that touches more than a couple of files."
 ---
 
 # html-plan
 
 Plan what the user asked for: the text after `/skill:html-plan`, or the request in the conversation when the command carried no text.
 
-You write **one HTML file by hand**. It holds a tree of claims. A small runtime draws the tree and lets the reader open it level by level, answer decisions, edit schemas, comment on anything, and copy one response back to you. Do not start building until that response arrives.
+You write **one HTML file by hand**. It holds a tree of claims. A small runtime draws the tree and lets the reader open it level by level, answer decisions, edit schemas, comment on anything, and copy one response back to you.
+
+**Who asked decides whether you wait.** If the user asked for the plan (`/skill:html-plan`, "make a plan"), wait for the response before you build. If you wrote the plan on your own initiative, or you are a subagent working from a brief, do not wait: hand over the link, take the default of each decision, record it in one line, and build. The user can still answer later; then apply the changes.
 
 ```
 <this skill's directory>/
@@ -129,7 +131,7 @@ These are not STE and stay as they are: the words of the user in a `doc-quote`, 
 4. **Pack.** `node <skill dir>/runtime/pack.mjs plan.html --root <repo>`. It reports errors and warnings by line or claim number. Fix them. It writes `plan.packed.html`, one file that works offline.
 5. **Look at it** in a browser if you can: closed, with each claim open, and at each decision (the “to answer” button goes to them). Check that mockups are not clipped and arrows do not cross labels.
 6. **Hand it over** (next section) with one line: “Four decisions. The defaults are what I would build.”
-7. **Act on the response.** Apply changed decisions, schema edits, struck calls and each comment. Refer to claims by number. If the answers change the shape of the plan, update the page and send it again. Then build.
+7. **Act on the response** (only when the user asked for the plan; otherwise build now with the defaults). Apply changed decisions, schema edits, struck calls and each comment. Refer to claims by number. If the answers change the shape of the plan, update the page and send it again. Then build.
 
 ## Getting the answer back
 
