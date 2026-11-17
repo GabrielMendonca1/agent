@@ -194,7 +194,7 @@
 		{
 			"officialVersion": "1.5.2",
 			"path": "overlay/model-data/1.5.2",
-			"manifestSha256": "ea7932c576dbd6cb73eb7ae4815e7b69806c4aa5b3606b00ecfff3b91fd24d6e"
+			"manifestSha256": "aa8ae1795ec75bcb34b61d9d835d272ebe03f956a4ba206d1106dcb26a0f7fc1"
 		}
 	],
 	"releaseOverlays": [
