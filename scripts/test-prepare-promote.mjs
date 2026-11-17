@@ -4,7 +4,7 @@ import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { spawnSync } from "node:child_process";
 import { chmodSync, copyFileSync, cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, readlinkSync, realpathSync, renameSync, rmSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { homedir, tmpdir } from "node:os";
 import { dirname, isAbsolute, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { acquireStoreLock, readCurrentTarget } from "./lib/store-lock.mjs";
@@ -16,6 +16,24 @@ const fixture = join(root, "fixture");
 const hash = (bytes) => createHash("sha256").update(bytes).digest("hex");
 const json = (file, value) => writeFileSync(file, `${JSON.stringify(value, null, 2)}\n`);
 const load = (file) => JSON.parse(readFileSync(file, "utf8"));
+// Watch the caller's profiles, including a profile recorded by its store rather than HOME.
+const externalSettings = new Set([
+	join(homedir(), ".agent", "settings.json"),
+	join(homedir(), ".pi", "agent", "settings.json"),
+	...(process.env.PI_CODING_AGENT_DIR ? [join(process.env.PI_CODING_AGENT_DIR, "settings.json")] : []),
+]);
+const callerStore = process.env.AGENT_STORE || join(homedir(), ".local", "share", "agent");
+const callerConfig = join(callerStore, "runtime", "config.json");
+if (existsSync(callerConfig)) {
+	const receipt = load(callerConfig).resourceReceipt;
+	if (receipt && existsSync(receipt)) {
+		const recorded = load(receipt);
+		if (recorded.settingsPath) externalSettings.add(recorded.settingsPath);
+		else if (recorded.agentDir) externalSettings.add(join(recorded.agentDir, "settings.json"));
+	}
+}
+const settingsHash = (file) => existsSync(file) ? hash(readFileSync(file)) : null;
+const externalBefore = new Map([...externalSettings].map((file) => [file, settingsHash(file)]));
 let checks = 0;
 function test(name, fn) { fn(); checks++; console.log(`ok ${name}`); }
 async function atest(name, fn) { await fn(); checks++; console.log(`ok ${name}`); }
@@ -169,7 +187,17 @@ export function rollbackAgentResources({ receiptPath }) {
 		writeFileSync(join(stubs, command), body, { mode: 0o755 });
 		writeFileSync(join(stubs, `${command}.cmd`), `@echo forbidden > "${forbidden}"\r\n@exit /b 91\r\n`);
 	}
-	const env = { ...process.env, PATH: `${stubs}${process.platform === "win32" ? ";" : ":"}${process.env.PATH}`, PREPARE_TEST_SENTINEL: sentinel };
+	// --store isolates artifacts, not profiles. Every child must also get a private HOME/profile.
+	const home = join(root, "home");
+	mkdirSync(home);
+	const env = {
+		...process.env,
+		HOME: home,
+		USERPROFILE: home,
+		PI_CODING_AGENT_DIR: join(home, ".pi", "agent"),
+		PATH: `${stubs}${process.platform === "win32" ? ";" : ":"}${process.env.PATH}`,
+		PREPARE_TEST_SENTINEL: sentinel,
+	};
 	function cli(store, args, ok = true) {
 		const result = spawnSync(process.execPath, [script, "--store", store, ...args], { encoding: "utf8", env });
 		assert.equal(result.status === 0, ok, result.stdout + result.stderr);
@@ -528,7 +556,8 @@ export function rollbackAgentResources({ receiptPath }) {
 		assert.match(cliWith(empty, ["--agent-enable", "--juice-home", h.juice], h.env, false).stderr, /No active release/);
 		// Store isolado não autoriza escrita no perfil real.
 		const bare = { ...h.env };
-		delete bare.PI_CODING_AGENT_DIR;
+		// undefined removes the key from spawn's env; deleting an override would inherit env's value.
+		bare.PI_CODING_AGENT_DIR = undefined;
 		assert.match(cliWith(f.store, ["--agent-enable", "--juice-home", h.juice], bare, false).stderr, /PI_CODING_AGENT_DIR/);
 		assert.equal(existsSync(join(f.store, "runtime", "config.json")), false);
 	});
@@ -888,4 +917,7 @@ export function rollbackAgentResources({ receiptPath }) {
 	console.log(`prepare-promote: ${checks} tests OK (fixtures only; no real build or external E2E)`);
 } finally {
 	rmSync(root, { recursive: true, force: true });
+	for (const [file, before] of externalBefore) {
+		assert.equal(settingsHash(file), before, `prepare-promote changed external settings: ${file}`);
+	}
 }
