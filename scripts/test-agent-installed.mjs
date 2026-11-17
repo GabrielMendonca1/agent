@@ -94,9 +94,9 @@ try {
 	const agentDir = join(home, ".pi", "agent");
 	const store = join(root, "store");
 	const cwd = join(root, "projeto");
-	const juiceHome = join(root, "juice");
+	const legacyHome = join(root, "legacy");
 	const bundle = join(root, "bundle");
-	for (const dir of [join(agentDir, "extensions", "personal-sentinel"), join(agentDir, "agents"), join(home, "Sistema", "Pi"), store, cwd, juiceHome, join(bundle, "scripts", "lib")]) {
+	for (const dir of [join(agentDir, "extensions", "personal-sentinel"), join(agentDir, "agents"), join(home, "Sistema", "Pi"), store, cwd, legacyHome, join(bundle, "scripts", "lib")]) {
 		mkdirSync(dir, { recursive: true });
 	}
 	// Preferências pessoais que o Agent não tem permissão de tocar: modelo e thinking vivem aqui.
@@ -170,7 +170,7 @@ try {
 	const settingsReapplied = JSON.parse(readFileSync(join(agentDir, "settings.json"), "utf8"));
 	test("segunda aplicação é idempotente: nenhuma entrada nova", JSON.stringify(settingsReapplied.extensions) === JSON.stringify(settingsAfterApply.extensions));
 
-	const preferencesPath = join(juiceHome, "preferences.v3.json");
+	const preferencesPath = join(legacyHome, "preferences.v3.json");
 	const writePreferences = (mode) => writeFileSync(preferencesPath, `${JSON.stringify({ mode, supportModel: "anthropic/claude-haiku-5-5" })}\n`);
 	writePreferences("simple");
 	const preferencesBefore = readFileSync(preferencesPath, "utf8");
@@ -235,7 +235,7 @@ try {
 		}
 		const tokens = enabled.env.NODE_OPTIONS.split(/\s+/).filter(Boolean);
 		assert.ok(tokens.includes(userNodeOptions), `NODE_OPTIONS do usuário perdido: ${enabled.env.NODE_OPTIONS}`);
-		assert.equal(tokens.filter((token) => token.includes("juice/runtime.mjs")).length, 1, `preload repetido: ${enabled.env.NODE_OPTIONS}`);
+		assert.equal(tokens.filter((token) => token.includes("core/runtime.mjs")).length, 1, `preload repetido: ${enabled.env.NODE_OPTIONS}`);
 		assert.equal(enabled.env.AGENT_JUICE_HOME, undefined);
 		assert.equal(enabled.env.AGENT_JUICE_STATE, undefined);
 		assert.equal(enabled.env.AGENT_RUNTIME_ENABLED, "1");
@@ -288,8 +288,8 @@ try {
 		return true;
 	})());
 
-	const ledgerPath = join(juiceHome, "run.v3.json");
-	test("runtime novo responde sem criar ledger nem config Juice", (() => {
+	const ledgerPath = join(legacyHome, "run.v3.json");
+	test("runtime novo responde sem criar ledger nem accounting", (() => {
 		assert.equal(existsSync(ledgerPath), false);
 		assert.equal(readAgentConfig(store).juiceHome, undefined);
 		assert.equal(readAgentConfig(store).version, 2);
@@ -298,15 +298,15 @@ try {
 
 	// A corrupt legacy ledger and a lock must be irrelevant, not silently repaired.
 	writeFileSync(ledgerPath, "corrupt legacy sentinel");
-	writeFileSync(join(juiceHome, "run.v3.json.lock"), "locked sentinel");
+	writeFileSync(join(legacyHome, "run.v3.json.lock"), "locked sentinel");
 	const before = fake.messages().length;
-	const second = await runPi("de novo", "run2-lean", { AGENT_JUICE_HOME: juiceHome, AGENT_JUICE_STATE: ledgerPath });
+	const second = await runPi("de novo", "run2-lean", { AGENT_JUICE_HOME: legacyHome, AGENT_JUICE_STATE: ledgerPath });
 	test("relançamento preserva preferências e ignora ledger legado corrompido/bloqueado", (() => {
 		assert.equal(second.code, 0, second.err);
 		assert.equal(readFileSync(preferencesPath, "utf8"), preferencesBefore);
 		assert.ok(fake.messages().length > before);
 		assert.equal(readFileSync(ledgerPath, "utf8"), "corrupt legacy sentinel");
-		assert.equal(readFileSync(join(juiceHome, "run.v3.json.lock"), "utf8"), "locked sentinel");
+		assert.equal(readFileSync(join(legacyHome, "run.v3.json.lock"), "utf8"), "locked sentinel");
 		return true;
 	})());
 

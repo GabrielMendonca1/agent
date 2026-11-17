@@ -60,13 +60,13 @@ function spawnAsync(cmd, args, options) {
 	});
 }
 
-const preload = pathToFileURL(join(repo, 'agent/juice/runtime.mjs')).href;
+const preload = pathToFileURL(join(repo, 'agent/core/runtime.mjs')).href;
 
-/** `pi -p --mode json` com Juice ligado; devolve o payload enviado ao provider. */
+/** `pi -p --mode json` com Agent ligado; devolve o payload enviado ao provider. */
 async function run(agent, label, extraEnv = {}) {
-	const juiceHome = join(root, `juice-${label}`);
-	mkdirSync(juiceHome, { recursive: true, mode: 0o700 });
-	writeFileSync(join(juiceHome, 'preferences.v3.json'), `${JSON.stringify({ mode: 'complex', supportModel: null })}\n`);
+	const unusedHome = join(root, `unused-${label}`);
+	mkdirSync(unusedHome, { recursive: true, mode: 0o700 });
+	writeFileSync(join(unusedHome, 'preferences.v3.json'), `${JSON.stringify({ mode: 'complex', supportModel: null })}\n`);
 	const before = fake.messages().length;
 	const h = join(home, label.split('-')[0]);
 	const result = await spawnAsync(pi, ['-p', '--mode', 'json', '--no-session', '--model', 'anthropic/claude-sonnet-4-5', 'oi'], {
@@ -87,7 +87,7 @@ async function run(agent, label, extraEnv = {}) {
 	const payload = sent[0];
 	const system = typeof payload.system === 'string' ? payload.system : JSON.stringify(payload.system);
 	const tools = (payload.tools ?? []).map((t) => t.name);
-	assert.ok(!existsSync(join(juiceHome, 'run.v3.json')), 'runtime não cria ledger');
+	assert.ok(!existsSync(join(unusedHome, 'run.v3.json')), 'runtime não cria ledger');
 	return { system, tools, payloadTools: payload.tools ?? [], bytes: Buffer.byteLength(system), toolBytes: Buffer.byteLength(JSON.stringify(payload.tools ?? [])), output };
 }
 
@@ -98,20 +98,20 @@ try {
 	{
 		const { headlessSettings } = await import('./lib/agent-headless.mjs');
 		const L = '/o/agent/extensions/brain-live'; const R = '/o/runtime/releases/abc/agent/extensions/brain-live';
-		const h = headlessSettings({ extensions: [`${L}/juice.ts`, `${L}/subagent`, `-${L}/subagent/index.ts`, `${R}/juice.ts`, `${R}/subagent`, '/o/agent/extensions/agent/tui'] }, { exists: () => false });
-		assert.deepEqual(h.extensions, [`${R}/juice.ts`, `${R}/subagent`], 'uma cópia por extensão, a da release');
+		const h = headlessSettings({ extensions: [`${L}/project-prompt.ts`, `${L}/subagent`, `-${L}/subagent/index.ts`, `${R}/project-prompt.ts`, `${R}/subagent`, '/o/agent/extensions/agent/tui'] }, { exists: () => false });
+		assert.deepEqual(h.extensions, [`${R}/project-prompt.ts`, `${R}/subagent`], 'uma cópia por extensão, a da release');
 		console.log('ok sem extensão duplicada no settings do Agent');
 	}
 	const names = (s) => s.extensions.map((e) => e.split('/').slice(-2).join('/').replace(/\.ts$/, ''));
 
-	assert.deepEqual(names(headless.settings).sort(), ['brain-live/juice', 'brain-live/subagent']);
+	assert.deepEqual(names(headless.settings).sort(), ['brain-live/project-prompt', 'brain-live/subagent']);
 	for (const entry of ['agent/tui', 'agent/peers', 'extensions/megamind']) {
 		assert.ok(full.settings.extensions.some((e) => e.endsWith(entry)), `perfil completo sem ${entry}`);
 		assert.ok(!headless.settings.extensions.some((e) => e.includes(entry)), `headless carrega ${entry}`);
 	}
 	assert.equal(headless.settings.tuiMode, undefined);
 	assert.equal(headless.settings.theme, undefined);
-	ok('settings headless: só juice e subagent; tui/peers/megamind fora');
+	ok('settings headless: só project-prompt e subagent; tui/peers/megamind fora');
 
 	const fullRun = await run(full, 'full-default');
 	const enabled = await run(headless, 'headless-default');

@@ -11,7 +11,7 @@ import { agentSetupFiles, syncAgentSetup } from './lib/agent-setup.mjs';
 const repo = fileURLToPath(new URL('../', import.meta.url));
 const store = process.env.AGENT_STORE || join(homedir(), '.local/share/agent');
 const suffix = 'lib/node_modules/@earendil-works/pi-coding-agent';
-const piRoot = process.env.AGENT_JUICE_PI_ROOT || [join(store, 'current', suffix),
+const piRoot = process.env.AGENT_PI_ROOT || [join(store, 'current', suffix),
   ...readdirSync(join(store, 'releases')).sort().reverse().map(n => join(store, 'releases', n, suffix))]
   .find(p => existsSync(join(p, 'dist/index.js')));
 assert.ok(piRoot, 'Pi instalado necessário para carregar a extensão real');

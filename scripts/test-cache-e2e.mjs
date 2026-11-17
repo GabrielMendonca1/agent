@@ -65,11 +65,11 @@ await new Promise(r => server.listen(0, '127.0.0.1', r));
 const port = server.address().port;
 
 const root = mkdtempSync(join(tmpdir(), 'cache-e2e-'));
-const home = join(root, 'home'); const agent = join(home, '.pi/agent'); const juiceHome = join(root, 'juice');
-mkdirSync(agent, { recursive: true }); mkdirSync(juiceHome, { recursive: true });
+const home = join(root, 'home'); const agent = join(home, '.pi/agent'); const legacyHome = join(root, 'legacy');
+mkdirSync(agent, { recursive: true }); mkdirSync(legacyHome, { recursive: true });
 writeFileSync(join(root, 'x.txt'), 'conteúdo\n'.repeat(200));
 writeFileSync(join(agent, 'settings.json'), JSON.stringify({ compaction: { enabled: true, reserveTokens: 550_000, keepRecentTokens: 10 }, retry: { enabled: false }, cacheWarming: 'off' }));
-const ledger = join(juiceHome, 'run.v3.json');
+const ledger = join(legacyHome, 'run.v3.json');
 writeFileSync(ledger, 'legacy ledger sentinel');
 
 const model = (id) => ({ id, name: id, reasoning: false, input: ['text'], cost: { input: 5, output: 25, cacheRead: 0.5, cacheWrite: 6.25 }, contextWindow: 1_000_000, maxTokens: 32_000 });
@@ -86,7 +86,7 @@ writeFileSync(join(agent, 'models.json'), JSON.stringify({ providers: {
 const ext = join(root, 'e2e-ext.ts');
 writeFileSync(ext, `
 import { appendFileSync } from "node:fs";
-import { sessionCachePolicy } from ${JSON.stringify(join(repo, 'agent/juice/cache-policy.mjs'))};
+import { sessionCachePolicy } from ${JSON.stringify(join(repo, 'agent/core/cache-policy.mjs'))};
 export default function (pi: any) {
   pi.on("before_provider_request", (e: any) => Array.isArray(e.payload?.tools) && e.payload.tools.length ? { ...e.payload, tools: e.payload.tools.map((t: any) => ({ ...t, description: (t.description ?? "") + " [léxico]" })) } : undefined);
   pi.events.on("agent:cache-estimate", (d: any) => appendFileSync(${JSON.stringify(events)}, JSON.stringify(d) + "\\n"));
@@ -107,8 +107,8 @@ const env = {
   ...process.env, HOME: home, USERPROFILE: home, PI_CODING_AGENT_DIR: agent, PI_OFFLINE: '1',
   PI_DURABLE_HOST: '0',
   PI_CACHE_RETENTION: 'long', AGENT_CACHE_KEEPER_TEST: '1',
-  AGENT_RUNTIME_ENABLED: '1', AGENT_JUICE_HOME: juiceHome, AGENT_JUICE_STATE: ledger, AGENT_PI_ROOT: piRoot,
-  NODE_OPTIONS: `--import=${pathToFileURL(join(repo, 'agent/juice/runtime.mjs')).href}`,
+  AGENT_RUNTIME_ENABLED: '1', AGENT_JUICE_HOME: legacyHome, AGENT_JUICE_STATE: ledger, AGENT_PI_ROOT: piRoot,
+  NODE_OPTIONS: `--import=${pathToFileURL(join(repo, 'agent/core/runtime.mjs')).href}`,
 };
 delete env.AGENT_JUICE_CHILD; delete env.AGENT_CACHE_PREFETCH; delete env.AGENT_CHILD; delete env.AGENT_CACHE_KEEPER;
 delete env.AGENT_JUICE_PI_ENTRY;
@@ -187,7 +187,7 @@ console.log('ok F: troca de modelo no Pi real emite a estimativa de reconstruç�
   assert.equal(sent[2].prompt_cache_key, sent[1].prompt_cache_key, 'filhos do mesmo papel: mesma chave');
   console.log('ok H: Responses no Pi real: principal com a chave do Pi, filhos com a chave do prefixo');
 }
-assert.deepEqual(readdirSync(juiceHome), ['run.v3.json'], 'sem novos ledgers');
+assert.deepEqual(readdirSync(legacyHome), ['run.v3.json'], 'sem novos ledgers');
 assert.equal(readFileSync(ledger, 'utf8'), 'legacy ledger sentinel');
 console.log(`PASS cache-e2e (${host})`);
 } finally {

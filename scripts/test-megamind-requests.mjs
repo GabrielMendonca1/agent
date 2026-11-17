@@ -7,7 +7,7 @@ import { tmpdir, homedir } from 'node:os';
 import { join, resolve } from 'node:path';
 const repo = resolve(import.meta.dirname, '..');
 const store = process.env.AGENT_STORE || join(homedir(), '.local/share/agent');
-const piRoot = realpathSync(process.env.AGENT_JUICE_PI_ROOT || join(store, 'current/lib/node_modules/@earendil-works/pi-coding-agent'));
+const piRoot = realpathSync(process.env.AGENT_PI_ROOT || join(store, 'current/lib/node_modules/@earendil-works/pi-coding-agent'));
 const { createJiti } = createRequire(join(piRoot, 'package.json'))('jiti');
 const jiti = createJiti(import.meta.url, { fsCache: false, moduleCache: false, alias: {
   typebox: join(piRoot, 'node_modules/typebox/build/index.mjs'),

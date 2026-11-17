@@ -14,7 +14,7 @@ import { existsSync, realpathSync, mkdirSync, mkdtempSync, readFileSync, readdir
 import { homedir, tmpdir } from 'node:os';
 import { pathToFileURL } from 'node:url';
 import { join } from 'node:path';
-import { AUTONOMY_POLICY } from '../agent/juice/policy.mjs';
+import { AUTONOMY_POLICY } from '../agent/core/policy.mjs';
 import { startFakeAnthropic } from './lib/fake-anthropic.mjs';
 
 const repo = new URL('..', import.meta.url).pathname.replace(/\/$/, '');
@@ -50,14 +50,14 @@ async function checkShellRuntime() {
     writeFileSync(join(agent, 'settings.json'), JSON.stringify({ shellPath: '/bin/bash', shellCommandPrefix: 'export PREFIX_FIXTURE=global' }));
     settings('project');
     Object.assign(process.env, { HOME: root, PI_CODING_AGENT_DIR: agent,
-      NODE_OPTIONS: '--no-warnings --import=/tmp/agent/juice/runtime.mjs',
-      AGENT_JUICE_SKILLS_BEFORE: 'null', PI_AUTOMATIC_SKILLS: 'fixture-curated',
+      NODE_OPTIONS: '--no-warnings --import=/tmp/agent/core/runtime.mjs',
+      AGENT_SKILLS_BEFORE: 'null', PI_AUTOMATIC_SKILLS: 'fixture-curated',
       AGENT_JUICE_SECRET: 'filtered', SHELL_ALLOWED: 'kept' });
     delete process.env.PREFIX_FIXTURE;
     delete process.env.SHELL_FIXTURE;
     const runtimePath = join(repo, 'agent/extensions/brain-live/shell-runtime.ts');
     const tui = join(repo, 'agent/extensions/agent/tui');
-    const probe = `node -e 'console.log(JSON.stringify({cwd:process.cwd(),allowed:process.env.SHELL_ALLOWED,pre:process.env.PREFIX_FIXTURE??null,shell:process.env.SHELL_FIXTURE??null,options:process.env.NODE_OPTIONS,skills:process.env.PI_AUTOMATIC_SKILLS??null,juice:Object.keys(process.env).filter(k=>k.startsWith("AGENT_JUICE_"))}))'`;
+    const probe = `node -e 'console.log(JSON.stringify({cwd:process.cwd(),allowed:process.env.SHELL_ALLOWED,pre:process.env.PREFIX_FIXTURE??null,shell:process.env.SHELL_FIXTURE??null,options:process.env.NODE_OPTIONS,skills:process.env.PI_AUTOMATIC_SKILLS??null,legacyEnv:Object.keys(process.env).filter(k=>k.startsWith("AGENT_JUICE_"))}))'`;
     let baseline;
     for (const mode of ['plain', 'none', 'claude']) {
       process.env.ARCA_COMPACT_TOOLS = mode === 'plain' ? '0' : '1';
@@ -79,7 +79,7 @@ async function checkShellRuntime() {
       settings('project');
       const result = await execute(probe);
       const out = JSON.parse(result.content[0].text.trim());
-      assert.deepEqual(out, { cwd: work, allowed: 'kept', pre: 'project', shell: 'project', options: '--no-warnings', skills: null, juice: [] });
+      assert.deepEqual(out, { cwd: work, allowed: 'kept', pre: 'project', shell: 'project', options: '--no-warnings', skills: null, legacyEnv: [] });
       if (baseline) assert.deepEqual(out, baseline, mode); else baseline = out;
       assert.equal(result.structuredContent.exit_code, 0);
       settings('updated');
@@ -114,7 +114,7 @@ async function checkShellRuntime() {
         assert.match(text.replace(/\x1b\[[0-9;]*m/g, ''), /⏺ Bash/, 'Claude precede compacto na ordem da TUI');
       }
       if (mode !== 'claude') assert.equal(runner.resolveToolRenderers('read', () => base), base, 'compacto preserva renderer das outras tools');
-      assert.ok(process.env.NODE_OPTIONS.includes('/agent/juice/runtime.mjs'), 'env do pai intacto');
+      assert.ok(process.env.NODE_OPTIONS.includes('/agent/core/runtime.mjs'), 'env do pai intacto');
       assert.equal(process.env.AGENT_JUICE_SECRET, 'filtered');
       console.log(`ok shell ${mode}: bash/!cmd, cwd, settings, env, stdout/stderr, exit 7 e cancelamento`);
     }
@@ -166,7 +166,7 @@ const fake = await startFakeAnthropic([
 ]);
 try {
   const seed = join(parent, 'seed'); mkdirSync(seed);
-  const prep = spawnSync(process.execPath, [join(repo, 'scripts/prepare-juice-test.mjs'), '--temp-parent', parent, '--agent-dir', seed, '--pi-root', fixturePiRoot], { encoding: 'utf8', env: { ...process.env, NODE_OPTIONS: '' } });
+  const prep = spawnSync(process.execPath, [join(repo, 'scripts/prepare-agent-test.mjs'), '--temp-parent', parent, '--agent-dir', seed, '--pi-root', fixturePiRoot], { encoding: 'utf8', env: { ...process.env, NODE_OPTIONS: '' } });
   assert.equal(prep.status, 0, prep.stderr);
   const info = JSON.parse(prep.stdout);
   setFixtureTui(info);
@@ -310,7 +310,7 @@ async function runHotSwitch(host) {
   const hotFake = await startFakeAnthropic([{ text: 'ok' }]);
   try {
     const seed = join(hotParent, 'seed'); mkdirSync(seed);
-    const prep = spawnSync(process.execPath, [join(repo, 'scripts/prepare-juice-test.mjs'), '--temp-parent', hotParent, '--host', host, '--agent-dir', seed, '--pi-root', fixturePiRoot], { encoding: 'utf8', env: { ...process.env, NODE_OPTIONS: '' } });
+    const prep = spawnSync(process.execPath, [join(repo, 'scripts/prepare-agent-test.mjs'), '--temp-parent', hotParent, '--host', host, '--agent-dir', seed, '--pi-root', fixturePiRoot], { encoding: 'utf8', env: { ...process.env, NODE_OPTIONS: '' } });
     if (prep.status !== 0) {
       throw new Error(prep.stderr);
     }

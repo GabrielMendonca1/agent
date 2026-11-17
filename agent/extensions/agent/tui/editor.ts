@@ -1,8 +1,8 @@
 import { CustomEditor, type ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { isKeyRelease, matchesKey, Key, type Component, type TUI } from "@earendil-works/pi-tui";
 
-import { loadAllSkillCategories } from "../../../juice/skill-categories.mjs";
-import { isAutomaticSkill } from "../../../juice/skill-policy.mjs";
+import { loadAllSkillCategories } from "../../../core/skill-categories.mjs";
+import { isAutomaticSkill } from "../../../core/skill-policy.mjs";
 
 import { paint, paletteFor, type ThemeLike } from "./claude-style";
 import {
@@ -40,7 +40,7 @@ export interface SkillPickerSources {
 	commands: () => readonly SkillCommandInfo[];
 	/** Categorias das pastas (`loadSkillCategories()`); chamado só ao ABRIR o seletor. */
 	categories: () => readonly CategoryLike[];
-	/** Curadoria (agent/juice/skill-policy.mjs); ausente = ninguém é automática. */
+	/** Curadoria (agent/core/skill-policy.mjs); ausente = ninguém é automática. */
 	isAutomaticSkill?: IsAutomaticSkill;
 }
 

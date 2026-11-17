@@ -4,5 +4,5 @@ docs/setup.md — Instalação, ativação, updater, rollback, custo sem prompt,
 docs/rename-map.md — Mapa do rename Mark → Agent: o que mudou e o que ficou do Pi upstream.
 docs/consumer-contract.md — Contrato lido por consumidores externos (Superagent): valores antigos e novos lado a lado.
 overlay/README.md — Patches do overlay sobre o Pi oficial, camadas, launcher e frame da TUI.
-agent/juice/PROTOCOL.md — Contrato do runtime em agent/juice: preload, preferências, subagentes sempre ligados, receita e cache; ledger v1/v2 só como histórico.
+agent/core/PROTOCOL.md — Contrato do runtime em agent/core: preload, preferências, subagentes sempre ligados, receita e cache; ledger v1/v2 só como histórico.
 NOTICE — Atribuição ao Pi (earendil-works) e às skills de terceiros.

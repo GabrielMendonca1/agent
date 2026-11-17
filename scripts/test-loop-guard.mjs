@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import assert from "node:assert/strict";
-import { initialState, next } from "../agent/juice/loop-guard.mjs";
+import { initialState, next } from "../agent/core/loop-guard.mjs";
 
 let checks = 0;
 function test(name, run) { run(); checks++; console.log(`ok ${name}`); }

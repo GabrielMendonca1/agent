@@ -23,7 +23,7 @@ try {
  const patch={name:'base',path:'overlay/base.patch',sha256:hash(Buffer.from('fixture patch')),tests:['fixture.test.ts']};
  const manifest={name:'agent',officialPackage:'fixture-pi',officialRepository:'https://example.invalid/pi',overlayRef:'v1.0.0',overlayBase:'a'.repeat(40),patches:[patch],compatibility:{forbiddenOverlayMarkers:[],upstreamLayouts:[{name:'classic',binPi:'dist/cli.js'}],bundleMarkers:[{name:'base',path:'dist/cli.js',marker:'BASE',patch:'base'}]}};
  json(join(source,'overlay/manifest.json'),manifest);
- mkdirSync(join(source,'agent/juice'),{recursive:true});writeFileSync(join(source,'agent/juice/runtime.mjs'),'// no-op fixture preload\n');
+ mkdirSync(join(source,'agent/core'),{recursive:true});writeFileSync(join(source,'agent/core/runtime.mjs'),'// no-op fixture preload\n');
  mkdirSync(join(source,'agent/extensions/agent/demo'),{recursive:true});writeFileSync(join(source,'agent/extensions/agent/demo/index.ts'),'// fixture extension\n');
  mkdirSync(join(source,'extensions/megamind'),{recursive:true});writeFileSync(join(source,'extensions/megamind/index.ts'),'// fixture Megamind\n');
  mkdirSync(join(source,'skills/megamind'),{recursive:true});writeFileSync(join(source,'skills/megamind/SKILL.md'),'---\nname: megamind\ndescription: fixture\n---\nfixture');
@@ -38,7 +38,7 @@ try {
   const dir=join(root,id),pkg=join(dir,'lib/node_modules/fixture-pi');mkdirSync(join(pkg,'dist/core'),{recursive:true});mkdirSync(join(dir,'bin'));
   json(join(pkg,'package.json'),{name:'fixture-pi',version:'1.0.0',bin:{pi:'dist/cli.js'}});
   writeFileSync(join(pkg,'dist/core/model-runtime.js'),'export class ModelRuntime {}');
-  writeFileSync(join(pkg,'dist/cli.js'),`#!/usr/bin/env node\n// BASE ${id}\nif(process.argv.includes('--version'))console.log('1.0.0');else {console.log(JSON.stringify({type:'fixture',args:process.argv.slice(2),runtime:process.env.AGENT_RUNTIME_ENABLED,piRoot:process.env.AGENT_PI_ROOT,juice:process.env.AGENT_JUICE_HOME}));process.exit(Number(process.env.FIXTURE_EXIT||0));}\n`,{mode:0o755});
+  writeFileSync(join(pkg,'dist/cli.js'),`#!/usr/bin/env node\n// BASE ${id}\nif(process.argv.includes('--version'))console.log('1.0.0');else {console.log(JSON.stringify({type:'fixture',args:process.argv.slice(2),runtime:process.env.AGENT_RUNTIME_ENABLED,piRoot:process.env.AGENT_PI_ROOT,legacyHome:process.env.AGENT_JUICE_HOME}));process.exit(Number(process.env.FIXTURE_EXIT||0));}\n`,{mode:0o755});
   symlinkSync('../lib/node_modules/fixture-pi/dist/cli.js',join(dir,'bin/pi'));
   const fp=hash(Buffer.concat([readFileSync(join(source,'overlay/manifest.json')),readFileSync(join(source,patch.path))]));
   json(join(dir,'agent-release.json'),{officialRef:'v1.0.0',officialCommit:'a'.repeat(40),officialVersion:'1.0.0',overlayFingerprint:fp,patches:{base:patch.sha256},optionalLayers:[],digestAlgorithm:3,treeDigest:api.digestTree(dir)});
@@ -81,7 +81,7 @@ try {
   assert.ok(!existsSync(join(env.HOME,'.pi')));assert.ok(!existsSync(join(env.HOME,'.agent-juice')));
   assert.ok(!existsSync(join(env.HOME,'.bashrc')));assert.ok(!existsSync(join(env.HOME,'.zshrc')));
   const r=run(launcher,['--mode','json','-p','hello']);const observed=JSON.parse(r.stdout);
-  assert.equal(observed.runtime,'1');assert.equal(observed.juice,undefined);assert.deepEqual(observed.args,['--mode','json','-p','hello']);
+  assert.equal(observed.runtime,'1');assert.equal(observed.legacyHome,undefined);assert.deepEqual(observed.args,['--mode','json','-p','hello']);
   assert.equal(run(launcher,['-p','error'],false,{FIXTURE_EXIT:'7'}).status,7);
  });
  test('update B, idempotence, rollback A keeps resources/config paired',()=>{

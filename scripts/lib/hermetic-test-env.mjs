@@ -1,5 +1,5 @@
 // Testes rodam de dentro de um pi Agent, que exporta NODE_OPTIONS=--import <runtime da release>
-// e AGENT_*/AGENT_JUICE_*. Herdados, os filhos de um teste sobem o runtime de uma release instalada
+// e AGENT_*. Herdados, os filhos de um teste sobem o runtime de uma release instalada
 // (às vezes velha) e o broker real: o teste passa a medir a sessão, não o repo. Importe primeiro.
 // AGENT_STORE, AGENT_REPO e AGENT_STALE_NOTICE são do instalador (antes PI_OVERLAY_*) e ficam.
 const installerEnv = new Set(['AGENT_STORE', 'AGENT_REPO', 'AGENT_STALE_NOTICE']);

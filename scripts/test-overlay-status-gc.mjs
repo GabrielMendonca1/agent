@@ -330,7 +330,7 @@ teste("gc conserva releases e reporta em uso se a inspeção de processos falhar
 	assert.match(out.stdout, /process inspection unavailable: cannot prove unused/);
 	for (const name of ["orf-velho", "orf-velho2"]) assert.ok(existe(store, "releases", name));
 	for (const name of ["sobra-velha", "sobra-velha2"]) assert.ok(existe(store, "runtime", "releases", name));
-	assert.ok(existe(store, "runtime", "build-cache"), "sem inspeção de processos o build-cache também fica: o broker do Juice pode estar usando");
+	assert.ok(existe(store, "runtime", "build-cache"), "sem inspeção de processos o build-cache também fica: o broker histórico pode estar usando");
 });
 
 teste("gc sem config do Agent só reporta artefatos, não apaga", () => {

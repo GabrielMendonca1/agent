@@ -1,6 +1,6 @@
 /** @typedef {import('@earendil-works/pi-coding-agent').ExtensionAPI} ExtensionAPI */
 /** @typedef {import('@earendil-works/pi-coding-agent').ExtensionContext} ExtensionContext */
-/** @typedef {import('../../../juice/protocol.d.ts').JuiceMode} JuiceMode */
+/** @typedef {'simple' | 'complex'} SessionMode */
 
 const ENTRY_TYPE = 'agent-mode';
 // Pi mutates the branch before _persist. A thrown append must not authorize
@@ -9,7 +9,7 @@ const ENTRY_TYPE = 'agent-mode';
 /** @type {WeakMap<ExtensionContext['sessionManager'], Set<string | undefined>>} */
 const failedWrites = new WeakMap();
 const writeError = () => new Error('Agent: falha ao salvar o modo da sessão. Use /mode simple ou /mode complex para recuperar.');
-/** @param {unknown} mode @returns {mode is JuiceMode} */
+/** @param {unknown} mode @returns {mode is SessionMode} */
 function validMode(mode) {
   return mode === 'simple' || mode === 'complex';
 }
@@ -17,14 +17,14 @@ function validMode(mode) {
 /**
  * Only custom entries on the active branch count; conversation notes do not.
  * @param {ExtensionContext} ctx
- * @returns {JuiceMode | null}
+ * @returns {SessionMode | null}
  */
 export function readSessionMode(ctx) {
   if (failedWrites.get(ctx.sessionManager)?.has(ctx.sessionManager.getSessionId?.())) throw writeError();
   return readBranchMode(ctx);
 }
 
-/** @param {ExtensionContext} ctx @returns {JuiceMode | null} */
+/** @param {ExtensionContext} ctx @returns {SessionMode | null} */
 function readBranchMode(ctx) {
   const branch = ctx.sessionManager.getBranch();
   for (let i = branch.length - 1; i >= 0; i--) {
@@ -40,7 +40,7 @@ function readBranchMode(ctx) {
 /**
  * @param {ExtensionAPI} pi
  * @param {ExtensionContext} ctx
- * @param {JuiceMode} mode
+ * @param {SessionMode} mode
  * @returns {void}
  */
 export function saveSessionMode(pi, ctx, mode) {
@@ -65,7 +65,7 @@ export function saveSessionMode(pi, ctx, mode) {
  * Old and new sessions seed the branch once, never from the accounting ledger.
  * @param {ExtensionAPI} pi
  * @param {ExtensionContext} ctx
- * @returns {JuiceMode}
+ * @returns {SessionMode}
  */
 export function ensureSessionMode(pi, ctx) {
   const saved = readSessionMode(ctx);

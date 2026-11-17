@@ -24,9 +24,9 @@ import {
 	sessionMayBeOwned,
 } from "./legacy-runs.ts";
 import { ownerMayBeAlive, readProcessIdentity, type ProcessIdentity } from "./process-owner.ts";
-// @ts-ignore — módulo JS do juice, sem tipos
-import { staggeredFanout } from "../../../juice/cache-policy.mjs";
-import { childCacheRetention } from "../../../juice/child-env.mjs";
+// @ts-ignore — módulo JS compartilhado, sem tipos
+import { staggeredFanout } from "../../../core/cache-policy.mjs";
+import { childCacheRetention } from "../../../core/child-env.mjs";
 import {
 	ChildSlots,
 	type DispatchDefaults,

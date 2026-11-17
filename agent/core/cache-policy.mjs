@@ -3,8 +3,8 @@
 // compactação, troca de modelo, chave OpenAI) e o runner de subagentes (leque escalonado).
 // Nada aqui guarda texto de payload: só números e enums.
 
-/** Option-symbol que o runtime Juice lê como `kind` da chamada (ex.: 'cache-warm'). Símbolo não serializa no provider. */
-export const JUICE_KIND = Symbol.for('agent.juice.kind');
+/** Option-symbol que o runtime Agent lê como `kind` da chamada (ex.: 'cache-warm'). Símbolo não serializa no provider. */
+export const CALL_KIND = Symbol.for('agent.runtime.kind');
 
 /** Preço em US$ por token de um modelo do Pi (`model.cost` vem em US$/milhão). */
 function perToken(model, key) {

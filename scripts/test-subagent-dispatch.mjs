@@ -11,7 +11,7 @@ import { createRequire } from 'node:module';
 import { fileURLToPath } from 'node:url';
 import { startFakeAnthropic } from './lib/fake-anthropic.mjs';
 import { buildAgentLaunch } from './lib/agent-runtime.mjs';
-import { subagentEnv, userCommandEnv } from '../agent/juice/child-env.mjs';
+import { subagentEnv, userCommandEnv } from '../agent/core/child-env.mjs';
 
 const repo = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const piRoot = process.env.AGENT_PI_ROOT || join(homedir(), '.local/share/agent/current/lib/node_modules/@earendil-works/pi-coding-agent');

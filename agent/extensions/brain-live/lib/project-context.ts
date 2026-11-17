@@ -2,7 +2,7 @@ import type { ExtensionAPI } from '@earendil-works/pi-coding-agent';
 import { getAgentDir, loadProjectContextFiles } from '@earendil-works/pi-coding-agent';
 import { homedir } from 'node:os';
 import { join, resolve, dirname } from 'node:path';
-import { hasRules, rebuildAgents, rememberRule, selectProjectContext } from '../../../juice/project-context.mjs';
+import { hasRules, rebuildAgents, rememberRule, selectProjectContext } from '../../../core/project-context.mjs';
 
 export function installProjectContext(pi: ExtensionAPI) {
   let snapshot: Array<{ path: string; content: string }> | undefined;

@@ -3,11 +3,11 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, mkdirSync, writeFileSync, utimesSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import * as policy from '../agent/juice/policy.mjs';
+import * as policy from '../agent/core/policy.mjs';
 assert.equal(typeof policy.notesSection, 'function', 'notesSection existe');
 assert.equal(policy.notesSection({ count: 0, ageDays: 9 }), '');
 assert.equal(policy.notesSection({ count: 2, ageDays: 3 }), '<agent_notes>Mapa de notas do projeto em .agent/notes.md (2 linhas, atualizado há 3 dias): leia-o antes de explorar e responda pela nota quando ela cobrir a pergunta; quando a resposta for decidir algo, verifique no código.</agent_notes>');
-const { readNotesMetadata, unmappedDocs } = await import('../agent/juice/notes.mjs');
+const { readNotesMetadata, unmappedDocs } = await import('../agent/core/notes.mjs');
 const dir = mkdtempSync(join(tmpdir(), 'agent-notes-'));
 try {
   const now = Date.now();

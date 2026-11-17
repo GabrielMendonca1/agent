@@ -26,9 +26,9 @@ import {
 import { type Component, Container, Markdown, Spacer, Text, truncateToWidth } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
 import { formatRoleModelChoices, getRoleModelChoices } from "../lib/tiers.ts";
-import { getAgentPreferences, isChild } from "../../../juice/client.mjs";
-import { NO_DELEGATE_ENV } from "../../../juice/child-env.mjs";
-import { parseWorkflow, readWorkflow } from "../../../juice/workflow.mjs";
+import { getAgentPreferences, isChild } from "../../../core/client.mjs";
+import { NO_DELEGATE_ENV } from "../../../core/child-env.mjs";
+import { parseWorkflow, readWorkflow } from "../../../core/workflow.mjs";
 import { type AgentConfig, type AgentScope, discoverAgents } from "./agents.ts";
 import {
 	DEFAULT_TIMEOUT_SECONDS,

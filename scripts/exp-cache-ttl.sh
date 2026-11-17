@@ -1,7 +1,7 @@
 #!/bin/bash
 REPO=/Users/biel/Projects/agent
 mkdir -p /tmp/agent-ttl; PARENT=$(mktemp -d /tmp/agent-ttl/p-XXXX)
-PROF=$(NODE_OPTIONS= node $REPO/scripts/prepare-juice-test.mjs --temp-parent $PARENT | python3 -c "import sys,json; print(json.load(sys.stdin)['root'])")
+PROF=$(NODE_OPTIONS= node $REPO/scripts/prepare-agent-test.mjs --temp-parent $PARENT | python3 -c "import sys,json; print(json.load(sys.stdin)['root'])")
 SID=$(uuidgen | tr A-Z a-z); LOG=/tmp/agent-ttl/usage.jsonl; : > $LOG
 turn() { cd $REPO; AGENT_TTL=$2 AGENT_TTL_LOG=$LOG AGENT_LEARN=0 AGENT_DISPATCHER=0 $PROF/launch.sh -p --session-id $SID -e $REPO/scripts/exp-cache-ttl.ext.mjs --model anthropic/claude-haiku-5-5 "Responda só: $3" >/dev/null 2>&1
   python3 - "$1" <<'PY'

@@ -14,7 +14,7 @@ const pkg = process.env.AGENT_PI_ROOT || join(process.env.AGENT_STORE || join(ho
 if (!existsSync(join(pkg, 'package.json'))) throw new Error('Pi instalado é necessário para verificar o dispatch do piloto.');
 const req = createRequire(join(pkg, 'package.json'));
 const { createJiti } = req('jiti');
-const root = mkdtempSync(join(tmpdir(), 'juice-dispatch-'));
+const root = mkdtempSync(join(tmpdir(), 'agent-dispatch-'));
 const savedEnv = { ...process.env };
 let checks = 0;
 try {
@@ -148,7 +148,7 @@ try {
   checks++; console.log('ok regras do projeto só na mensagem do filho, pelo cwd efetivo; aquecimento intacto');
 
   // Teto do bloco de orientação: nada de receita gigante comendo o contexto do filho.
-  const { RULES_GUIDANCE_CAP, RULES_SOURCE_CAP, projectRules } = await import(join(repo, 'agent/juice/workflow.mjs'));
+  const { RULES_GUIDANCE_CAP, RULES_SOURCE_CAP, projectRules } = await import(join(repo, 'agent/core/workflow.mjs'));
   const recipeOf = (dir) => readFileSync(join(dir, '.agent/workflow.md'), 'utf8');
   const guidanceRules = (text) => text.split('\n').filter((l) => l.startsWith('- ')).map((l) => l.slice(2));
   const emoji = project('proj-emoji', ['regra com acentuação e emoji 🚀🧪 — cabe inteira', 'segunda regra ção ✓']);

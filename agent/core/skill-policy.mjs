@@ -13,16 +13,19 @@ export function isAutomaticSkill(name) {
   return automaticSkillNames().includes(name);
 }
 
-export const PREVIOUS_SKILL_POLICY_ENV = 'AGENT_JUICE_SKILLS_BEFORE';
+export const PREVIOUS_SKILL_POLICY_ENV = 'AGENT_SKILLS_BEFORE';
 
 /** Desfazer só a política instalada pelo Agent, preservando eventual env do usuário. */
 export function restoreSkillPolicyEnvironment(env) {
-  if (!Object.hasOwn(env, PREVIOUS_SKILL_POLICY_ENV)) return;
-  const previous = JSON.parse(env[PREVIOUS_SKILL_POLICY_ENV]);
+  // Read-only compatibility for a parent process started before the rename.
+  const key = Object.hasOwn(env, PREVIOUS_SKILL_POLICY_ENV) ? PREVIOUS_SKILL_POLICY_ENV : 'AGENT_JUICE_SKILLS_BEFORE';
+  if (!Object.hasOwn(env, key)) return;
+  const previous = JSON.parse(env[key]);
   if (previous !== null && typeof previous !== 'string') throw new Error('Agent: snapshot de curadoria inválido');
   if (previous === null) delete env.PI_AUTOMATIC_SKILLS;
   else env.PI_AUTOMATIC_SKILLS = previous;
   delete env[PREVIOUS_SKILL_POLICY_ENV];
+  delete env.AGENT_JUICE_SKILLS_BEFORE;
 }
 
 /**

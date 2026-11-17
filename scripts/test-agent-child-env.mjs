@@ -1,15 +1,15 @@
 #!/usr/bin/env node
-/** Comandos do usuário/agente (bash, codemode) não herdam o preload do Juice nem a curadoria de skills. */
+/** Comandos do usuário/agente (bash, codemode) não herdam o preload do Agent nem a curadoria de skills. */
 import assert from 'node:assert/strict';
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { homedir, tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { userCommandEnv, subagentEnv } from '../agent/juice/child-env.mjs';
+import { userCommandEnv, subagentEnv } from '../agent/core/child-env.mjs';
 
 const repo = resolve(dirname(fileURLToPath(import.meta.url)), '..');
-const rt = '/tmp/x/agent/juice/runtime.mjs';
+const rt = '/tmp/x/agent/core/runtime.mjs';
 const url = `--import=file://${rt}`;
 
 const run = (env) => userCommandEnv(env);
@@ -18,21 +18,21 @@ assert.equal(run({ NODE_OPTIONS: `--max-old-space-size=64 ${url} --no-warnings` 
 assert.equal(run({ NODE_OPTIONS: `--no-warnings --import ${rt}` }).NODE_OPTIONS, '--no-warnings');
 assert.equal(run({ NODE_OPTIONS: `--import ./other.mjs ${url}` }).NODE_OPTIONS, '--import ./other.mjs');
 assert.equal(run({ PI_AUTOMATIC_SKILLS: 'peers' }).PI_AUTOMATIC_SKILLS, 'peers'); // sem snapshot: intacto
-assert.equal(run({ PI_AUTOMATIC_SKILLS: 'peers', AGENT_JUICE_SKILLS_BEFORE: 'null' }).PI_AUTOMATIC_SKILLS, undefined);
-const s = run({ PI_AUTOMATIC_SKILLS: 'peers', AGENT_JUICE_SKILLS_BEFORE: '"a,b"', AGENT_JUICE_X: '1', KEEP: '1' });
+assert.equal(run({ PI_AUTOMATIC_SKILLS: 'peers', AGENT_SKILLS_BEFORE: 'null' }).PI_AUTOMATIC_SKILLS, undefined);
+const s = run({ PI_AUTOMATIC_SKILLS: 'peers', AGENT_SKILLS_BEFORE: '"a,b"', AGENT_JUICE_X: '1', KEEP: '1' });
 assert.deepEqual(s, { PI_AUTOMATIC_SKILLS: 'a,b', KEEP: '1' });
-const original = { NODE_OPTIONS: url, AGENT_JUICE_SKILLS_BEFORE: 'null', PI_AUTOMATIC_SKILLS: 'peers' };
+const original = { NODE_OPTIONS: url, AGENT_SKILLS_BEFORE: 'null', PI_AUTOMATIC_SKILLS: 'peers' };
 run(original);
 assert.equal(original.NODE_OPTIONS, url); // não muta
 for (const snapshot of ['{', '{}', '1', 'true']) {
-  const env = { AGENT_JUICE_SKILLS_BEFORE: snapshot, PI_AUTOMATIC_SKILLS: 'unsafe', A: '1' };
+  const env = { AGENT_SKILLS_BEFORE: snapshot, PI_AUTOMATIC_SKILLS: 'unsafe', A: '1' };
   assert.throws(() => run(env), snapshot === '{' ? SyntaxError : /snapshot de curadoria inválido/);
   assert.equal(env.PI_AUTOMATIC_SKILLS, 'unsafe', 'failed restoration does not mutate parent');
 }
 const parent = {
   NODE_OPTIONS: url, AGENT_RUNTIME_ENABLED: '1', AGENT_PI_ROOT: '/pi',
   AGENT_CACHE_PREFETCH: '1', AGENT_JUICE_STATE: '/legacy',
-  AGENT_JUICE_SKILLS_BEFORE: 'null', PI_AUTOMATIC_SKILLS: 'peers', KEEP: 'yes',
+  AGENT_SKILLS_BEFORE: 'null', PI_AUTOMATIC_SKILLS: 'peers', KEEP: 'yes',
 };
 assert.deepEqual(run({ ...parent, AGENT_CHILD: '1' }), { KEEP: 'yes' });
 const child = subagentEnv(parent);
@@ -46,7 +46,7 @@ assert.equal(child.AGENT_RUNTIME_ENABLED, '1');
 assert.equal(child.AGENT_PI_ROOT, '/pi');
 assert.equal(child.PI_AUTOMATIC_SKILLS, 'peers', 'Agent child retains skill policy');
 assert.equal(child.AGENT_JUICE_STATE, undefined, 'no accounting env');
-assert.equal(child.AGENT_JUICE_SKILLS_BEFORE, 'null');
+assert.equal(child.AGENT_SKILLS_BEFORE, 'null');
 assert.equal(parent.AGENT_CHILD, undefined, 'parent env not mutated');
 assert.equal(child.PI_CACHE_RETENTION, 'short', 'children default to the 5 min cache');
 assert.equal(subagentEnv({ PI_CACHE_RETENTION: 'long' }).PI_CACHE_RETENTION, 'short', 'session long does not reach children');
@@ -56,7 +56,7 @@ console.log('ok userCommandEnv');
 
 const store = process.env.AGENT_STORE ? resolve(process.env.AGENT_STORE) : join(homedir(), '.local/share/agent');
 const rel = 'lib/node_modules/@earendil-works/pi-coding-agent';
-let piRoot = process.env.AGENT_PI_ROOT || process.env.AGENT_JUICE_PI_ROOT;
+let piRoot = process.env.AGENT_PI_ROOT;
 if (!piRoot && existsSync(join(store, 'current', rel, 'dist/index.js'))) piRoot = join(store, 'current', rel);
 if (!piRoot) { console.log('skip: Pi não encontrado'); process.exit(0); }
 piRoot = realpathSync(piRoot);
@@ -64,14 +64,14 @@ piRoot = realpathSync(piRoot);
 const root = mkdtempSync(join(tmpdir(), 'agent-child-env-'));
 const saved = { ...process.env };
 try {
-  mkdirSync(join(root, 'agent/juice'), { recursive: true });
-  const fake = join(root, 'agent/juice/runtime.mjs');
+  mkdirSync(join(root, 'agent/core'), { recursive: true });
+  const fake = join(root, 'agent/core/runtime.mjs');
   writeFileSync(fake, '');
   process.env.HOME = root;
   process.env.PI_CODING_AGENT_DIR = join(root, 'agent');
   process.env.NODE_OPTIONS = `--no-warnings --import=file://${fake}`;
   process.env.PI_AUTOMATIC_SKILLS = 'peers,megamind,tasks';
-  process.env.AGENT_JUICE_SKILLS_BEFORE = 'null';
+  process.env.AGENT_SKILLS_BEFORE = 'null';
   process.env.AGENT_RUNTIME_ENABLED = '1';
   process.env.AGENT_PI_ROOT = piRoot;
   process.env.AGENT_CHILD = '1';

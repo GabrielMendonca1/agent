@@ -40,8 +40,8 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { bindSessionCachePolicy, breakCause, compactionDecision, idleCompactionAt, idleCompactionDecision, idleCompactMinTokens, fingerprint, firstChangedSegment, JUICE_KIND, modelSwitchEstimate, openaiCacheKey, prefetchPayload, warmPlan } from "../../juice/cache-policy.mjs";
-import { isChild } from "../../juice/client.mjs";
+import { bindSessionCachePolicy, breakCause, compactionDecision, idleCompactionAt, idleCompactionDecision, idleCompactMinTokens, fingerprint, firstChangedSegment, CALL_KIND, modelSwitchEstimate, openaiCacheKey, prefetchPayload, warmPlan } from "../../core/cache-policy.mjs";
+import { isChild } from "../../core/client.mjs";
 import { CompactionEpoch, branchOf } from "./lib/compaction-epoch.ts";
 import { clearBeforeAutoCompaction, recordToolClearRequest } from './compaction/tool-clear.ts';
 
@@ -259,7 +259,7 @@ export default function cacheKeeper(pi: ExtensionAPI) {
     }
     const m: any = ctx?.model;
     pendingModel = m ? { provider: m.provider, id: m.id, api: m.api } : undefined;
-    captureFinal = true; // o runtime Juice entrega o corpo final depois da cadeia inteira
+    captureFinal = true; // o runtime Agent entrega o corpo final depois da cadeia inteira
     remember(p, pendingModel);
   });
   // Corpo final (runtime.mjs, depois de tool-lexicon/image-normalize etc.) substitui o parcial.
@@ -317,7 +317,7 @@ export default function cacheKeeper(pi: ExtensionAPI) {
         {
           maxTokens: plan.maxTokens, signal: controller.signal, cacheRetention: ttl >= 3600 ? "long" : "short",
           // Contabilidade separada no ledger (kind cache-warm); o símbolo não vai ao provider.
-          [JUICE_KIND]: "cache-warm",
+          [CALL_KIND]: "cache-warm",
           // Chamadas por modelRegistry não passam por before_provider_request: troca o payload aqui.
           // Corpo idêntico salvo max_tokens: o cch (que exclui model/max_tokens) e o prefixo se mantêm.
           onPayload: () => ({ ...snapshot, max_tokens: plan.maxTokens }),

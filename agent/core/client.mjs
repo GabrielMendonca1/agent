@@ -6,7 +6,6 @@ import { randomUUID } from 'node:crypto';
 import { withDirectoryLock } from './lock.mjs';
 
 export const runtimeEnabled = () => (process.env.AGENT_RUNTIME_ENABLED ?? process.env.AGENT_JUICE_ENABLED) === '1';
-export const juiceEnabled = runtimeEnabled;
 export const isChild = () => (process.env.AGENT_CHILD ?? process.env.AGENT_JUICE_CHILD) === '1';
 export const preferencesPath = () => join(process.env.PI_CODING_AGENT_DIR || join(homedir(), '.agent'), 'agent-preferences.json');
 function readPreferences() {
@@ -34,5 +33,3 @@ export function setAgentPreferences(patch) {
   if (result === undefined) throw new Error(`Agent: preferences lock timeout: ${file}`);
   return result;
 }
-export const getJuicePreferences = getAgentPreferences;
-export const setJuicePreferences = setAgentPreferences;

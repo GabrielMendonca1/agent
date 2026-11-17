@@ -30,12 +30,12 @@ function copyIsolatedTree(from, to, ancestors = new Set()) {
   } else throw new Error(`Recurso não copiável no perfil isolado: ${from}`);
 }
 const source = resolve(option('--agent-dir', join(homedir(), '.agent')));
-const piRoot = resolve(option('--pi-root', process.env.AGENT_PI_ROOT || process.env.AGENT_JUICE_PI_ROOT || join(homedir(), '.local/share/agent/current/lib/node_modules/@earendil-works/pi-coding-agent')));
+const piRoot = resolve(option('--pi-root', process.env.AGENT_PI_ROOT || join(homedir(), '.local/share/agent/current/lib/node_modules/@earendil-works/pi-coding-agent')));
 if (!existsSync(join(piRoot, 'dist/core/model-runtime.js'))) throw new Error('Pi root missing; pass --pi-root');
 const host = option('--host', 'classic');
 if (host !== 'classic') throw new Error('--host must be classic');
 const entry = 'dist/cli.js';
-const root = mkdtempSync(join(resolve(option('--temp-parent', tmpdir())), 'agent-juice-test-'));
+const root = mkdtempSync(join(resolve(option('--temp-parent', tmpdir())), 'agent-test-'));
 const home = join(root, 'home');
 const agent = join(home, '.pi/agent');
 mkdirSync(agent, { recursive: true, mode: 0o700 });
@@ -164,7 +164,7 @@ const env = {
   PI_CACHE_RETENTION: 'long',
   // Compatibility with previously installed dual-host Pi releases.
   PI_DURABLE_HOST: '0',
-  NODE_OPTIONS: `--import=${pathToFileURL(join(repo, 'agent/juice/runtime.mjs')).href}`,
+  NODE_OPTIONS: `--import=${pathToFileURL(join(repo, 'agent/core/runtime.mjs')).href}`,
 };
 // Existing ARCA profile paths remain supported for Megamind and Peers.
 // Only --link-arca shares enrollment/mesh; --install does not imply consent.

@@ -1,22 +1,7 @@
-// Trava de mutação da receita (.agent/workflow.md + history.json), entre processos.
-//
-// Protocolo (só entre quem coopera — aprendizado e ledger do Agent; edição humana não passa aqui):
-// - adquirir: mkdir `.agent/.workflow.lock` (atômico) e criar dentro, com O_EXCL,
-//   `owner.<pid>.<nonce>`; o nonce distingue donos mesmo com PID reaproveitado.
-// - nunca roubar por idade: dono vivo (ou suspenso) mantém a trava o tempo que for.
-// - reaproveitar trava de dono morto: só se o PID do arquivo owner não existe mais;
-//   apaga EXATAMENTE aquele arquivo e, só se esse unlink deu certo, rmdir NÃO recursivo
-//   (dois concorrentes: só um vence o unlink; dono novo nunca é apagado).
-// - diretório sem owner (dono morreu entre mkdir e criar o owner) ou com owner ilegível:
-//   fail closed — ninguém remove sozinho; limpeza manual: `rmdir .agent/.workflow.lock`.
-// - soltar: unlink do próprio owner + rmdir não recursivo.
-// Sem a trava em `waitMs`, devolve undefined: o chamador trata como inconclusivo
-// (o chamador não grava). Nunca segure durante chamada de modelo.
 import { closeSync, mkdirSync, openSync, readdirSync, rmdirSync, unlinkSync } from 'node:fs';
 import { randomUUID } from 'node:crypto';
 import { dirname, join } from 'node:path';
 
-export const LOCK_DIR = '.workflow.lock';
 const OWNER = /^owner\.(\d+)\.([0-9a-f-]+)$/;
 const sleep = (ms) => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
 
@@ -38,12 +23,7 @@ function reapDead(dir) {
   return true;
 }
 
-/** Roda `fn` com a trava; devolve o retorno dele, ou `undefined` se não obteve em `waitMs`. */
-export function withWorkflowLock(cwd, fn, { waitMs = 5000 } = {}) {
-  return withDirectoryLock(join(cwd, '.agent', LOCK_DIR), fn, { waitMs });
-}
-
-/** Trava de transação reutilizada pelo ledger e pelas preferências JSON. */
+/** Transaction lock for profile preferences. Dead owners only; never steal a live lock. */
 export function withDirectoryLock(dir, fn, { waitMs = 5000 } = {}) {
   const deadline = Date.now() + waitMs;
   const owner = join(dir, `owner.${process.pid}.${randomUUID()}`);

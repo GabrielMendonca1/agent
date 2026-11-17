@@ -5,13 +5,13 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'nod
 import { homedir, tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
-const root = process.env.AGENT_PI_ROOT || process.env.AGENT_JUICE_PI_ROOT || join(process.env.AGENT_STORE || join(homedir(), '.local/share/agent'), 'current/lib/node_modules/@earendil-works/pi-coding-agent');
+const root = process.env.AGENT_PI_ROOT || join(process.env.AGENT_STORE || join(homedir(), '.local/share/agent'), 'current/lib/node_modules/@earendil-works/pi-coding-agent');
 const enrollmentHome = mkdtempSync(join(tmpdir(), 'agent-skill-enrollment-'));
 const originalHome = process.env.HOME;
 const originalConfig = process.env.ARCA_MEGAMIND_CONFIG;
 process.env.HOME = enrollmentHome;
 process.env.ARCA_MEGAMIND_CONFIG = 'none';
-const policy = await import('../agent/juice/skill-policy.mjs');
+const policy = await import('../agent/core/skill-policy.mjs');
 const dir = mkdtempSync(join(tmpdir(), 'agent-skill-policy-'));
 const savedEnv = { ...process.env };
 const names = ['peers', 'megamind', 'tasks', 'diagram', 'arca-ops', 'omni-ops', 'goal', 'grill', 'cua', 'debug', 'tdd', 'pr', 'handoff', 'sources', 'html-plan', 'ui-review', 'pessoal'];

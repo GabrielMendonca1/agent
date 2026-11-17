@@ -2,7 +2,7 @@
 import { isAbsolute, join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { runtimeEnabled } from './client.mjs';
-import { JUICE_KIND } from './cache-policy.mjs';
+import { CALL_KIND } from './cache-policy.mjs';
 import { installSkillPolicy, restoreSkillPolicyEnvironment } from './skill-policy.mjs';
 
 const installed = Symbol.for('agent.runtime.v2');
@@ -17,7 +17,7 @@ export function installAgentRuntime(ModelRuntime) {
     return { ...prepared, provider: new Proxy(prepared.provider, {
       get(target, key) {
         if (key === 'stream' || key === 'streamSimple') return (m, c, o = {}) => {
-          if (o[JUICE_KIND] !== 'cache-warm' && typeof o.onPayload === 'function') {
+          if (o[CALL_KIND] !== 'cache-warm' && typeof o.onPayload === 'function') {
             const onPayload = o.onPayload;
             o = { ...o, onPayload: async (payload, model) => {
               const result = await onPayload(payload, model);
@@ -36,8 +36,6 @@ export function installAgentRuntime(ModelRuntime) {
   Object.defineProperty(proto, installed, { value: true });
   return true;
 }
-// Existing hosts can retain the old installer name; it never accounts.
-export const installJuiceGate = installAgentRuntime;
 
 if (runtimeEnabled()) {
   const root = process.env.AGENT_PI_ROOT || process.env.AGENT_JUICE_PI_ROOT;

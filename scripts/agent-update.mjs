@@ -1460,7 +1460,7 @@ async function prepareAgentPair(store, releaseDir, label, options) {
 	renameSync(temporary, historyPath);
 	const historicalConfig = label === "Rollback" && typeof history[piRoot] === "object" ? history[piRoot] : undefined;
 	if (artifact.manifest?.version < 3) {
-		console.warn("Rollback: legacy runtime restores its declared Juice accounting contract.");
+		console.warn("Rollback: legacy runtime restores its declared historical accounting contract.");
 		const home = historicalConfig?.juiceHome || config.juiceHome;
 		if (!home || !isAbsolute(home) || home.split(/[\\/]/).includes("..") || !existsSync(home) || !statSync(home).isDirectory()) fail("Legacy rollback requires its original existing juiceHome directory; nothing activated");
 	}
@@ -2634,10 +2634,10 @@ function overlayGc(options) {
 	console.log(`Reclaimed ${formatSize(total)} in ${deletes.length} item(s).`);
 }
 
-/** Rodado de dentro de uma sessão Agent antiga, tira do próprio ambiente o preload do Juice e a curadoria de skills. */
+/** Rodado de dentro de uma sessão Agent antiga, tira do próprio ambiente o preload legado do Agent e a curadoria de skills. */
 async function sanitizeUpdaterEnv(env = process.env) {
 	try {
-		const { userCommandEnv } = await import(pathToFileURL(join(repoRoot, "agent", "juice", "child-env.mjs")).href);
+		const { userCommandEnv } = await import(pathToFileURL(join(repoRoot, "agent", "core", "child-env.mjs")).href);
 		const clean = userCommandEnv(env);
 		for (const key of Object.keys(env)) if (!(key in clean)) delete env[key];
 		for (const [key, value] of Object.entries(clean)) if (env[key] !== value) env[key] = value;
