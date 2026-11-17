@@ -24,6 +24,27 @@ import { startFakeAnthropic } from './lib/fake-anthropic.mjs';
 const piRoot = join(process.env.AGENT_STORE || join(homedir(), '.local/share/agent'), 'current/lib/node_modules/@earendil-works/pi-coding-agent');
 const repo = new URL('..', import.meta.url).pathname.replace(/\/$/, '');
 
+// Family policy boundaries and explicit override; no provider calls.
+{
+  const { codemodeModeFor } = await import('../agent/core/codemode-policy.mjs');
+  for (const id of ['gpt-5.6-sol', 'gpt-5.6-astra', 'gpt-6-sol', 'gpt-6.2-sol', 'gpt-6.2-astra', 'gpt-7-sol', 'gpt-10.3-astra']) {
+    assert.equal(codemodeModeFor({ provider: 'openai-codex', id }, {}), 'only', id);
+  }
+  for (const id of ['gpt-5.5-sol', 'gpt-5.7-sol', 'gpt-6.2-luna', 'gpt-7-luna']) {
+    assert.equal(codemodeModeFor({ provider: 'openai-codex', id }, {}), 'on', id);
+  }
+  for (const id of ['claude-opus-5', 'claude-fable-5.1', 'claude-opus-6-2', 'claude-fable-10']) {
+    assert.equal(codemodeModeFor({ provider: 'anthropic', id }, {}), 'only', id);
+  }
+  for (const id of ['claude-opus-4.9', 'claude-haiku-6', 'claude-sonnet-7']) {
+    assert.equal(codemodeModeFor({ provider: 'anthropic', id }, {}), 'on', id);
+  }
+  assert.equal(codemodeModeFor({ provider: 'openai', id: 'gpt-7-sol' }, {}), 'on');
+  assert.equal(codemodeModeFor(null, {}), 'on');
+  assert.equal(codemodeModeFor({ provider: 'openai-codex', id: 'gpt-7-sol' }, { AGENT_CODEMODE_MODE: 'on' }), 'on');
+  assert.equal(codemodeModeFor(null, { AGENT_CODEMODE_MODE: 'only' }), 'only');
+}
+
 // ---- diagnóstico: registry realista, sem sessão, I/O ou inferência ---------
 {
   const root = realpathSync(piRoot);
