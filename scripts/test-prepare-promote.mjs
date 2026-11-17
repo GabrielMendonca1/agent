@@ -40,7 +40,7 @@ async function atest(name, fn) { await fn(); checks++; console.log(`ok ${name}`)
 try {
 	mkdirSync(join(fixture, "scripts"), { recursive: true });
 	mkdirSync(join(fixture, "overlay"));
-	for (const name of ["agent-update.mjs", "agent-wrapper.sh", "agent-wrapper.cmd"]) {
+	for (const name of ["agent-update.mjs", "agent-wrapper.sh", "agent-wrapper.cmd", "migrate-from-mark.mjs", "import-durable-sessions.mjs"]) {
 		copyFileSync(join(repo, "scripts", name), join(fixture, "scripts", name));
 	}
 	cpSync(join(repo, "scripts", "lib"), join(fixture, "scripts", "lib"), { recursive: true });

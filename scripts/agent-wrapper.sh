@@ -11,6 +11,10 @@ AGENT_CONFIG="$STORE/runtime/config.json"
 AGENT_LAUNCHER="$OVERLAY_REPO/scripts/agent-launch.mjs"
 
 case "${1:-}" in
+  migrate-from-mark)
+    shift
+    exec node "$OVERLAY_REPO/scripts/migrate-from-mark.mjs" "$@"
+    ;;
   overlay-update)
     shift
     exec node "$UPDATER" "$@"

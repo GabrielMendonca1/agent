@@ -2,6 +2,7 @@
   "defaultTimeoutMs": 120000,
   "parallel": 4,
   "checks": [
+    { "name": "mark-migration", "cmd": "node scripts/test-mark-migration.mjs", "tags": ["integration", "agent"] },
     { "name": "agent-project-context", "cmd": "node scripts/test-agent-project-context.mjs", "tags": ["integration", "agent"] },
     { "name": "tool-clear", "cmd": "node scripts/test-tool-clear.mjs", "tags": ["integration", "agent"] },
     {

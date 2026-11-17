@@ -31,6 +31,7 @@ rem Tudo depois do primeiro argumento, preservando o quoting original.
 set "REST="
 for /f "tokens=1,*" %%a in ("%*") do set "REST=%%b"
 
+if /i "%~1"=="migrate-from-mark" goto :migrate_from_mark
 if /i "%~1"=="overlay-update" goto :overlay_update
 if /i "%~1"=="overlay-rollback" goto :overlay_rollback
 if /i "%~1"=="overlay-status" goto :overlay_status
@@ -51,6 +52,10 @@ exit /b
 echo Agent esta habilitado em "%AGENT_CONFIG%", mas "%AGENT_LAUNCHER%" nao existe neste bundle. 1>&2
 echo Reinstale o bundle com o launcher correspondente. 1>&2
 exit /b 1
+
+:migrate_from_mark
+node "%OVERLAY_REPO%\scripts\migrate-from-mark.mjs" %REST%
+exit /b
 
 :overlay_update
 node "%UPDATER%" %REST%

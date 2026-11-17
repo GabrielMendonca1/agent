@@ -18,7 +18,7 @@ agent
 
 Use `AGENT_VERSION=<tag>` para fixar uma release e `AGENT_RELEASE_REPO=owner/repo` para escolher explicitamente outro canal privado confiável. Não use um mirror não confiável: SHA256SUMS detecta corrupção, **não é assinatura**. O transporte autenticado do `gh` é a origem de confiança. Nenhum download usa HTTP público nem copia auth do Mark. Busca web e Megamind podem exigir configuração própria; não são autenticação do chat.
 
-Padrões: store `~/.local/share/agent`, comando `~/.local/bin/agent`, perfil `~/.agent`. `AGENT_STORE` e `PI_CODING_AGENT_DIR` explícitos prevalecem. Não existe migração de `~/.pi/agent` ou do store Mark. O bootstrap não altera shell rc; configure o PATH também para o Node em terminais novos. Um store alternativo só adota `~/.local/bin/agent` com `--adopt-launcher` explícito.
+Padrões: store `~/.local/share/agent`, comando `~/.local/bin/agent`, perfil `~/.agent`. `AGENT_STORE` e `PI_CODING_AGENT_DIR` explícitos prevalecem. Para copiar o perfil Mark existente sem apagar a origem, use `agent migrate-from-mark` (detalhes abaixo). O bootstrap não altera shell rc; configure o PATH também para o Node em terminais novos. Um store alternativo só adota `~/.local/bin/agent` com `--adopt-launcher` explícito.
 
 ```sh
 agent update                 # canal privado, sem build; erro de acesso preserva a instalação
@@ -27,6 +27,27 @@ agent overlay-status
 node scripts/agent-update.mjs --install-artifact /caminho/agent-<id>-<os>-<arch>.tar.gz
 # O arquivo SHA256SUMS deve estar no mesmo diretório do archive local.
 ```
+
+### Migração Mark → Agent
+
+Depois de instalar/ativar o Agent:
+
+```sh
+agent migrate-from-mark --dry-run         # inventário sem alterar o perfil
+agent migrate-from-mark --dry-run --json  # relatório para o Megamind
+agent migrate-from-mark                  # copia somente dados ausentes
+agent migrate-from-mark --json            # pode repetir; não sobrescreve dados
+```
+
+Origem fixa: `~/.pi/agent`; destino: `PI_CODING_AGENT_DIR` ou `~/.agent`. O store segue `AGENT_STORE`. Execute com o HOME do sócio que está migrando. Não use o perfil real em testes.
+
+Sessões JSONL, jobs, credenciais/contas, modelos, MCP, keybindings, índices, overviews e secrets são copiados sem sobrescrita, preservando mtime e com arquivos privados (0600). Durable sessions usam exclusivamente `scripts/import-durable-sessions.mjs --source ... --destination ...`; falhas aparecem como pendência e saída não zero. O dry-run do importador usa snapshots temporários descartáveis, sem publicar sessões nem alterar a origem.
+
+Só `defaultProvider`, `defaultModel`, `theme` e `defaultThinkingLevel` ausentes entram em settings. `extensions`/`skills` e outras configurações do Mark não entram: o recibo de recursos do Agent continua sendo a autoridade. Revise os itens pulados e as entradas Mark específicas nas pendências. Arquivos existentes (incluindo auth/accounts) nunca são mesclados: mantenha o relatório para revisar diferenças manualmente, sem expor seu conteúdo.
+
+O wrapper bash `~/.local/bin/pi` reconhecido como Mark ganha backup e passa a executar `~/.local/bin/agent`, fixando o perfil Agent (inclusive em terminais do Megamind). Wrappers desconhecidos ou symlinks são preservados e reportados. Links de `~/.agents/skills` para o store Mark são reapontados quando a skill existe no Agent; os obsoletos são removidos com backup fora da pasta de skills, em `~/.agents/mark-migration-backups/`. Nenhum outro link é alterado. O caminho estável `<store>/skills` acompanha o artefato ativo e resolve para a mesma árvore padrão usada pelo Pi; não cria cópias de skills.
+
+O relatório textual/JSON separa `copied` (planejado no dry-run), `alreadyExisted`, `skipped` (com motivo) e `manual`. Estado `superagent` nunca é migrado; pare/reconfigure o daemon manualmente. Worktrees não são movidas: branches sujas, à frente do upstream ou sem prova de integração são listadas para revisão. A origem Mark e seu store permanecem intactos. Windows aceita o subcomando `.cmd`, mas não converte o wrapper bash `pi`; a instalação Windows continua não validada.
 
 `agent update --extensions` e outras opções nativas de atualização de pacotes continuam delegadas ao Pi. `agent update --all` instala o artefato e depois atualiza as extensões pelo Pi. Print/JSON/RPC, SDK e códigos de saída pertencem ao Pi; o launcher não reescreve stdout.
 
