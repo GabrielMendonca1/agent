@@ -9,18 +9,5 @@ Runtime e extensões do Agent sobre o Pi. Instalação e operação: docs/setup.
 - Não mantenha unit tests nem testes e2e no repositório. Se precisar de um para verificar uma mudança, crie, rode e apague antes de terminar.
 - A verificação permanente é o portão de checks (`.pi/checks.json` + `scripts/test-*.mjs`).
 
-# Receita do Agent — agent
-
-família: change-with-tests
-versão: v1
-
-## Etapas (complex)
-1. scout · apoio · devolve arquivos e linhas relevantes, nada mais
-2. worker · apoio · implementa o brief, roda os checks do projeto, devolve diff e resultado
-3. reviewer · principal · aponta erro concreto com arquivo:linha, ou aprova
-
-## Regras aprendidas
-(nenhuma ainda)
-
 - Read .agent/notes.md when needed.
 - Read docs when needed.
