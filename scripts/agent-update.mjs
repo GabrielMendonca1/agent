@@ -189,7 +189,9 @@ function parseArgs(argv) {
 	};
 	for (let index = 0; index < args.length; index++) {
 		const arg = args[index];
-		if (arg === "--install-artifact") parsed.installArtifact = args[++index] ?? fail("--install-artifact requires a path or latest");
+		if (arg === "--install-artifact") parsed.installArtifact = args[++index] ?? fail("--install-artifact requires a path, latest or release tag");
+		else if (arg === "--release-tag") parsed.releaseTag = args[++index] ?? fail("--release-tag requires a tag");
+		else if (arg === "--release-repo") parsed.releaseRepo = args[++index] ?? fail("--release-repo requires a repo");
 		else if (arg === "--prepare") parsed.prepare = true;
 		else if (arg === "--promote") parsed.promote = args[++index] ?? fail("--promote requires a release ID");
 		else if (arg === "--check") parsed.check = true;
@@ -215,7 +217,7 @@ function parseArgs(argv) {
 		else if (arg === "--without") parsed.without.push(args[++index] ?? fail("--without requires a layer name"));
 		else if (arg === "--ref") parsed.ref = args[++index] ?? fail("--ref requires a value");
 		else if (arg === "--store") parsed.store = resolve(args[++index] ?? fail("--store requires a value"));
-		else fail(`Unknown overlay update option: ${arg}. Usage: agent-update [--prepare | --promote <releaseId> | --check | --rollback | --agent-enable | --agent-disable | --install-artifact <archive|latest> | --status | --gc [--dry-run] [--keep <N>]] [--hydrate] [--ref <vX.Y.Z|latest>] [--with <layer>] [--without <layer>] [--rollback] [--force] [--no-prune] [--adopt-launcher] [--vendor-model-data] [--store <path>]`);
+		else fail(`Unknown overlay update option: ${arg}. Usage: agent-update [--prepare | --promote <releaseId> | --check | --rollback | --agent-enable | --agent-disable | --install-artifact <archive|latest|tag> | --status | --gc [--dry-run] [--keep <N>]] [--hydrate] [--ref <vX.Y.Z|latest>] [--with <layer>] [--without <layer>] [--rollback] [--force] [--no-prune] [--adopt-launcher] [--vendor-model-data] [--store <path>]`);
 	}
 	const modes = [parsed.installArtifact !== undefined, parsed.prepare, parsed.promote !== undefined, parsed.check, parsed.rollback, parsed.agentEnable, parsed.agentDisable, parsed.status, parsed.gc].filter(Boolean);
 	if (modes.length > 1) {
@@ -1073,7 +1075,7 @@ function agentSource(store, releaseDir) {
 }
 
 function writeActive(store, releaseDir, metadata, launcher, extra = {}, { inheritSource = false } = {}) {
-	const active = { ...metadata, releaseDir, ...launcher, updaterGeneration, ...sourceRecord(store, metadata, inheritSource), ...extra };
+	const active = { ...metadata, release: readJsonFile(join(store, "release-identities.json"))?.[releaseDir], releaseDir, ...launcher, updaterGeneration, ...sourceRecord(store, metadata, inheritSource), ...extra };
 	for (const [key, value] of Object.entries(active)) {
 		if (value === undefined) delete active[key];
 	}
@@ -2278,12 +2280,21 @@ async function installArtifact(options) {
 		finally { rmSync(stage, { recursive: true, force: true }); }
 	}
 	// Capture only transaction-owned launcher/metadata files; auth and sessions never enter backups.
-	const paths = [join(options.store,"active.json"), join(options.store,"layers.json"), join(options.store,"bin", isWindows ? "pi-wrapper.cmd" : "pi-wrapper")];
+	const paths = [join(options.store,"release-identities.json"), join(options.store,"active.json"), join(options.store,"layers.json"), join(options.store,"bin", isWindows ? "pi-wrapper.cmd" : "pi-wrapper")];
 	if (options.adoptLauncher) paths.push(join(homedir(), ".local", "bin", isWindows ? "agent.cmd" : "agent"));
 	const snapshots = paths.map(path => ({ path, exists: linkExists(path), link: linkExists(path) && lstatSync(path).isSymbolicLink() ? readlinkSync(path) : null,
 		body: linkExists(path) && lstatSync(path).isFile() ? readFileSync(path) : null, mode: linkExists(path) ? lstatSync(path).mode : 0o755 }));
 	try {
 		assertCurrentUnchanged(options.store, before);
+		// Provenance belongs to the installed pair, outside its immutable verified tree.
+		// Snapshot/restore this index with active.json so failed installs cannot relabel rollback.
+		const identitiesFile = join(options.store, "release-identities.json");
+		const identities = readJsonFile(identitiesFile) ?? {};
+		if (options.releaseTag) identities[release] = { tag: options.releaseTag, assetId: artifact.releaseId, repo: options.releaseRepo };
+		else delete identities[release];
+		const temporary = `${identitiesFile}.tmp-${process.pid}`;
+		try { writeFileSync(temporary, `${JSON.stringify(identities, null, 2)}\n`); renameSync(temporary, identitiesFile); }
+		finally { rmSync(temporary, { force: true }); }
 		await activateRelease(options.store, release, options.adoptLauncher, { installRuntime: true, selection: selection.optional });
 	} catch (error) {
 		for (const saved of snapshots) {
@@ -2362,6 +2373,7 @@ function overlayStatus(store) {
 		console.log(lines.join("\n"));
 		return;
 	}
+	lines.push(active.release ? `Release: ${active.release.tag} (assetId ${active.release.assetId}, repo ${active.release.repo})` : "Release: unknown (local install or unrecorded release)");
 	const commit = typeof active.officialCommit === "string" ? active.officialCommit.slice(0, 10) : "unknown";
 	lines.push(`Pi: ${active.officialVersion ?? "unknown"} (${active.officialRef ?? "unknown ref"}, commit ${commit})`);
 	const optional = Array.isArray(active.optionalLayers) ? active.optionalLayers : [];
@@ -2658,11 +2670,17 @@ async function main() {
 	// Somente leitura: não toma o lock, não exige geração do updater (só lê o que está no disco).
 	if (options.status) return overlayStatus(options.store);
 	if (options.gc && options.dryRun) return overlayGc(options);
-	if (options.installArtifact !== undefined && (options.installArtifact === "latest" || !lstatSync(resolve(options.installArtifact)).isDirectory())) {
+	if (options.releaseTag !== undefined || options.releaseRepo !== undefined) {
+		if (options.installArtifact === undefined || !/^[\w.+-]+$/.test(options.releaseTag ?? "") || !/^[\w.-]+\/[\w.-]+$/.test(options.releaseRepo ?? "")) fail("Release identity requires an artifact, valid tag and repo");
+	}
+	if (options.installArtifact !== undefined && (options.installArtifact === "latest" || !existsSync(resolve(options.installArtifact)) || !lstatSync(resolve(options.installArtifact)).isDirectory())) {
 		const temporary = mkdtempSync(join(tmpdir(), "agent-download-"));
 		try {
-			const archive = options.installArtifact === "latest" ? downloadArtifact(temporary, process.env.AGENT_VERSION || "") : resolve(options.installArtifact);
-			const status = bootstrap(archive, ["--store", options.store, ...(options.adoptLauncher ? ["--adopt-launcher"] : [])]);
+			const remote = options.installArtifact === "latest" || !existsSync(resolve(options.installArtifact));
+			const downloaded = remote ? downloadArtifact(temporary, options.installArtifact === "latest" ? process.env.AGENT_VERSION || "" : options.installArtifact) : undefined;
+			const tag = downloaded?.tag ?? options.releaseTag;
+			const repo = downloaded?.repo ?? options.releaseRepo;
+			const status = bootstrap(downloaded?.archive ?? resolve(options.installArtifact), ["--store", options.store, ...(options.adoptLauncher ? ["--adopt-launcher"] : []), ...(tag ? ["--release-tag", tag, "--release-repo", repo] : [])]);
 			if (status !== 0) fail(`Artifact bootstrap failed (${status})`);
 			return;
 		} finally { rmSync(temporary, { recursive: true, force: true }); }

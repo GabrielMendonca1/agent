@@ -68,6 +68,8 @@ try {
   json(join(env.PI_CODING_AGENT_DIR,'settings.json'),{extensions:[dirname(personal)],defaultModel:'personal-model'});
   run('bash',[join(repo,'scripts/install.sh'),'--adopt-launcher'],true,{AGENT_RELEASE_DIR:outA});
   assert.match(current(),/release-a-[0-9a-f]{10}$/);assert.ok(existsSync(launcher));
+  assert.equal(load(join(store,'active.json')).release,undefined);
+  assert.match(run(launcher,['overlay-status']).stdout,/Release: unknown/);
   assert.equal(config().version,2);assert.equal(config().juiceHome,undefined);
   const settings=load(join(env.PI_CODING_AGENT_DIR,'settings.json'));
   assert.ok(settings.extensions.some(p=>p.endsWith('/extensions/standard/megamind')));
@@ -84,9 +86,11 @@ try {
  });
  test('update B, idempotence, rollback A keeps resources/config paired',()=>{
   run(process.execPath,[updater,'--install-artifact',archive(outB)]);
+  assert.equal(load(join(store,'active.json')).release,undefined);
   const previous=realpathSync(join(store,'previous'));assert.ok(previous.includes('/release-a-'));
   run(process.execPath,[updater,'--install-artifact',archive(outB)]);assert.equal(realpathSync(join(store,'previous')),previous);
   run(launcher,['overlay-rollback']);assert.ok(current().includes('/release-a-'));assert.ok(config().piRoot.startsWith(current()));
+  assert.equal(load(join(store,'active.json')).release,undefined);
   const registrations=load(join(env.PI_CODING_AGENT_DIR,'settings.json')).extensions.filter(p=>!p.startsWith('-'));
   assert.ok(registrations.filter(p=>p.includes('/runtime/releases/')).every(p=>p.includes(config().artifactId)));
  });
@@ -140,16 +144,40 @@ try {
    assert.deepEqual(snapshot(),before);
   } finally {rmSync(launcher,{force:true});symlinkSync(link,launcher);}
  });
- test('remote update uses private gh fixture and no build',()=>{
+ test('release install, update, rollback and explicit tag retain stable identity',()=>{
   const bin=join(root,'fake-bin');mkdirSync(bin);
-  writeFileSync(join(bin,'gh'),`#!/usr/bin/env node\nconst fs=require('node:fs'),path=require('node:path'),args=process.argv.slice(2);if(args[0]!=='release'||args[1]!=='download'||!args.includes('GabrielMendonca1/agent'))process.exit(8);const dest=args[args.indexOf('-D')+1];for(const name of fs.readdirSync(process.env.FIXTURE_DIST))fs.copyFileSync(path.join(process.env.FIXTURE_DIST,name),path.join(dest,name));\n`,{mode:0o755});
-  run(launcher,['update'],true,{PATH:`${bin}:${env.PATH}`,FIXTURE_DIST:outB});assert.ok(current().includes('/release-b-'));
+  writeFileSync(join(bin,'gh'),`#!/usr/bin/env node
+const fs=require('node:fs'),path=require('node:path'),args=process.argv.slice(2);
+if(args[0]==='auth'&&args[1]==='status')process.exit(0);
+if(args[0]!=='release'||!args.includes('GabrielMendonca1/agent'))process.exit(8);
+if(args[1]==='view'){console.log(process.env.FIXTURE_TAG);process.exit(0);}
+if(args[1]!=='download'||!args.includes(process.env.FIXTURE_TAG))process.exit(9);
+const dest=args[args.indexOf('-D')+1];for(const name of fs.readdirSync(process.env.FIXTURE_DIST))fs.copyFileSync(path.join(process.env.FIXTURE_DIST,name),path.join(dest,name));
+`,{mode:0o755});
+  const remote=(dir,tag)=>({PATH:`${bin}:${env.PATH}`,FIXTURE_DIST:dir,FIXTURE_TAG:tag,AGENT_RELEASE_DIR:'',AGENT_VERSION:''});
+  const idA={tag:'v-agent-a',assetId:load(join(root,'original-payload/artifact.json')).releaseId,repo:'GabrielMendonca1/agent'};
+  const payloadB=join(root,'identity-b');extractArchive(archive(outB),payloadB);
+  const idB={tag:'v-agent-b',assetId:load(join(payloadB,'artifact.json')).releaseId,repo:'GabrielMendonca1/agent'};
+  const active=()=>load(join(store,'active.json')).release;
+  const status=id=>assert.ok(run(launcher,['overlay-status']).stdout.includes(`Release: ${id.tag} (assetId ${id.assetId}, repo ${id.repo})`));
+  run('bash',[join(repo,'scripts/install.sh')],true,remote(outA,idA.tag));assert.deepEqual(active(),idA);status(idA);
+  run(launcher,['update'],true,remote(outB,idB.tag));assert.ok(current().includes('/release-b-'));assert.deepEqual(active(),idB);status(idB);
+  run(launcher,['overlay-rollback']);assert.deepEqual(active(),idA);status(idA);
+  run(launcher,['overlay-rollback']);assert.deepEqual(active(),idB);
+  run(launcher,['overlay-rollback']);assert.deepEqual(active(),idA);
+  const before=snapshot(),identities=readFileSync(join(store,'release-identities.json'),'utf8');
+  run(launcher,['update'],false,{...remote(outB,'v-failed'),FIXTURE_FAIL_CONFIG:'1'});
+  assert.deepEqual(snapshot(),before);assert.equal(readFileSync(join(store,'release-identities.json'),'utf8'),identities);
+  run(process.execPath,[updater,'--install-artifact',idB.tag],true,remote(outB,idB.tag));assert.deepEqual(active(),idB);
+  run(process.execPath,[updater,'--install-artifact','latest'],true,{...remote(outA,idA.tag),AGENT_VERSION:idA.tag});assert.deepEqual(active(),idA);
+  run('bash',[join(repo,'scripts/install.sh')],true,{...remote(outB,idB.tag),AGENT_VERSION:idB.tag});assert.deepEqual(active(),idB);
  });
  test('explicit runtime opt-out survives artifact updates without legacy profile sync',()=>{
   run(launcher,['overlay-update','--agent-disable']);
   assert.equal(load(join(env.PI_CODING_AGENT_DIR,'settings.json')).warnings,undefined);
   const before=readFileSync(join(env.PI_CODING_AGENT_DIR,'settings.json'),'utf8');
   run(process.execPath,[updater,'--install-artifact',archive(outA),'--adopt-launcher']);
+  assert.equal(load(join(store,'active.json')).release,undefined);
   assert.equal(config().enabled,false);assert.equal(readFileSync(join(env.PI_CODING_AGENT_DIR,'settings.json'),'utf8'),before);
   assert.equal(existsSync(join(env.HOME,'.bashrc')),false);assert.equal(existsSync(join(env.HOME,'.zshrc')),false);
  });

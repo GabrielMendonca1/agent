@@ -128,13 +128,17 @@ export function downloadArtifact(destination, tag = '') {
  requireNode();
  const repo = process.env.AGENT_RELEASE_REPO || 'GabrielMendonca1/agent';
  if (!/^[\w.-]+\/[\w.-]+$/.test(repo) || (tag && !/^[\w.+-]+$/.test(tag))) fail('invalid private repository or release tag');
+ const view=spawnSync('gh',['release','view',...(tag ? [tag] : []),'-R',repo,'--json','tagName','--jq','.tagName'],{encoding:'utf8',env:{...process.env,GH_HOST:'github.com'}});
+ if (view.error || view.status !== 0) fail('cannot resolve private release tag');
+ tag=view.stdout.trim();
+ if (!/^[\w.+-]+$/.test(tag)) fail('invalid resolved release tag');
  const asset = `agent-*-${process.platform}-${process.arch}.tar.gz`;
  const args = ['release','download',...(tag ? [tag] : []),'-R',repo,'-p',asset,'-p','SHA256SUMS','-D',destination];
  const result=spawnSync('gh',args,{stdio:'inherit',env:{...process.env,GH_HOST:'github.com'}});
  if (result.error || result.status !== 0) fail('authenticated private release download failed (gh access required)');
  const archives = readdirSync(destination).filter(n=>n.endsWith(`-${process.platform}-${process.arch}.tar.gz`));
  if (archives.length !== 1) fail('expected exactly one platform artifact');
- return join(destination,archives[0]);
+ return { archive: join(destination,archives[0]), tag, repo };
 }
 export function bootstrap(archive, args = []) {
  requireNode(); verifyArchiveHash(archive);

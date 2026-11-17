@@ -9,6 +9,7 @@ if [ -z "${AGENT_RELEASE_DIR:-}" ]; then
 fi
 tmp=$(mktemp -d)
 trap 'rm -rf "$tmp"' EXIT
+release_args=()
 if [ -n "${AGENT_RELEASE_DIR:-}" ]; then
   cp "$AGENT_RELEASE_DIR/agent-distribution.mjs" "$AGENT_RELEASE_DIR/SHA256SUMS" "$tmp/"
   cp "$AGENT_RELEASE_DIR/"*.tar.gz "$tmp/"
@@ -17,6 +18,11 @@ else
   tag=${AGENT_VERSION:-}
   [[ "$repo" =~ ^[a-zA-Z0-9_.-]+/[a-zA-Z0-9_.-]+$ ]] || { echo "Invalid private repository" >&2; exit 1; }
   [[ -z "$tag" || "$tag" =~ ^[a-zA-Z0-9_.+-]+$ ]] || { echo "Invalid release tag" >&2; exit 1; }
+  view=(release view -R "$repo" --json tagName --jq .tagName)
+  if [ -n "$tag" ]; then view+=("$tag"); fi
+  tag=$(GH_HOST=github.com gh "${view[@]}")
+  [[ "$tag" =~ ^[a-zA-Z0-9_.+-]+$ ]] || { echo 'Invalid resolved release tag' >&2; exit 1; }
+  release_args=(--release-tag "$tag" --release-repo "$repo")
   platform=$(node -p 'process.platform+"-"+process.arch')
   download=(release download -R "$repo" -p "agent-*-$platform.tar.gz" -p SHA256SUMS -p agent-distribution.mjs -D "$tmp")
   if [ -n "$tag" ]; then download+=("$tag"); fi
@@ -33,5 +39,5 @@ platform=$(node -p 'process.platform+"-"+process.arch')
 archives=("$tmp"/agent-*-"$platform".tar.gz)
 [ "${#archives[@]}" -eq 1 ] && [ -f "${archives[0]}" ] || { echo 'Expected exactly one platform archive' >&2; exit 1; }
 export PI_CODING_AGENT_DIR="${PI_CODING_AGENT_DIR:-$HOME/.agent}"
-node "$tmp/agent-distribution.mjs" "${archives[0]}" "$@"
+node "$tmp/agent-distribution.mjs" "${archives[0]}" ${release_args[@]+"${release_args[@]}"} "$@"
 printf '%s\n' 'Run ~/.local/bin/agent and /login with your own provider account.' 'If needed: export PATH="$HOME/.local/bin:$PATH" (no shell rc changed).'

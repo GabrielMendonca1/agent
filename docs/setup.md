@@ -24,9 +24,17 @@ Padrões: store `~/.local/share/agent`, comando `~/.local/bin/agent`, perfil `~/
 agent update                 # canal privado, sem build; erro de acesso preserva a instalação
 agent overlay-rollback       # revalida o par anterior antes de trocar
 agent overlay-status
+node scripts/agent-update.mjs --install-artifact latest
+node scripts/agent-update.mjs --install-artifact <tag>
 node scripts/agent-update.mjs --install-artifact /caminho/agent-<id>-<os>-<arch>.tar.gz
 # O arquivo SHA256SUMS deve estar no mesmo diretório do archive local.
 ```
+
+### Identidade instalada
+
+Instalações remotas registram em `<store>/active.json` o objeto opcional `release: { tag, assetId, repo }`. A tag é resolvida antes do download e usada explicitamente nele, mesmo para `latest`. `assetId` é o `releaseId` do manifesto: o `<id>` em `agent-<id>-<os>-<arch>.tar.gz`, não o ID numérico do GitHub nem o ID interno do runtime. O rollback restaura os valores do par anterior. Checkout, archive local e `AGENT_RELEASE_DIR` não declaram uma release remota.
+
+`agent overlay-status` mostra `Release: <tag> (assetId <id>, repo <owner/repo>)`, ou `Release: unknown (local install or unrecorded release)` quando não há identidade. A saída é textual; o app Megamind usa o JSON de `active.json`, comparando tag e nome do asset remoto sem depender de datas. Veja [o contrato de consumo](consumer-contract.md#identidade-da-release-instalada-megamind).
 
 ### Migração Mark → Agent
 
