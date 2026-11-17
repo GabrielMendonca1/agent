@@ -20,6 +20,8 @@
  * Sem UI, tenta o Megamind antes de pedir uma pergunta em texto plano.
  */
 
+import { readFileSync, readdirSync } from "node:fs";
+import { join } from "node:path";
 import { createAskRequest, escalationDelay, normalizeOption } from "./ask-user-megamind.mjs";
 import { Type } from "typebox";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
@@ -85,10 +87,39 @@ function responsive(build: (width: number) => string) {
 	return { render: (width: number) => build(width).split("\n"), invalidate() {} };
 }
 
+const GOAL_RUNNING = "Goal em execução: decida e registre no audit; se for linha vermelha, adie e registre também no state.md.";
+const GOAL_UNREADABLE = "Não foi possível verificar o estado do goal. Confira state.md; decida e registre no audit ou adie se for linha vermelha.";
+
+/**
+ * Estado persistido, reavaliado em cada chamada, inclusive após retomada.
+ * Escopo conservador: qualquer goal running em <ctx.cwd>/.pi/goals bloqueia
+ * esta sessão; não adivinha dono por PID nem procura em pais/outros worktrees.
+ * blocked/done/stopped não bloqueiam. Falha de leitura não libera perguntas.
+ */
+function goalQuestionBlock(cwd: string): string | undefined {
+	const goals = join(cwd, ".pi", "goals");
+	try {
+		for (const entry of readdirSync(goals, { withFileTypes: true })) {
+			if (!entry.isDirectory() && !entry.isSymbolicLink()) continue;
+			try {
+				const firstLine = readFileSync(join(goals, entry.name, "state.md"), "utf8").split(/\r?\n/, 1)[0];
+				if (/^# goal \S+ — running\s*$/.test(firstLine)) return GOAL_RUNNING;
+			} catch (error) {
+				if ((error as NodeJS.ErrnoException).code !== "ENOENT") return GOAL_UNREADABLE;
+			}
+		}
+	} catch (error) {
+		if ((error as NodeJS.ErrnoException).code !== "ENOENT") return GOAL_UNREADABLE;
+	}
+}
+
 export default function askUser(pi: ExtensionAPI) {
 	const nestedCalls = new Set<string>();
-	pi.on("tool_call", (event) => {
-		if (event.toolName === "ask_user" && event.parentToolCallId) nestedCalls.add(event.toolCallId);
+	pi.on("tool_call", (event, ctx) => {
+		if (event.toolName !== "ask_user") return;
+		const reason = goalQuestionBlock(ctx.cwd);
+		if (reason) return { block: true, reason };
+		if (event.parentToolCallId) nestedCalls.add(event.toolCallId);
 	});
 	pi.on("tool_result", (event) => { nestedCalls.delete(event.toolCallId); });
 	pi.on("session_start", () => { nestedCalls.clear(); });
@@ -118,6 +149,12 @@ export default function askUser(pi: ExtensionAPI) {
 		}),
 
 		async execute(_id, params, signal, onUpdate, ctx) {
+			// Defesa também para invocação direta e mudança de estado após tool_call.
+			const reason = goalQuestionBlock(ctx.cwd);
+			if (reason) {
+				nestedCalls.delete(_id);
+				return { content: [{ type: "text" as const, text: reason }], isError: true };
+			}
 			const fallback = () => ({ content: [{ type: "text" as const, text: "Usuário não está disponível interativamente agora. Faça a pergunta numa mensagem normal e aguarde a próxima resposta dele." }] });
 
 			const options = params.options && params.options.length >= 2 ? params.options.map(normalizeOption) : [];

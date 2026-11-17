@@ -5,77 +5,88 @@ description: Run a bounded autonomous long-horizon task from one approved charte
 
 # goal
 
-Long work dies from two things: no checkable *done*, and a question at every branch. This skill fixes both — agree **one charter up front**, then execute inside it, recording decisions instead of asking about them.
-
-This never overrides a higher-priority instruction. If the user asked for interrogation, review, or approval per step, that wins; for deep interrogation load [grill](../grill/SKILL.md) explicitly — it is a separate skill, not a phase of this one.
+Agree **one charter up front**, then execute inside it, recording decisions instead of asking. This never overrides a higher-priority instruction. If the user requires approval per step, that wins; for deep interrogation load [grill](../grill/SKILL.md) explicitly, not as a phase of this skill.
 
 ## 1. Charter (one approval, then go)
 
-Draft it from the repo and the request, propose defaults, and ask **once**:
+Before drafting, **inventory where you can act**, read-only and without authentication changes:
+- Git remotes and branches; project scripts, CI and deploy configs.
+- SSH `Host` entries in `~/.ssh/config` (including configured includes) and company aliases provisioned by Megamind, e.g. `ssh omni` / `ssh arca`; resolve candidates with `ssh -G <host>`. Do not connect or infer permission from discovery.
+- Logged-in accounts in the Prometheus browser: inspect through CLI `arca`, following `arca skills get orca-cli`.
+- Already-authenticated CLIs such as `gh`, `vercel`, `fly`: detect status/account only, never print tokens or secrets. If discovery is unavailable or requires consent, mark it unavailable; do not authenticate or bypass consent.
+
+Draft from this inventory and the request, propose defaults, and ask **once**, before setting status to `running`:
 
 ```text
 ## Goal charter
 Id: <slug>            Result: <one sentence end state>
-Done: <checkable predicate>
-Verify: `<command or evidence source>`
+Done: <checkable predicate>   Verify: `<command or evidence source>`
 Scope: <paths/actions allowed>   Off-limits: <paths/actions forbidden>
-Budgets: <iterations> iters | <wall time> | <stall cap> rounds without progress | <$ or token budget>
-Autonomy: decide and record reversible technical choices; escalate <list>
+Inventory approved: <discovered targets; explicitly mark authorized vs excluded/unavailable>
+Push: <remote + branches>   Deploy: <targets/environments>
+SSH: <hosts + allowed actions>   Browser: <accounts + allowed actions>
+Budgets: <iterations> iters | <wall time> | <stall cap> rounds without progress | <token/cost cap>
+Autonomy: execute within approved scope and inventory; defer red lines, never ask mid-goal
 Checkpoint: <project>/.pi/goals/<id>/state.md   Audit: same dir /audit.html
 ```
 
-Persist the approved charter in `state.md`; do not infer fresh permission on resume. If token/cost metering is unavailable, say so and use enforceable wall-time and iteration caps instead of pretending to measure spend.
+Discovery is not authorization: list exact authorized targets/actions, or `none`, for each category. The approved charter is explicit instruction to commit, push without force and deploy within those bounds, not permission for red lines. Persist the full approved charter and inventory in `state.md`; on resume reuse them, never ask for approval again or silently expand them.
 
-Emit only when all four hold: verification is runnable evidence, budgets are numbers, scope names paths and actions, and a progress signal lets the work stop itself. Any one missing → resolve that one before starting, not the whole tree.
+Start only with runnable verification, numeric budgets, named paths/actions and a progress signal. Resolve missing items in the single charter approval, before execution. If token/cost metering is unavailable, state that and enforce wall-time and iteration caps instead.
 
 ## 2. Autonomy inside the charter
 
-**Decide and record** (do not ask): library/helper choice, file layout, naming, test shape, refactor depth inside scope, retry strategy, formatting — anything reversible with a local edit.
+**Decide, act and record; do not ask.** Choose libraries, layout, naming, test shape, refactor depth, retries and formatting. Commit frequently, push without force to approved remotes/branches, and deploy to listed targets, including production if approved. Record effects and verification in the audit; no additional confirmation.
 
-**Stop and ask** only for: risk beyond the charter, budget overrun, production/live systems, destructive or irreversible actions (delete, force-push, migrations, deploy, money/legal/medical), external effects (sending messages, third-party calls, publishing), new credentials or permissions, and genuine ambiguity whose answer lies **outside** the charter. When blocked, write the pending audit row, checkpoint, and ask one concrete question with a recommended answer.
+**Fixed red lines — do not act, even under an autonomy charter:** force-push or rewrite shared-branch history; delete production data/databases/volumes or run destructive migrations without backup; spend money, purchase or subscribe; send messages or publish to third parties on the user's behalf; create, rotate or expose credentials or change account permissions; act on any target outside the approved inventory. Authorized code push/deploy above is not permission for unrelated publishing or messaging.
+
+For every red line or out-of-scope ambiguity, mark **adiado** in both `audit.html` and `state.md`, explain the constraint and continue other authorized work. Never request confirmation as a workaround. If no authorized progress remains, stop and report the deferred items; do not change status merely to unlock a question and resume execution.
+
+After approval, **no `ask_user`, text questions, remote questions or confirmations** until done or budget/stall exhaustion. A terminal blocker gets a final report, not a question. Do not treat a blocked tool as a reason to ask through another channel. The extension blocks `ask_user` whenever any `<cwd>/.pi/goals/*/state.md` has first-line status `running`; `blocked`, `done` and `stopped` release it. Keep project cwd and state accurate; the pre-running charter question remains available.
 
 ## 3. Loop of execution
 
 1. **Inspect** — run the verify command, record the metric.
-2. **Decide** — done → stop; budget/stall exhausted → stop and report; escalation trigger → ask.
+2. **Decide** — done → stop; budget/stall exhausted → stop and report; red line → defer and continue.
 3. **Act** — one bounded change. Append the *pending* audit row first.
 4. **Verify** — rerun; update that row with result, status, timestamp.
-5. **Checkpoint** — rewrite `state.md`.
+5. **Checkpoint** — rewrite `state.md`, including remaining budgets and deferred items.
 
-No fake schedulers. `/loop`, cron, wake-ups and "keep going overnight" only exist if the runtime actually provides them; a skill cannot grant them. Without runtime support, the goal runs inside the current session and the checkpoint is what makes it resumable later.
+No fake schedulers. `/loop`, cron, wake-ups and overnight execution require real runtime support. Otherwise execution runs in this session and the checkpoint makes it resumable. On termination set `done` when verified, `stopped` at budget/stall exhaustion or user stop, or `blocked` only when no authorized progress remains. Report verification, commits/pushes/deploys, budgets and all deferred items; do not append a new approval question.
 
 ## 4. Checkpoint — `<project>/.pi/goals/<id>/state.md`
 
-Small and rewritten each step; enough for a cold agent to resume without the transcript. On resume, recheck the worktree, pending actions, evidence and remaining budgets before acting; never reset caps or repeat an uncertain external effect blindly:
+Small and rewritten each step; sufficient for a cold resume without the transcript. Preserve the full charter and inventory. Recheck worktree, pending effects, evidence and remaining budgets before resuming; never reset caps or repeat an uncertain external effect blindly. Set `running` before further execution, without another approval:
 
 ```text
 # goal <id> — <status: running|blocked|done|stopped>
+Approved charter and inventory: <full approved text, including targets/actions and exclusions>
 Done when: <predicate>   Verify: `<cmd>`   Last result: <pass/fail + metric> @ <ISO time>
 Budgets used: <n/N iters> | <elapsed/limit> | <stall n/limit> | <measured tokens/cost or unavailable>
-Approved autonomy: <allowed choices + escalation rules>   Started/deadline: <ISO times>
-Scope: <paths>   Off-limits: <paths/actions>
-Done so far: <bullets>   Next step: <one action>   Blocked on: <question or ->
+Started/deadline: <ISO times>   Scope: <paths>   Off-limits: <paths/actions>
+Done so far: <bullets>   Next step: <one action>   Blocked on: <constraint or ->
+Adiado: <deferred action + reason, or none>
 ```
 
 ## 5. Audit — `audit.html`
 
-One standalone HTML file: no JavaScript, no CDN, no external CSS/fonts. It is a **human summary for the user**, not chain-of-thought and not a transcript — one row per *material* decision or action (changes behaviour, costs money/time, is hard to undo, or resolves ambiguity). Each row carries: what was chosen, the rejected alternative with a short reason, what verification showed, timestamp and status.
+One standalone HTML file: no JavaScript, CDN or external CSS/fonts. A **human summary**, not chain-of-thought, transcript or raw logs; never include secrets in the inventory, state, audit or logs. One row per *material* decision/action: choice, rejected alternative and short reason, verification, timestamp, status.
 
-Append a **pending** row before acting, then patch that row with the result after. Never rewrite history: failed attempts, reversals and resumed steps stay visible. Escape `& < >` in every cell. Template: [audit.md](audit.md) — load only when you must create or extend the file.
+Append **pending** before acting, patch after verification; never erase failed attempts, reversals or resumed steps. For red lines use visible status **adiado** (the template's `blocked` CSS class is sufficient), with reason and unperformed action as result; mirror it in `state.md`. Escape `& < >` in every cell. Template: [audit.md](audit.md), loaded only to create or extend the audit.
 
 ## 6. Parallelism
 
-Independent sub-tasks that share this orchestrator → **native subagents**, in the current Mac session, with each one's edits confined to its own files. Never spawn an orchestrator that spawns orchestrators; no recursive herds, no workspace-per-step reflex. Serialize anything that touches the same file.
+Independent sub-tasks sharing this orchestrator → **native subagents**, current Mac session, each confined to its files and the same charter/red lines/no-question rule. No recursive orchestrators or workspace-per-step reflex. Serialize shared-file changes.
 
 ## 7. Checklist scenarios
 
 | Situation | Do |
 |---|---|
-| "Fix the failing tests, I'm going out" | Charter, run loop, decide fixes yourself, audit each, stop at cap |
-| Two reasonable libraries, both reversible | Pick one, record rejected alternative + reason, continue |
-| Needs a prod DB migration | Pending row, checkpoint, ask — do not run |
-| Request is vague and charter cannot cover it | Ask before starting; if user wants depth, load `grill` |
-| User said "ask me at each step" | Obey them; charter autonomy does not apply |
-| Session ends mid-way | `state.md` is current; next session resumes from Next step |
-| Four independent files to migrate | Native subagents, one per file, this session |
-| "Keep running all night" | Say plainly: only with real runtime scheduling; otherwise checkpoint + resume |
+| "Fix the failing tests, I'm going out" | Inventory, one charter, loop, audit, stop at cap |
+| Two reasonable libraries | Pick one, record alternative + reason, continue |
+| Approved production deploy | Commit, push without force and deploy to approved targets; verify and audit |
+| Destructive prod migration without backup / unknown host | Mark adiado in audit + state; continue authorized work |
+| Vague request | Resolve in charter before running; load `grill` if explicitly requested |
+| User requires approval each step | Obey; this autonomy mode does not apply |
+| Session ends mid-way | Resume from state with same charter/inventory and remaining budgets, no question |
+| Budget/stall exhausted | Set stopped, report results and deferred items, no overrun |
