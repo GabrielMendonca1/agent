@@ -13,6 +13,8 @@ import {
 	mkdirSync,
 	readFileSync,
 	readdirSync,
+	readlinkSync,
+	symlinkSync,
 	realpathSync,
 	renameSync,
 	rmSync,
@@ -455,6 +457,26 @@ export function readAgentConfig(store) {
 	return validateConfig(parsed, path);
 }
 
+// Alias only: resource receipts and artifact realpaths remain unchanged.
+// Return an undo for the config commit failure path; historical artifacts without standard stay intact.
+export function syncStableSkills(store, target) {
+	if (!existsSync(target)) return () => {};
+	const link = join(store, "skills");
+	let old;
+	try { old = lstatSync(link); } catch (e) { if (e.code !== "ENOENT") throw e; }
+	if (old && !old.isSymbolicLink()) fail(`Refusing to replace non-symlink: ${link}`);
+	const previous = old ? readlinkSync(link) : null;
+	if (previous && resolve(dirname(link), previous) === resolve(target)) return () => {};
+	mkdirSync(store, { recursive: true });
+	const replace = destination => {
+		const temp = `${link}.tmp-${process.pid}`;
+		symlinkSync(destination, temp, process.platform === "win32" ? "junction" : "dir");
+		try { renameSync(temp, link); } catch (e) { rmSync(temp, { force: true }); throw e; }
+	};
+	replace(resolve(target));
+	return () => { if (previous !== null) replace(previous); else rmSync(link, { force: true }); };
+}
+
 /** Escrita atômica da configuração validada. `resourceReceipt` do B é preservado como veio. */
 export function writeAgentConfig({ store, config } = {}) {
 	const path = agentConfigPath(store);
@@ -463,10 +485,13 @@ export function writeAgentConfig({ store, config } = {}) {
 	const temporary = `${path}.tmp-${process.pid}`;
 	rmSync(temporary, { force: true });
 	writeFileSync(temporary, `${JSON.stringify(normalized, null, 2)}\n`, { mode: 0o600 });
+	let undoSkills;
 	try {
+		undoSkills = syncStableSkills(store, join(agentReleasesDir(store), normalized.artifactId, "agent", "skills", "standard"));
 		renameSync(temporary, path);
 	} catch (error) {
 		rmSync(temporary, { force: true });
+		undoSkills?.();
 		throw error;
 	}
 	return { path, config: normalized };

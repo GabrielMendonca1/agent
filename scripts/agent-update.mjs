@@ -880,6 +880,9 @@ function installOverlayBundle(store) {
 		"overlay/README.md",
 		"scripts/agent-update.mjs",
 		"scripts/lib/agent-distribution.mjs",
+		"scripts/lib/mark-migration.mjs",
+		"scripts/migrate-from-mark.mjs",
+		"scripts/import-durable-sessions.mjs",
 		// The updater imports these at module load; a bundle without them cannot run `pi update` at all.
 		"scripts/lib/store-lock.mjs",
 		"scripts/lib/internal-packages.mjs",
