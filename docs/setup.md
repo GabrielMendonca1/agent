@@ -275,7 +275,7 @@ Ordem de decisão:
 
 1. Config do papel em `/models` (`<perfil>/agent-models.json`).
 2. Frontmatter do papel (`model`, `thinking`).
-3. Slot: `.agent/workflow.md`, se existir; senão scout=apoio e os demais=principal.
+3. Slot: `.agent/rules.md`, com fallback para `.agent/workflow.md`; senão scout=apoio e os demais=principal.
 
 O slot `apoio` usa o modelo de apoio; `principal`, o modelo da sessão. Não há classificador de dispatch. Sem modelo de apoio configurado, o slot `apoio` cai no modelo principal: papéis sem config própria em `/models` e sem `model` no frontmatter herdam o principal; os demais seguem os itens 1 e 2. Risco de custo: configure o apoio em `/models`.
 
@@ -304,7 +304,7 @@ Cada filho é outro processo `pi -p`, com contexto próprio. Só o resultado vol
 ### Lacunas
 
 - stderr do filho fica só em memória (até 64 KB) e só aparece no resultado quando a tarefa falha.
-- O system prompt do papel vai por arquivo temporário, apagado no fim. O registro guarda o nome do papel, não o texto. As regras de `.agent/workflow.md` anexadas à tarefa ficam no JSONL do filho.
+- O system prompt do papel vai por arquivo temporário, apagado no fim. O registro guarda o nome do papel, não o texto. As fontes `.agent/rules.md` + `.agent/header.md` (ou workflow.md legado sem rules.md) anexadas à tarefa ficam no JSONL do filho.
 - Escritor único (single, chain, ou `parallel` com um só escritor) grava direto no `cwd`, sem worktree nem diff registrado. Use `git` para ver o que mudou.
 - Sandbox só cobre o `bash` de papéis sem `edit`/`write`: seatbelt no macOS, bwrap no Linux, `none` sem suporte. O resultado informa `sandbox=`. Sem sandbox, o detector compara só o `git status` do checkout antes e depois; escrita fora do checkout Git não é vista.
 - `list` apaga o registro de jobs terminados há mais de 30 dias, junto com worktrees limpos e já integrados. Worktree sujo ou não integrado preserva o registro. Os JSONL dos filhos ficam.
@@ -339,3 +339,33 @@ for t in scripts/test-*.mjs; do ORCA_BACKGROUND_LAUNCH=1 node "$t" || exit; done
 ```
 
 O teste de startup usa o Pi instalado, mas HOME, agent-dir, cwd e store temporários e ambiente sem credenciais herdadas. Carrega exatamente os registros instalados e abre `pi --mode json -p`, conferindo tools e os cinco papéis. O provider aponta para loopback fechado com chave fictícia: a falha de conexão é esperada, não há inferência real. Sem Pi instalado o teste informa que pulou; isso não equivale a validar startup. Não é teste visual da TUI.
+
+## Contexto do projeto e regras
+
+Edite `.agent/rules.md` (regras, incluindo a receita antes em workflow.md) e
+`.agent/header.md` (cabeçalho curto). O Agent gera `AGENTS.md` para outras CLIs:
+marcador de gerado no topo, header + rules e ponteiros para `.agent/notes.md`,
+`STATUS.md`, `HISTORY.md` e `docs` quando existirem. O pessoal
+`~/.agent/AGENTS.md` continua inteiro no Pi e nunca é copiado para o projeto.
+
+No Agent, AGENTS.md gerado não é injetado: entram rules + header inteiros e
+ponteiros absolutos para AGENTS.md e os documentos existentes. STATUS é só
+ponteiro; seu corpo não entra. Arquivos manuais continuam inteiros, com uma
+dica de `/rules init`. O montador nunca sobrescreve um AGENTS.md manual.
+
+- `/rules init` envia ao agente o pedido de separar o AGENTS.md manual nas duas
+  fontes, incorporar workflow.md e substituir explicitamente o arquivo manual
+  pela versão marcada. Confira a migração como qualquer edição do agente.
+- `/remember <texto>` oferece salvar em `~/.agent/AGENTS.md` ou
+  `.agent/rules.md` e acrescenta `- texto`. Cancelar não grava. Sem UI, grava
+  no projeto somente se rules.md existir; caso contrário informa erro.
+- O AGENTS.md em disco é remontado no início da sessão, após `/remember` e
+  após edit/write em rules/header. Alterações externas são lidas na próxima
+  sessão. O contexto injetado é um snapshot fixo por sessão, inclusive após
+  esses comandos: abra outra sessão para usar regras novas. Não há patch no Pi.
+- Filhos recebem as mesmas fontes no lugar do AGENTS.md gerado, na mensagem
+  da tarefa. workflow.md só é fallback se rules.md não existir.
+
+O check `agent-project-context` valida a montagem determinística, a sincronia
+deste repo e o system prompt realmente enviado pelo Pi a um provider falso
+em loopback, sem credenciais e sem chamadas pagas.

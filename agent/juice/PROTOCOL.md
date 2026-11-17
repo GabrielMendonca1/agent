@@ -33,15 +33,18 @@ decisão e integração. Isolamento, auditoria e lacunas: `docs/setup.md`,
 
 ## Receita e modelo por papel
 
-`workflow.mjs` lê `.agent/workflow.md` se existir; o arquivo não é criado
+`workflow.mjs` lê `.agent/rules.md`, com fallback para `.agent/workflow.md`; o arquivo não é criado
 automaticamente. Sem ele, scout=apoio e os demais papéis=principal. Ordem de
 decisão do modelo de um papel: config do papel em `/models` > frontmatter do
 papel > slot. Não há classificador de dispatch. Sem modelo de apoio, o slot
 `apoio` cai no principal: herdam o modelo principal os papéis sem config própria
 em `/models` e sem `model` no frontmatter.
 
-`projectRules` anexa as regras de `.agent/workflow.md` (até 8 KB; fonte acima de
-64 KB é ignorada) à tarefa de cada filho, como orientação.
+`contextFilesMessage` substitui AGENTS.md gerado por `.agent/rules.md` +
+`.agent/header.md` e ponteiros na tarefa de cada filho. Não duplica as fontes em
+`projectRules`; quando o projeto de origem difere do checkout do filho, recebe
+também as fontes da origem como orientação. Sem rules.md, mantém o fallback
+legado de workflow.md (até 8 KB; fonte acima de 64 KB é ignorada).
 
 ## Cache
 
@@ -75,3 +78,24 @@ Vale só para artefatos v1/v2 com config v1 (rollback). Não descreve o runtime 
 - O modo ficava numa entrada `custom` `agent-mode` (`{ version: 1, mode }`) no branch.
 - Após run com checks verdes, o modelo de apoio escrevia 0–3 regras em
   `.agent/workflow.md` (`[by: Agent; proven: no]`) e `.agent/history.json`.
+
+## Contexto do projeto
+
+- Pessoal: `~/.agent/AGENTS.md`, injetado inteiro pelo Pi, sem entrar no arquivo gerado do projeto.
+- Fontes: `.agent/rules.md` e `.agent/header.md`. `project-context.mjs` monta
+  `AGENTS.md` com marcador na primeira linha, header + rules e ponteiros relativos
+  para notes, STATUS, HISTORY e docs existentes, nessa ordem. Não inclui corpos desses documentos.
+- AGENTS.md sem marcador nunca é sobrescrito pelo montador; entra inteiro no
+  contexto, com dica de `/rules init`. Esse comando pede ao agente a migração
+  explícita, incluindo o workflow legado.
+- `juice.ts` instala `lib/project-context.ts`: remonta no session_start e fixa
+  `systemPromptOptions.contextFiles` pelo SDK do Pi 1.5.2. AGENTS.md gerado vira
+  rules + header inteiros e ponteiro absoluto para o arquivo completo; notes e
+  STATUS são ponteiros, não corpos. A descoberta de ancestrais e shadowing é do Pi.
+- edit/write das fontes e `/remember <texto>` só remontam o disco, nunca o snapshot
+  em uso. Nova sessão lê as mudanças. `/remember` oferece pessoal/projeto via
+  ui.select; sem UI exige rules.md existente e grava nele. Cancelamento não escreve.
+- Arquivo gerado usa LF, uma linha vazia entre blocos e newline final; fontes
+  são preservadas no disco e injetadas inteiras. Não há relógio na montagem.
+- Verificação: `scripts/test-agent-project-context.mjs` no portão, incluindo
+  sincronia byte a byte do AGENTS.md deste repo e captura offline com Pi real.
