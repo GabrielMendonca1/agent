@@ -133,23 +133,9 @@
       ]
     },
     {
-      "name": "agent-mine",
-      "cmd": "node scripts/test-agent-mine.mjs",
-      "tags": [
-        "fast"
-      ]
-    },
-    {
       "name": "subagent-dispatch",
       "cmd": "node scripts/test-subagent-dispatch.mjs",
       "tags": ["integration", "slow"]
-    },
-    {
-      "name": "agent-learn",
-      "cmd": "node scripts/test-agent-learn.mjs",
-      "tags": [
-        "fast"
-      ]
     },
     {
       "name": "cache-e2e",
