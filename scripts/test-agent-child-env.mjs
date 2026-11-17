@@ -70,7 +70,7 @@ try {
   process.env.HOME = root;
   process.env.PI_CODING_AGENT_DIR = join(root, 'agent');
   process.env.NODE_OPTIONS = `--no-warnings --import=file://${fake}`;
-  process.env.PI_AUTOMATIC_SKILLS = 'peers,megamind,prometheus,tasks';
+  process.env.PI_AUTOMATIC_SKILLS = 'peers,megamind,tasks';
   process.env.AGENT_JUICE_SKILLS_BEFORE = 'null';
   process.env.AGENT_RUNTIME_ENABLED = '1';
   process.env.AGENT_PI_ROOT = piRoot;

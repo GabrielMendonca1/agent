@@ -1,7 +1,7 @@
 /**
  * Child-only: caps large tool outputs before they enter a subagent's context.
  *
- * Measured (Mark sessions, 30 days): child tool outputs above 10k chars (80% bash
+ * Measured (Agent sessions, 30 days): child tool outputs above 10k chars (80% bash
  * sed/cat/head/git diff/rg, 17% read) cost about as much in later cacheRead as in the
  * first send. Above the limit the full text goes to a per-session temp file and the
  * model gets head + tail plus one line with the omitted size and the file path, to be

@@ -14,7 +14,7 @@ process.env.ARCA_MEGAMIND_CONFIG = 'none';
 const policy = await import('../agent/juice/skill-policy.mjs');
 const dir = mkdtempSync(join(tmpdir(), 'agent-skill-policy-'));
 const savedEnv = { ...process.env };
-const names = ['peers', 'megamind', 'prometheus', 'tasks', 'diagram', 'arca-ops', 'omni-ops', 'goal', 'grill', 'cua', 'debug', 'tdd', 'pr', 'handoff', 'sources', 'html-plan', 'ui-review', 'pessoal'];
+const names = ['peers', 'megamind', 'tasks', 'diagram', 'arca-ops', 'omni-ops', 'goal', 'grill', 'cua', 'debug', 'tdd', 'pr', 'handoff', 'sources', 'html-plan', 'ui-review', 'pessoal'];
 try {
   for (const name of names) {
     mkdirSync(join(dir, name));
@@ -47,7 +47,7 @@ try {
     delete process.env.PI_AUTOMATIC_SKILLS;
     console.log(`ok ${entry}: pessoais e system automáticas, catálogo inteiro, fonte intacta e reload`);
   }
-  assert.deepEqual(policy.automaticSkillNames(), ['peers', 'megamind', 'prometheus', 'cua', 'diagram', 'handoff', 'html-plan', 'pr', 'sources']);
+  assert.deepEqual(policy.automaticSkillNames(), ['peers', 'megamind', 'cua', 'diagram', 'handoff', 'html-plan', 'pr', 'sources']);
   for (const name of ['arca-ops', 'omni-ops', 'pessoal']) assert.equal(policy.isAutomaticSkill(name), false, `${name}: sem enrollment não é automática`);
   assert.equal(policy.isAutomaticSkill('debug'), false);
   assert.equal(policy.isAutomaticSkill('review'), false);

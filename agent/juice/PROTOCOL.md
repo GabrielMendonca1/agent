@@ -65,7 +65,8 @@ Ledger e accounting Juice, aprendizado/mineração automáticos e recaps por mod
 Vale só para artefatos v1/v2 com config v1 (rollback). Não descreve o runtime atual.
 
 - `client.mjs` mantinha preferências em `AGENT_JUICE_HOME/preferences.v3.json`
-  (padrão `~/.pi/agent/agent-juice/`) e contabilidade em `AGENT_JUICE_STATE`
+  (o launcher define `AGENT_JUICE_HOME` a partir de `juiceHome` na config v1;
+  instalações do Agent usam `~/.agent-juice`) e contabilidade em `AGENT_JUICE_STATE`
   (padrão `<home>/run.v3.json`), opt-in por `AGENT_JUICE_ENABLED=1`. A geração
   Rust/v1 usava `run.json` e `preferences.json`.
 - Escrita sob trava de diretório com dono PID/nonce e rename atômico; schema v2.

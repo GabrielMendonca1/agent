@@ -65,7 +65,7 @@ export function syncAgentSkills({
 	const target = join(store, SKILLS_DIR);
 	// `register: false` (Agent): só atualiza uma cópia que já existe; o registro é do recibo de recursos.
 	if (!register && !existsSync(target)) return { installed: [], skipped: [], settingsUpdated: false };
-	// O Prometheus liga as skills padrão em ~/.agents/skills para o Claude/Codex apontando para
+	// O app Megamind liga as skills padrão em ~/.agents/skills para o Claude/Codex apontando para
 	// <store>/skills: esses links são do próprio Agent, não skills do usuário.
 	const ownRoot = `${resolve(target)}${sep}`;
 	const isOwn = (path) => {

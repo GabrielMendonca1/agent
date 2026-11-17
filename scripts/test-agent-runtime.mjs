@@ -461,7 +461,7 @@ test(`${DISABLE_ENV}=1 volta ao legado e limpa contabilização fantasma herdada
 		AGENT_JUICE_ENABLED: "1",
 		AGENT_JUICE_BIN: "/antigo/agent-juice",
 		AGENT_JUICE_SKILLS_BEFORE: JSON.stringify("minha-skill"),
-		PI_AUTOMATIC_SKILLS: "peers,megamind,prometheus,tasks",
+		PI_AUTOMATIC_SKILLS: "peers,megamind,tasks",
 		AGENT_ARTIFACT: "antigo",
 		NODE_OPTIONS: `--enable-source-maps --import=file:///velho/agent/juice/runtime.mjs`,
 	};

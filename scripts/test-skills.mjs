@@ -43,7 +43,7 @@ try {
 
 	test("repo skills/ has the Agent defaults and they travel in the bundle", () => {
 		const names = skillNames(join(repo, "skills"));
-		assert.deepEqual(names, ["goal", "grill", "megamind", "peers", "prometheus", "repitch", "review", "skills", "ui-ux"]);
+		assert.deepEqual(names, ["goal", "grill", "megamind", "peers", "repitch", "review", "skills", "ui-ux"]);
 		assert.deepEqual(names.filter(name => agentNames().includes(name)), [], "overlay and Agent skills must not collide");
 		assert.ok(skillFiles(repo).includes("skills/grill/SKILL.md"));
 		assert.ok(!skillFiles(repo).some(file => file.startsWith("skills/debug/")));
