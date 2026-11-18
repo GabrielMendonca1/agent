@@ -1,0 +1,284 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Agent CLI Plan</title>
+<link rel="stylesheet" href="/Users/biel/.local/share/pi-overlay/mark-ii/releases/5904fd879e37a4ba1fd4cf09cd77d0fdda7a6b8db52e5a16cd1804744f843b20/mark/skills/system/html-plan/runtime/htmlplan.css">
+<script src="/Users/biel/.local/share/pi-overlay/mark-ii/releases/5904fd879e37a4ba1fd4cf09cd77d0fdda7a6b8db52e5a16cd1804744f843b20/mark/skills/system/html-plan/runtime/htmlplan.js" defer></script>
+<body>
+<header>
+<h1>Installable CLI and Lean Agent</h1>
+<details class="thread"><summary>Why · 3 requests</summary>
+<doc-quote via="prompt" from="the user">Pi enxuto + subagentes opcionais (recomendado)</doc-quote>
+<doc-quote via="prompt" from="the user">opcao 1 mas eu quero nao remover o cache-keeper , o megamind ,</doc-quote>
+<doc-quote via="prompt" from="the user">vamos combinar tudo isso com o cli</doc-quote>
+</details>
+</header>
+<main><doc-plan>
+<doc-claim>
+<p>The user installs a ready runtime without a local build.</p>
+<doc-mock frame="terminal" title="Proposed first release" w="470"><template>$ bash ./install.sh
+Artifact source: selected release channel
+Platform: supported OS and architecture required
+Digest and runtime: valid
+Agent profile: ~/.agent
+Agent store: ~/.local/share/agent
+Launcher: ~/.local/bin/agent
+Open a new terminal, then run agent.</template></doc-mock>
+<doc-ask id="node-runtime"><p>Where does Agent get Node?</p>
+<label><input type="radio" name="node-runtime" value="external" checked> External Node 22.19 or newer <small>Use the tested Node runtime with prebuilt Agent files.</small></label>
+<label><input type="radio" name="node-runtime" value="embedded"> Node inside each platform artifact <small>No Node setup; larger artifacts need separate platform checks.</small></label>
+</doc-ask>
+<doc-note tone="info">First release: ready runtime.</doc-note>
+<doc-claim>
+<p>The release channel does not control source repository visibility.</p>
+<doc-code title="Release access · sketch" lang="text"><script type="text/plain">
+Private channel: authenticated artifact download; access can fail before install.
+Public channel: public artifacts, with the source repository still private.
+A separate public releases repository is a valid public channel.
+The channel carries the installer, platform artifacts, and SHA256SUMS.
+No published URL or release exists by this plan's assertion.
+Publication requires separate approval after the release checks.
+</script></doc-code>
+<doc-ask id="release-access"><p>Who can download the artifacts?</p>
+<label><input type="radio" name="release-access" value="private" checked> Users with private channel access <small>Keep authenticated downloads for the first release.</small></label>
+<label><input type="radio" name="release-access" value="public"> Anyone from a public artifact channel <small>A separate releases repository keeps the source private.</small></label>
+</doc-ask>
+</doc-claim>
+<doc-claim>
+<p>The installer accepts only artifacts for tested platforms.</p>
+<doc-code title="Install contract · sketch" lang="text"><script type="text/plain">
+New: scripts/install.sh; scripts/agent-dist.mjs.
+Build in an isolated HOME and store; package the tested release and bundle.
+Record OS, architecture, Node contract, commit, and tree digest.
+Do not claim one universal tarball before platform validation.
+Test macOS and Linux per architecture; defer untested Windows installers.
+Reject unsafe archive paths, symlinks, unsupported platforms, and bad digests.
+SHA256SUMS alone does not prove publisher identity; use a trusted channel.
+Do not trust host-bound prepare receipts for downloaded artifacts.
+Scan the package for secrets, personal paths, auth, and session files.
+Set ~/.agent explicitly; never fall back to the installed Mark profile.
+Print PATH help for unsupported shells; preserve explicit profile overrides.
+</script></doc-code>
+<doc-claim at="scripts/agent-update.mjs:1201"><p>scripts/agent-update.mjs:1201 · install profile</p><doc-code src="scripts/agent-update.mjs" lines="1199-1211"></doc-code></doc-claim>
+</doc-claim>
+</doc-claim>
+
+<doc-claim>
+<p>The user logs in and chats without Juice or personal dependencies.</p>
+<doc-mock frame="terminal" title="Proposed first use" w="470"><template>$ agent
+Pi · Agent
+&gt; /login
+Select provider: OpenAI
+Complete the provider login with your account.
+&gt; Explain this repository.
+Chat works without Vault, Sistema, or Megamind.
+Provider authentication and normal costs still apply.</template></doc-mock>
+<doc-claim>
+<p>New artifacts start without accounting or a juiceHome.</p>
+<doc-calls title="Separate boot and accounting" caption="Keep the payload observer and skill policy."><script type="text/plain">
+~ validate config and launch                 @ scripts/lib/agent-runtime.mjs:416
+~   remove new-artifact juiceHome requirement @ scripts/agent-update.mjs:1568
+~ installJuiceGate()                          @ agent/juice/runtime.mjs:12
+-   reserve / settle / cancel / unknown       @ agent/juice/runtime.mjs:38
+-   accountingFailure and result proxy        @ agent/juice/runtime.mjs:42
+    finalPayload observer                     @ agent/juice/runtime.mjs:50
+-   getJuiceSnapshot() admission               @ agent/juice/runtime.mjs:104
+    installSkillPolicy()                      @ agent/juice/runtime.mjs:143
+</script></doc-calls>
+<doc-claim at="agent/juice/runtime.mjs:50"><p>agent/juice/runtime.mjs:50 · finalPayload observer</p><doc-code src="agent/juice/runtime.mjs" lines="45-57"></doc-code></doc-claim>
+</doc-claim>
+<doc-claim>
+<p>The core keeps Pi authentication, sessions, tools, and safety controls.</p>
+<doc-code title="Core contract · sketch" lang="text"><script type="text/plain">
+Keep Pi, session resume, provider errors, and native usage costs.
+Review each patch; remove extra inference from transcript-feedback.
+Keep tool permissions, sandbox limits, loop guards, cancellation, and skill policy.
+Let each user select and authenticate their provider; do not force a provider.
+Do not copy credentials from Mark or another profile into ~/.agent.
+Vault/Sistema and optional search credentials cannot block core chat.
+Remove ledger reads, writes, reserve/settle, and global accounting locks.
+Keep store, workflow, preferences, and history locks that protect real state.
+Remove global accounting fields; do not replace them with false zero values.
+Do not replace the ledger with another accounting store.
+</script></doc-code>
+</doc-claim>
+<doc-claim>
+<p>Automatic learning and extra inference notices do not run.</p>
+<doc-calls title="Remove automatic work, not safety controls" caption="Audit notice paths before any deletion."><script type="text/plain">
+~ agent_settled hook                         @ agent/extensions/brain-live/juice.ts:299
+-   learnFromRun()                            @ agent/extensions/brain-live/juice.ts:331
+-   automatic learning support               @ agent/juice/learn.mjs:100
+- automatic task mining                      @ agent/juice/mine.mjs:149
+~ panel accounting and learning fields       @ agent/juice/panel.ts:27
+~ optional Vault setup                       @ agent/extensions/brain-live/vault-runtime.ts:171
+~ model defaults without Sistema             @ agent/extensions/brain-live/lib/tiers.ts:2
+</script></doc-calls>
+<doc-note tone="warn">The transcript-feedback patch adds recap inference. Remove that inference and its notices; keep transcript rendering and masking. See overlay/manifest.json and overlay/transcript-feedback.patch.</doc-note>
+</doc-claim>
+</doc-claim>
+
+<doc-claim>
+<p>Cache-keeper stays functional, and Megamind stays available with separate configuration.</p>
+<doc-mock frame="terminal" title="Required behavior" w="470"><template>cache-keeper: enabled, independent of Juice
+cache prefetch: retained with existing limits
+Megamind: not configured
+&gt; Continue the task.
+Chat continues.
+Megamind tools remain available after configuration.
+Never bundle personal tokens.</template></doc-mock>
+<doc-claim>
+<p>Cache operations keep final payloads and existing request limits.</p>
+<doc-calls title="Keep cache behavior without accounting" caption="Do not remove cache-prefetch under an unclear dependency."><script type="text/plain">
+~ cacheKeeper()                              @ agent/extensions/brain-live/cache-keeper.ts:88
+    OpenAI cache key                          @ agent/extensions/brain-live/cache-keeper.ts:93
+    bounded prefetch                          @ agent/extensions/brain-live/cache-keeper.ts:98
+    finalPayload observer                     @ agent/extensions/brain-live/cache-keeper.ts:243
+    streamSimple() warm request               @ agent/extensions/brain-live/cache-keeper.ts:286
+~ cache report and event imports              @ agent/extensions/brain-live/cache-keeper.ts:40
+~ child cache policy without Juice switch     @ agent/extensions/brain-live/subagent/runner.ts:792
+</script></doc-calls>
+<doc-note tone="warn">Keep prefetch until proven separate. Keep compaction gates and hard limits.</doc-note>
+<doc-claim at="agent/extensions/brain-live/cache-keeper.ts:98"><p>agent/extensions/brain-live/cache-keeper.ts:98 · prefetch</p><doc-code src="agent/extensions/brain-live/cache-keeper.ts" lines="98-115"></doc-code></doc-claim>
+</doc-claim>
+<doc-claim>
+<p>Megamind uses its own profile and cannot block chat.</p>
+<doc-code src="extensions/megamind/index.ts" lines="924-940"></doc-code>
+
+</doc-claim>
+</doc-claim>
+
+<doc-claim>
+<p>The user can use subagents without a required complex mode.</p>
+<doc-mock frame="terminal" title="Proposed optional dispatch" w="470"><template>Subagents: disabled
+Chat and tools work without child processes.
+Subagents: enabled by user configuration
+subagent launch → job id
+subagent status / result / cancel → same job
+No simple/complex switch is required.</template></doc-mock>
+<doc-claim>
+<p>Dispatch uses an explicit feature switch, not a session mode.</p>
+<doc-calls title="Keep dispatch and child protections" caption="Optional does not mean removed."><script type="text/plain">
+~ launch feature admission                   @ agent/extensions/brain-live/subagent/index.ts:771
+-   complex mode requirement                  @ agent/extensions/brain-live/subagent/index.ts:774
+-   ledger snapshot and state path            @ agent/extensions/brain-live/subagent/index.ts:775
+    cancel owned job                          @ agent/extensions/brain-live/subagent/index.ts:723
+~ child environment without ledger           @ agent/extensions/brain-live/subagent/runner.ts:532
+    child cache and skills                    @ agent/extensions/brain-live/subagent/runner.ts:792
+~ role model defaults                        @ agent/extensions/brain-live/subagent/jobs.ts:140
+~ mode keybinding registration                @ scripts/lib/agent-resources.mjs:32
+~ mode header hints                          @ agent/extensions/agent/tui/logo.ts:30
+</script></doc-calls>
+
+</doc-claim>
+<doc-claim>
+<p>Existing checks prove optional dispatch and retained cache behavior.</p>
+<doc-code title="Acceptance checks after approval · sketch" lang="text"><script type="text/plain">
+Adapt .pi/checks.json and the existing scripts/test-*.mjs gate.
+juice-wire / juice-dispatch / juice-panel:
+  Missing, corrupt, or locked ledger cannot block startup or two requests.
+  Assert zero ledger access; keep provider errors, costs, and stream behavior.
+cache-keeper / cache-e2e / cache-prefetch:
+  Preserve final payload, TTL, stop conditions, warm limits, and OpenAI keys.
+  Preserve prefetch's one request, 60-second limit, and blocked tools.
+subagent-dispatch / agent-child-env / agent-model-roles:
+  Dispatch defaults to disabled; enabled dispatch needs no complex mode.
+  Disabled dispatch starts no child; retain the dispatch implementation.
+  Cancel cannot kill another session's child; abort and shutdown leave no orphan.
+megamind-profile / megamind-requests / megamind-status:
+  A missing profile or disconnected service cannot prevent chat.
+agent-learn / agent-mine / agent-skill-policy:
+  Automatic inference and mining are absent; required skills still work.
+</script></doc-code>
+</doc-claim>
+</doc-claim>
+
+<doc-claim>
+<p>Updates and rollback switch only to a valid complete runtime.</p>
+<doc-mock frame="terminal" title="Proposed update and rollback" w="470"><template>$ agent update
+Download → stage → validate → activate
+current: release B · previous: release A
+$ agent overlay-rollback
+Validate A → activate A
+current: release A
+A failed download or validation keeps current intact.</template></doc-mock>
+<doc-claim>
+<p>The updater validates the candidate before an atomic switch.</p>
+<doc-calls title="Artifact install instead of local rebuild" caption="Keep verification and store locks."><script type="text/plain">
+~ agent update route                         @ scripts/agent-wrapper.sh:53
++   **installArtifact**()                     @ scripts/agent-update.mjs:2150
+    requireVerified()                         @ scripts/agent-update.mjs:2121
+~   activateRelease()                         @ scripts/agent-update.mjs:1965
+~ artifact contract and preload               @ scripts/lib/agent-runtime.mjs:255
+~ release source metadata                     @ scripts/agent-update.mjs:1039
+</script></doc-calls>
+
+</doc-claim>
+<doc-claim>
+<p>Artifact versions preserve old rollback contracts without new accounting.</p>
+<doc-code title="Versioned runtime contract · sketch" lang="text"><script type="text/plain">
+New artifacts start the lean Agent automatically; no manual Juice opt-in.
+New manifests/configs need no juiceHome or accounting preload.
+Accept legacy --juice-home with a deprecation notice; do not access that path.
+Remove only Agent accounting imports from inherited NODE_OPTIONS.
+Keep unrelated options; load payload observation and skill policy once.
+Old artifacts retain their declared runtime and verification contract.
+Old rollback can restore accounting; show that fact before activation.
+Do not rewrite old artifacts, digests, receipts, or historical data.
+Stage config/resources with the runtime; restore them if activation fails.
+Keep user auth and sessions outside artifacts and rollback transactions.
+</script></doc-code>
+</doc-claim>
+<doc-claim>
+<p>Release checks use a clean HOME without personal credentials.</p>
+<doc-code title="Release gate after approval · sketch" lang="text"><script type="text/plain">
+Extend prepare-promote, agent-runtime, agent-startup, agent-installed,
+agent-resources, agent-setup, and overlay-store-lock checks as needed.
+Use temporary HOME, profiles, stores, old/new fixtures, and fake providers.
+Make missing candidate startup a failure, not a skip.
+Prove install → first chat → update A/B → rollback with a real artifact.
+Inject bad digest, unsafe archive, wrong platform, and interrupted activation.
+Prove atomic current/previous and config/resource recovery; keep store locks.
+Make sure ~/.pi/agent and the installed Mark store remain untouched.
+After separate auth approval, test fresh OpenAI login without credential copies.
+Run each advertised OS/architecture; no support claim from another platform.
+Run the full gate and compare failures with the supplied baseline, 39/42.
+Inherited: prepare-promote expects an old message; juice-panel lacks
+.agent/workflow.md; agent-runtime lacks a fixture directory.
+This plan does not rerun that baseline or declare those failures fixed.
+Keep permanent verification in the gate; retain no unit/e2e test suites.
+</script></doc-code>
+</doc-claim>
+</doc-claim>
+
+<doc-claim aux="shared">
+<p>The artifact records the runtime contract without personal state.</p>
+<doc-schema id="artifact-contract" lang="ts" title="Artifact contract · sketch"><script type="text/plain">
+type AgentArtifact = {
+  schema: number; // New version selects the lean boot contract.
+  releaseId: string;
+  sourceCommit: string; // No absolute sourceRepo path.
+  overlayFingerprint: string;
+  treeDigest: string;
+  platforms: Array<{ os: string; arch: string }>;
+  node: { kind: "external" | "embedded"; min: string; version?: string };
+  profileDefault: "~/.agent";
+};
+</script></doc-schema>
+</doc-claim>
+<doc-claim aux="scope">
+<p>Only Agent changes after the user responds to this plan.</p>
+<ul>
+<li>This task adds only docs/agent-cli-plan.html and its packed file. Base: f65f904. Wait for the HTML response before implementation.</li>
+<li>Keep docs/cli-install-plan.html, docs/remove-juice-plan.html, their packed files, research, and tasks unchanged.</li>
+<li>This plan replaces mandatory modes, manual Juice opt-in, public-source requirements, and the universal POSIX artifact proposal.</li>
+<li>New implementation files: scripts/install.sh and scripts/agent-dist.mjs. Extend existing gate scripts for concrete risks.</li>
+<li>Change the paths in the call trees, plus scripts/lib/agent-setup.mjs, README.md, docs/setup.md, and .pi/checks.json.</li>
+<li>Audit import callers before removal. Do not delete agent/juice wholesale. Keep Pi and its patches.</li>
+<li>Sources: both original plans and docs/research/2026-11-15-pi-vercel-fx-agent-core.md. All four required external READMEs were read.</li>
+<li>Do not change installed Mark, WG, personal data, credentials, or other repositories. No installation, deletion, publication, or new external dependency.</li>
+<li>Only Node packaging and release access remain open. Cache-keeper and Megamind retention are settled.</li>
+</ul>
+</doc-claim>
+</doc-plan></main>
+</body></html>

@@ -1,0 +1,292 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<title>Agent CLI Install</title>
+<link rel="stylesheet" href="/Users/biel/.local/share/pi-overlay/mark-ii/releases/5904fd879e37a4ba1fd4cf09cd77d0fdda7a6b8db52e5a16cd1804744f843b20/mark/skills/system/html-plan/runtime/htmlplan.css">
+<script src="/Users/biel/.local/share/pi-overlay/mark-ii/releases/5904fd879e37a4ba1fd4cf09cd77d0fdda7a6b8db52e5a16cd1804744f843b20/mark/skills/system/html-plan/runtime/htmlplan.js" defer></script>
+<body>
+
+<header>
+  <h1>Installable Agent CLI from Releases</h1>
+  <doc-changes new="3" changed="5"></doc-changes>
+  <details class="thread"><summary>Why · 1 request</summary>
+    <doc-quote via="prompt" from="the user">quero uma cli instalavel que nem o claude code</doc-quote>
+  </details>
+</header>
+
+<main>
+<doc-plan>
+
+<!-- ═════ 1 · install ═════ -->
+<doc-claim>
+  <p>A user with Node and GitHub CLI installs Agent without a build.</p>
+  <doc-mock frame="terminal" title="zsh — clean machine" w="470"><template><span class="dim">$</span> gh release download -R GabrielMendonca1/agent \
+    -p install.sh -O - | bash
+<span class="dim">Agent installer</span>
+<span class="g">✓</span> node v24.11.0 (needs >= 22.19)
+<span class="g">✓</span> agent-1.5.0-f65f904-posix.tar.gz
+<span class="g">✓</span> sha256 matches SHA256SUMS
+<span class="g">✓</span> release 1.5.0-f9a2636556-a1fe83215f-…
+<span class="g">✓</span> pi --version 1.5.0
+<span class="g">✓</span> ~/.local/bin/agent → ~/.local/share/agent
+<span class="g">✓</span> profile ~/.agent
+<span class="y">!</span> open a new terminal, then run <b>agent</b></template></doc-mock>
+  <doc-ask id="format">
+    <p>What does the user download?</p>
+    <label><input type="radio" name="format" value="prebuilt" checked> A prebuilt tarball of the tested release <small>needs Node 22.19+, no git, no build</small></label>
+    <label><input type="radio" name="format" value="source"> The checkout, then the updater builds locally <small>needs git and npm; minutes of build; claim 4 goes</small></label>
+    <label><input type="radio" name="format" value="binary"> One Bun binary from upstream build:binary <small>no Node; extensions and updater need a new port</small></label>
+  </doc-ask>
+  <div data-if="format=source"><doc-note tone="warn">Then install.sh only wraps the commands in docs/setup.md. Each install clones Pi, runs npm ci, check, build and the patch tests.</doc-note></div>
+  <div data-if="format=binary"><doc-note tone="risk">The updater, wrapper and launcher are Node scripts, and extensions load through jiti. A Bun binary changes the runtime that the gate tested.</doc-note></div>
+
+  <doc-claim>
+    <p>install.sh downloads the tarball only if Node is 22.19 or newer.</p>
+    <doc-code title="scripts/install.sh · sketch" lang="bash">
+<script type="text/plain">
+#!/usr/bin/env bash
+set -euo pipefail
+REPO=${AGENT_RELEASE_REPO:-GabrielMendonca1/agent}
+TAG=${AGENT_VERSION:-}                      # empty = latest release
+node -e 'const [a,b]=process.versions.node.split(".").map(Number);
+  process.exit(a>22||(a===22&&b>=19)?0:1)' \
+  || { echo "Install Node >= 22.19 first" >&2; exit 1; }
+case "$(uname -s)" in Darwin|Linux) ;; *)
+  echo "macOS or Linux only; Windows: docs/setup.md" >&2; exit 1;; esac
+tmp=$(mktemp -d); trap 'rm -rf "$tmp"' EXIT
+if [ -n "${AGENT_RELEASE_DIR:-}" ]; then cp "$AGENT_RELEASE_DIR"/* "$tmp"   # local test
+else gh release download ${TAG:+"$TAG"} -R "$REPO" \
+  -p 'agent-*-posix.tar.gz' -p SHA256SUMS -D "$tmp"; fi
+(cd "$tmp" && grep -- '-posix.tar.gz' SHA256SUMS | shasum -a 256 -c -)
+tar -xzf "$tmp"/agent-*-posix.tar.gz -C "$tmp"
+PI_CODING_AGENT_DIR="${PI_CODING_AGENT_DIR:-$HOME/.agent}" \
+  node "$tmp/bundle/scripts/agent-update.mjs" --install-artifact "$tmp"
+</script>
+    </doc-code>
+    <doc-ask id="access">
+      <p>Who can download the release?</p>
+      <label><input type="radio" name="access" value="private" checked> Only people with access to the private repo <small>uses gh auth; the repo is private today</small></label>
+      <label><input type="radio" name="access" value="public"> Anyone; make the repo public <small>curl from releases/latest/download; gh not needed</small></label>
+    </doc-ask>
+    <div data-if="access=public"><doc-note tone="warn">Then install.sh also accepts curl. The URL https://github.com/GabrielMendonca1/agent/releases/latest/download/install.sh works only after the repo is public and a release exists.</doc-note></div>
+  </doc-claim>
+
+  <doc-note tone="warn">The installer must reject unsafe archive paths and links before extraction. It must use an HTTPS release from the selected repository. SHA256SUMS detects damaged files; it does not prove the publisher identity by itself.</doc-note>
+  <doc-claim>
+    <p>The bundled updater activates the tarball with no build.</p>
+    <doc-calls title="--install-artifact" caption="Each step after the first reuses code that promote() already calls.">
+<script type="text/plain">
+~ main()                                         @ scripts/agent-update.mjs:2581
++   **installArtifact**(options)                 @ scripts/agent-update.mjs:2150   -- new mode beside promote()
++     read artifact.json, match manifest fingerprint   @ scripts/agent-update.mjs:2178
++     copy release/ to releases/<releaseId>      @ scripts/agent-update.mjs:2810
+      requireVerified(releaseDir, metadata)      @ scripts/agent-update.mjs:2121   -- markers, digest, pi --version
+      activateRelease(store, releaseDir, true)   @ scripts/agent-update.mjs:1965   -- current, previous, launcher, PATH
+      warmStartCache(options)                    @ scripts/agent-update.mjs:2530
+</script>
+    </doc-calls>
+    <doc-claim at="scripts/agent-update.mjs:2150">
+      <p><b>agent-update.mjs:2150</b> · promote()</p>
+      <doc-code src="scripts/agent-update.mjs" lines="2150-2164" hl="2158-2160">
+        <doc-pin line="2159" tone="warn" title="The receipt pins node and store">A download cannot match it, so the new mode skips the receipt.</doc-pin>
+      </doc-code>
+    </doc-claim>
+  </doc-claim>
+
+  <doc-claim>
+    <p>The installer registers resources in ~/.agent, not in ~/.pi/agent.</p>
+    <doc-code src="scripts/agent-update.mjs" lines="1199-1211" hl="1201">
+      <doc-pin line="1201" tone="risk" title="Default is ~/.pi/agent">The updater must default to ~/.agent and keep explicit profile overrides.</doc-pin>
+    </doc-code>
+  </doc-claim>
+</doc-claim>
+
+<!-- ═════ 2 · first run ═════ -->
+<doc-claim>
+  <p>The user types <code>agent</code> and logs in with their own account.</p>
+  <doc-mock frame="terminal" title="agent" w="470"><template><span class="dim">$</span> agent
+<span class="dim">pi 1.5.0 · Agent · simple</span>
+<span class="dim">></span> /login
+<span class="box"> Select provider                         
+ <span class="inv">› Anthropic (Claude Pro/Max)          </span>
+   OpenAI (ChatGPT Plus/Pro)            
+   Anthropic API key                    </span>
+<span class="g">✓</span> Logged in. Credentials in <b>~/.agent/auth.json</b></template></doc-mock>
+
+  <doc-claim>
+    <p>The wrapper fixes the profile to ~/.agent for every command.</p>
+    <doc-code src="scripts/agent-wrapper.sh" lines="4-11" hl="7">
+      <doc-pin line="7" title="Separate from Pi and Mark">Settings, auth and sessions stay in ~/.agent.</doc-pin>
+    </doc-code>
+  </doc-claim>
+
+  <doc-note tone="info">Model login does not enable web search. First-use help must name the optional Google or OpenRouter credentials. Missing search credentials must not block chat.</doc-note>
+  <doc-claim>
+    <p>A new terminal finds <code>agent</code> through the PATH block.</p>
+    <doc-code src="scripts/lib/agent-setup.mjs" lines="247-265" hl="249">
+      <doc-pin line="249" title="zsh and bash only">fish and other shells get no block.</doc-pin>
+    </doc-code>
+  </doc-claim>
+</doc-claim>
+
+<!-- ═════ 3 · update and rollback ═════ -->
+<doc-claim>
+  <p><code>agent update</code> installs the latest release; rollback restores the last one.</p>
+  <doc-mock frame="terminal" title="agent update" w="470"><template><span class="dim">$</span> agent update
+<span class="g">✓</span> latest agent-1.5.0-9b1c2d0, active agent-1.5.0-f65f904
+<span class="g">✓</span> sha256, markers, digest, pi --version
+<span class="g">✓</span> current → 1.5.0-…-9b1c2d0  previous → …-f65f904
+<span class="dim">$</span> agent update
+<span class="dim">already on agent-1.5.0-9b1c2d0</span>
+<span class="dim">$</span> agent overlay-rollback
+<span class="g">✓</span> current → 1.5.0-…-f65f904</template></doc-mock>
+
+  <doc-claim>
+    <p>The wrapper sends <code>agent update</code> to the release download, not to a rebuild.</p>
+    <doc-code diff file="scripts/agent-wrapper.sh" start="53">
+<script type="text/plain">
+     if [ "$mode" = delegate ]; then
+       exec "$ACTIVE_PI" update "$@"
+     fi
+     if [ "$mode" = all ]; then
+-      node "$UPDATER"
++      node "$UPDATER" --install-artifact latest
+       exec "$ACTIVE_PI" update "${extension_args[@]}"
+     fi
+-    exec node "$UPDATER"
++    exec node "$UPDATER" --install-artifact latest
+     ;;
+</script>
+      <doc-pin line="60" title="overlay-update keeps the rebuild">Line 14 is not changed.</doc-pin>
+    </doc-code>
+  </doc-claim>
+
+  <doc-claim>
+    <p>Rollback uses the existing previous pointer and verification.</p>
+    <doc-code src="scripts/agent-update.mjs" lines="328-345" hl="337">
+      <doc-pin line="337" title="Same check as install">verifyRelease() runs on the previous target.</doc-pin>
+    </doc-code>
+  </doc-claim>
+</doc-claim>
+
+<!-- ═════ 4 · publish ═════ -->
+<doc-claim>
+  <p>The maintainer builds one tarball from the checkout and publishes it.</p>
+  <doc-mock frame="terminal" title="~/Projects/agent" w="470"><template><span class="dim">$</span> node scripts/agent-dist.mjs
+<span class="dim">--prepare in a temporary store …</span>
+<span class="g">✓</span> dist/agent-1.5.0-f65f904-posix.tar.gz
+<span class="g">✓</span> dist/install.sh
+<span class="g">✓</span> dist/SHA256SUMS
+<span class="g">✓</span> no personal credentials or host paths in metadata
+<span class="y">!</span> publish needs approval:
+  gh release create agent-1.5.0-f65f904 dist/* \
+    -R GabrielMendonca1/agent</template></doc-mock>
+
+  <doc-claim>
+    <p>agent-dist reuses <code>--prepare</code> and packs the release with the bundle.</p>
+    <doc-calls title="agent-dist.mjs" caption="Only the tar step and the scan are new.">
+<script type="text/plain">
++ **agentDist**()                                @ scripts/agent-dist.mjs:1
++   agent-update.mjs --prepare --store <tmp>     @ scripts/agent-update.mjs:2807   -- HOME and PI_CODING_AGENT_DIR in tmp
++   installOverlayBundle(<tmp store>)            @ scripts/agent-update.mjs:867
++   write artifact.json                          @ scripts/agent-dist.mjs:1
++   tar release/ bundle/ artifact.json           @ scripts/agent-dist.mjs:1
++   **scanPersonalPaths**(tree)                  @ scripts/agent-dist.mjs:1
+</script>
+    </doc-calls>
+  </doc-claim>
+
+  <doc-claim>
+    <p>The release metadata records the commit but not the local checkout path.</p>
+    <doc-code diff file="scripts/agent-update.mjs" start="1039">
+<script type="text/plain">
+ function checkoutSource() {
+ 	const info = checkoutInfo(repoRoot);
+-	if (info && resolvedPath(info.top) === resolvedPath(repoRoot)) return { sourceRepo: info.top, sourceCommit: info.head };
++	if (!info || resolvedPath(info.top) !== resolvedPath(repoRoot)) return {};
++	if (process.env.AGENT_DIST === "1") return { sourceCommit: info.head };
++	return { sourceRepo: info.top, sourceCommit: info.head };
+-	return {};
+ }
+</script>
+      <doc-pin old="1041" tone="warn" title="Today it writes /Users/biel/Projects/agent">active.json shows it at sourceRepo.</doc-pin>
+    </doc-code>
+  </doc-claim>
+</doc-claim>
+
+<!-- ═════ 5 · checks ═════ -->
+<doc-claim>
+  <p>One gate check proves install, update and rollback in a temporary HOME.</p>
+  <doc-code title="scripts/test-install-artifact.mjs · sketch" lang="js">
+<script type="text/plain">
+// Fixture tarballs A and B, built like test-prepare-promote.mjs builds its fixtures.
+const home = mkdtempSync(join(tmpdir(), "agent-install-"));
+const env = { ...hermeticEnv(), HOME: home, PI_CODING_AGENT_DIR: join(home, ".agent") };
+run("node", [updater, "--install-artifact", fixtureA], { env });
+assert(readlink(join(home, ".local/bin/agent")).endsWith("bin/pi-wrapper"));
+assert(!existsSync(join(home, ".pi/agent")));                  // profile stays in ~/.agent
+run("node", [updater, "--install-artifact", fixtureA], { env }); // same id: no change
+run("node", [updater, "--install-artifact", fixtureB], { env });
+assert.equal(linkTarget(store, "previous"), releaseA);
+run("node", [updater, "--rollback"], { env });
+assert.equal(linkTarget(store, "current"), releaseA);
+assert.throws(() => run("node", [updater, "--install-artifact", corrupted], { env }));
+assert.equal(linkTarget(store, "current"), releaseA);            // bad sha leaves current
+</script>
+  </doc-code>
+  <doc-claim>
+    <p>A manual clean-machine run uses a real tarball before each publish.</p>
+    <doc-code title="manual run before publish · sketch" lang="bash">
+<script type="text/plain">
+# macOS: an empty HOME, the real tarball from dist/
+H=$(mktemp -d)
+HOME=$H AGENT_RELEASE_DIR=dist bash dist/install.sh   # no download
+HOME=$H $H/.local/bin/agent --version                 # 1.5.0
+# Run the candidate launcher with a loopback provider and fake key.
+# Missing candidate or skipped startup MUST fail the release gate.
+# Linux: repeat in a clean container for each supported architecture.
+# Do not claim Linux support from a macOS run alone.
+# Audit metadata and packaged files for credentials and host-specific paths.
+</script>
+    </doc-code>
+  </doc-claim>
+</doc-claim>
+
+<!-- ═════ shared ═════ -->
+<doc-claim aux="shared">
+  <p>Shared: the tarball layout and its artifact.json.</p>
+  <doc-schema id="artifact" lang="js" title="artifact.json (in agent-&lt;version&gt;-&lt;commit&gt;-posix.tar.gz)" caption="release/ is the --prepare tree; bundle/ is the overlay bundle.">
+<script type="text/plain">
+/**
+ * @typedef {Object} AgentArtifact
+ * @property {1} schema
+ * @property {string} tag                 // agent-1.5.0-f65f904
+ * @property {string} releaseId           // 1.5.0-f9a2636556-a1fe83215f-8026a6708f
+ * @property {string} officialVersion     // 1.5.0, from overlay/manifest.json:overlayRef
+ * @property {string} overlayFingerprint  // must match bundle/overlay/manifest.json
+ * @property {string} treeDigest          // digestAlgorithm 3 of release/
+ * @property {string} sourceCommit        // no sourceRepo path
+ * @property {string[]} platforms         // only platform/architecture pairs tested
+ * @property {string} nodeMin             // "22.19"
+ */
+</script>
+  </doc-schema>
+</doc-claim>
+
+<doc-claim aux="scope">
+  <p>Not changing: Pi base, patches, build pipeline, Windows, runtime opt-in.</p>
+  <ul>
+    <li>Pi 1.5.0 base, the 10 patches in <code>overlay/</code> and the gate in <code>agent-update.mjs</code> stay as they are.</li>
+    <li>No npm package. The updater installs a tested tree with rollback; <code>npm install -g</code> skips that.</li>
+    <li>Windows keeps the checkout path in docs/setup.md. Windows is not validated on a real machine. A later Windows installer needs its own artifact validation.</li>
+    <li>The runtime opt-in (<code>--agent-enable --juice-home</code>) stays manual.</li>
+    <li>The Mark store <code>~/.local/share/pi-overlay</code> and <code>~/.pi/agent</code> are not touched.</li>
+    <li>No CI workflow. The maintainer runs agent-dist.mjs and publishes after approval.</li>
+    <li>Files: new scripts/install.sh, scripts/agent-dist.mjs, scripts/test-install-artifact.mjs; changed agent-update.mjs, agent-wrapper.sh, .pi/checks.json, docs/setup.md, README.md. The new release check must fail if candidate startup does not run.</li>
+  </ul>
+</doc-claim>
+
+</doc-plan>
+</main>
+</body>
+</html>

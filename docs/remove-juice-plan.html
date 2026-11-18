@@ -1,0 +1,143 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Remove Juice Accounting</title>
+<link rel="stylesheet" href="/Users/biel/.local/share/pi-overlay/mark-ii/releases/5904fd879e37a4ba1fd4cf09cd77d0fdda7a6b8db52e5a16cd1804744f843b20/mark/skills/system/html-plan/runtime/htmlplan.css">
+<script src="/Users/biel/.local/share/pi-overlay/mark-ii/releases/5904fd879e37a4ba1fd4cf09cd77d0fdda7a6b8db52e5a16cd1804744f843b20/mark/skills/system/html-plan/runtime/htmlplan.js" defer></script>
+<body>
+<header>
+<h1>Remove Juice Accounting from Agent</h1>
+<details class="thread"><summary>Why · 1 request</summary>
+<doc-quote via="prompt" from="User">o agent nao pode ter isso , quero remover essa parte que e inutil do mark que so gera problemas , no agent entende ?</doc-quote>
+</details>
+</header>
+<main><doc-plan>
+<doc-claim>
+<p>Ledger faults cannot stop inference, dispatch, cache, or startup.</p>
+<doc-code title="Required results · sketch" lang="text"><script type="text/plain">
+Ledger absent, corrupt, or locked:
+  Provider stream and result keep their native behavior.
+  The next request can start after the first result.
+  Complex mode can dispatch; simple mode still refuses dispatch.
+  Cache events do not read, write, or lock the ledger.
+  New Agent artifacts start without a ledger or juiceHome.
+</script></doc-code>
+<doc-claim>
+<p>The provider keeps its payload hook, but loses all accounting.</p>
+<doc-calls title="Remove the accounting gate" caption="Keep the payload observer and skill policy without ledger calls."><script type="text/plain">
+~ installJuiceGate()                         @ agent/juice/runtime.mjs:12
+-   reserve / cancel / unknown / settle       @ agent/juice/runtime.mjs:38
+-   accountingFailure / result proxy          @ agent/juice/runtime.mjs:42
+    finalPayload observer                     @ agent/juice/runtime.mjs:50
+-   getJuiceSnapshot() admission               @ agent/juice/runtime.mjs:104
+~ bootstrap                                  @ agent/juice/runtime.mjs:126
+-   init / parent ledger requirement          @ agent/juice/runtime.mjs:134
+    installSkillPolicy()                      @ agent/juice/runtime.mjs:143
+- recordJuiceCacheEvent() ledger update        @ agent/juice/client.mjs:176
+</script></doc-calls>
+<doc-claim at="agent/juice/runtime.mjs:42"><p>agent/juice/runtime.mjs:42 · record()</p><doc-code src="agent/juice/runtime.mjs" lines="40-56"></doc-code></doc-claim>
+</doc-claim>
+</doc-claim>
+<doc-claim>
+<p>Modes, models, child identity, and skills work without a ledger.</p>
+<doc-code title="Retained behavior · sketch" lang="text"><script type="text/plain">
+Keep: session-owned simple/complex mode and ensureSessionMode().
+Keep: role model precedence, principal/apoio slots, thinking, parentSession.
+Keep: child identity, child cache policy, and the skills catalog.
+Keep: preferences and their own lock; keep workflow/history locks.
+Remove: statePath from dispatch policy and ledger checks from /models.
+Replace: juiceEnabled as a feature switch, not all feature hooks.
+</script></doc-code>
+<doc-claim>
+<p>Dispatch policy no longer contains an accounting path.</p>
+<doc-calls title="Separate policy from accounting" caption="Keep each policy when the accounting path goes away."><script type="text/plain">
+~ launch / ensureSessionMode()                @ agent/extensions/brain-live/subagent/index.ts:771
+-   getJuiceSnapshot() / AGENT_JUICE_STATE      @ agent/extensions/brain-live/subagent/index.ts:775
+~   dispatchDefaults.juice                    @ agent/extensions/brain-live/subagent/index.ts:777
+~ resolveJobTaskModels()                      @ agent/extensions/brain-live/subagent/jobs.ts:140
+~ child env independent of juiceStatePath     @ agent/extensions/brain-live/subagent/runner.ts:532
+~ child cache and skills independent of juice @ agent/extensions/brain-live/subagent/runner.ts:792
+~ feature hooks independent of ledger        @ agent/extensions/brain-live/juice.ts:89
+~ preferences independent of snapshot         @ agent/extensions/brain-live/models.ts:183
+    getJuicePreferences()                     @ agent/juice/client.mjs:70
+    withWorkflowLock()                        @ agent/juice/lock.mjs:43
+</script></doc-calls>
+</doc-claim>
+</doc-claim>
+<doc-claim>
+<p>Pi keeps native costs; Agent stops global cost collection.</p>
+<doc-code title="Cost display · sketch" lang="text"><script type="text/plain">
+Keep: native Pi usage, session cost, team status, and cache behavior.
+Keep: panel.ts as a pure renderer; change only its accounting fields.
+Remove: global ledger totals, reports, receipts, and cache telemetry.
+Do not replace the ledger with another store.
+Do not show a false zero for a removed total.
+</script></doc-code>
+<doc-ask id="global-display"><p>What replaces the global cost field?</p>
+<label><input type="radio" name="global-display" value="remove" checked> Remove the field <small>Keep native session costs.</small></label>
+<label><input type="radio" name="global-display" value="unavailable"> Show “Unavailable” <small>Keep the label without a data source.</small></label>
+</doc-ask>
+<doc-claim><p>The panel reads session data, not a global snapshot.</p><doc-code src="agent/juice/panel.ts" lines="7-25"></doc-code></doc-claim>
+</doc-claim>
+<doc-claim>
+<p>New artifacts need no juiceHome; old artifacts keep explicit compatibility.</p>
+<doc-code title="Artifact contract · sketch" lang="text"><script type="text/plain">
+New manifest/config version:
+  No required juiceHome, ledger path, or accounting preload.
+  Load the payload observer and skill policy without the ledger gate.
+  Remove inherited Agent accounting imports from NODE_OPTIONS.
+  Keep unrelated NODE_OPTIONS; install the feature bootstrap once.
+Old manifest/config versions:
+  Validate and launch their declared runtime for rollback.
+  Keep their juiceHome requirement inside the old-version branch.
+  Do not rewrite old artifacts, their digest, or historical data.
+  Old rollback can still use accounting; it is not the new runtime.
+</script></doc-code>
+<doc-ask id="old-flag"><p>How does a new artifact handle an explicit --juice-home?</p>
+<label><input type="radio" name="old-flag" value="deprecated" checked> Accept it with a deprecation notice <small>Do not read or create the accounting home.</small></label>
+<label><input type="radio" name="old-flag" value="reject"> Reject it with an upgrade message <small>Old artifacts still accept and require it.</small></label>
+</doc-ask>
+<doc-claim><p>Artifact versions select the launcher contract before path validation.</p>
+<doc-calls title="Versioned boot contract" caption="Apply the new contract only to new artifact versions."><script type="text/plain">
+~ build artifact / preload requirement        @ scripts/lib/agent-runtime.mjs:255
+~ validate manifest / preload                 @ scripts/lib/agent-runtime.mjs:349
+~ validate config / juiceHome                 @ scripts/lib/agent-runtime.mjs:416
+~ launch / env / NODE_OPTIONS                 @ scripts/lib/agent-runtime.mjs:572
+~ parse --agent-enable / --juice-home          @ scripts/agent-update.mjs:237
+~ agentEnable() directory requirement         @ scripts/agent-update.mjs:1568
+</script></doc-calls>
+</doc-claim>
+<doc-claim><p>Offline checks prove the retained behavior without personal state.</p>
+<doc-code title="Acceptance checks after approval · sketch" lang="text"><script type="text/plain">
+Use temporary homes, fake providers, and old/new artifact fixtures.
+Adapt existing checks; remove obsolete accounting assertions only.
+Run scripts/test-{juice-wire,juice-dispatch,juice-panel}.mjs:
+  Locked/corrupt/missing ledger cannot affect results or later calls.
+  Assert zero ledger reads/writes/locks in all four execution paths.
+Run scripts/test-{subagent-dispatch,agent-child-env,agent-model-roles}.mjs:
+  Keep mode refusal, role precedence, slots, child identity, skills.
+Run scripts/test-{cache-keeper,cache-e2e,agent-skill-policy}.mjs:
+  Keep final payload observation, cache behavior, and skill policy.
+Run scripts/test-agent-runtime.mjs and scripts/test-prepare-promote.mjs:
+  New boot needs no home; old fixtures keep the declared contract.
+  Inherited accounting preload is absent; unrelated options survive.
+Run the gate in .pi/checks.json; compare with the reported baseline.
+Baseline from parent, not rerun here: 39/42.
+Known failures: prepare-promote (expected message), juice-panel
+(missing .agent/workflow.md), agent-runtime (missing fixture directory).
+Do not retain temporary unit/e2e tests. Keep the existing check gate.
+</script></doc-code>
+</doc-claim>
+</doc-claim>
+<doc-claim aux="scope"><p>Historical data and all systems outside Agent stay unchanged.</p>
+<ul>
+<li>Base: f65f904. This task adds only this plan and its packed file. Wait for the user's response before implementation.</li>
+<li>Keep preferences at their current path, separate from ledger access. Do not migrate or delete personal files.</li>
+<li>Do not change installed Mark, /Users/biel/Projects/mark-pi, WG, credentials, or personal data.</li>
+<li>Do not install, publish, increase timeouts, hide accounting errors, or add another ledger.</li>
+<li>Read the required READMEs in mark-pi, megamind, lucid-dream, and prometheus/prometheus. Those systems remain outside this plan.</li>
+</ul>
+</doc-claim>
+</doc-plan></main>
+</body></html>
