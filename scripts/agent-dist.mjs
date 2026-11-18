@@ -39,7 +39,7 @@ if (merge.length) {
  process.exit(0);
 }
 // realpath: no macOS tmpdir() é /var/... (symlink de /private/var); sem isso o bin/pi da release preparada "escapa" da árvore.
-const temp=realpathSync(mkdtempSync(join(process.env.AGENT_DIST_TMP || tmpdir(),process.platform === 'win32' ? 'ad-' : 'agent-dist-')));
+const temp=realpathSync.native(mkdtempSync(join(process.env.AGENT_DIST_TMP || tmpdir(),process.platform === 'win32' ? 'ad-' : 'agent-dist-')));
 try {
  const home=join(temp,'h'), store=join(temp,'s'); mkdirSync(home);
  const inherited={...process.env};

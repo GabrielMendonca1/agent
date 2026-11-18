@@ -2777,7 +2777,8 @@ async function build(options, currentAtStart) {
 			: options.ref === "release"
 				? manifest.overlayRef
 				: options.ref;
-	const stageRoot = mkdtempSync(join(tmpdir(), "agent-update-"));
+	// native: expande nomes 8.3 do Windows (RUNNER~1); senão o tsc vê o mesmo módulo por dois caminhos.
+	const stageRoot = realpathSync.native(mkdtempSync(join(tmpdir(), "agent-update-")));
 	const sourceDir = join(stageRoot, "source");
 	// O staging dentro do store (`releases/.staging-<pid>`) é desta tentativa e de mais ninguém: só ele
 	// é removido no catch, e só pelo caminho que esta execução criou. Varrer `.staging-*` por prefixo
