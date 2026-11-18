@@ -6,3 +6,6 @@ agent-patches/*.patch -text
 overlay/model-data/** -text
 scripts/*.cmd text eol=crlf
 overlay/manifest.json text eol=lf
+*.mjs text eol=lf
+*.sh text eol=lf
+*.ps1 text eol=lf
