@@ -34,7 +34,7 @@ JS
 # v0.1.0 exposes bootstrap/downloadArtifact but predates the install CLI.
 node --input-type=module - "$tmp/agent-distribution.mjs" "$tmp" "$@" <<'JS'
 import { pathToFileURL } from 'node:url';
-import { readdirSync } from 'node:fs';
+import { mkdirSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
 const [modulePath, temp, ...args] = process.argv.slice(2);
 process.argv[1] = process.execPath; // Legacy bootstrap compares realpaths at import time.
@@ -45,7 +45,9 @@ else {
   const local = process.env.AGENT_RELEASE_DIR;
   const names = local && readdirSync(local).filter(n => n.endsWith(`-${process.platform}-${process.arch}.tar.gz`));
   if (local && names.length !== 1) throw Error('Expected exactly one platform archive');
-  const d = local ? { archive: join(local, names[0]) } : dist.downloadArtifact(temp, process.env.AGENT_VERSION || '');
+  const downloadDir = join(temp, 'payload-download');
+  if (!local) mkdirSync(downloadDir); // gh refuses to overwrite the bootstrap SHA256SUMS.
+  const d = local ? { archive: join(local, names[0]) } : dist.downloadArtifact(downloadDir, process.env.AGENT_VERSION || '');
   process.exitCode = dist.bootstrap(d.archive, [...(d.tag ? ['--release-tag', d.tag, '--release-repo', d.repo] : []), ...args]);
 }
 JS
