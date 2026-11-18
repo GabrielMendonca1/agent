@@ -3,7 +3,7 @@ $ErrorActionPreference = 'Stop'
 $tmp = Join-Path ([IO.Path]::GetTempPath()) ('ai-' + [guid]::NewGuid().ToString('N').Substring(0,8))
 $oldHost = $env:GH_HOST
 try {
-    & node -e 'const [a,b]=process.versions.node.split(".").map(Number);process.exit(a>22||(a===22&&b>=19)?0:1)'
+    & node -e 'const [a,b]=process.versions.node.split(String.fromCharCode(46)).map(Number);process.exit(a>22||(a===22&&b>=19)?0:1)'
     if ($LASTEXITCODE -ne 0) { throw 'Node >=22.19 required' }
     New-Item -ItemType Directory -Path $tmp | Out-Null
     if ($env:AGENT_RELEASE_DIR) {

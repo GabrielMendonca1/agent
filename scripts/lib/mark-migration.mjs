@@ -104,14 +104,14 @@ export function migrateFromMark({ platform = process.platform, createSymlink = s
   for (const [name, forwarding] of wrappers) {
     const wrapper = join(home, '.local/bin', name);
     if (info(wrapper)?.isFile()) {
-    const content = readFileSync(wrapper, 'utf8');
-    if (content === forwarding || (/(?:exec\s+.*agent|agent\.cmd)/.test(content) && !/pi-overlay|mark-ii/.test(content))) record('alreadyExisted', wrapper, 'already forwards to Agent');
-    else if (/pi-overlay|mark-ii/.test(content) && !existsSync(join(home, platform === 'win32' ? '.local/bin/agent.cmd' : '.local/bin/agent'))) record('manual', wrapper, 'Agent command missing; install Agent before replacing pi');
-    else if (/pi-overlay|mark-ii/.test(content)) {
-      const saved = backup(wrapper); record('copied', wrapper, `forward to Agent; backup: ${saved}`);
-      if (!dryRun) { const temp = `${wrapper}.migration-${process.pid}`; writeFileSync(temp, forwarding, { flag: 'wx', mode: 0o755 }); renameSync(temp, wrapper); }
-    } else record('skipped', wrapper, 'unrecognized wrapper; preserved');
-  } else record('skipped', wrapper, 'missing or not a regular wrapper; preserved');
+      const content = readFileSync(wrapper, 'utf8');
+      if (content === forwarding || (/(?:exec\s+.*agent|agent\.cmd)/.test(content) && !/pi-overlay|mark-ii/.test(content))) record('alreadyExisted', wrapper, 'already forwards to Agent');
+      else if (/pi-overlay|mark-ii/.test(content) && !existsSync(join(home, platform === 'win32' ? '.local/bin/agent.cmd' : '.local/bin/agent'))) record('manual', wrapper, 'Agent command missing; install Agent before replacing pi');
+      else if (/pi-overlay|mark-ii/.test(content)) {
+        const saved = backup(wrapper); record('copied', wrapper, `forward to Agent; backup: ${saved}`);
+        if (!dryRun) { const temp = `${wrapper}.migration-${process.pid}`; writeFileSync(temp, forwarding, { flag: 'wx', mode: 0o755 }); renameSync(temp, wrapper); }
+      } else record('skipped', wrapper, 'unrecognized wrapper; preserved');
+    } else record('skipped', wrapper, 'missing or not a regular wrapper; preserved');
   }
   const skills = join(home, '.agents/skills');
   safeParents(dirname(skills));
