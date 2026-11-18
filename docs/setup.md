@@ -2,9 +2,9 @@
 
 ## Instalação privada por artefato
 
-O pipeline está implementado, mas **não há release publicada por esta mudança**. Os comandos remotos abaixo só funcionarão depois da publicação aprovada e dos checks de cada plataforma.
+A v0.1.0 publicada contém somente darwin-arm64. Esta mudança não publica uma release: os comandos Windows exigem uma release posterior com o asset win32-x64, aprovada após o smoke nativo.
 
-Pré-requisitos: Node externo >=22.19 (recomendado Node 24), Bash em macOS/Linux e GitHub CLI (`gh`) autenticado com acesso a `GabrielMendonca1/agent`. Não precisa de Git, npm, clone ou build na máquina do consumidor. Windows não foi validado; não há bootstrap Windows distribuído.
+Pré-requisitos: Node externo >=22.19 (recomendado Node 24), Bash em macOS/Linux e GitHub CLI (`gh`) autenticado com acesso a `GabrielMendonca1/agent`. Em Windows x64 nativo, também instale **Git for Windows** (Git Bash é usado pelo shell do Pi). Em macOS/Linux, não precisa de Git; nenhuma plataforma precisa de npm, clone ou build na máquina do consumidor. Não use WSL para instalar o pacote win32-x64.
 
 Após existir uma release aprovada, obtenha `install.sh` pelo canal privado e execute:
 
@@ -15,6 +15,24 @@ export PATH="$HOME/.local/bin:$PATH"
 agent
 # Na conversa: /login — sua própria conta do provider
 ```
+
+### Windows x64 (PowerShell)
+
+```powershell
+gh auth status
+gh release download -R GabrielMendonca1/agent -p install.ps1 -O ./install.ps1
+# Opcional: $env:AGENT_VERSION = 'vX.Y.Z' (baixe install.ps1 da mesma tag)
+pwsh -NoProfile -File ./install.ps1 --adopt-launcher
+& "$env:USERPROFILE/.local/bin/agent.cmd" --version
+& "$env:USERPROFILE/.local/bin/agent.cmd" overlay-status
+& "$env:USERPROFILE/.local/bin/agent.cmd" migrate-from-mark --dry-run --json
+```
+
+O script também pode ser executado com `powershell -NoProfile -File`; respeite a política de execução local (não a altere automaticamente). O app deve aguardar o código de saída antes de lançar o Agent. `install.ps1` exige Node >=22.19 e `gh auth status` válido, baixa o bootstrap e SHA256SUMS via `gh`, confere o bootstrap e chama `node agent-distribution.mjs install`. A CLI aceita `install --tag <tag>` e opções do updater, como `--adopt-launcher` e `--store <path>`. Código 0 significa ativação concluída; falha retorna código não zero (erros do bootstrap: 1) com diagnóstico em stderr; stdout é log de progresso, não JSON. Não faça parsing de mensagens de progresso.
+
+Os launchers são `%USERPROFILE%\.local\bin\agent.cmd` e `agent.ps1`; perfil padrão `%USERPROFILE%\.agent`, store `%USERPROFILE%\.local\share\agent`. Não há alteração de PATH, shell rc nem login automático. O comando de migração retorna JSON com `--json`; `--dry-run` não escreve. Uma migração efetiva preserva wrappers Mark reconhecidos como `pi.cmd.before-agent-migration` / `pi.ps1.before-agent-migration` (sufixo numérico se necessário), encaminha para `agent.cmd` e usa junctions absolutos para diretórios de skills. Wrappers desconhecidos são preservados.
+
+`AGENT_RELEASE_DIR=<diretório>` permite instalar offline um dist local, sem `gh`: exige bootstrap, SHA256SUMS e exatamente um tarball da plataforma. Nesse modo não se infere identidade de release. O formato schema 1/runtimeContract 3 permanece compatível com v0.1.0; `install.sh` também aceita o bootstrap antigo dessa release.
 
 Use `AGENT_VERSION=<tag>` para fixar uma release e `AGENT_RELEASE_REPO=owner/repo` para escolher explicitamente outro canal privado confiável. Não use um mirror não confiável: SHA256SUMS detecta corrupção, **não é assinatura**. O transporte autenticado do `gh` é a origem de confiança. Nenhum download usa HTTP público nem copia auth do Mark. Busca web e Megamind podem exigir configuração própria; não são autenticação do chat.
 
@@ -97,7 +115,21 @@ HOME="$H" PI_CODING_AGENT_DIR="$H/.agent" AGENT_STORE="$H/store" \
   "$H/.local/bin/agent" --version
 ```
 
-A saída é um ustar gzip determinístico para os mesmos bytes de entrada, mais `install.sh`, bootstrap independente e SHA256SUMS. O build normal ainda depende das fontes/dependências upstream fixadas; timestamps de builds distintos podem diferir. O pack remove `sourceRepo` da metadata e faz scan de arquivos de estado/chaves e paths pessoais em metadata. Isso não substitui revisão humana de segredos nem prova suporte a outro SO. Cada pacote declara apenas o par SO/arquitetura do build; rode startup real com provider falso e o gate completo nesse par antes de publicar. Esta implementação não publica, cria release, faz push ou migra o host.
+A saída é um ustar gzip determinístico para os mesmos bytes de entrada, mais `install.sh`, `install.ps1`, bootstrap independente `agent-distribution.mjs` e SHA256SUMS. O build normal ainda depende das fontes/dependências upstream fixadas; timestamps de builds distintos podem diferir. O pack remove `sourceRepo` da metadata e faz scan de arquivos de estado/chaves e paths pessoais em metadata. Isso não substitui revisão humana de segredos nem prova suporte a outro SO. Cada pacote declara apenas o par SO/arquitetura do build; rode startup real com provider falso e o gate completo nesse par antes de publicar. Esta implementação não publica, cria release, faz push ou migra o host.
+
+### Distribuição multi-host e CI
+
+Cada host gera seu próprio dist e SHA256SUMS. Una diretórios em uma saída nova; o merge verifica os hashes de entrada, recusa nomes com bytes conflitantes e calcula um único SHA256SUMS com ambos os instaladores:
+
+```sh
+node scripts/agent-dist.mjs --merge dist-mac dist-win --out dist-merged
+```
+
+Em Windows o staging usa nomes curtos (`ad-*`, `h`, `s`); `AGENT_DIST_TMP` permite escolher uma raiz curta gravável (no CI: `C:\adtmp`). Variáveis essenciais do Windows são preservadas ao filtrar credenciais do ambiente de build. Recomenda-se uma raiz curta também para checkout e instalação.
+
+O workflow `.github/workflows/agent-dist.yml` aceita `workflow_dispatch` ou push na branch `ci/agent-dist`, constrói em macos-14/arm64 e windows-2022/x64 com Node 24 e salva artifacts `agent-darwin-arm64` / `agent-win32-x64`. O smoke Windows instala o dist local em USERPROFILE/store temporários e verifica versão, status e migração dry-run de um perfil Mark falso.
+
+Disparo sem publicação (padrão): `gh workflow run agent-dist.yml --ref <branch>`. O workflow precisa existir no ref e estar disponível no GitHub. Para publicação explicitamente aprovada: `gh workflow run agent-dist.yml --ref <branch> -f tag=vX.Y.Z -f publish=true`. Apenas esse opt-in habilita o job final que faz merge e `gh release create` ou `upload` (sem sobrescrever assets existentes). Não publique antes de validar os artifacts e os checks; a execução desse workflow não foi feita localmente.
 
 ### Portão contra a release candidata
 
