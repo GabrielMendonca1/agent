@@ -2,7 +2,7 @@
 // Standalone bootstrap: builtins only. Downloaded code is trusted ONLY through the private gh channel.
 import { createHash } from 'node:crypto';
 import { cpSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, readlinkSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { homedir, tmpdir } from 'node:os';
 import { basename, dirname, join, posix, resolve } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
@@ -150,7 +150,33 @@ export function bootstrap(archive, args = []) {
   return result.status ?? 1;
  } finally { rmSync(temporary,{recursive:true,force:true}); }
 }
+// Shared native installer. Legacy archive invocation remains supported for v0.1.0.
+export function install(args = []) {
+ requireNode();
+ let tag = process.env.AGENT_VERSION || '';
+ const forwarded = [];
+ for (let i = 0; i < args.length; i++) {
+  if (args[i] === '--tag') { tag = args[++i]; if (!tag) fail('--tag requires a value'); }
+  else forwarded.push(args[i]);
+ }
+ process.env.PI_CODING_AGENT_DIR ||= join(process.env.USERPROFILE || homedir(), '.agent');
+ const temporary = mkdtempSync(join(tmpdir(), 'agent-install-'));
+ try {
+  let downloaded;
+  if (process.env.AGENT_RELEASE_DIR) {
+   const dir = resolve(process.env.AGENT_RELEASE_DIR);
+   const archives = readdirSync(dir).filter(n => n.startsWith('agent-') && n.endsWith(`-${process.platform}-${process.arch}.tar.gz`));
+   if (archives.length !== 1) fail('expected exactly one platform artifact');
+   downloaded = { archive: join(dir, archives[0]) };
+  } else {
+   const auth = spawnSync('gh', ['auth', 'status'], { stdio: 'ignore', env: { ...process.env, GH_HOST: 'github.com' } });
+   if (auth.error || auth.status !== 0) fail('authenticated GitHub CLI (gh) required');
+   downloaded = downloadArtifact(temporary, tag);
+  }
+  return bootstrap(downloaded.archive, [...(downloaded.tag ? ['--release-tag', downloaded.tag, '--release-repo', downloaded.repo] : []), ...forwarded]);
+ } finally { rmSync(temporary, { recursive: true, force: true }); }
+}
 if (process.argv[1] && realpathSync(resolve(process.argv[1])) === realpathSync(fileURLToPath(import.meta.url))) {
- try { process.exitCode=bootstrap(resolve(process.argv[2] ?? ''),process.argv.slice(3)); }
+ try { process.exitCode = process.argv[2] === 'install' ? install(process.argv.slice(3)) : bootstrap(resolve(process.argv[2] ?? ''),process.argv.slice(3)); }
  catch(error) { console.error(error.message); process.exitCode=1; }
 }

@@ -2,29 +2,25 @@
 set -euo pipefail
 command -v node >/dev/null || { echo 'Install Node >=22.19 first' >&2; exit 1; }
 node -e 'const [a,b]=process.versions.node.split(".").map(Number);process.exit(a>22||(a===22&&b>=19)?0:1)' || { echo 'Install Node >=22.19 first' >&2; exit 1; }
-case "$(uname -s)" in Darwin|Linux) ;; *) echo 'POSIX bootstrap only; Windows is not validated' >&2; exit 1;; esac
 if [ -z "${AGENT_RELEASE_DIR:-}" ]; then
   command -v gh >/dev/null || { echo 'Authenticated GitHub CLI (gh) is required' >&2; exit 1; }
   GH_HOST=github.com gh auth status >/dev/null 2>&1 || { echo 'Authenticate gh for private repository access first' >&2; exit 1; }
 fi
 tmp=$(mktemp -d)
 trap 'rm -rf "$tmp"' EXIT
-release_args=()
 if [ -n "${AGENT_RELEASE_DIR:-}" ]; then
   cp "$AGENT_RELEASE_DIR/agent-distribution.mjs" "$AGENT_RELEASE_DIR/SHA256SUMS" "$tmp/"
-  cp "$AGENT_RELEASE_DIR/"*.tar.gz "$tmp/"
 else
   repo=${AGENT_RELEASE_REPO:-GabrielMendonca1/agent}
   tag=${AGENT_VERSION:-}
-  [[ "$repo" =~ ^[a-zA-Z0-9_.-]+/[a-zA-Z0-9_.-]+$ ]] || { echo "Invalid private repository" >&2; exit 1; }
-  [[ -z "$tag" || "$tag" =~ ^[a-zA-Z0-9_.+-]+$ ]] || { echo "Invalid release tag" >&2; exit 1; }
+  [[ "$repo" =~ ^[a-zA-Z0-9_.-]+/[a-zA-Z0-9_.-]+$ ]] || exit 1
+  [[ -z "$tag" || "$tag" =~ ^[a-zA-Z0-9_.+-]+$ ]] || exit 1
   view=(release view -R "$repo" --json tagName --jq .tagName)
   if [ -n "$tag" ]; then view+=("$tag"); fi
   tag=$(GH_HOST=github.com gh "${view[@]}")
-  [[ "$tag" =~ ^[a-zA-Z0-9_.+-]+$ ]] || { echo 'Invalid resolved release tag' >&2; exit 1; }
-  release_args=(--release-tag "$tag" --release-repo "$repo")
-  platform=$(node -p 'process.platform+"-"+process.arch')
-  download=(release download -R "$repo" -p "agent-*-$platform.tar.gz" -p SHA256SUMS -p agent-distribution.mjs -D "$tmp")
+  [[ "$tag" =~ ^[a-zA-Z0-9_.+-]+$ ]] || exit 1
+  export AGENT_VERSION="$tag"
+  download=(release download -R "$repo" -p agent-distribution.mjs -p SHA256SUMS -D "$tmp")
   if [ -n "$tag" ]; then download+=("$tag"); fi
   GH_HOST=github.com gh "${download[@]}"
 fi
@@ -35,9 +31,21 @@ const root=process.argv[2],name='agent-distribution.mjs';
 const matches=fs.readFileSync(path.join(root,'SHA256SUMS'),'utf8').split(/\r?\n/).map(l=>/^([a-f0-9]{64})  ([A-Za-z0-9._+-]+)$/.exec(l)).filter(m=>m?.[2]===name);
 if(matches.length!==1||crypto.createHash('sha256').update(fs.readFileSync(path.join(root,name))).digest('hex')!==matches[0][1])throw Error('Bootstrap digest mismatch');
 JS
-platform=$(node -p 'process.platform+"-"+process.arch')
-archives=("$tmp"/agent-*-"$platform".tar.gz)
-[ "${#archives[@]}" -eq 1 ] && [ -f "${archives[0]}" ] || { echo 'Expected exactly one platform archive' >&2; exit 1; }
-export PI_CODING_AGENT_DIR="${PI_CODING_AGENT_DIR:-$HOME/.agent}"
-node "$tmp/agent-distribution.mjs" "${archives[0]}" ${release_args[@]+"${release_args[@]}"} "$@"
-printf '%s\n' 'Run ~/.local/bin/agent and /login with your own provider account.' 'If needed: export PATH="$HOME/.local/bin:$PATH" (no shell rc changed).'
+# v0.1.0 exposes bootstrap/downloadArtifact but predates the install CLI.
+node --input-type=module - "$tmp/agent-distribution.mjs" "$tmp" "$@" <<'JS'
+import { pathToFileURL } from 'node:url';
+import { readdirSync } from 'node:fs';
+import { join } from 'node:path';
+const [modulePath, temp, ...args] = process.argv.slice(2);
+process.argv[1] = process.execPath; // Legacy bootstrap compares realpaths at import time.
+const dist = await import(pathToFileURL(modulePath));
+if (dist.install) process.exitCode = dist.install(args);
+else {
+  process.env.PI_CODING_AGENT_DIR ||= join(process.env.HOME, '.agent');
+  const local = process.env.AGENT_RELEASE_DIR;
+  const names = local && readdirSync(local).filter(n => n.endsWith(`-${process.platform}-${process.arch}.tar.gz`));
+  if (local && names.length !== 1) throw Error('Expected exactly one platform archive');
+  const d = local ? { archive: join(local, names[0]) } : dist.downloadArtifact(temp, process.env.AGENT_VERSION || '');
+  process.exitCode = dist.bootstrap(d.archive, [...(d.tag ? ['--release-tag', d.tag, '--release-repo', d.repo] : []), ...args]);
+}
+JS
