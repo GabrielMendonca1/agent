@@ -48,6 +48,15 @@ try {
  const a=release('release-a'),b=release('release-b'),outA=join(root,'dist-a'),outB=join(root,'dist-b');
  run(process.execPath,[dist,'--release',a,'--out',outA]);run(process.execPath,[dist,'--release',b,'--out',outB]);
  const archive=dir=>join(dir,readdirSync(dir).find(n=>n.endsWith('.tar.gz')));
+ test('merge host artifacts with verified checksums and both installers',()=>{
+  const merged=join(root,'merged');
+  run(process.execPath,[dist,'--merge',outA,outB,'--out',merged]);
+  assert.equal(readdirSync(merged).filter(n=>n.endsWith('.tar.gz')).length,2);
+  assert.ok(readFileSync(join(merged,'SHA256SUMS'),'utf8').includes('  install.ps1'));
+  assert.equal(hash(readFileSync(archive(outA))),hash(readFileSync(join(merged,archive(outA).split('/').at(-1)))));
+  writeFileSync(join(merged,'install.ps1'),'corrupt');
+  run(process.execPath,[dist,'--merge',merged,'--out',join(root,'bad-merge')],false);
+ });
  test('pack is deterministic and metadata portable',()=>{
   const again=join(root,'again');run(process.execPath,[dist,'--release',a,'--out',again]);
   assert.equal(hash(readFileSync(archive(outA))),hash(readFileSync(archive(again))));
