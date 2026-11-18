@@ -1,0 +1,121 @@
+name: Agent distribution
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Release tag (required only for publication)
+        required: false
+        type: string
+      publish:
+        description: Publish the merged assets to a GitHub release
+        default: false
+        type: boolean
+  push:
+    branches: [ci/agent-dist]
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-14
+            platform: darwin-arm64
+          - os: windows-2022
+            platform: win32-x64
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - run: git config --global core.longpaths true
+      - name: Short Windows build root
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force C:\adtmp | Out-Null
+          'AGENT_DIST_TMP=C:\adtmp' >> $env:GITHUB_ENV
+      - run: node scripts/agent-dist.mjs --out dist
+      - uses: actions/upload-artifact@v4
+        with:
+          name: agent-${{ matrix.platform }}
+          path: dist/
+          if-no-files-found: error
+
+  smoke-windows:
+    needs: build
+    runs-on: windows-2022
+    steps:
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - uses: actions/download-artifact@v4
+        with:
+          name: agent-win32-x64
+          path: dist
+      - name: Native bootstrap and fake Mark profile
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $homeDir = 'C:\as-' + [guid]::NewGuid().ToString('N').Substring(0,8)
+          New-Item -ItemType Directory $homeDir | Out-Null
+          try {
+            $env:USERPROFILE = $homeDir
+            $env:HOME = $homeDir
+            $env:PI_CODING_AGENT_DIR = Join-Path $homeDir '.agent'
+            $env:AGENT_STORE = Join-Path $homeDir 's'
+            $env:AGENT_WARM_START = '0'
+            $env:AGENT_RELEASE_DIR = (Resolve-Path dist).Path
+            & pwsh -NoProfile -File dist/install.ps1 --adopt-launcher
+            if ($LASTEXITCODE -ne 0) { throw 'install.ps1 failed' }
+            $agent = Join-Path $homeDir '.local/bin/agent.cmd'
+            & $agent --version
+            if ($LASTEXITCODE -ne 0) { throw 'agent --version failed' }
+            & $agent overlay-status
+            if ($LASTEXITCODE -ne 0) { throw 'agent overlay-status failed' }
+            $mark = Join-Path $homeDir '.pi/agent'
+            New-Item -ItemType Directory -Force $mark | Out-Null
+            '{"defaultModel":"fixture-mark"}' | Set-Content (Join-Path $mark 'settings.json')
+            $json = & $agent migrate-from-mark --dry-run --json
+            if ($LASTEXITCODE -ne 0) { throw 'Mark dry-run failed' }
+            $report = ($json -join "`n") | ConvertFrom-Json
+            if (-not $report.dryRun) { throw 'Missing dry-run report' }
+            if (Test-Path (Join-Path $env:PI_CODING_AGENT_DIR 'auth.json')) { throw 'Unexpected credentials' }
+          } finally {
+            Remove-Item -Recurse -Force $homeDir
+          }
+
+  publish:
+    if: github.event_name == 'workflow_dispatch' && inputs.publish
+    needs: [build, smoke-windows]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      RELEASE_TAG: ${{ inputs.tag }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: agent-*
+          path: hosts
+      - name: Merge and publish only on explicit request
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$RELEASE_TAG" =~ ^[a-zA-Z0-9_.+-]+$ ]] || { echo 'A valid tag is required for publication' >&2; exit 1; }
+          node scripts/agent-dist.mjs --merge hosts/agent-darwin-arm64 hosts/agent-win32-x64 --out dist
+          if gh release view "$RELEASE_TAG" -R "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release upload "$RELEASE_TAG" dist/* -R "$GITHUB_REPOSITORY"
+          else
+            gh release create "$RELEASE_TAG" dist/* --target "$GITHUB_SHA" --title "$RELEASE_TAG" --notes 'Native Agent distributions; external Node >=22.19 required.' -R "$GITHUB_REPOSITORY"
+          fi
