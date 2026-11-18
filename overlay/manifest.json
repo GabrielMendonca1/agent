@@ -219,6 +219,26 @@
 				"file": "packages/coding-agent/test/auth-storage.test.ts",
 				"name": "keeps a coalesced reload alive while another credential reader is waiting",
 				"reason": "upstream: reescreve auth.json com o mesmo tamanho e no NTFS a revisão (tamanho+mtime) não muda a tempo; falha 5 em 6 no Windows"
+			},
+			{
+				"file": "packages/coding-agent/test/tools.test.ts",
+				"name": "should include EACCES for read-only files",
+				"reason": "upstream: chmod read-only no NTFS gera EPERM, não EACCES"
+			},
+			{
+				"file": "packages/coding-agent/test/tools.test.ts",
+				"name": "should include EACCES in diff preview for unreadable files",
+				"reason": "upstream: chmod 000 não tira leitura no NTFS; o arquivo continua legível"
+			},
+			{
+				"file": "packages/coding-agent/test/tools.test.ts",
+				"name": "should treat flag-like patterns as search text",
+				"reason": "upstream: no grep o padrão '--pre=<caminho C:\\...>' vira regex com '\\U' inválido; rg recusa (sem executar nada, que é o que importa)"
+			},
+			{
+				"file": "packages/coding-agent/test/tools.test.ts",
+				"name": "bash uses ctx.cwd when provided",
+				"reason": "upstream: no Git Bash o pwd sai como /tmp/... e o teste compara com o caminho C:\\..."
 			}
 		]
 	},
