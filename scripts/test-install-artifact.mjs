@@ -7,7 +7,7 @@ import { dirname, join, resolve } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { pathToFileURL } from 'node:url';
 import { gunzipSync, gzipSync } from 'node:zlib';
-import { hash, packArchive, extractArchive, inventory, validateDirectory } from './lib/agent-distribution.mjs';
+import { createArtifactLink, hash, packArchive, extractArchive, inventory, validateDirectory } from './lib/agent-distribution.mjs';
 const root=realpathSync(mkdtempSync(join(tmpdir(),'agent-dist-test-'))), repo=resolve(new URL('..',import.meta.url).pathname);
 const json=(p,v)=>{mkdirSync(dirname(p),{recursive:true});writeFileSync(p,`${JSON.stringify(v,null,2)}\n`);};
 const load=p=>JSON.parse(readFileSync(p,'utf8'));
@@ -48,6 +48,14 @@ try {
  const a=release('release-a'),b=release('release-b'),outA=join(root,'dist-a'),outB=join(root,'dist-b');
  run(process.execPath,[dist,'--release',a,'--out',outA]);run(process.execPath,[dist,'--release',b,'--out',outB]);
  const archive=dir=>join(dir,readdirSync(dir).find(n=>n.endsWith('.tar.gz')));
+ test('Windows directory links use absolute junction targets; file contract stays unchanged',()=>{
+  const calls=[];
+  const path=join(root,'link');
+  createArtifactLink('target',path,{platform:'win32',directory:true,createSymlink:(...args)=>calls.push(args)});
+  assert.deepEqual(calls[0],[join(root,'target'),path,'junction']);
+  createArtifactLink('target',path,{platform:'win32',directory:false,createSymlink:(...args)=>calls.push(args)});
+  assert.deepEqual(calls[1],['target',path,'file']);
+ });
  test('merge host artifacts with verified checksums and both installers',()=>{
   const merged=join(root,'merged');
   run(process.execPath,[dist,'--merge',outA,outB,'--out',merged]);

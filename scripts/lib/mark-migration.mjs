@@ -7,7 +7,7 @@ import { fileURLToPath } from 'node:url';
 const info = p => { try { return lstatSync(p); } catch (e) { if (e.code === 'ENOENT') return null; throw e; } };
 const within = (root, p) => p === root || p.startsWith(root + sep);
 
-export function migrateFromMark({ dryRun = false, home = homedir(), store = process.env.AGENT_STORE || join(home, '.local/share/agent'), destination = process.env.PI_CODING_AGENT_DIR || join(home, '.agent') } = {}) {
+export function migrateFromMark({ platform = process.platform, createSymlink = symlinkSync, dryRun = false, home = homedir(), store = process.env.AGENT_STORE || join(home, '.local/share/agent'), destination = process.env.PI_CODING_AGENT_DIR || join(home, '.agent') } = {}) {
   home = resolve(home); store = resolve(store); destination = resolve(destination);
   const source = join(home, '.pi/agent'), markStore = join(home, '.local/share/pi-overlay');
   if (within(source, destination) || within(destination, source)) throw new Error('Source and destination overlap');
@@ -90,24 +90,29 @@ export function migrateFromMark({ dryRun = false, home = homedir(), store = proc
     while (info(dst)) dst = `${base}.before-agent-migration-${++n}`;
     if (!dryRun) {
       mkdirSync(dirname(dst), { recursive: true, mode: 0o700 });
-      if (info(path).isSymbolicLink()) symlinkSync(resolve(dirname(path), readlinkSync(path)), dst);
+      if (info(path).isSymbolicLink()) createSymlink(resolve(dirname(path), readlinkSync(path)), dst, platform === 'win32' ? 'junction' : undefined);
       else { copyFileSync(path, dst, constants.COPYFILE_EXCL); chmodSync(dst, info(path).mode & 0o777); }
     }
     return dst;
   }
-  const wrapper = join(home, '.local/bin/pi');
   const shellQuote = s => "'" + s.replaceAll("'", "'\\''") + "'";
-  const forwarding = `#!/usr/bin/env bash\n# agent Mark migration forwarding wrapper\nexport PI_CODING_AGENT_DIR=${shellQuote(destination)}\nexec ${shellQuote(join(home, '.local/bin/agent'))} "$@"\n`;
-  if (process.platform === 'win32') record('skipped', wrapper, 'pi wrapper migration requires macOS/Linux');
-  else if (info(wrapper)?.isFile()) {
+  const windowsProfile = destination === join(home, '.agent') ? '%USERPROFILE%\\.agent' : destination.replaceAll('%', '%%');
+  const wrappers = platform === 'win32' ? [
+    ['pi.cmd', `@echo off\r\nrem agent Mark migration forwarding wrapper\r\nset "PI_CODING_AGENT_DIR=${windowsProfile}"\r\ncall "%~dp0agent.cmd" %*\r\nexit /b %errorlevel%\r\n`],
+    ['pi.ps1', `# agent Mark migration forwarding wrapper\n$env:PI_CODING_AGENT_DIR = '${destination.replaceAll("'", "''")}'\n& "$PSScriptRoot/agent.cmd" @args\nexit $LASTEXITCODE\n`],
+  ] : [['pi', `#!/usr/bin/env bash\n# agent Mark migration forwarding wrapper\nexport PI_CODING_AGENT_DIR=${shellQuote(destination)}\nexec ${shellQuote(join(home, '.local/bin/agent'))} "$@"\n`]];
+  for (const [name, forwarding] of wrappers) {
+    const wrapper = join(home, '.local/bin', name);
+    if (info(wrapper)?.isFile()) {
     const content = readFileSync(wrapper, 'utf8');
-    if (content === forwarding || (/exec\s+.*agent/.test(content) && !/pi-overlay|mark-ii/.test(content))) record('alreadyExisted', wrapper, 'already forwards to Agent');
-    else if (/pi-overlay|mark-ii/.test(content) && !existsSync(join(home, '.local/bin/agent'))) record('manual', wrapper, 'Agent command missing; install Agent before replacing pi');
+    if (content === forwarding || (/(?:exec\s+.*agent|agent\.cmd)/.test(content) && !/pi-overlay|mark-ii/.test(content))) record('alreadyExisted', wrapper, 'already forwards to Agent');
+    else if (/pi-overlay|mark-ii/.test(content) && !existsSync(join(home, platform === 'win32' ? '.local/bin/agent.cmd' : '.local/bin/agent'))) record('manual', wrapper, 'Agent command missing; install Agent before replacing pi');
     else if (/pi-overlay|mark-ii/.test(content)) {
       const saved = backup(wrapper); record('copied', wrapper, `forward to Agent; backup: ${saved}`);
       if (!dryRun) { const temp = `${wrapper}.migration-${process.pid}`; writeFileSync(temp, forwarding, { flag: 'wx', mode: 0o755 }); renameSync(temp, wrapper); }
     } else record('skipped', wrapper, 'unrecognized wrapper; preserved');
   } else record('skipped', wrapper, 'missing or not a regular wrapper; preserved');
+  }
   const skills = join(home, '.agents/skills');
   safeParents(dirname(skills));
   if (info(skills)?.isDirectory() && !info(skills).isSymbolicLink() && !existsSync(join(store, 'skills'))) record('manual', skills, 'Agent standard skills unavailable; activate Agent before migrating links');
@@ -120,7 +125,7 @@ export function migrateFromMark({ dryRun = false, home = homedir(), store = proc
       const standard = join(store, 'skills', name), saved = backup(link);
       const available = existsSync(standard);
       record('copied', link, `${available ? 'repoint to Agent' : 'remove obsolete Mark link'}; backup: ${saved}`);
-      if (!dryRun) { unlinkSync(link); if (available) symlinkSync(standard, link); }
+      if (!dryRun) { unlinkSync(link); if (available) createSymlink(resolve(standard), link, platform === 'win32' ? 'junction' : undefined); }
     }
   }
   if (info(join(source, 'superagent'))) record('manual', join(source, 'superagent'), 'daemon state not migrated; stop/reconfigure manually');

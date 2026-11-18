@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // Standalone bootstrap: builtins only. Downloaded code is trusted ONLY through the private gh channel.
 import { createHash } from 'node:crypto';
-import { cpSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, readlinkSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { cpSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, readlinkSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
 import { homedir, tmpdir } from 'node:os';
 import { basename, dirname, join, posix, resolve } from 'node:path';
 import { spawnSync } from 'node:child_process';
@@ -94,6 +94,12 @@ export function packArchive(root, output) {
  }
  chunks.push(Buffer.alloc(1024)); writeFileSync(output,gzipSync(Buffer.concat(chunks),{ level: 9 }));
 }
+// Directory links need absolute junction targets on unprivileged Windows.
+// Schema 1 archives currently allow only links to regular packaged files.
+export function createArtifactLink(target, path, { platform = process.platform, directory = statSync(resolve(dirname(path), target)).isDirectory(), createSymlink = symlinkSync } = {}) {
+ const absolute = resolve(dirname(path), target);
+ createSymlink(platform === 'win32' && directory ? absolute : target, path, platform === 'win32' ? (directory ? 'junction' : 'file') : undefined);
+}
 export function extractArchive(archive, destination) {
  // Parse every header and validate all paths/links BEFORE writing any payload bytes.
  const bytes = gunzipSync(readFileSync(archive), { maxOutputLength: 2 * 1024 ** 3 });
@@ -116,7 +122,7 @@ export function extractArchive(archive, destination) {
  if (existsSync(destination)) fail('extraction destination must not exist');
  mkdirSync(destination,{recursive:true});
  for (const e of entries.filter(e=>e.type==='file')) { const p=join(destination,e.path); mkdirSync(dirname(p),{recursive:true}); writeFileSync(p,e.body,{mode:e.mode,flag:'wx'}); }
- for (const e of entries.filter(e=>e.type==='link')) { const p=join(destination,e.path); mkdirSync(dirname(p),{recursive:true}); symlinkSync(e.target,p); }
+ for (const e of entries.filter(e=>e.type==='link')) { const p=join(destination,e.path); mkdirSync(dirname(p),{recursive:true}); createArtifactLink(e.target,p); }
  return validateDirectory(destination);
 }
 export function verifyArchiveHash(archive) {

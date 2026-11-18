@@ -6,6 +6,7 @@ import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync,
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
+import { migrateFromMark } from './lib/mark-migration.mjs';
 import { writeAgentConfig } from './lib/agent-runtime.mjs';
 
 const root = mkdtempSync(join(tmpdir(), 'agent-mark-migration-'));
@@ -102,5 +103,29 @@ try {
   // A destination symlink must never redirect credentials outside the fixture profile.
   rmSync(join(dest, 'auth.json')); symlinkSync(join(root, 'outside'), join(dest, 'auth.json'));
   assert.ok(!run().copied.some(e => e.path === join(dest, 'auth.json'))); assert.ok(!existsSync(join(root, 'outside')));
+  // Simulate the Windows branch without touching the host profile or requiring symlink privileges.
+  const winHome = join(root, 'win-home'), winStore = join(winHome, '.local/share/agent');
+  put(join(winHome, '.local/bin/agent.cmd'), '@echo off');
+  for (const ext of ['cmd', 'ps1']) put(join(winHome, `.local/bin/pi.${ext}`), '# pi-overlay Mark launcher');
+  const winSkill = join(winHome, '.agents/skills/demo');
+  put(join(winStore, 'skills/demo/SKILL.md'), 'fixture');
+  mkdirSync(dirname(winSkill), {recursive:true});
+  const markTarget=join(winHome, '.local/share/pi-overlay/skills/demo');
+  mkdirSync(markTarget, {recursive:true});
+  symlinkSync(markTarget, winSkill);
+  const options={home:winHome,store:winStore,destination:join(winHome,'.agent'),platform:'win32'};
+  const beforeWin=snapshot(winHome);
+  migrateFromMark({...options,dryRun:true});
+  assert.deepEqual(snapshot(winHome),beforeWin);
+  const junctions=[];
+  migrateFromMark({...options,createSymlink:(target,path,type)=>{junctions.push([target,path,type]);symlinkSync(target,path);}});
+  assert.match(readFileSync(join(winHome,'.local/bin/pi.cmd'),'utf8'), /PI_CODING_AGENT_DIR=%USERPROFILE%\\.agent/);
+  assert.match(readFileSync(join(winHome,'.local/bin/pi.cmd'),'utf8'), /call "%~dp0agent.cmd" %\*/);
+  assert.match(readFileSync(join(winHome,'.local/bin/pi.ps1'),'utf8'), /agent.cmd.*@args/);
+  for (const ext of ['cmd','ps1']) assert.equal(readFileSync(join(winHome,`.local/bin/pi.${ext}.before-agent-migration`),'utf8'),'# pi-overlay Mark launcher');
+  assert.equal(junctions.length,2);
+  assert.ok(junctions.every(([target,,type])=>resolve(target)===target&&type==='junction'));
+  assert.equal(realpathSync(winSkill),realpathSync(join(winStore,'skills/demo')));
+  assert.equal(migrateFromMark(options).alreadyExisted.filter(e=>/pi\.(cmd|ps1)$/.test(e.path)).length,2);
   console.log('ok Mark migration: isolated HOME, dry-run, copy, durable import, repeat, privacy, backups, skill realpath');
 } finally { rmSync(root, { recursive: true, force: true }); }
