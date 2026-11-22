@@ -216,7 +216,7 @@ O Agent traz o próprio Pi dentro do store, em releases imutáveis. Um Pi global
 
 Pi novo só chega com artefato novo. Quem faz o quê:
 
-- Mantenedor: reaplica os 11 patches de `overlay/manifest.json` sobre o Pi upstream novo, passa o portão e publica o artefato.
+- Mantenedor: reaplica os 12 patches de `overlay/manifest.json` sobre o Pi upstream novo, passa o portão e publica o artefato.
 - Consumidor: roda `agent update`.
 
 Nenhum patch é necessário para as extensões carregarem; eles dão funcionalidade. Linhas: inserções/remoções de `git apply --stat`, testes incluídos. Fragilidade: risco de conflito num port, pelo quanto o patch mexe em arquivo central do upstream.
@@ -234,6 +234,7 @@ Nenhum patch é necessário para as extensões carregarem; eles dão funcionalid
 | `tool-load-append` | Tool carregada no meio da sessão não reescreve o system prompt. | +211/−26 | Média: `agent-session.ts`. |
 | `cc-hidden-tool-names` | No OAuth Anthropic, `Bash`/`Read` de tool escondida voltam em minúsculas. | +22/−2 | Baixa: poucas linhas, mas no mesmo arquivo de `pi-black`. |
 | `auth-guidance-short` | Avisos de falta de login/modelo/chave e diálogo de login do Bedrock sem "See:" e sem os caminhos de `providers.md`/`models.md`. | +43/−12 | Baixa: uma função em `auth-guidance.ts` e três linhas em `interactive-mode.ts`. |
+| `mcp-structured-content` | Chamada direta de tool MCP mostra ao modelo o `structuredContent` que o texto do servidor não traz. | +103/−6 | Baixa: uma função em `extensions/mcp/tools.ts`. |
 
 ## Avisos da TUI e como desligar
 

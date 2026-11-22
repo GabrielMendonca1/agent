@@ -1,6 +1,6 @@
 # Agent
 
-Agent é o agente de terminal pessoal do Gabriel, usado na ARCA, no Omni e em projetos pessoais, com o Megamind como integração. É o [Pi oficial](https://github.com/earendil-works/pi) **1.5.2 clássico** (base `b4afdddf44e059c67ccf5097e5317d913521b470`) com 11 patches pequenos (`overlay/`), mais:
+Agent é o agente de terminal pessoal do Gabriel, usado na ARCA, no Omni e em projetos pessoais, com o Megamind como integração. É o [Pi oficial](https://github.com/earendil-works/pi) **1.5.2 clássico** (base `b4afdddf44e059c67ccf5097e5317d913521b470`) com 12 patches pequenos (`overlay/`), mais:
 
 - `agent/`: extensões (`agent/extensions/agent`, `agent/extensions/brain-live`), temas, skills por categoria e papéis de subagente (`agent/agents/`);
 - `skills/`: skills padrão copiadas para o store a cada ativação;
