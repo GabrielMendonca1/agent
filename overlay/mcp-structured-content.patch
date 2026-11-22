@@ -1,0 +1,207 @@
+diff --git a/packages/coding-agent/docs/mcp.md b/packages/coding-agent/docs/mcp.md
+index 5c6aa7d86d71cd9634fd0efff10f8784de84fb00..7f423a05e3ac9a902e28942dcc4f0d1e0402e7cf 100644
+--- a/packages/coding-agent/docs/mcp.md
++++ b/packages/coding-agent/docs/mcp.md
+@@ -231,6 +231,8 @@ Tools with `codemode` or `deferred` exposure can be reached through either indir
+ 
+ To keep `codemode` active without MCP servers, add `"defaultTools": ["+codemode"]` to [settings](settings.md#tools). To prevent automatic codemode activation, set `"autoEnableCodemode": false` beside `mcpServers`. A project value overrides the user-level value. Pi warns once when neither `codemode` nor `tool_search` is active and non-direct tools cannot be called.
+ 
++Direct calls show the model the result's content blocks. When the server also sends `structuredContent` and no text block already parses to the same JSON, Pi appends a text block `structuredContent: <compact JSON>`, so ids and handles that the server left out of its text summary still reach the model. A result without content blocks reaches the model as its structured content in indented JSON.
++
+ Text results over 20 KB reach the model with their middle removed around a `…N chars truncated…` marker. The full text is saved to a temporary file named in the result. Codemode scripts receive the complete result and can reduce it before returning output to the model.
+ 
+ Codemode scripts receive the complete MCP `CallToolResult`, including `content`, `structuredContent`, and `isError`. A result with `isError` resolves inside scripts but is reported as an error for direct calls. `image(result.content[0])` forwards an image block. Server instructions are not part of any tool description; scripts read them with `describeNamespace("mcp__<server>")`, which also returns the server's tool names.
+diff --git a/packages/coding-agent/src/extensions/mcp/tools.ts b/packages/coding-agent/src/extensions/mcp/tools.ts
+index a484d21b22f6e0224b6e8d18ec3ce48c28a43fd4..594f56471257ee443ab4d4e0223166c1b7308049 100644
+--- a/packages/coding-agent/src/extensions/mcp/tools.ts
++++ b/packages/coding-agent/src/extensions/mcp/tools.ts
+@@ -4,12 +4,15 @@
+  * Results map onto pi's model-facing content (text and images). Text over 20KB keeps its start and
+  * end with the middle cut out, like Codex does, and the full text is saved to a temp file the model
+  * can read. Binary resources other than images are saved to temp files too, and resource links name
+- * the `read_mcp_resource` tool. Codemode scripts receive the whole `CallToolResult` without `_meta`
++ * the `read_mcp_resource` tool. When a result has both content blocks and `structuredContent`, and no
++ * text block already is that JSON, the model also gets `structuredContent: <compact JSON>` after the
++ * blocks. Codemode scripts receive the whole `CallToolResult` without `_meta`
+  * (`content` blocks as sent by the server, `structuredContent`, `isError`), never truncated: it is
+  * the tool's `structuredContent`, and every MCP tool declares a `CallToolResult` output schema. MCP
+  * errors (`isError`) are error results for the model, but scripts still resolve to the result.
+  */
+ 
++import { isDeepStrictEqual } from "node:util";
+ import type { AgentToolResult } from "@earendil-works/pi-agent-core";
+ import type { ImageContent, JsonValue, TextContent } from "@earendil-works/pi-ai";
+ import {
+@@ -211,6 +214,25 @@ export async function toModelContent(
+ 	return (await Promise.all(blocks.map((block) => blockToContent(server, block, options)))).flat();
+ }
+ 
++/**
++ * A text block with `result`'s structured content as compact JSON, for results whose content blocks
++ * do not carry it: servers often send a text summary in `content` and the data (ids, handles) only in
++ * `structuredContent`. Undefined without structured content or when a text block already parses to
++ * the same JSON.
++ */
++function structuredContentBlock(result: CallToolResult): TextContent | undefined {
++	if (result.structuredContent === undefined) return undefined;
++	for (const block of result.content) {
++		if (block.type !== "text") continue;
++		try {
++			if (isDeepStrictEqual(JSON.parse(block.text), result.structuredContent)) return undefined;
++		} catch {
++			// Not JSON: a summary, so it does not carry the structured content.
++		}
++	}
++	return { type: "text", text: `structuredContent: ${JSON.stringify(result.structuredContent)}` };
++}
++
+ /** Convert an MCP result. `isError` results become error results that keep the structured result. */
+ export async function convertMcpResult(
+ 	server: string,
+@@ -224,6 +246,10 @@ export async function convertMcpResult(
+ 	if (result.isError && textOf(converted) === "") {
+ 		converted.push({ type: "text", text: `MCP tool ${server}/${tool} returned an error` });
+ 	}
++	if (result.content.length > 0) {
++		const structured = structuredContentBlock(result);
++		if (structured) converted.push(structured);
++	}
+ 	const { content, fullOutputPath } = await limitMcpContent(converted, options.saveOutput ?? saveToTempFile);
+ 	const { _meta: _ignored, ...scriptResult } = result;
+ 	return {
+diff --git a/packages/coding-agent/test/mcp-extension.test.ts b/packages/coding-agent/test/mcp-extension.test.ts
+index 1b22e32fd7bc5d56930fa9be9b84fca7ea992dce..bf462b0a99afdff2b298428fb11f4ec25059d849 100644
+--- a/packages/coding-agent/test/mcp-extension.test.ts
++++ b/packages/coding-agent/test/mcp-extension.test.ts
+@@ -350,6 +350,7 @@ describe("MCP tools", () => {
+ 				{ type: "text", text: '[Resource file:///a "a"]' },
+ 				{ type: "text", text: "b text" },
+ 				{ type: "text", text: "[audio audio/wav omitted]" },
++				{ type: "text", text: 'structuredContent: {"ok":true}' },
+ 			],
+ 			details: { server: "docs", tool: "t" },
+ 			// Scripts get the server's blocks as sent, without `_meta`.
+@@ -377,6 +378,64 @@ describe("MCP tools", () => {
+ 		]);
+ 	});
+ 
++	it("shows the model structured content its text blocks do not carry", async () => {
++		const structured = { pid: 4242, window: { id: 7, title: "Chrome" } };
++		// A text summary plus structured data: the model gets the data as compact JSON after the text.
++		const summary = { content: [{ type: "text" as const, text: "Browser ready" }], structuredContent: structured };
++		const withSummary = await convertMcpResult("cua", "browser_prepare", summary);
++		expect(withSummary.content).toEqual([
++			{ type: "text", text: "Browser ready" },
++			{ type: "text", text: 'structuredContent: {"pid":4242,"window":{"id":7,"title":"Chrome"}}' },
++		]);
++		// Scripts still get the CallToolResult as sent.
++		expect(withSummary.structuredContent).toEqual(summary);
++		// A text block that already is the JSON (any formatting or key order) is not repeated.
++		const echoed = {
++			content: [
++				{ type: "text" as const, text: "Browser ready" },
++				{ type: "text" as const, text: '{ "window": { "title": "Chrome", "id": 7 }, "pid": 4242 }' },
++			],
++			structuredContent: structured,
++		};
++		expect((await convertMcpResult("cua", "browser_prepare", echoed)).content).toEqual([
++			{ type: "text", text: "Browser ready" },
++			{ type: "text", text: '{ "window": { "title": "Chrome", "id": 7 }, "pid": 4242 }' },
++		]);
++		// A text block with different JSON does not count as carrying it.
++		expect(
++			(
++				await convertMcpResult("cua", "t", {
++					content: [{ type: "text", text: '{"pid":1}' }],
++					structuredContent: { pid: 2 },
++				})
++			).content,
++		).toEqual([
++			{ type: "text", text: '{"pid":1}' },
++			{ type: "text", text: 'structuredContent: {"pid":2}' },
++		]);
++		// No structured content: text only. No content blocks: pretty JSON, as before.
++		expect((await convertMcpResult("cua", "t", { content: [{ type: "text", text: "ok" }] })).content).toEqual([
++			{ type: "text", text: "ok" },
++		]);
++		expect((await convertMcpResult("cua", "t", { content: [], structuredContent: structured })).content).toEqual([
++			{ type: "text", text: JSON.stringify(structured, null, 2) },
++		]);
++		// Errors keep their text and gain the structured content.
++		expect(
++			await convertMcpResult("cua", "t", {
++				content: [{ type: "text", text: "failed" }],
++				structuredContent: { code: 3 },
++				isError: true,
++			}),
++		).toMatchObject({
++			content: [
++				{ type: "text", text: "failed" },
++				{ type: "text", text: 'structuredContent: {"code":3}' },
++			],
++			isError: true,
++		});
++	});
++
+ 	it("points resource links to read_mcp_resource and saves binary resources", async () => {
+ 		const saved: [string | Uint8Array, string][] = [];
+ 		const saveOutput = async (data: string | Uint8Array, extension: string) => {
+diff --git a/packages/coding-agent/test/suite/agent-session-mcp.test.ts b/packages/coding-agent/test/suite/agent-session-mcp.test.ts
+index ca3df6bcf8567051a0ec78637c4f080288f11fca..0949173fd56e809174831b66615a015b9ece090a 100644
+--- a/packages/coding-agent/test/suite/agent-session-mcp.test.ts
++++ b/packages/coding-agent/test/suite/agent-session-mcp.test.ts
+@@ -456,7 +456,9 @@ describe("AgentSession MCP integration", () => {
+ 		expect(annotations.get("mcp__docs__fail")).toEqual({ destructiveHint: true, readOnlyHint: false });
+ 		expect(annotations.get("mcp__docs__search")).toBeUndefined();
+ 		const result = toolResult(harness, "mcp__docs__search");
+-		expect(getMessageText(result)).toBe("direct guide\ndirect faq");
++		expect(getMessageText(result)).toBe(
++			'direct guide\ndirect faq\nstructuredContent: {"hits":["direct guide","direct faq"]}',
++		);
+ 	});
+ 
+ 	it.each(["direct", "codemode"] as const)(
+@@ -648,7 +650,9 @@ return { docs, sameForAliases: aliases.every((alias) => JSON.stringify(alias) ==
+ 		await harness.session.prompt("go");
+ 
+ 		expect(harness.session.getActiveToolNames()).toEqual(["tool_search", "mcp__docs__search"]);
+-		expect(getMessageText(toolResult(harness, "mcp__docs__search"))).toBe("loaded guide\nloaded faq");
++		expect(getMessageText(toolResult(harness, "mcp__docs__search"))).toBe(
++			'loaded guide\nloaded faq\nstructuredContent: {"hits":["loaded guide","loaded faq"]}',
++		);
+ 		expect(notifications).toEqual([]);
+ 	});
+ 
+@@ -898,7 +902,9 @@ return [...new Set(await Promise.all(names.map(async (name) => (await describeNa
+ 
+ 		await harness.session.prompt("go");
+ 
+-		expect(getMessageText(toolResult(harness, "mcp__slow__search"))).toBe("late guide\nlate faq");
++		expect(getMessageText(toolResult(harness, "mcp__slow__search"))).toBe(
++			'late guide\nlate faq\nstructuredContent: {"hits":["late guide","late faq"]}',
++		);
+ 	});
+ 
+ 	it("holds the first prompt for servers with direct tools", async () => {
+@@ -1001,7 +1007,9 @@ return [...new Set(await Promise.all(names.map(async (name) => (await describeNa
+ 		);
+ 		expect(loadMessages).toHaveLength(1);
+ 		expect(loadMessages[0].toolsAdded?.map((tool) => tool.name)).toEqual([searchName]);
+-		expect(getMessageText(toolResult(harness, searchName))).toBe("loaded guide\nloaded faq");
++		expect(getMessageText(toolResult(harness, searchName))).toBe(
++			'loaded guide\nloaded faq\nstructuredContent: {"hits":["loaded guide","loaded faq"]}',
++		);
+ 		expect(calls).toEqual(['search:{"query":"loaded"}']);
+ 
+ 		// Loads are recorded in the transcript: navigating back before the load drops the tool,
+@@ -1216,7 +1224,9 @@ describe("AgentSession MCP tools after resume and reload", () => {
+ 		]);
+ 		await second.harness.session.prompt("use it");
+ 
+-		expect(getMessageText(toolResult(second.harness, "mcp__docs__search"))).toBe("again guide\nagain faq");
++		expect(getMessageText(toolResult(second.harness, "mcp__docs__search"))).toBe(
++			'again guide\nagain faq\nstructuredContent: {"hits":["again guide","again faq"]}',
++		);
+ 		const removals = second.harness.session.messages.filter(
+ 			(message) => message.role === "system" && (message.toolsRemoved ?? []).length > 0,
+ 		);

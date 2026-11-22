@@ -123,6 +123,16 @@
 				"packages/coding-agent/test/auth-guidance-short.test.ts",
 				"packages/coding-agent/test/rpc-prompt-response-semantics.test.ts"
 			]
+		},
+		{
+			"name": "mcp-structured-content",
+			"path": "overlay/mcp-structured-content.patch",
+			"description": "Chamada direta de tool MCP: quando o resultado tem blocos de conteúdo e structuredContent, e nenhum bloco de texto já é esse JSON, o modelo recebe também `structuredContent: <JSON compacto>`. Codemode inalterado.",
+			"sha256": "8616b2a2f38ccd0d92d3184db41561424ae5b4b335c14038765b82bcaad17619",
+			"tests": [
+				"packages/coding-agent/test/mcp-extension.test.ts",
+				"packages/coding-agent/test/suite/agent-session-mcp.test.ts"
+			]
 		}
 	],
 	"modelData": [
@@ -287,6 +297,12 @@
 				"patch": "stream-markdown",
 				"path": "dist/bundle",
 				"marker": "PI_TUI_HZ"
+			},
+			{
+				"name": "mcp structured content for the model",
+				"patch": "mcp-structured-content",
+				"path": "dist/bundle",
+				"marker": "structuredContent: ${JSON.stringify("
 			}
 		],
 		"upstreamLayouts": [

@@ -181,7 +181,7 @@ teste("o manifesto real declara a base clássica e nenhuma camada opcional (cont
 	assert.equal(manifest.name, "agent");
 	assert.deepEqual(
 		selectLayers(manifest.patches, {}).selected.map((patch) => patch.name),
-		["pi-black", "garime-frame", "pi-account-env", "transcript-feedback", "stream-markdown", "agent-skill-curation", "codemode-typed-results", "codemode-background", "tool-load-append", "cc-hidden-tool-names", "auth-guidance-short"],
+		["pi-black", "garime-frame", "pi-account-env", "transcript-feedback", "stream-markdown", "agent-skill-curation", "codemode-typed-results", "codemode-background", "tool-load-append", "cc-hidden-tool-names", "auth-guidance-short", "mcp-structured-content"],
 	);
 	assert.deepEqual(selectLayers(manifest.patches, {}).available, []);
 	for (const marker of manifest.compatibility.bundleMarkers) {
