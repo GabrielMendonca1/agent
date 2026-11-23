@@ -24,7 +24,7 @@ try {
 	// Agent: system automática; design/plan sob demanda.
 	test("agent/skills: nomes, frontmatter válido e créditos", () => {
 		const dir = join(repo, "agent/skills");
-		const expected = ["a11y", "award-site", "colors", "debug", "figma-to-code", "handoff", "html-plan", "iso-figure", "layout", "microcopy", "polish", "pr", "prototype", "rea", "sources", "tdd", "type", "ui-review"];
+		const expected = ["a11y", "award-site", "colors", "computer-use", "debug", "figma-to-code", "handoff", "html-plan", "iso-figure", "layout", "microcopy", "polish", "pr", "prototype", "rea", "sources", "tdd", "type", "ui-review"];
 		assert.deepEqual(agentNames(), expected);
 		assert.ok(existsSync(join(dir, "CREDITS.md")), "CREDITS.md com origem e licença");
 		for (const name of expected) {
@@ -51,7 +51,7 @@ try {
 
 	test("categorias geram resumo determinístico sem system", () => {
         assert.deepEqual(categories.map(c => c.name), ['design', 'dev', 'plan', 'system']);
-        assert.deepEqual(categories.find(c => c.name === 'system').skills, ['handoff', 'html-plan', 'pr', 'sources']);
+        assert.deepEqual(categories.find(c => c.name === 'system').skills, ['computer-use', 'handoff', 'html-plan', 'pr', 'sources']);
         assert.equal(categoryPrompt().split('\n').length, 3);
         assert.equal(categoryPrompt(), categoryPrompt());
         assert.ok(!categoryPrompt().includes('system:'));

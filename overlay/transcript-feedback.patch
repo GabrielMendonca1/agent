@@ -579,10 +579,10 @@ index 33d2af8a2fcb29baf84fbfd02074e3459f56de14..7f3255a529ecc9c8802a1d289ed6eecf
  			this.ui.terminal.setProgress(false);
 diff --git a/packages/coding-agent/src/modes/interactive/run-feedback.ts b/packages/coding-agent/src/modes/interactive/run-feedback.ts
 new file mode 100644
-index 0000000000000000000000000000000000000000..89486313a52612e02c15ffa9a6f7991751277ce7
+index 0000000000000000000000000000000000000000..0bb65063941f1b0c4955c6b8379a6ba0ce00e385
 --- /dev/null
 +++ b/packages/coding-agent/src/modes/interactive/run-feedback.ts
-@@ -0,0 +1,681 @@
+@@ -0,0 +1,728 @@
 +import { randomUUID } from "node:crypto";
 +import type { AgentSessionEvent } from "../../core/agent-session.ts";
 +import type { ModelRuntime } from "../../core/model-runtime.ts";
@@ -601,7 +601,7 @@ index 0000000000000000000000000000000000000000..89486313a52612e02c15ffa9a6f79917
 +	evidence?: string;
 +	details?: string;
 +	actions: string;
-+	completion?: { elapsedMs: number; at: number; interrupted: boolean };
++	completion?: { elapsedMs: number; at: number; interrupted: boolean; toolErrors?: number };
 +}
 +export interface FeedbackRecord {
 +	session: string;
@@ -1010,6 +1010,33 @@ index 0000000000000000000000000000000000000000..89486313a52612e02c15ffa9a6f79917
 +	);
 +}
 +
++const MAX_RECAP_LENGTH = 220;
++const NEUTRAL_RECAP = "Não há uma conclusão curta para esta resposta.";
++const INTERRUPTED_RECAP = "A execução foi interrompida antes da conclusão.";
++
++/** Keep the meaning of the answer: prefer no excerpt to dropping a qualification or masking part of a claim. */
++function shortPublicRecap(text: string): string | undefined {
++	const summary = text.trim().replace(/[\r\n\t ]+/g, " ");
++	if (!summary || summary.length > MAX_RECAP_LENGTH || !/\p{L}/u.test(summary)) return;
++	if (/[\p{Cc}\p{Cf}]|```|~~~|<[^>]*>|!?(?:\]\s*\(|\]\s*\[)/u.test(summary)) return;
++	// Leave links and common identifiers (emails, personal paths and long numeric IDs) in the answer only.
++	if (/@|\b(?:[a-z][\w+.-]*:\/\/|www\.)|(?:^|[\s"'`(])(?:~\/|\/|[a-z]:\\)|\d(?:[ .()+-]*\d){7}/i.test(summary))
++		return;
++	if (/\b(?:senha|chave(?: de api| privada)?|segredo|cpf|cnpj|password|secret|token)\b\s*(?:[:=]|é\s|is\s)/iu.test(summary))
++		return;
++	if (redactFeedback(text) !== text || redactFeedback(summary) !== summary) return;
++	return summary;
++}
++
++function answerRecap(text: string): string | undefined {
++	// Prefer an explicit conclusion, otherwise the final prose paragraph. Don't quote a code block.
++	const prose = text.replace(/^[ \t]*(\x60{3,}|~{3,})[^\n]*\n[\s\S]*?(?:^[ \t]*\1[ \t]*$|(?![\s\S]))/gm, "\n\n").trim();
++	const paragraphs = prose.split(/\n[ \t]*\n/).reverse();
++	const conclusion = paragraphs.find((p) => /^(?:\*\*)?(?:conclusão|resumo|resultado):/iu.test(p.trim()));
++	const last = (conclusion ?? paragraphs[0] ?? "").trim().replace(/^(?:\*\*)?(?:conclusão|resumo|resultado):(?:\*\*)?\s*/iu, "");
++	return shortPublicRecap(last);
++}
++
 +/** TUI-owned observer. No tool, custom message, agent prompt or model-context entry. */
 +export class RunFeedback {
 +	private enabled = process.env.PI_TUI_FEEDBACK !== "0";
@@ -1019,6 +1046,7 @@ index 0000000000000000000000000000000000000000..89486313a52612e02c15ffa9a6f79917
 +	private startedAt = 0;
 +	private interrupted = false;
 +	private lastAssistantFailed = false;
++	private finalRecap?: string;
 +	private run = "";
 +	private results = new Set<string>();
 +	private sensitive = new Set<string>();
@@ -1061,7 +1089,17 @@ index 0000000000000000000000000000000000000000..89486313a52612e02c15ffa9a6f79917
 +				if (!this.modelNotices || r !== latestNotice || rated.has(r.id)) continue;
 +				this.notice = r;
 +			}
-+			host.display(r.card!);
++			const card = r.card!;
++			host.display(
++				card.kind === "recap"
++					? {
++							...card,
++							summary: card.completion?.interrupted
++								? INTERRUPTED_RECAP
++								: (r.model === "local" ? shortPublicRecap(card.summary) : undefined) ?? NEUTRAL_RECAP,
++						}
++					: card,
++			);
 +		}
 +	}
 +	reset(): void {
@@ -1073,6 +1111,7 @@ index 0000000000000000000000000000000000000000..89486313a52612e02c15ffa9a6f79917
 +		this.commands.clear();
 +		this.errors = 0;
 +		this.excerpt = [];
++		this.finalRecap = undefined;
 +		this.notice = undefined;
 +		this.noticeAttempts = 0;
 +		this.resultsAtObservation = 0;
@@ -1141,9 +1180,16 @@ index 0000000000000000000000000000000000000000..89486313a52612e02c15ffa9a6f79917
 +		if (event.type === "message_end") {
 +			this.message(event.message);
 +			if (event.message.role === "assistant") {
++				const { content, stopReason } = event.message;
++				this.finalRecap =
++					stopReason === "stop" && !content.some((block) => block.type === "toolCall")
++						? answerRecap(content.flatMap((block) => (block.type === "text" ? [block.text] : [])).join("\n"))
++						: undefined;
 +				this.lastAssistantFailed = event.message.stopReason === "error";
 +				this.interrupted ||= event.message.stopReason === "aborted";
 +				if (this.interrupted) this.interrupt();
++			} else if (event.message.role === "user" || event.message.role === "toolResult") {
++				this.finalRecap = undefined;
 +			}
 +		}
 +		if (event.type === "tool_execution_start") {
@@ -1192,7 +1238,7 @@ index 0000000000000000000000000000000000000000..89486313a52612e02c15ffa9a6f79917
 +			this.active = false;
 +			this.pending?.abort();
 +			const at = Date.now();
-+			const completion = { elapsedMs: at - this.startedAt, at, interrupted: this.interrupted };
++			const completion = { elapsedMs: at - this.startedAt, at, interrupted: this.interrupted, toolErrors: this.errors };
 +			// Local factual recap; never schedules auxiliary inference.
 +			const card = this.local(completion);
 +			this.publish(card, "local");
@@ -1205,14 +1251,15 @@ index 0000000000000000000000000000000000000000..89486313a52612e02c15ffa9a6f79917
 +			kind: "recap",
 +			title: "Resumo operacional",
 +			summary: completion.interrupted
-+				? "O Agent teve a execução interrompida; o resultado da tarefa não foi confirmado."
-+				: this.errors > 0
-+					? "O Agent encontrou erros nas ferramentas; o resultado da tarefa não foi confirmado."
-+					: "O Agent encerrou este turno; o resultado da tarefa não foi confirmado.",
++				? INTERRUPTED_RECAP
++				: this.finalRecap ??
++					(this.errors > 0
++						? "Houve erros nas ferramentas. O resultado não foi confirmado."
++						: NEUTRAL_RECAP),
 +			evidence: `${this.results.size} tools encerradas; ${this.errors} com erro (eventos únicos).`,
 +			details: completion.interrupted
 +				? "Execução interrompida: recap por modelo não solicitado."
-+				: "Resumo local provisório ou fallback; não confirma sucesso.",
++				: "Resumo local da resposta final ou fallback; não confirma sucesso.",
 +			actions: "",
 +			completion,
 +		};
@@ -1603,7 +1650,7 @@ index ffb9e1aedc609022045ab98cda311aee423523f4..55dcd473e7e55359785b394c14c64289
 +);
 diff --git a/packages/coding-agent/test/run-feedback.test.ts b/packages/coding-agent/test/run-feedback.test.ts
 new file mode 100644
-index 0000000000000000000000000000000000000000..b5a914256d8642eda288c9bab6dc2ee34cc91b20
+index 0000000000000000000000000000000000000000..a56e06acdcbfd0b9b1e31b5f93b3e4878ff75633
 --- /dev/null
 +++ b/packages/coding-agent/test/run-feedback.test.ts
 @@ -0,0 +1,766 @@
@@ -1729,7 +1776,7 @@ index 0000000000000000000000000000000000000000..b5a914256d8642eda288c9bab6dc2ee3
 +	f.event({ type: "agent_settled", aborted: false });
 +	await settle();
 +	expect(cards[1].evidence).toContain("1 tools encerradas; 0 com erro");
-+	expect(cards[1].summary).toContain("não foi confirmado");
++	expect(cards[1].summary).toBe("Não há uma conclusão curta para esta resposta.");
 +	expect(records.every((record) => record.model === "local")).toBe(true);
 +	expect(complete).not.toHaveBeenCalled();
 +});

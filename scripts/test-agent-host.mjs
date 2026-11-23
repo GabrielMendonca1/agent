@@ -264,7 +264,7 @@ async function runHost(host) {
       assert.equal(count(sys0, /Receita deste projeto|Regras aprendidas aqui|Projeto agent, receita/g), 0, `${host}: nada do conteúdo da receita no system prompt`);
       assert.equal(count(sys0, /<available_skills>/g), 1, `${host}: skills uma vez`);
       assert.deepEqual([...sys0.matchAll(/<name>([^<]+)<\/name>/g)].map(m => m[1]).sort(),
-        ['cua', 'diagram', 'handoff', 'html-plan', 'megamind', 'peers', 'pr', 'sources'], `${host}: curadoria real no provider, inclusive skills pessoais`);
+        ['computer-use', 'diagram', 'handoff', 'html-plan', 'megamind', 'peers', 'pr', 'sources'], `${host}: curadoria real no provider, inclusive skills pessoais`);
       for (const name of policyNames) assert.equal(readFileSync(join(info.agentDir, 'skills', name, 'SKILL.md'), 'utf8'),
         `---\nname: ${name}\ndescription: Fixture ${name}\n---\n`, `${host}: SKILL.md intacto`);
       assert.equal(count(sys0, /^Available tools:$/gm), 1, `${host}: lista de tools do Agent`);

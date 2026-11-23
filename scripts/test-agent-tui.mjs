@@ -409,7 +409,7 @@ async function runHotSwitch(host) {
     assert.match(picker, /^\s*▸ rea\s+ /m, `${host}: rea sob demanda`);
     term.keys('Tab');
     picker = await term.waitScreen(/skills · system/, `${host}: Tab visita system`);
-    assert.match(picker, /^\s*▸ handoff\s+◆/m, 'system é automática em qualquer modo');
+    assert.match(picker, /^\s*▸ computer-use\s+◆/m, 'computer-use é automática em qualquer modo');
     term.keys('Tab');
     await term.waitScreen(/skills · design/, `${host}: Tab volta a design`);
     term.keys('-l', ':mic');
