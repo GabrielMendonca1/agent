@@ -34,6 +34,7 @@ const PATH_RE =
 const PASTE_RE = /\x1b\[200~([\s\S]*?)\x1b\[201~/g;
 const PLACEHOLDER_RE = /\[Image #(\d+)\]/g;
 const PLACEHOLDER_END_RE = /\[Image #\d+\]$/;
+const ANSWER_PREFIX_RE = /^Resposta do usuário(?: \([^)]*\))?: /;
 const BACKSPACES = new Set(["\x7f", "\x08"]);
 
 const LOG = `${homedir()}/.pi/agent/garime-debug.log`;
@@ -237,9 +238,13 @@ export default function (pi: ExtensionAPI) {
 			ask.pending.has(n) ? `[image not sent: ${basename(ask.pending.get(n)!)}]` : match);
 		if (cleaned !== editor) ctx.ui.setEditorText(cleaned);
 		if (event.isError || !ask.answer) return;
-		const expected = `Resposta do usuário: ${ask.answer}`;
-		const index = event.content.findIndex(c => c.type === "text" && c.text === expected);
-		if (index < 0) return;
+		// ask_user may tag the answer with its source: "Resposta do usuário (terminal): …".
+		const answer = ask.answer;
+		const index = event.content.findIndex(c => c.type === "text" && ANSWER_PREFIX_RE.test(c.text)
+			&& c.text.replace(ANSWER_PREFIX_RE, "") === answer);
+		const block = event.content[index];
+		if (!block || block.type !== "text") return;
+		const expected = block.text;
 		const { text, images } = await resolve(expected, ask.pending, false);
 		if (text === expected && !images.length) return;
 		const content = [...event.content];
