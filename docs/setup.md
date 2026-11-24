@@ -205,7 +205,7 @@ Antes de cada `edit`/`write` do agente na sessão principal (também os chamados
 `/rewind` lista os turnos do ramo atual, do mais novo ao mais antigo, com o texto do pedido e os arquivos que o agente mudou nele:
 
 ```
-Voltar para antes de qual turno? (só edições feitas por edit/write do agente; bash (rm, mv, sed…) não é rastreado)
+Voltar para antes de qual turno? (edit/write da sessão e escritores sem worktree em Git; bash da sessão não é rastreado)
 → 2. segundo pedido · novo.txt
   1. primeiro pedido · a.txt
 
@@ -218,10 +218,10 @@ O que desfazer?
   Cancelar
 ```
 
-- Código: cada arquivo tocado desde o turno escolhido volta ao estado de antes dele; arquivo criado pelo agente é apagado. Vale a ordem em que as edições aconteceram no disco, de qualquer ramo da conversa.
+- Código: cada arquivo tocado desde o turno escolhido volta ao estado de antes dele; arquivo criado pelo agente é apagado. Vale a ordem de captura dos arquivos, de qualquer ramo da conversa.
 - Conversa: `ctx.navigateTree` até a mensagem escolhida, o mesmo mecanismo do `/tree` (sem resumo do ramo abandonado). O ramo antigo continua no `/tree` e o texto do pedido volta ao editor.
 - Se um arquivo mudou depois da última edição do agente (editor, `bash`, outro processo), o `/rewind` lista os arquivos e pergunta: sobrescrever, pular os alterados ou cancelar.
-- Não rastreia `bash` (rm, mv, `sed -i`, geradores) nem filhos (`AGENT_CHILD=1`), que escrevem em worktree próprio. Arquivo acima de 20 MB fica marcado como não restaurável.
+- Não rastreia `bash` da sessão principal nem grava checkpoints dentro dos filhos (`AGENT_CHILD=1`). O pai registra as mudanças dos escritores sem worktree próprio em Git, mesmo se o filho falhar. Espere o job terminar antes de usar `/rewind`. Arquivos acima de 20 MiB não têm restauração.
 - Só roda com o agente parado. `/fork` e `/clone` criam sessão nova sem os checkpoints da anterior. O double-Esc continua abrindo o `/tree`, que não mexe em arquivos.
 
 Disco: `<perfil>/checkpoints/<sessionId>/index.jsonl` (registro append-only) e `blobs/<sha256>` (conteúdo, deduplicado). Persistem ao retomar a sessão. No início de cada sessão, apaga os checkpoints de sessões sem uso há mais de `AGENT_CHECKPOINTS_DAYS` dias (30) e, se o total passar de `AGENT_CHECKPOINTS_MAX_MB` (500), os das sessões menos recentes; a sessão atual nunca. `AGENT_CHECKPOINTS=0` desliga a gravação e o comando. Não adiciona tool nem texto ao prompt.
@@ -395,8 +395,8 @@ O resultado e o uso disponível ficam no registro do job; não há sessão JSONL
 ### Lacunas
 
 - stderr do filho fica só em memória (até 64 KB) e só aparece no resultado quando a tarefa falha.
-- O system prompt do papel vai por arquivo temporário, apagado no fim. O registro guarda o nome do papel, não o texto. As fontes `.agent/rules.md` + `.agent/header.md` (ou workflow.md legado sem rules.md) anexadas à tarefa ficam no JSONL do filho.
-- Escritor único (single, chain, ou `parallel` com um só escritor) grava direto no `cwd`, sem worktree nem diff registrado. Use `git` para ver o que mudou.
+- No runner Pi, o system prompt do papel vai por arquivo temporário, apagado no fim. No agy, o prompt completo vai por stdin quando excede 16 KiB. O registro guarda o nome do papel, não o texto. As fontes `.agent/rules.md` + `.agent/header.md` (ou workflow.md legado sem rules.md) anexadas à tarefa ficam no JSONL do filho Pi.
+- Escritores sem worktree próprio (`single`, `chain` ou `parallel` com um só escritor no repositório) gravam direto no `cwd`. Em Git, o pai compara o conteúdo antes e depois de cada filho e registra as mudanças para `/rewind` no turno que lançou o job. A captura cobre arquivos regulares rastreados ou não ignorados (até 10.000 caminhos e 64 MiB por leitura; até 20 MiB por arquivo). Não cobre `cwd` sem Git, links, arquivos ignorados, permissões, índice ou commits. Evite modificar o mesmo checkout enquanto o job roda: a comparação não distingue uma edição concorrente de uma feita pelo filho.
 - Sandbox só cobre o `bash` de papéis sem `edit`/`write`: seatbelt no macOS, bwrap no Linux, `none` sem suporte. O resultado informa `sandbox=`. Sem sandbox, o detector compara só o `git status` do checkout antes e depois; escrita fora do checkout Git não é vista.
 - `list` apaga o registro de jobs terminados há mais de 30 dias, junto com worktrees limpos e já integrados. Worktree sujo ou não integrado preserva o registro. Os JSONL dos filhos ficam.
 - O prefetch (`AGENT_CACHE_PREFETCH_NEXT=1`) roda com `--no-session`; seu custo não entra em usage.

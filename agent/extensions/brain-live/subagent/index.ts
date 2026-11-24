@@ -25,6 +25,7 @@ import {
 } from "@earendil-works/pi-coding-agent";
 import { type Component, Container, Markdown, Spacer, Text, truncateToWidth } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
+import { lastUser } from "../lib/checkpoint-store.ts";
 import { formatRoleModelChoices, getRoleModelChoices, resolveGeminiPreference } from "../lib/tiers.ts";
 import { getAgentPreferences, isChild } from "../../../core/client.mjs";
 import { NO_DELEGATE_ENV } from "../../../core/child-env.mjs";
@@ -876,6 +877,12 @@ export default function (pi: ExtensionAPI) {
 
 			if (signal?.aborted) return fail("Dispatch aborted before launch.");
 			if (!isSafeId(sessionId)) return fail("Unsafe session id; refusing to launch a subagent job.");
+			if (process.env.AGENT_CHECKPOINTS !== "0") {
+				const user = lastUser(ctx);
+				if (user) dispatchDefaults.writerCheckpoint = {
+					root: path.join(getAgentDir(), "checkpoints"), sessionId, turn: user.id, prompt: user.prompt,
+				};
+			}
 
 			// Anchor: the leaf at dispatch belongs to a shared ancestor, so a sibling
 			// branch forked from it would accept this job's result. Append our own entry
