@@ -5,7 +5,6 @@ Agent é o agente de terminal pessoal do Gabriel, usado na ARCA, no Omni e em pr
 - `agent/`: extensões (`agent/extensions/agent`, `agent/extensions/brain-live`), temas, skills por categoria e papéis de subagente (`agent/agents/`);
 - `skills/`: skills padrão copiadas para o store a cada ativação;
 - `extensions/megamind/`: extensão Megamind;
-- `agent-patches/`: patches aplicados sobre a árvore `agent/` para rodar sem infraestrutura pessoal;
 - `scripts/`: updater, launcher e testes do portão de checks (`.pi/checks.json`).
 
 Runtime novo sem contabilidade. A tool `subagent` está sempre ligada na sessão principal, e o system prompt pede ao modelo que atue como orquestrador; isolamento, auditoria e lacunas em [docs/setup.md](docs/setup.md#subagentes-sempre-ligados-isolamento-e-auditoria). Cache-keeper e compactação ociosa ficam ligados por padrão; custo e como desligar em [docs/setup.md](docs/setup.md#custo-o-que-roda-sem-prompt). `/rewind` desfaz as edições de arquivo do agente (edit/write, não bash) e/ou a conversa até um turno escolhido; snapshots e limpeza em [docs/setup.md](docs/setup.md#checkpoints-de-arquivo-e-rewind). Megamind permanece. Subagentes rodam em processos `pi -p`, vinculados por `parentSession`. Sessões JSONL, `/resume` e `--session` são os oficiais do Pi.

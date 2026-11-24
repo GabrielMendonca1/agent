@@ -13,7 +13,7 @@ import { homedir } from "node:os";
 import type { ImageContent } from "@earendil-works/pi-ai";
 import { resizeImage, type ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { isKeyRelease, matchesKey } from "@earendil-works/pi-tui";
-import { LADO_MAX, precisaReduzir } from "../lib/image-normalize.ts";
+import { LADO_MAX, precisaReduzir } from "../../brain-live/lib/image-normalize.ts";
 
 const MAX_BYTES = 20 * 1024 * 1024; // 20MB por imagem
 

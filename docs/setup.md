@@ -416,12 +416,10 @@ O código de `agent/` não depende de caminhos literais `/Users/biel` (só um ex
 | tui | Código local, não depende de serviço Garime. Recursos interativos guardados por modo/UI; logs usam HOME local. |
 | accounts | Preserva autenticação e contas locais do usuário; nenhuma credencial é copiada de outro perfil. Mirror só opera com dados locais existentes. |
 | peers | IPC local em HOME/PI_MESH_DIR, sem serviço pessoal remoto; pasta é criada em runtime. |
-| cost, sessions | Leem sessões locais; histórico vazio é válido. `03-sessions-explicit-gc-only.patch`: `sessions` não poda no `session_start`; apagar sessão velha/vazia só por `/gc` explícito. |
+| cost, sessions | Leem sessões locais; histórico vazio é válido. `sessions` não poda no `session_start`; apagar sessão velha/vazia só por `/gc` explícito. |
 | image-normalize | Normalização local; nenhuma pasta pessoal obrigatória. |
 | project-operator, checks | Operam sobre o projeto atual; não exigem repositórios pessoais. |
 | ask-user, btw, checkpoints, codex-fast, files, plan, slash-anywhere, todos, tool-lexicon, whimsical | Sem infraestrutura pessoal obrigatória. |
-
-Patches de compatibilidade ficam em `agent-patches/`.
 
 ## Verificação
 
