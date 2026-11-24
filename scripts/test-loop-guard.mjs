@@ -27,6 +27,36 @@ test("nudge at 3, block sixth attempt", () => {
   assert.equal(m.call().stop, true);
 });
 
+test("periods 2 and 3 nudge once, then block only the continuing call", () => {
+  for (const keys of [["A", "B"], ["A", "B", "A"]]) {
+    const m = machine();
+    m.call({ command: "prefix" });
+    for (let i = 0; i < 5 * keys.length; i++) {
+      const command = keys[i % keys.length];
+      const outcome = m.call({ command }, command);
+      assert.equal(outcome.nudge, i + 1 === 3 * keys.length);
+      assert.equal(outcome.stop, undefined);
+    }
+    assert.equal(m.call({ command: keys[0] }).stop, true);
+    assert.equal(m.call({ command: "different" }).stop, undefined);
+  }
+});
+
+test("changed hashes break cycles and a user message clears cycle history", () => {
+  const m = machine();
+  for (let i = 0; i < 6; i++) {
+    assert.equal(m.call({ command: "A" }).nudge, false);
+    assert.equal(m.call({ command: "B" }, `result ${i}`).nudge, false);
+  }
+  for (let i = 0; i < 5; i++) {
+    m.call({ command: "C" });
+    m.call({ command: "D" });
+  }
+  assert.equal(m.call({ command: "C" }).stop, true);
+  m.send({ type: "before_agent_start", messageType: "user" });
+  assert.equal(m.call({ command: "C" }).stop, undefined);
+});
+
 test("new user run resets repetition and empty turns", () => {
   const m = machine();
   for (let i = 0; i < 5; i++) m.call();

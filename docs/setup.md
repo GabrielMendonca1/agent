@@ -285,6 +285,10 @@ Nenhum patch é necessário para as extensões carregarem; eles dão funcionalid
 - O banner "pi has joined Earendil" não é automático; só aparece por comando.
 - Custo em USD no rodapé é preço de lista calculado localmente, não fatura. Com assinatura, representa consumo de cota.
 
+## Proteção contra loops de ferramentas
+
+O loop guard avisa após 3 resultados idênticos seguidos, ou 3 repetições de um ciclo de 2 ou 3 chamadas com os mesmos argumentos e resultados. Após 5 repetições, bloqueia a chamada que continuaria a sequência. Resultados diferentes quebram a repetição, chamadas aninhadas não contam e uma nova mensagem sua limpa o histórico. Para desligar: `AGENT_LOOP_GUARD=0`.
+
 ## Custo: o que roda sem prompt
 
 Chamadas pagas que não saem de uma mensagem sua. Todas usam a sua conta ou chave do provider.
