@@ -435,7 +435,7 @@ index d8e2390c44392bca796a04901cf5600b74e37b45..33d2af8a2fcb29baf84fbfd02074e345
  								skillBlock.userMessage,
  								this.getMarkdownThemeWithSettings(),
 diff --git a/packages/coding-agent/src/modes/interactive/theme/system-theme.ts b/packages/coding-agent/src/modes/interactive/theme/system-theme.ts
-index a215797e300b4fcdaadb2e0af1fc04c40ff0eb28..6c84bb248da2e31e4581384b880a794913c15309 100644
+index a215797e300b4fcdaadb2e0af1fc04c40ff0eb28..1af4413eca716fb67afdfe7742cbf60afaa354f2 100644
 --- a/packages/coding-agent/src/modes/interactive/theme/system-theme.ts
 +++ b/packages/coding-agent/src/modes/interactive/theme/system-theme.ts
 @@ -100,6 +100,13 @@ const TOKEN_FAMILIES: Record<ThemeToken, FamilyName> = {
@@ -452,7 +452,17 @@ index a215797e300b4fcdaadb2e0af1fc04c40ff0eb28..6c84bb248da2e31e4581384b880a7949
  	mdListBullet: "violet",
  	syntaxType: "violet",
  	border: "blue",
-@@ -307,7 +314,19 @@ const RULES: Rule[] = [
+@@ -298,7 +305,8 @@ const RULES: Rule[] = [
+ 	...each(["accent", "success", "error", "warning"], ["background", "selectedBg", ...TOOL_PANELS], "readable"),
+ 	{ token: "muted", on: ["background", "selectedBg", "customMessageBg", ...TOOL_PANELS], level: "readable" },
+ 	{ token: "dim", on: ["background", "selectedBg", "customMessageBg", ...TOOL_PANELS], level: "subtle" },
+-	{ token: "thinkingText", on: ["background"], level: "readable" },
++	// garime-frame: o raciocínio fica um degrau abaixo do texto comum (mesmo nível do dim).
++	{ token: "thinkingText", on: ["background"], level: "subtle" },
+ 	{ token: "customMessageText", on: ["customMessageBg", ...TOOL_PANELS], level: "readable" },
+ 	{
+ 		token: "customMessageLabel",
+@@ -307,7 +315,19 @@ const RULES: Rule[] = [
  	},
  	{ token: "toolOutput", on: ["background", ...TOOL_PANELS], level: "readable" },
  	...each(
