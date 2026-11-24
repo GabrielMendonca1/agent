@@ -9,7 +9,17 @@
     (subpath (string-append (param "HOME") "/.npm/_cacache"))
     (subpath (string-append (param "HOME") "/.npm/_logs"))
     (subpath (string-append (param "HOME") "/.cache"))
-    (subpath (string-append (param "CWD") "/node_modules/.cache"))
-    (subpath (string-append (param "CWD") "/.pi")))
-; Metadados git nunca são uma área de cache gravável.
-(deny file-write* (subpath (string-append (param "CWD") "/.git")))
+    (subpath (string-append (param "CWD") "/node_modules/.cache")))
+; Metadados do projeto ficam protegidos mesmo em checkouts dentro de /tmp.
+(deny file-write*
+    (subpath (string-append (param "CWD") "/.git"))
+    (subpath (string-append (param "CWD") "/.pi"))
+    (subpath (param "PROJECT_PI")))
+; O bash não precisa ler chaves nem credenciais do perfil.
+(deny file-read*
+    (subpath (param "SSH"))
+    (subpath (param "AWS"))
+    (subpath (param "GNUPG"))
+    (literal (param "AGENT_AUTH"))
+    (literal (param "PI_AUTH"))
+    (literal (param "PROFILE_AUTH")))
