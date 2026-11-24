@@ -298,7 +298,7 @@ Chamadas pagas que não saem de uma mensagem sua. Todas usam a sua conta ou chav
 
 O aquecedor nativo do Pi (`cacheWarming`) fica parado, inclusive com `AGENT_CACHE_KEEPER=0`; a lane OAuth Anthropic não usa message threads (cada request leva system, tools e a conversa inteira).
 
-Prompt cache: o launcher define `PI_CACHE_RETENTION=long` (TTL 1h) quando a variável não está definida; um valor do usuário, inclusive `none`, prevalece. Isso vale para a sessão principal; subagentes usam 5 min (ver Custo dos filhos). Escrita de cache custa 2× a entrada com TTL 1h e 1,25× com 5 min; leitura, 0,1×. Medido na auditoria do commit 6f77207: o prefixo fixo da 1ª requisição tem 10,2 KB de system e 20,0 KB de tools (o schema de `subagent` ocupa 8,9 KB), idêntico entre requisições e processos; cada passo do modelo é uma requisição.
+Prompt cache: o launcher define `PI_CACHE_RETENTION=long` (TTL 1h) quando a variável não está definida; um valor do usuário, inclusive `none`, prevalece. Isso vale para a sessão principal; subagentes usam 5 min (ver Custo dos filhos). Escrita de cache custa 2× a entrada com TTL 1h e 1,25× com 5 min; leitura, 0,1×. Medido na auditoria do commit 6f77207: o prefixo fixo da 1ª requisição tem 10,2 KB de system e 20,0 KB de tools (8,9 KB da declaração de `subagent`), idêntico entre requisições e processos; cada passo do modelo é uma requisição. Na fixture Anthropic do check `test-agent-headless.mjs`, a compactação reduziu a declaração de `subagent` de 9.398 para 5.657 bytes e o total de tools do perfil completo de 20.239 para 16.498 bytes.
 
 Cache-keeper em detalhe:
 
