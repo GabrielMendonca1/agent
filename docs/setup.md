@@ -401,7 +401,8 @@ O resultado e o uso disponível ficam no registro do job; não há sessão JSONL
 - stderr do filho fica só em memória (até 64 KB) e só aparece no resultado quando a tarefa falha.
 - O system prompt do papel vai por arquivo temporário, apagado no fim. O registro guarda o nome do papel, não o texto. As fontes `.agent/rules.md` + `.agent/header.md` (ou workflow.md legado sem rules.md) anexadas à tarefa ficam no JSONL do filho.
 - Escritor único (single, chain, ou `parallel` com um só escritor) grava direto no `cwd`, sem worktree nem diff registrado. Use `git` para ver o que mudou.
-- Sandbox só cobre o `bash` de papéis sem `edit`/`write`: seatbelt no macOS, bwrap no Linux, `none` sem suporte. O resultado informa `sandbox=`. Sem sandbox, o detector compara só o `git status` do checkout antes e depois; escrita fora do checkout Git não é vista.
+- O sandbox cobre apenas o `bash` de papéis sem `edit`/`write`: Seatbelt no macOS, bwrap no Linux, `none` sem suporte. Com sandbox, `<cwd>/.pi` não é gravável e o bash não lê `~/.ssh`, `~/.aws`, `~/.gnupg`, `~/.agent/auth.json`, `~/.pi/agent/auth.json` nem `auth.json` do perfil ativo (`PI_CODING_AGENT_DIR`). A rede continua disponível. O resultado informa `sandbox=`. Sem sandbox, o detector compara só o `git status` do checkout antes e depois; escrita fora do checkout Git não é vista.
+- Na sessão principal, tanto a ferramenta `bash` do modelo quanto `!cmd` e o bash via RPC usam `shellPath` e `shellCommandPrefix` do perfil global. Para permitir que `<cwd>/.pi/settings.json` sobrescreva essas opções, inicie o Agent com `AGENT_TRUST_PROJECT_SHELL=1` apenas em projetos confiáveis: essas opções podem executar código.
 - `list` apaga o registro de jobs terminados há mais de 30 dias, junto com worktrees limpos e já integrados. Worktree sujo ou não integrado preserva o registro. Os JSONL dos filhos ficam.
 - O prefetch (`AGENT_CACHE_PREFETCH_NEXT=1`) roda com `--no-session`; seu custo não entra em usage.
 

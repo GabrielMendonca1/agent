@@ -44,10 +44,12 @@ async function checkShellRuntime() {
     const agent = join(root, 'agent'); mkdirSync(agent);
     const work = join(root, 'work'); mkdirSync(join(work, '.pi'), { recursive: true });
     const other = join(root, 'other'); mkdirSync(other);
-    const wrapper = join(root, 'shell');
-    writeFileSync(wrapper, '#!/bin/sh\nexport SHELL_FIXTURE=project\nexec /bin/bash "$@"\n', { mode: 0o755 });
-    const settings = prefix => writeFileSync(join(work, '.pi/settings.json'), JSON.stringify({ shellPath: '~/shell', shellCommandPrefix: `export PREFIX_FIXTURE=${prefix}` }));
-    writeFileSync(join(agent, 'settings.json'), JSON.stringify({ shellPath: '/bin/bash', shellCommandPrefix: 'export PREFIX_FIXTURE=global' }));
+    for (const shell of ['global', 'project']) {
+      writeFileSync(join(root, `shell-${shell}`), `#!/bin/sh\nexport SHELL_FIXTURE=${shell}\nexec /bin/bash "$@"\n`, { mode: 0o755 });
+    }
+    const prefixFor = value => `export PREFIX_FIXTURE="\${PREFIX_FIXTURE:-}${value}"`;
+    const settings = prefix => writeFileSync(join(work, '.pi/settings.json'), JSON.stringify({ shellPath: '~/shell-project', shellCommandPrefix: prefixFor(prefix) }));
+    writeFileSync(join(agent, 'settings.json'), JSON.stringify({ shellPath: '~/shell-global', shellCommandPrefix: prefixFor('global') }));
     settings('project');
     Object.assign(process.env, { HOME: root, PI_CODING_AGENT_DIR: agent,
       NODE_OPTIONS: '--no-warnings --import=/tmp/agent/core/runtime.mjs',
@@ -58,8 +60,9 @@ async function checkShellRuntime() {
     const runtimePath = join(repo, 'agent/extensions/brain-live/shell-runtime.ts');
     const tui = join(repo, 'agent/extensions/agent/tui');
     const probe = `node -e 'console.log(JSON.stringify({cwd:process.cwd(),allowed:process.env.SHELL_ALLOWED,pre:process.env.PREFIX_FIXTURE??null,shell:process.env.SHELL_FIXTURE??null,options:process.env.NODE_OPTIONS,skills:process.env.PI_AUTOMATIC_SKILLS??null,legacyEnv:Object.keys(process.env).filter(k=>k.startsWith("AGENT_JUICE_"))}))'`;
-    let baseline;
+    const expected = { cwd: work, allowed: 'kept', pre: 'global', shell: 'global', options: '--no-warnings', skills: null, legacyEnv: [] };
     for (const mode of ['plain', 'none', 'claude']) {
+      delete process.env.AGENT_TRUST_PROJECT_SHELL;
       process.env.ARCA_COMPACT_TOOLS = mode === 'plain' ? '0' : '1';
       process.env.GARIME_CLAUDE_STYLE = mode === 'claude' ? '1' : '0';
       const paths = [runtimePath];
@@ -76,35 +79,41 @@ async function checkShellRuntime() {
       const tool = shell.tools.get('bash').definition;
       const ctx = { cwd: work, sessionManager: { getSessionId: () => 'shell-check', getSessionFile: () => undefined } };
       const execute = (command, signal, cwd = work) => tool.execute('shell-check', { command }, signal, undefined, { ...ctx, cwd });
+      const userBash = shell.handlers.get('user_bash')[0];
+      const runUser = async (command, projectPrefix, options) => {
+        const { operations } = await userBash({ command }, ctx);
+        // Pi antepõe o prefixo mesclado antes de chamar operations, mesmo sem opt-in do Agent.
+        return operations.exec(`${prefixFor(projectPrefix)}\n${command}`, work, options);
+      };
+      const checkShell = async (projectPrefix, expectedOutput) => {
+        const result = await execute(probe);
+        assert.equal(result.structuredContent.exit_code, 0);
+        assert.deepEqual(JSON.parse(result.content[0].text), expectedOutput, `${mode}: bash do modelo`);
+        let userOut = '';
+        const status = await runUser(probe, projectPrefix, { env: { ...process.env }, onData: b => { userOut += b; } });
+        assert.equal(status.exitCode, 0);
+        assert.deepEqual(JSON.parse(userOut), expectedOutput, `${mode}: !cmd`);
+      };
       settings('project');
-      const result = await execute(probe);
-      const out = JSON.parse(result.content[0].text.trim());
-      assert.deepEqual(out, { cwd: work, allowed: 'kept', pre: 'project', shell: 'project', options: '--no-warnings', skills: null, legacyEnv: [] });
-      if (baseline) assert.deepEqual(out, baseline, mode); else baseline = out;
-      assert.equal(result.structuredContent.exit_code, 0);
+      await checkShell('project', expected);
+      process.env.AGENT_TRUST_PROJECT_SHELL = '1';
+      await checkShell('project', { ...expected, pre: 'project', shell: 'project' });
       settings('updated');
-      assert.equal(JSON.parse((await execute(probe)).content[0].text).pre, 'updated', 'settings relidas por chamada');
+      await checkShell('updated', { ...expected, pre: 'updated', shell: 'project' });
       const global = JSON.parse((await execute(probe, undefined, other)).content[0].text);
-      assert.equal(global.cwd, other); assert.equal(global.pre, 'global'); assert.equal(global.shell, null);
+      assert.deepEqual(global, { ...expected, cwd: other });
       const failed = await execute('printf stdout; printf stderr >&2; exit 7');
       assert.match(failed.content[0].text, /stdoutstderr/);
       assert.equal(failed.structuredContent.exit_code, 7);
       assert.equal(failed.isError, true);
-      const userBash = shell.handlers.get('user_bash')[0];
-      const { operations } = await userBash({ command: probe }, ctx);
-      let userOut = '';
-      // O host aplica shellCommandPrefix antes de chamar operations (não a TUI).
-      const status = await operations.exec(`export PREFIX_FIXTURE=project\n${probe}`, work, { env: { ...process.env }, onData: b => { userOut += b; } });
-      assert.equal(status.exitCode, 0);
-      assert.deepEqual(JSON.parse(userOut), baseline, '!cmd usa o mesmo cwd, shell e env filtrado');
       let failedOut = '';
-      assert.equal((await operations.exec('printf stdout; printf stderr >&2; exit 7', work, { onData: b => { failedOut += b; } })).exitCode, 7);
+      assert.equal((await runUser('printf stdout; printf stderr >&2; exit 7', 'updated', { onData: b => { failedOut += b; } })).exitCode, 7);
       assert.equal(failedOut, 'stdoutstderr');
       // Cancela após a primeira saída: prova propagação de AbortSignal em execução.
       const controller = new AbortController();
       await assert.rejects(tool.execute('cancel', { command: 'printf ready; sleep 30' }, controller.signal, () => controller.abort(), ctx), /aborted/i);
       const userAbort = new AbortController();
-      await assert.rejects(operations.exec('printf ready; sleep 30', work, { signal: userAbort.signal, onData: () => userAbort.abort() }), /aborted/i);
+      await assert.rejects(runUser('printf ready; sleep 30', 'updated', { signal: userAbort.signal, onData: () => userAbort.abort() }), /aborted/i);
       const runner = new ExtensionRunner(loaded.extensions, runtime, root, {}, {});
       const base = { marker: 'native' };
       const renderer = runner.resolveToolRenderers('bash', () => base);
