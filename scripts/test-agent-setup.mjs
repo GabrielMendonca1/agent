@@ -135,7 +135,7 @@ try {
 		assert.ok(existsSync(join(clean.agentDir, THEMES_SUBDIR, "grayscale-baimin-claude-cc-agent.json")));
 		assert.equal(cleanResult.themes.length, themesIn(join(repo, AGENT_DIR, THEMES_SUBDIR)).length);
 		for (const [key, value] of Object.entries(AGENT_SETTINGS_DEFAULTS)) assert.deepEqual(settings[key], value);
-		assert.deepEqual(cleanResult.agents, ["planner.md", "reviewer.md", "scout.md", "visual.md", "worker.md"]);
+		assert.deepEqual(cleanResult.agents, ["gemini.md", "planner.md", "reviewer.md", "scout.md", "visual.md", "worker.md"]);
 		assert.ok(existsSync(join(clean.agentDir, AGENTS_SUBDIR, "worker.md")));
 		if (posixShells) {
 			for (const rc of [".zshrc", ".bashrc"]) assert.ok(readFileSync(join(clean.home, rc), "utf8").includes(PATH_MARKER));

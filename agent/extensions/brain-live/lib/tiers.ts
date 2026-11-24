@@ -34,6 +34,38 @@ export interface RoleModelChoice {
 	thinking: string;
 }
 
+export const AGY_THINKING = ["low", "medium", "high", "xhigh"] as const;
+type AgyThinking = (typeof AGY_THINKING)[number];
+const [low, medium, high] = AGY_THINKING;
+const regular = [low, medium, high] as const;
+
+// Snapshot de `agy models`. Sem sufixos anunciados, o ID é fixo e só --effort varia.
+export const AGY_FAMILIES: ReadonlyArray<{ id: string; label: string; levels?: readonly AgyThinking[] }> = [
+	{ id: "gemini-4-neon", label: "Gemini 4 Neon", levels: AGY_THINKING },
+	{ id: "gemini-4-carbon", label: "Gemini 4 Carbon", levels: regular },
+	{ id: "gemini-4-argon", label: "Gemini 4 Argon", levels: regular },
+	{ id: "gemini-4-hydrogen", label: "Gemini 4 Hydrogen", levels: AGY_THINKING },
+	{ id: "gemini-pro-orchestrator-neon", label: "Gemini Pro Orchestrator Neon" },
+	{ id: "gemini-pro-orchestrator", label: "Gemini Pro Orchestrator" },
+	{ id: "gemini-pro-orchestrator-argon", label: "Gemini Pro Orchestrator Argon" },
+	{ id: "gemini-3.8-flash", label: "Gemini 3.8 Flash", levels: regular },
+	{ id: "claude-opus-5-5", label: "Claude Opus 5.5", levels: regular },
+	{ id: "claude-sonnet-5-5", label: "Claude Sonnet 5.5", levels: regular },
+	{ id: "gpt-oss-120b", label: "GPT OSS 120B", levels: [medium] },
+];
+export const agyFamilyRef = (id: string) => `antigravity/${id}`;
+export const DEFAULT_GEMINI_MODEL: Readonly<RoleModelChoice> = { model: agyFamilyRef("gemini-4-neon"), thinking: high };
+
+/** Converte família virtual no par nativo, sem consultar o registry do Pi. */
+export function resolveAgyFamily(choice: RoleModelChoice): RoleModelChoice {
+	const family = AGY_FAMILIES.find(({ id }) => agyFamilyRef(id) === choice?.model);
+	const requested = AGY_THINKING.indexOf(choice?.thinking as AgyThinking);
+	if (!family || requested < 0) throw new Error("gemini: escolha uma família Antigravity e thinking low, medium, high ou xhigh");
+	const distance = (level: AgyThinking) => Math.abs(AGY_THINKING.indexOf(level) - requested);
+	const effort = family.levels?.reduce((best, level) => distance(level) < distance(best) ? level : best) ?? AGY_THINKING[requested];
+	return { model: family.levels ? `${family.id}-${effort}` : family.id, thinking: effort };
+}
+
 export interface TiersFile {
 	tiers: Record<TierName, Tier>;
 	/**
@@ -42,6 +74,8 @@ export interface TiersFile {
 	 * Opcional para manter compatibilidade com configs e agentes de projeto antigos.
 	 */
 	roleModels?: Record<string, RoleModelChoice[]>;
+	/** Preferência de CLI, separada das allowlists de inferência do Pi. */
+	agyModels?: { gemini?: RoleModelChoice };
 }
 
 export interface ResolvedRoleModel extends RoleModelChoice {
@@ -162,6 +196,27 @@ export function saveTiers(data: TiersFile): void {
 	const temp = `${MODELS_FILE}.${randomUUID()}.tmp`;
 	writeFileSync(temp, `${JSON.stringify(data, null, 2)}\n`, "utf-8");
 	renameSync(temp, MODELS_FILE);
+}
+
+export function getGeminiPreference(data = loadTiers()): RoleModelChoice | undefined {
+	const choice = data.agyModels?.gemini;
+	if (choice !== undefined) resolveAgyFamily(choice);
+	return choice;
+}
+
+export function setGeminiPreference(choice: RoleModelChoice): void {
+	resolveAgyFamily(choice);
+	const data = loadTiers();
+	data.agyModels = { ...data.agyModels, gemini: choice };
+	saveTiers(data);
+}
+
+/** Preferência salva > frontmatter nativo (se presente) > padrão do gemini. */
+export function resolveGeminiPreference(role: { model?: string; thinking?: string }): RoleModelChoice | undefined {
+	const choice = getGeminiPreference();
+	if (choice) return resolveAgyFamily(choice);
+	if (!role.model && !role.thinking) return resolveAgyFamily(DEFAULT_GEMINI_MODEL);
+	return undefined; // Runner mantém a semântica original do frontmatter nativo.
 }
 
 export function isTierRef(value: string | undefined): value is `tier:${TierName}` {

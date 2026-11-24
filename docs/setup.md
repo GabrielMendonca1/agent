@@ -345,7 +345,12 @@ O repo não distribui uma lista padrão de modelos por papel. Instalações anti
 
 ### Isolamento
 
-Cada filho é outro processo `pi -p`, com contexto próprio. Só o resultado volta ao pai. O que o filho lê não entra no contexto nem no cache do pai.
+Os papéis Pi rodam em outro processo `pi -p`, com contexto próprio. Só o resultado volta ao pai. O que o filho lê não entra no contexto nem no cache do pai.
+
+`gemini` usa o Antigravity CLI oficial (`agy` no `PATH`; faça login no CLI antes), em modo `plan --sandbox` por padrão. Em `/models`, selecione a linha `gemini`: **Enter** escolhe a família, **←/→** muda o thinking (`low`, `medium`, `high`, `xhigh`). O padrão é Gemini 4 Neon com `high`; sem preferência salva, um frontmatter customizado ainda pode fornecer `model` (ID nativo) e `thinking`.
+
+A escolha fica em `agyModels.gemini` no `agent-models.json` do perfil. O painel usa um catálogo estático, sem consultar o CLI nem cadastrar um provider no Pi. O job passa o ID nativo e o esforço efetivo ao `agy`: por exemplo, Carbon com `xhigh` aparece como `xhigh → high` e vira `--model gemini-4-carbon-high --effort high`. Famílias sem sufixo no catálogo (Orchestrator) mantêm o ID fixo e recebem o thinking via `--effort`.
+O resultado e o uso disponível ficam no registro do job; não há sessão JSONL do Pi nem `trace` para esse runner.
 
 ### Custo dos filhos
 

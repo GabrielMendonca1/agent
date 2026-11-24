@@ -18,7 +18,9 @@ import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-c
 import { getSelectListTheme } from "@earendil-works/pi-coding-agent";
 import { Container, fuzzyFilter, Input, Key, matchesKey, type SelectItem, SelectList, Spacer, Text, truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
 import { getAgentPreferences, runtimeEnabled, setAgentPreferences } from "../../core/client.mjs";
+import { AGY_FAMILIES, AGY_THINKING, agyFamilyRef, DEFAULT_GEMINI_MODEL, getGeminiPreference, resolveAgyFamily, setGeminiPreference } from "./lib/tiers.ts";
 import { loadRoleModels, loadTiers, MODELS_FILE, ROLE_NAMES, type RoleModelChoice, saveTiers, setRolePreference, TIER_NAMES, type Tier, type TierName, type TiersFile } from "./lib/tiers.ts";
+import { type AgentConfig, discoverAgents } from "./subagent/agents.ts";
 
 const THINKING = ["off", "minimal", "low", "medium", "high", "xhigh"];
 const QUALITY = ["auto", "low", "medium", "high"];
@@ -150,8 +152,8 @@ class ModelPicker extends Container {
 }
 
 interface Row {
-	/** `role` = papel nativo (allowlist do models.json); os outros são sessão/fallback/tier. */
-	kind: "session" | "support" | "tier" | "role";
+	/** `role` = allowlist do Pi; `agy` = preferência independente do registry. */
+	kind: "session" | "support" | "tier" | "role" | "agy";
 	id: string;
 	label: string;
 	description: string;
@@ -199,6 +201,41 @@ export default function (pi: ExtensionAPI) {
 			} catch (err) {
 				roleError = err instanceof Error ? err.message : String(err);
 			}
+			let gemini: AgentConfig | undefined;
+			try {
+				gemini = discoverAgents(ctx.cwd, "user").agents.find((agent) => agent.name === "gemini");
+			} catch { /* A broken role file must not block the Pi model panel. */ }
+			const showAgy = !gemini || gemini.runner === "agy";
+			let geminiChoice: RoleModelChoice | undefined;
+			let geminiError: string | undefined;
+			if (showAgy) {
+				try {
+					geminiChoice = getGeminiPreference(data);
+				} catch (err) {
+					geminiError = err instanceof Error ? err.message : String(err);
+				}
+			}
+			const agyOptions = AGY_FAMILIES.map((family) => ({
+				value: agyFamilyRef(family.id), label: family.label, description: family.levels?.join(" / ") ?? "ID fixo · thinking via effort",
+			}));
+			const nativeFamily = AGY_FAMILIES.find(({ id, levels }) =>
+				levels ? levels.some((level) => `${id}-${level}` === gemini?.model) : id === gemini?.model,
+			);
+			const frontmatterThinking = gemini?.thinking ??
+				nativeFamily?.levels?.find((level) => `${nativeFamily.id}-${level}` === gemini?.model);
+			const agyChoice = () => geminiChoice ?? {
+				model: nativeFamily ? agyFamilyRef(nativeFamily.id) : DEFAULT_GEMINI_MODEL.model,
+				thinking: AGY_THINKING.find((level) => level === frontmatterThinking) ?? DEFAULT_GEMINI_MODEL.thinking,
+			};
+			const writeAgyChoice = (choice: RoleModelChoice) => {
+				try {
+					setGeminiPreference(choice);
+					geminiChoice = choice;
+					geminiError = undefined;
+				} catch (err) {
+					ctx.ui.notify(`erro salvando gemini: ${err instanceof Error ? err.message : String(err)}`, "error");
+				}
+			};
 			const options = modelOptions(ctx, pilot);
 			const currentDefault = () => (ctx.model ? `${ctx.model.provider}/${ctx.model.id}` : "");
 			const supportUnset = "__agent_support_inherit__";
@@ -218,7 +255,7 @@ export default function (pi: ExtensionAPI) {
 				};
 				// Papel nativo: a allowlist do models.json decide modelo E thinking (par autorizado).
 				// Papel sem allowlist não é escondido: aparece com a origem real (frontmatter/slot).
-				const roleIds = [...ROLE_NAMES, ...Object.keys(roleChoices).filter((r) => !ROLE_NAMES.includes(r as any))];
+				const roleIds = [...ROLE_NAMES, ...Object.keys(roleChoices).filter((r) => !ROLE_NAMES.includes(r as any) && !(showAgy && r === "gemini"))];
 				const roleRows: Row[] = roleIds.map((role) => ({
 					kind: "role",
 					id: role,
@@ -231,6 +268,17 @@ export default function (pi: ExtensionAPI) {
 						return ["models.json", choice.thinking];
 					},
 				}));
+				if (showAgy) roleRows.push({
+					kind: "agy", id: "gemini", label: "gemini", description: "papel · Antigravity CLI",
+					model: () => geminiChoice?.model ?? (!nativeFamily && gemini?.model ? gemini.model : agyChoice().model),
+					extra: () => {
+						if (geminiError) return ["config inválida"];
+						if (!geminiChoice && (gemini?.model || gemini?.thinking)) return ["frontmatter", frontmatterThinking ?? ""];
+						const choice = agyChoice();
+						const actual = resolveAgyFamily(choice).thinking;
+						return [geminiChoice ? "models.json" : "padrão", actual === choice.thinking ? actual : `${choice.thinking} → ${actual}`];
+					},
+				});
 				const rows: Row[] = pilot
 					? [
 							{
@@ -281,7 +329,17 @@ export default function (pi: ExtensionAPI) {
 
 				const cycle = (dir: 1 | -1) => {
 					const row = rows[cursor];
-					// Thinking de papel vem do par autorizado: não se move sozinho.
+					if (row.kind === "agy") {
+						if (geminiError || (!geminiChoice && gemini?.model && !nativeFamily)) {
+							ctx.ui.notify("gemini: escolha uma família com Enter antes de mudar o thinking", "warning");
+							return;
+						}
+						const choice = agyChoice();
+						const cur = AGY_THINKING.findIndex((level) => level === choice.thinking);
+						writeAgyChoice({ ...choice, thinking: AGY_THINKING[(cur + dir + AGY_THINKING.length) % AGY_THINKING.length] });
+						return;
+					}
+					// Thinking de papel Pi vem do par autorizado: não se move sozinho.
 					if (row.kind === "role") return;
 					if (row.kind === "session") {
 						const cur = THINKING.indexOf(ctx.thinkingLevel ?? "medium");
@@ -305,6 +363,13 @@ export default function (pi: ExtensionAPI) {
 				};
 				const openPicker = () => {
 					const row = rows[cursor];
+					if (row.kind === "agy") {
+						picker = new ModelPicker(row.label, row.description, agyOptions, row.model(), (model) => {
+							writeAgyChoice({ ...agyChoice(), model });
+							picker = null;
+						}, () => { picker = null; }, theme);
+						return;
+					}
 					if (row.kind === "role") {
 						if (roleError) {
 							ctx.ui.notify(`erro lendo ${MODELS_FILE}: ${roleError}`, "error");
@@ -403,7 +468,7 @@ export default function (pi: ExtensionAPI) {
 								: theme.fg("dim", "—")
 							: r.kind === "tier" && r.id === "image"
 								? badge(theme, id, "GPT Image", sel) + theme.fg("dim", `  via ${prettyName(ctx, id)}`)
-								: badge(theme, id, prettyName(ctx, id), sel);
+								: badge(theme, id, r.kind === "agy" ? agyOptions.find((o) => o.value === id)?.label ?? id : prettyName(ctx, id), sel);
 						const extra = r
 							.extra()
 							.filter(Boolean)

@@ -25,7 +25,7 @@ import {
 } from "@earendil-works/pi-coding-agent";
 import { type Component, Container, Markdown, Spacer, Text, truncateToWidth } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
-import { formatRoleModelChoices, getRoleModelChoices } from "../lib/tiers.ts";
+import { formatRoleModelChoices, getRoleModelChoices, resolveGeminiPreference } from "../lib/tiers.ts";
 import { getAgentPreferences, isChild } from "../../../core/client.mjs";
 import { NO_DELEGATE_ENV } from "../../../core/child-env.mjs";
 import { parseWorkflow, readWorkflow } from "../../../core/workflow.mjs";
@@ -304,10 +304,20 @@ export function describeUserAgents(): string {
 				// A config de modelo por papel vale nos dois mundos (piloto incluso): é do usuário.
 				// Arquivo de modelos ausente/ilegível não apaga a lista de papéis.
 				let choices: string | undefined;
-				try { choices = formatRoleModelChoices(a.name); } catch { choices = undefined; }
+				let agyModel = a.model || "CLI default";
+				try {
+					if (a.runner !== "agy") choices = formatRoleModelChoices(a.name);
+					else if (a.name === "gemini") {
+						const choice = resolveGeminiPreference(a);
+						if (choice) agyModel = `${choice.model} (effort ${choice.thinking})`;
+					}
+				} catch { /* Keep listing the role even if preferences cannot be read. */ }
 				const legacy = a.model ? `${a.model.startsWith("tier:") ? a.model.slice(5) : a.model}` : undefined;
+				const modelHint = a.runner === "agy" ? ` [agy model: ${agyModel}]`
+					: choices ? ` [allowed: ${choices}]` : legacy ? ` [legacy default: ${legacy}]` : "";
 				const required = a.briefRequired?.length ? ` [brief requires: ${a.briefRequired.join(", ")}]` : "";
-				return `${a.name} — ${a.description} [${describeAgentTools(a)}]${required}${choices ? ` [allowed: ${choices}]` : legacy ? ` [legacy default: ${legacy}]` : ""}`;
+				const tools = a.runner === "agy" ? `${describeAgentTools(a)} (capabilities; tools managed by agy)` : describeAgentTools(a);
+				return `${a.name} — ${a.description} [${tools}]${required}${modelHint}`;
 			})
 			.join("; ");
 	} catch {
@@ -825,7 +835,7 @@ export default function (pi: ExtensionAPI) {
 				// Explicit role configuration is authoritative; no classifier inference.
 				await mapWithConcurrencyLimit(tasks, 4, async (t) => {
 					const role = agents.find((a) => a.name === t.agent);
-					if (t.model || role?.model || role?.thinking || getRoleModelChoices(t.agent)?.length) return;
+					if (role?.runner === "agy" || t.model || role?.model || role?.thinking || getRoleModelChoices(t.agent)?.length) return;
 					const step = recipe.steps.find((st) => st.role === t.agent);
 					const fromRecipe = step?.slot ?? (t.agent === "scout" ? "apoio" : "principal");
 					t.slot = fromRecipe;
@@ -911,7 +921,12 @@ export default function (pi: ExtensionAPI) {
 							`Launched subagent job ${outcome.record.jobId} (${mode}: ${outcome.record.agents.join(", ")}), status running.`,
 							`Models: ${outcome.record.tasks.map((task) => `${task.agent}=${task.model ?? "legacy/default"}${task.thinking ? ` (thinking ${task.thinking})` : ""}`).join(", ")}.`,
 							...outcome.record.tasks.flatMap((task) => {
-								const sandbox = sandboxForTools(discovery.agents.find((agent) => agent.name === task.agent)?.tools);
+								const role = agents.find((agent) => agent.name === task.agent);
+								if (role?.runner === "agy") {
+									return role.tools?.some((tool) => tool === "edit" || tool === "write") ? []
+										: [`Sandbox: ${task.agent}=agy (plan mode).`];
+								}
+								const sandbox = sandboxForTools(role?.tools);
 								return sandbox ? [`Sandbox: ${task.agent}=${sandbox}${sandbox === "none" ? " (writes detected after the run)" : ""}.`] : [];
 							}),
 							`Timeout ${timeout.value}s. Result file: ${outcome.resultPath}.`,

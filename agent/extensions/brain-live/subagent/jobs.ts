@@ -15,7 +15,7 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { gcWorktrees, isolateWriters, manageWorktrees, worktreeSummary } from "./worktrees.ts";
-import { getRoleModelChoices, type ResolvedRoleModel, resolveRoleModel } from "../lib/tiers.ts";
+import { getRoleModelChoices, resolveGeminiPreference, type ResolvedRoleModel, resolveRoleModel } from "../lib/tiers.ts";
 import type { AgentConfig, AgentScope } from "./agents.ts";
 import {
 	type DurableRunState,
@@ -146,19 +146,27 @@ function ownRoleModel(role: string, requestedModel?: string): ResolvedRoleModel 
 }
 
 /** Config do papel no próprio arquivo .md do usuário (`model:`/`tier:`/`thinking:`). */
-export interface RoleFileConfig {
-	name: string;
-	model?: string;
-	thinking?: string;
-}
+export type RoleFileConfig = Pick<AgentConfig, "name" | "runner" | "model" | "thinking">;
 
 export function resolveJobTaskModels(tasks: JobTaskSpec[], defaults?: DispatchDefaults, roleFiles?: readonly RoleFileConfig[]): { ok: true; tasks: JobTaskSpec[] } | { ok: false; error: string } {
+	const externalTask = (task: JobTaskSpec): JobTaskSpec | undefined => {
+		const role = roleFiles?.find((file) => file.name === task.agent);
+		if (role?.runner !== "agy") return undefined;
+		if (task.model !== undefined) {
+			const source = role.name === "gemini" ? "choose its model in /models" : "set a native model ID in the role file";
+			throw new Error(`Agent: ${task.agent} uses agy; ${source} instead of passing a Pi model override.`);
+		}
+		const choice = role.name === "gemini" ? resolveGeminiPreference(role) : undefined;
+		return { ...task, ...choice };
+	};
 	try {
 		if (defaults?.resources) {
 			const primary = defaults.model;
 			const support = defaults.resources.supportModel || primary;
-			if (!primary) throw new Error("Agent: parent model unavailable.");
 			return { ok: true, tasks: tasks.map((task) => {
+				const external = externalTask(task);
+				if (external) return external;
+				if (!primary) throw new Error("Agent: parent model unavailable.");
 				// A config do papel que o usuário já tinha (`roleModels`: modelo + thinking por papel)
 				// é autoritativa e NUNCA é zerada pelo piloto; o slot principal/apoio só preenche
 				// papel sem config própria.
@@ -181,6 +189,8 @@ export function resolveJobTaskModels(tasks: JobTaskSpec[], defaults?: DispatchDe
 		return {
 			ok: true,
 			tasks: tasks.map((task) => {
+				const external = externalTask(task);
+				if (external) return external;
 				const selected = resolveRoleModel(task.agent, task.model);
 				return selected ? { ...task, model: selected.model, thinking: selected.thinking } : { ...task };
 			}),
@@ -567,6 +577,7 @@ export class SubagentJobManager {
 
 	/** Aquecimento fire-and-forget do prefixo de `task.agent` (ver prefetchPolicy). */
 	private prefetchRole(job: ActiveJob, spec: LaunchSpec, task: JobTaskSpec, signal: AbortSignal): void {
+		if (spec.agents.find((role) => role.name === task.agent)?.runner === "agy") return;
 		const key = prefixKey(task, spec.cwd);
 		if (!prefetchAllowed(spec, key, Date.now()) || signal.aborted) return;
 		const ttlMs = cacheTtlSeconds() * 1000;

@@ -167,7 +167,7 @@ const previousProfile = process.env.PI_CODING_AGENT_DIR;
 process.env.PI_CODING_AGENT_DIR = cleanProfile;
 try {
   const defaults = discoverAgents(root, 'user').agents;
-  assert.deepEqual(defaults.map(a => a.name).sort(), ['planner', 'reviewer', 'scout', 'visual', 'worker']);
+  assert.deepEqual(defaults.map(a => a.name).sort(), ['gemini', 'planner', 'reviewer', 'scout', 'visual', 'worker']);
   assert.ok(defaults.every(a => a.source === 'bundled' && a.filePath.startsWith(installed) && a.systemPrompt && a.tools.length));
   assert.equal(discoverAgents(root, 'project').agents.length, 0);
   mkdirSync(join(cleanProfile, 'agents'));

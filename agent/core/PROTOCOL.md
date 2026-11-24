@@ -39,6 +39,13 @@ papel > slot. Não há classificador de dispatch. Sem modelo de apoio, o slot
 `apoio` cai no principal: herdam o modelo principal os papéis sem config própria
 em `/models` e sem `model` no frontmatter.
 
+`gemini` com `runner: agy` não usa slots, tiers ou allowlists do Pi. Sua
+preferência opcional no `agent-models.json` do perfil é `agyModels.gemini`, com
+`{ "model": "antigravity/<família>", "thinking": "<nível solicitado>" }`.
+A referência virtual é só do painel/arquivo. Ao criar o job, ela vira o ID nativo
+(e o esforço mais próximo disponível quando a família tem sufixos). Sem essa
+preferência, vale o frontmatter nativo se definido; senão, Gemini 4 Neon `high`.
+
 `contextFilesMessage` substitui AGENTS.md gerado por `.agent/rules.md` +
 `.agent/header.md` e ponteiros na tarefa de cada filho. Não duplica as fontes em
 `projectRules`; quando o projeto de origem difere do checkout do filho, recebe

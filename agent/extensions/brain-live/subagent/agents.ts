@@ -13,6 +13,7 @@ export interface AgentConfig {
 	name: string;
 	description: string;
 	tools?: string[];
+	runner?: "agy";
 	model?: string;
 	thinking?: string;
 	/** Brief fields this role refuses to run without (frontmatter `brief_required`). */
@@ -41,6 +42,7 @@ type AgentFrontmatter = {
 	name?: unknown;
 	description?: unknown;
 	tools?: unknown;
+	runner?: unknown;
 	model?: unknown;
 	thinking?: unknown;
 	brief_required?: unknown;
@@ -104,6 +106,7 @@ function loadAgentsFromDir(dir: string, source: AgentConfig["source"]): AgentCon
 			name: frontmatter.name,
 			description: frontmatter.description,
 			tools: parseNameList(frontmatter.tools),
+			...(frontmatter.runner === "agy" ? { runner: "agy" as const } : {}),
 			model: typeof frontmatter.model === "string" ? frontmatter.model : undefined,
 			thinking: typeof frontmatter.thinking === "string" ? frontmatter.thinking : undefined,
 			briefRequired: parseNameList(frontmatter.brief_required),

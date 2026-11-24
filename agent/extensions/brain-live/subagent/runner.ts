@@ -17,7 +17,7 @@ import type { AgentToolResult, ThinkingLevel } from "@earendil-works/pi-agent-co
 import type { Message } from "@earendil-works/pi-ai";
 import { getAgentDir, getPackageDir, loadProjectContextFiles, SessionManager, withFileMutationQueue } from "@earendil-works/pi-coding-agent";
 import { resolveModelRef } from "../lib/tiers.ts";
-import { subagentEnv } from "../../../core/child-env.mjs";
+import { NO_DELEGATE_ENV, subagentEnv, userCommandEnv } from "../../../core/child-env.mjs";
 import { hasRules, selectProjectContext } from "../../../core/project-context.mjs";
 import { projectRules } from "../../../core/workflow.mjs";
 import { readHostFreePercent, waitForHostMemory } from "./host-memory.ts";
@@ -501,6 +501,7 @@ export interface RunAgentOptions {
 }
 
 interface ChildRunOptions {
+	runner?: AgentConfig["runner"];
 	args: string[];
 	cwd: string;
 	agentName: string;
@@ -517,9 +518,35 @@ interface ChildRunOptions {
 	prefetch?: boolean;
 }
 
-/** Run one classic Pi child, without replay after a crash. */
-async function runPiChild(opts: ChildRunOptions): Promise<void> {
+/** Decode the final Antigravity envelope; stdout is not a Pi event stream. */
+function settleAgyResult(result: SingleResult, stdout: string, exitCode: number): void {
+	let envelope: { status?: string; response?: string; error?: string | { message?: string }; num_turns?: number;
+		usage?: { input_tokens?: number; output_tokens?: number; cache_read_tokens?: number } } | undefined;
+	try { envelope = JSON.parse(stdout); } catch { /* exit 1 can also write plain diagnostics */ }
+	const count = (n: unknown) => typeof n === "number" && Number.isFinite(n) && n >= 0 ? n : 0;
+	result.usage.input = count(envelope?.usage?.input_tokens);
+	result.usage.output = count(envelope?.usage?.output_tokens);
+	result.usage.cacheRead = count(envelope?.usage?.cache_read_tokens);
+	result.usage.turns = count(envelope?.num_turns);
+	const response = typeof envelope?.response === "string" ? envelope.response : "";
+	if (exitCode === 0 && envelope?.status === "SUCCESS" && typeof envelope.response === "string") {
+		result.finalText = response;
+		return;
+	}
+	const error = typeof envelope?.error === "string" ? envelope.error : envelope?.error?.message;
+	const message = (typeof error === "string" && error.trim()) || result.stderr.trim() ||
+		(exitCode !== 0 && (response || (!envelope && stdout.trim().slice(0, 500)))) ||
+		(typeof envelope?.status === "string" && envelope.status !== "SUCCESS" ? `agy returned ${envelope.status}` :
+			exitCode !== 0 ? `agy exited with code ${exitCode}` : "agy did not return a valid JSON result");
+	result.finalText = result.errorMessage = message;
+	result.stopReason = "error";
+	result.exitCode = exitCode || 1;
+}
+
+/** Run one child with the shared slot, memory, cancellation and output limits. */
+async function runChild(opts: ChildRunOptions): Promise<void> {
 	const { result, signal } = opts;
+	const agy = opts.runner === "agy";
 	let processFinished: (() => void) | undefined;
 	let releaseSlot: (() => void) | null | undefined;
 	try {
@@ -545,14 +572,17 @@ async function runPiChild(opts: ChildRunOptions): Promise<void> {
 		let wasAborted = false;
 		let spawnError: string | undefined;
 		let outputOverflow: string | undefined;
+		let authRequired = false;
+		let agyOutput = "";
 
 		const exitCode = await new Promise<number>((resolve) => {
-			const invocation = runnerHooks.getPiInvocation(opts.args);
+			const invocation = agy ? { command: "agy", args: opts.args } : runnerHooks.getPiInvocation(opts.args);
 			const proc = runnerHooks.spawn(invocation.command, invocation.args, {
 				cwd: opts.cwd,
 				shell: false,
 				stdio: ["ignore", "pipe", "pipe"],
-				env: subagentEnv({ ...process.env, ...opts.extraEnv }),
+				env: agy ? userCommandEnv({ ...process.env, [NO_DELEGATE_ENV]: "1" })
+					: subagentEnv({ ...process.env, ...opts.extraEnv }),
 			});
 			let buffer = "";
 			let stdoutBytes = 0;
@@ -673,9 +703,17 @@ async function runPiChild(opts: ChildRunOptions): Promise<void> {
 				killProc();
 			};
 
+			if (agy) proc.stdout?.setEncoding("utf8");
 			proc.stdout?.on("data", (data: Buffer | string) => {
 				if (outputOverflow) return;
 				const chunk = typeof data === "string" ? data : data.toString();
+				if (agy) {
+					stdoutBytes += Buffer.byteLength(chunk, "utf-8");
+					if (stdoutBytes > MAX_STDOUT_LINE_BYTES) {
+						overflow(`Subagent output limit exceeded (agy JSON > ${MAX_STDOUT_LINE_BYTES} bytes).`);
+					} else agyOutput += chunk;
+					return;
+				}
 				buffer += chunk;
 				const lines = buffer.split("\n");
 				buffer = lines.pop() || "";
@@ -705,8 +743,16 @@ async function runPiChild(opts: ChildRunOptions): Promise<void> {
 			});
 
 			proc.stderr?.on("data", (data: Buffer | string) => {
-				if (Buffer.byteLength(result.stderr, "utf-8") >= MAX_STDERR_BYTES) return;
+				if (authRequired || Buffer.byteLength(result.stderr, "utf-8") >= MAX_STDERR_BYTES) return;
 				result.stderr += data.toString();
+				// agy prompts for interactive login even with stdin closed. Fail the job
+				// promptly and do not persist the authorization URL as a diagnostic.
+				if (agy && result.stderr.includes("Authentication required. Please visit the URL to log in:")) {
+					authRequired = true;
+					result.stderr = "Antigravity CLI authentication required. Run agy interactively to log in, then retry.";
+					killProc();
+					return;
+				}
 				if (Buffer.byteLength(result.stderr, "utf-8") > MAX_STDERR_BYTES) {
 					result.stderr = `${result.stderr.slice(0, MAX_STDERR_BYTES)}\n[stderr truncated]`;
 				}
@@ -753,15 +799,78 @@ async function runPiChild(opts: ChildRunOptions): Promise<void> {
 			if (result.exitCode === 0) result.exitCode = 1;
 			return;
 		}
+		if (authRequired && !signal?.aborted) {
+			result.exitCode = 1;
+			result.stopReason = "error";
+			result.finalText = result.errorMessage = result.stderr;
+			return;
+		}
 		if (wasAborted) {
 			result.stopReason = "aborted";
 			result.errorMessage ||= "Subagent aborted";
 			if (result.exitCode === 0) result.exitCode = 143;
+		} else if (agy && !spawnError) {
+			settleAgyResult(result, agyOutput, exitCode);
+			opts.emitUpdate();
 		}
 
 	} finally {
 		try { processFinished?.(); }
 		finally { releaseSlot?.(); }
+	}
+}
+
+function agyEffort(thinking?: string): string | undefined {
+	if (thinking === "minimal" || thinking === "off") return "low";
+	return thinking && ["low", "medium", "high", "xhigh", "max"].includes(thinking) ? thinking : undefined;
+}
+
+async function runAgyAgent(agent: AgentConfig, opts: RunAgentOptions): Promise<SingleResult> {
+	const { task, step, signal } = opts;
+	const cwd = opts.cwd ?? opts.defaultCwd;
+	const readOnly = !agent.tools?.some((tool) => tool === "edit" || tool === "write");
+	const model = opts.roleModel?.model ?? (agent.model?.trim() || undefined);
+	const effort = agyEffort(opts.roleModel?.thinking ?? agent.thinking ?? opts.dispatchDefaults.thinkingLevel);
+	const result: SingleResult = {
+		agent: agent.name, agentSource: agent.source, task, step, exitCode: -1,
+		finalText: "", stderr: "", usage: emptyUsage(), model, modelLabel: model ?? "Gemini", thinking: effort,
+	};
+	if (opts.prefetch) return { ...result, exitCode: PREFETCH_EXIT.unsupported };
+	if (model && !/^[a-z0-9][a-z0-9._-]*$/i.test(model)) {
+		const error = "agy model must be a native ID from agy models, without a Pi provider prefix or tier.";
+		return { ...result, model: undefined, exitCode: 1, stopReason: "error", finalText: error, errorMessage: error };
+	}
+	const instructions = contextFilesMessage(cwd);
+	const sourceCwd = opts.sourceCwd ?? cwd;
+	const guidance = path.resolve(sourceCwd) === path.resolve(cwd) && hasRules(cwd)
+		&& instructions.includes(`path="${path.join(cwd, ".agent", "rules.md")}"`) ? "" : projectRules(sourceCwd);
+	const prompt = [agent.systemPrompt.trim(), `Task: ${task}`, instructions, guidance].filter(Boolean).join("\n\n");
+	const args = ["-p", prompt, "--output-format", "json", "--disable-slash-commands",
+		"--mode", readOnly ? "plan" : "auto", readOnly ? "--sandbox" : "--dangerously-skip-permissions"];
+	if (model) args.push("--model", model);
+	if (effort) args.push("--effort", effort);
+	try { opts.onStart?.(result); } catch { /* audit bookkeeping must not break the run */ }
+	const before = readOnly ? checkoutSnapshot(cwd) : undefined;
+	await runChild({
+		runner: "agy", args, cwd, signal, result, agentName: agent.name,
+		onProcessStarted: opts.onProcessStarted, acquireSlot: opts.acquireSlot,
+		emitUpdate: () => opts.onUpdate?.({
+			content: [{ type: "text", text: previewOutput(result.finalText) || "(running...)" }],
+			details: opts.makeDetails([result]),
+		}),
+	});
+	verifyCheckout(before, cwd, result);
+	return result;
+}
+
+function verifyCheckout(before: Map<string, string> | undefined, cwd: string, result: SingleResult): void {
+	if (!before) return;
+	const after = checkoutSnapshot(cwd);
+	const changed = after ? [...new Set([...before.keys(), ...after.keys()])].filter((name) => before.get(name) !== after.get(name)).sort() : ["(git checkout unavailable)"];
+	if (changed.length) {
+		result.stopReason = "error";
+		result.errorMessage = `read-only role modified the checkout: ${changed.join(", ")}`;
+		result.exitCode = 1;
 	}
 }
 
@@ -783,6 +892,8 @@ export async function runSingleAgent(opts: RunAgentOptions): Promise<SingleResul
 			step,
 		};
 	}
+
+	if (agent.runner === "agy") return runAgyAgent(agent, opts);
 
 	// Garime: filho enxuto. Sem extensões (presence, relay, vault, kernel…) nem skills;
 	// AGENTS.md/CLAUDE.md continuam valendo, na mensagem da tarefa (contextFilesMessage),
@@ -904,7 +1015,7 @@ export async function runSingleAgent(opts: RunAgentOptions): Promise<SingleResul
 		}
 
 		const before = sandbox ? checkoutSnapshot(cwd) : undefined;
-		await runPiChild(
+		await runChild(
 			{
 				args,
 				cwd,
@@ -919,15 +1030,7 @@ export async function runSingleAgent(opts: RunAgentOptions): Promise<SingleResul
 				...(opts.prefetch ? { prefetch: true } : {}),
 			},
 		);
-		if (before) {
-			const after = checkoutSnapshot(cwd);
-			const changed = after ? [...new Set([...before.keys(), ...after.keys()])].filter((name) => before.get(name) !== after.get(name)).sort() : ["(git checkout unavailable)"];
-			if (changed.length) {
-				currentResult.stopReason = "error";
-				currentResult.errorMessage = `read-only role modified the checkout: ${changed.join(", ")}`;
-				currentResult.exitCode = 1;
-			}
-		}
+		verifyCheckout(before, cwd, currentResult);
 		return currentResult;
 	} finally {
 		if (tmpTaskPath)
