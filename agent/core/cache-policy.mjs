@@ -58,17 +58,22 @@ export function modelSwitchEstimate({ from, to, tokens, ttlSeconds = 300, warm =
  *   cache das mensagens. Replay só com max_tokens B+1 e se o PIOR caso (B+1 tokens de saída)
  *   couber no teto: ≤ `capShare` da perda evitada e ≤ `maxPingUsd`. Senão pula ('thinking-budget'
  *   ou 'cost-cap').
+ * - O custo de leitura + saída máxima também deve caber no saldo estimado da sessão.
  * Devolve { action:'replay', maxTokens, worstCaseUsd } | { action:'skip', reason }.
  */
-export function warmPlan(payload, { model, promptTokens = 0, ttlSeconds = 300, capShare = 0.25, maxPingUsd = 0.5 } = {}) {
+export function warmPlan(payload, { model, promptTokens = 0, ttlSeconds = 300, capShare = 0.25, maxPingUsd = 0.5, sessionSpentUsd = 0, maxSessionUsd = 5 } = {}) {
   if (!payload || typeof payload !== 'object') return { action: 'skip', reason: 'no-payload' };
+  const sessionCap = { action: 'skip', reason: 'session-cost-cap' };
+  if (sessionSpentUsd >= maxSessionUsd) return sessionCap;
+  const replay = (maxTokens, worstCaseUsd) => sessionSpentUsd + worstCaseUsd > maxSessionUsd
+    ? sessionCap : { action: 'replay', maxTokens, worstCaseUsd };
   const thinking = payload.thinking;
   const read = readCost(model, promptTokens) ?? 0;
   const out = perToken(model, 'output');
   if (!thinking || thinking.type === 'disabled' || thinking.type === 'adaptive') {
     const worst = read + (out ?? 0);
     if (worst > maxPingUsd) return { action: 'skip', reason: 'cost-cap' };
-    return { action: 'replay', maxTokens: 1, worstCaseUsd: worst };
+    return replay(1, worst);
   }
   if (thinking.type === 'enabled' && Number.isSafeInteger(thinking.budget_tokens) && thinking.budget_tokens > 0) {
     if (out === undefined) return { action: 'skip', reason: 'thinking-budget' };
@@ -77,7 +82,7 @@ export function warmPlan(payload, { model, promptTokens = 0, ttlSeconds = 300, c
     const avoided = rebuildCost(model, promptTokens, ttlSeconds).usd ?? 0;
     if (worst > maxPingUsd) return { action: 'skip', reason: 'cost-cap' };
     if (worst > capShare * Math.max(0, avoided - read)) return { action: 'skip', reason: 'thinking-budget' };
-    return { action: 'replay', maxTokens, worstCaseUsd: worst };
+    return replay(maxTokens, worst);
   }
   return { action: 'skip', reason: 'thinking-budget' };
 }

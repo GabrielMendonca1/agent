@@ -58,8 +58,11 @@ legado de workflow.md (até 8 KB; fonte acima de 64 KB é ignorada).
 `extensions/brain-live/cache-keeper.ts`, pela compactação e pelo runner de
 subagentes: plano de ping (`warmPlan`), adiamento da compactação por limiar
 (`compactionDecision`), compactação ociosa, chave `prompt_cache_key` da OpenAI,
-causa de quebra de cache e leque escalonado. Não guarda texto de payload. Custos,
-gatilhos e variáveis: `docs/setup.md`, "Custo: o que roda sem prompt".
+causa de quebra de cache e leque escalonado. Não guarda texto de payload.
+`warmPlan` limita o custo estimado por ping e pelo saldo da sessão
+(`AGENT_CACHE_KEEPER_MAX_SESSION_USD`, padrão US$ 5); o keeper contabiliza cada
+tentativa antes do envio. Custos, gatilhos e variáveis: `docs/setup.md`,
+"Custo: o que roda sem prompt".
 
 ## Compatibilidade de leitura
 

@@ -108,6 +108,8 @@ export default function cacheKeeper(pi: ExtensionAPI) {
   pi.on("cache_warming_decision", async () => ({ action: "stop" as const }));
   if (process.env.AGENT_CACHE_KEEPER === "0") return;
   const child = isChild();
+  const configuredSessionUsd = Number(process.env.AGENT_CACHE_KEEPER_MAX_SESSION_USD ?? 5);
+  const maxSessionUsd = Number.isFinite(configuredSessionUsd) && configuredSessionUsd >= 0 ? configuredSessionUsd : 5;
 
   // H — vale também em subagentes: chave do prefixo estável quando falta ou é por sessão de filho.
   pi.on("before_provider_request", (event: { payload: Payload }) => {
@@ -147,7 +149,8 @@ export default function cacheKeeper(pi: ExtensionAPI) {
   let idleSince: number | undefined;
   let idleTokens: number | undefined;
   let warmUntil: number | undefined; // até quando o cache está garantido
-  let stats = { pings: 0, misses: 0, cost: 0 };
+  let stats = { pings: 0, misses: 0, cost: 0, estimatedCost: 0 };
+  let sessionId: string | undefined;
   let lastSkip: string | undefined;
   let ctxRef: ExtensionContext | undefined;
   let prevFp: { fp: ReturnType<typeof fingerprint>; at: number; ttl: number } | undefined;
@@ -246,6 +249,7 @@ export default function cacheKeeper(pi: ExtensionAPI) {
 
   // Request real → guarda; refresh do keeper → troca pelo último payload real com max_tokens 1.
   pi.on("before_provider_request", (event: { payload: Payload }, ctx?: ExtensionContext) => {
+    if (ctx) syncSession(ctx);
     const p = event.payload;
     if (pinging) return;
     requestBreak = undefined;
@@ -282,6 +286,12 @@ export default function cacheKeeper(pi: ExtensionAPI) {
     warmUntil = last.at + ttlOf(p) * 1000;
   }
 
+  const pingPlan = (ctx: ExtensionContext, payload: Payload) => warmPlan(payload, {
+    model: ctx.model, promptTokens: ctx.getContextUsage?.()?.tokens ?? 0, ttlSeconds: ttlOf(payload),
+    maxPingUsd: MAX_PING_USD, sessionSpentUsd: stats.estimatedCost, maxSessionUsd,
+  });
+  const sessionCapLabel = "teto da sessão";
+
   async function refresh(ctx: ExtensionContext): Promise<boolean> {
     const model: any = ctx.model;
     if (!last || !model) return false;
@@ -298,12 +308,13 @@ export default function cacheKeeper(pi: ExtensionAPI) {
       return false;
     }
     const ttl = ttlOf(snapshot);
-    const plan = warmPlan(snapshot, { model, promptTokens: ctx.getContextUsage?.()?.tokens ?? 0, ttlSeconds: ttl, maxPingUsd: MAX_PING_USD });
+    const plan = pingPlan(ctx, snapshot);
     if (plan.action === "skip") {
-
-      lastSkip = plan.reason;
+      lastSkip = plan.reason === "session-cost-cap" ? sessionCapLabel : plan.reason;
       return false;
     }
+    // Reserve before sending: even a failed request may have reached the provider.
+    stats.estimatedCost += plan.worstCaseUsd;
     const refreshCycle = cycle;
     pinging = true;
     let kill: ReturnType<typeof setTimeout> | undefined;
@@ -356,6 +367,11 @@ export default function cacheKeeper(pi: ExtensionAPI) {
       status(`cache até ${hhmm(base)} · ❄ (${THREADS_SKIP})` + (idleAt ? ` · resumo ${hhmm(idleAt)}` : ""));
       return;
     }
+    if (pingPlan(ctx, last.payload).reason === "session-cost-cap") {
+      planIdleCompaction(ctx, at);
+      status(`cache até ${hhmm(base)} · ❄ (${sessionCapLabel})` + (idleAt ? ` · resumo ${hhmm(idleAt)}` : ""));
+      return;
+    }
     if (at - idleSince > window) {
 
       planIdleCompaction(ctx, at);
@@ -366,7 +382,8 @@ export default function cacheKeeper(pi: ExtensionAPI) {
     const scheduledCycle = cycle;
     timer = setTimeout(async () => {
       timer = undefined;
-      if (idleSince === undefined) return;
+      syncSession(ctx);
+      if (scheduledCycle !== cycle || idleSince === undefined) return;
       const ok = await refresh(ctx);
       if (scheduledCycle !== cycle) return;
       if (!ok) {
@@ -382,7 +399,11 @@ export default function cacheKeeper(pi: ExtensionAPI) {
   }
 
   let unbindPolicy: (() => void) | undefined;
-  pi.on("session_start", (_e, ctx) => {
+  function syncSession(ctx: ExtensionContext) {
+    const nextId = ctx.sessionManager?.getSessionId?.();
+    if (nextId !== undefined && nextId !== sessionId) resetSession(ctx);
+  }
+  function resetSession(ctx: ExtensionContext) {
     unbindPolicy?.();
     cycle += 1;
     refreshController?.abort();
@@ -399,12 +420,14 @@ export default function cacheKeeper(pi: ExtensionAPI) {
     deferredTurns = 0;
     idleCompacting = false;
     decidido = new WeakMap();
-    stats = { pings: 0, misses: 0, cost: 0 };
+    stats = { pings: 0, misses: 0, cost: 0, estimatedCost: 0 };
+    sessionId = ctx.sessionManager?.getSessionId?.();
     lastSkip = undefined;
     ctxRef = ctx;
     epoch.sync(branchOf(ctx));
     unbindPolicy = bindSessionCachePolicy(ctx, { cacheState, deferCompaction, idleCompacting: () => idleCompacting });
-  });
+  }
+  pi.on("session_start", (_e, ctx) => resetSession(ctx));
 
   // J — quebra de cache com causa: resposta que leu < 50% do prompt depois de um request anterior.
   pi.on("message_end", (event: any) => {
@@ -499,6 +522,7 @@ export default function cacheKeeper(pi: ExtensionAPI) {
   // Troca de modelo (inclusive restore/alias para outro id): o payload guardado não serve mais.
   pi.on("model_select", (event: any) => { if (last && !sameModel(last.model, event?.model)) forget(); });
   pi.on("agent_start", (_e, ctx) => {
+    syncSession(ctx);
     ctxRef = ctx;
     clear();
     if (idleSince !== undefined) saveGap(ctx.cwd, { s: Math.round((Date.now() - idleSince) / 1000), k: idleTokens });
@@ -506,13 +530,16 @@ export default function cacheKeeper(pi: ExtensionAPI) {
     status(undefined);
   });
   pi.on("agent_settled", async (_e, ctx) => {
+    syncSession(ctx);
     ctxRef = ctx;
     if (!last) return;
     idleSince = Date.now();
     idleTokens = ctx.getContextUsage?.()?.tokens ?? undefined;
     if (process.env.AGENT_CACHE_KEEPER_TEST === "1") {
       const delay = Number(process.env.AGENT_CACHE_KEEPER_TEST_DELAY ?? 0) * 1000;
+      const testCycle = cycle;
       if (delay) await new Promise((r) => setTimeout(r, delay));
+      if (testCycle !== cycle) return;
       const ok = await refresh(ctx);
       process.stderr.write(`cache-keeper test: ${ok ? "hit" : "miss"} (${stats.pings} ping)${lastSkip ? ` skip=${lastSkip}` : ""}\n`);
       lastSkip = undefined;
@@ -539,6 +566,7 @@ export default function cacheKeeper(pi: ExtensionAPI) {
   pi.registerCommand("cache", {
     description: "Estado do cache-keeper: janela de aquecimento, pings e pausas registradas",
     handler: async (_args: string, ctx: ExtensionContext) => {
+      syncSession(ctx);
       const gaps = loadGaps(ctx.cwd);
       const ttl = last ? ttlOf(last.payload) : 3600;
       const win = warmWindow(gaps, ttl);
@@ -546,6 +574,8 @@ export default function cacheKeeper(pi: ExtensionAPI) {
         `TTL ${ttl >= 3600 ? "1 h" : "5 min"} · janela de aquecimento ${(win / 3600).toFixed(1)} h${gaps.length < MIN_SAMPLES ? ` (padrão; ${gaps.length}/${MIN_SAMPLES} pausas registradas)` : ` (${gaps.length} pausas deste projeto)`}`,
         `compactação ociosa: ${idleEnabled ? `≥${Math.round(idleMin / 1000)}k tokens${idleAt ? ` · agendada ${hhmm(idleAt)}` : ""}` : "desligada (AGENT_IDLE_COMPACT=0)"}`,
         `pings nesta sessão: ${stats.pings} (${stats.misses} sem acerto, US$${stats.cost.toFixed(4)})` + (warmUntil ? ` · cache garantido até ${hhmm(warmUntil)}` : ""),
+        `orçamento de pings: US$${stats.estimatedCost.toFixed(4)} estimados / US$${maxSessionUsd}`
+          + (stats.estimatedCost >= maxSessionUsd || (last && pingPlan(ctx, last.payload).reason === "session-cost-cap") ? ` (${sessionCapLabel})` : ""),
         ...(dropLabel() ? [dropLabel()!] : []),
       ].join("\n"), "info");
     },
