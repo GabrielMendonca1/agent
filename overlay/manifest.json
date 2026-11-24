@@ -142,66 +142,6 @@
 			"manifestSha256": "e92838bf9dc88cddb9b0cca09eed201135c39e4ab7875e8a6fa447daaf5cdc44"
 		},
 		{
-			"officialVersion": "0.86.0",
-			"path": "overlay/model-data/0.86.0",
-			"manifestSha256": "33ac1810ab3bf743b0b7f647c52f420586e2d6699f0628dbeeeff362d0af3882"
-		},
-		{
-			"officialVersion": "0.86.1",
-			"path": "overlay/model-data/0.86.1",
-			"manifestSha256": "16d9d9af457fc8cea192558df1775ab0682f5a9de2f3f4db35a3f485eb498383"
-		},
-		{
-			"officialVersion": "0.87.1",
-			"path": "overlay/model-data/0.87.1",
-			"manifestSha256": "b28fc20ae79d801409f5e8bba02a8ee953494d9124dd8c3506b421c70864ff62"
-		},
-		{
-			"officialVersion": "0.99.1",
-			"path": "overlay/model-data/0.99.1",
-			"manifestSha256": "c1bb0931877f2be444ccf210feed185088331f573fa1c4211f24b8111b8e9b26"
-		},
-		{
-			"officialVersion": "0.99.2",
-			"path": "overlay/model-data/0.99.2",
-			"manifestSha256": "c027d3dad96f165510cf94a9fe72504f558d3570fe070660e3d8588dea1e63ca"
-		},
-		{
-			"officialVersion": "1.0.0",
-			"path": "overlay/model-data/1.0.0",
-			"manifestSha256": "1c84c2fe69147b13f5b60b6164122b85cfd4806835157c73a8211cdaed87e92a"
-		},
-		{
-			"officialVersion": "1.0.2",
-			"path": "overlay/model-data/1.0.2",
-			"manifestSha256": "231d8f95640cccf19b6af0f00908c171c5258e1978c485dd609b73578530383e"
-		},
-		{
-			"officialVersion": "1.0.4",
-			"path": "overlay/model-data/1.0.4",
-			"manifestSha256": "cc48909dfc315529456a1a48d2e4e0cf2c7199a60ce54cef68aa493efe0c10e3"
-		},
-		{
-			"officialVersion": "1.1.0",
-			"path": "overlay/model-data/1.1.0",
-			"manifestSha256": "273eb372c80e9f39bbc79435940e7188230bad6c7e3ae47d80532dcd10ce8ed1"
-		},
-		{
-			"officialVersion": "1.3.0",
-			"path": "overlay/model-data/1.3.0",
-			"manifestSha256": "05a7f9b7d8fc9a28018f38c6ebb4b0321e3c3685fd6bed191730d5b32d9e60af"
-		},
-		{
-			"officialVersion": "1.4.0",
-			"path": "overlay/model-data/1.4.0",
-			"manifestSha256": "c2f8e71ea4191ebff20f1a104f74f7b71237cc5c6744a6815b7efa96d231db44"
-		},
-		{
-			"officialVersion": "1.5.0",
-			"path": "overlay/model-data/1.5.0",
-			"manifestSha256": "cf17cbcc7bbf526c30f246c7574bc56e323d919177992785ca330cad1773d75b"
-		},
-		{
 			"officialVersion": "1.5.2",
 			"path": "overlay/model-data/1.5.2",
 			"manifestSha256": "aa8ae1795ec75bcb34b61d9d835d272ebe03f956a4ba206d1106dcb26a0f7fc1"
