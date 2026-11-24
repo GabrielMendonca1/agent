@@ -38,6 +38,10 @@ Sucesso do instalador: código 0 e launchers em `%USERPROFILE%\.local\bin\agent.
 
 O store padrão fica em `%USERPROFILE%\.local\share\agent`, o perfil em `%USERPROFILE%\.agent`; overrides `AGENT_STORE` e `PI_CODING_AGENT_DIR` continuam válidos. Links de diretórios usam junctions absolutos. O app deve ler os mesmos arquivos e campos da tabela abaixo; não deve assumir symlinks POSIX nem importar o bootstrap como SDK do app.
 
+## Dependências externas no install
+
+Depois de ativar a release, o install e o `agent update` conferem `agent-browser`, `cua-driver` e `agy`. Sem TTY, o que inclui o app, nada é instalado e nada é perguntado. Se faltar alguma, o stdout ganha uma linha de log, `Agent: dependências externas ausentes (...); veja/instale com: agent deps --install`, sem formato estável. O código de saída continua sendo o da ativação: falha ou ausência de dependência nunca muda esse código. `AGENT_INSTALL_DEPS=0` suprime a verificação. `agent deps` é textual e de diagnóstico, não API.
+
 ## Identidade da release instalada (Megamind)
 
 O app Megamind lê `<store>/active.json`, sem importar código do updater. O campo aditivo e opcional `release` identifica a distribuição GitHub que instalou o par ativo:

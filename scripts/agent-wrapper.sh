@@ -15,6 +15,10 @@ case "${1:-}" in
     shift
     exec node "$OVERLAY_REPO/scripts/migrate-from-mark.mjs" "$@"
     ;;
+  deps)
+    shift
+    exec node "$OVERLAY_REPO/scripts/lib/agent-deps.mjs" "$@"
+    ;;
   overlay-update)
     shift
     exec node "$UPDATER" "$@"

@@ -48,6 +48,28 @@ node scripts/agent-update.mjs --install-artifact /caminho/agent-<id>-<os>-<arch>
 # O arquivo SHA256SUMS deve estar no mesmo diretório do archive local.
 ```
 
+### Dependências externas (skills e papéis)
+
+Três ferramentas externas ficam fora do artefato. O manifesto único está em `scripts/lib/agent-deps.mjs`:
+
+| Ferramenta | Mínimo | Quem usa | macOS (`agent deps --install`) | Linux / Windows (só instrução) |
+|---|---|---|---|---|
+| `agent-browser` | 0.43.0 | skill computer-use (web) | `brew install agent-browser` e `agent-browser install` (baixa o Chrome) | `npm install -g agent-browser && agent-browser install` |
+| `cua-driver` | 0.36.0 | skill computer-use (janelas macOS) | instalador oficial `https://cua.ai/driver/install.sh` com `--no-connect --no-test` | o mesmo script / `install.ps1` |
+| `agy` | 1.5.16 | papel `gemini` | `brew install --cask antigravity-cli` | `https://antigravity.google/cli/install.sh` / `install.ps1` |
+
+```sh
+agent deps             # status (somente leitura): versão, caminho, permissões do cua-driver
+agent deps --install   # instala as ausentes pela fonte oficial; mostra os passos manuais
+```
+
+No fim de `install.sh` e de `agent update`, o Agent confere o que falta. Em terminal interativo, ele lista as ausentes e pede uma única confirmação para instalar todas. Sem TTY, com `CI` definido ou quando o app Megamind executa o install, nada é instalado: só aparece uma linha com `agent deps --install`. `AGENT_INSTALL_DEPS=1` instala sem perguntar; `AGENT_INSTALL_DEPS=0` pula a verificação. Uma dependência que falha só gera log: a instalação do Agent continua e mantém o código de saída. Sem Homebrew, `agent-browser` e `agy` são pulados com a instrução de instalá-lo em https://brew.sh. A instalação automática existe só no macOS; Linux e Windows recebem os comandos para rodar manualmente. Versões abaixo do mínimo aparecem como `desatualizado` e não são atualizadas sozinhas.
+
+`--no-connect` impede o instalador do cua-driver de registrar MCP no Claude Code, Codex e Cursor, porque a skill usa o CLI. Os passos que exigem você nunca são automatizados, apenas indicados no fim:
+
+- `agy`: rode uma vez e faça o login Google (OAuth).
+- `cua-driver permissions grant`: conceda Acessibilidade e Gravação de Tela ao CuaDriver. `agent deps` lê `cua-driver permissions status` e avisa quando falta permissão.
+
 ### Identidade instalada
 
 Instalações remotas registram em `<store>/active.json` o objeto opcional `release: { tag, assetId, repo }`. A tag é resolvida antes do download e usada explicitamente nele, mesmo para `latest`. `assetId` é o `releaseId` do manifesto: o `<id>` em `agent-<id>-<os>-<arch>.tar.gz`, não o ID numérico do GitHub nem o ID interno do runtime. O rollback restaura os valores do par anterior. Checkout, archive local e `AGENT_RELEASE_DIR` não declaram uma release remota.

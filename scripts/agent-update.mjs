@@ -893,6 +893,8 @@ function installOverlayBundle(store) {
 		"scripts/lib/extensions.mjs",
 		"scripts/lib/agent-setup.mjs",
 		"scripts/lib/overlay-stale.mjs",
+		// `agent deps` e o passo de dependências externas do install/update.
+		"scripts/lib/agent-deps.mjs",
 		// Skills padrão do Agent: o bundle instalado precisa delas para reinstalar sem checkout.
 		...skillFiles(repoRoot),
 		// Idem a extensão Megamind.
@@ -2726,6 +2728,16 @@ async function main() {
 	// Só depois de ativar algo (não em --prepare, que deixa current intacto, nem em gc/disable).
 	if (options.agentEnable || options.promote !== undefined || (!options.prepare && !options.gc && !options.agentDisable)) {
 		warmStartCache(options);
+	}
+	// Install/update por artefato: dependências externas das skills/papéis. Fora do lock e sem poder
+	// falhar a instalação (bundle antigo sem o módulo, erro de rede, recusa do usuário).
+	if (options.installArtifact !== undefined) {
+		try {
+			const { postInstallDeps } = await import("./lib/agent-deps.mjs");
+			await postInstallDeps();
+		} catch (error) {
+			console.log(`Agent: verificação de dependências externas indisponível (${error.message}); rode: agent deps`);
+		}
 	}
 }
 

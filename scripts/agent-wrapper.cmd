@@ -1,6 +1,7 @@
 @echo off
 rem Launcher do overlay no Windows: a mesma semantica de scripts/agent-wrapper.sh.
 rem
+rem   agent deps [--install]        -> node <bundle>\scripts\lib\agent-deps.mjs [args]
 rem   agent overlay-update [args]   -> node <bundle>\scripts\agent-update.mjs [args]
 rem   agent overlay-rollback [args] -> node <bundle>\scripts\agent-update.mjs --rollback [args]
 rem   agent overlay-status [args]   -> node <bundle>\scripts\agent-update.mjs --status [args]
@@ -32,6 +33,7 @@ set "REST="
 for /f "tokens=1,*" %%a in ("%*") do set "REST=%%b"
 
 if /i "%~1"=="migrate-from-mark" goto :migrate_from_mark
+if /i "%~1"=="deps" goto :deps
 if /i "%~1"=="overlay-update" goto :overlay_update
 if /i "%~1"=="overlay-rollback" goto :overlay_rollback
 if /i "%~1"=="overlay-status" goto :overlay_status
@@ -55,6 +57,10 @@ exit /b 1
 
 :migrate_from_mark
 node "%OVERLAY_REPO%\scripts\migrate-from-mark.mjs" %REST%
+exit /b
+
+:deps
+node "%OVERLAY_REPO%\scripts\lib\agent-deps.mjs" %REST%
 exit /b
 
 :overlay_update
