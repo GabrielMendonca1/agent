@@ -35,8 +35,8 @@
  *
  * Desliga: AGENT_CACHE_KEEPER=0. Teste: AGENT_CACHE_KEEPER_TEST=1 faz um refresh já no agent_settled.
  */
-import { createHash } from "node:crypto";
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { createHash, randomUUID } from "node:crypto";
+import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
@@ -49,6 +49,7 @@ const DEFAULT_WINDOW_S = 3 * 3600; // ótimo nas pausas do Gabriel pesadas por c
 const MAX_WINDOW_S = 24 * 3600;
 const MIN_SAMPLES = 30;
 const MAX_SAMPLES = 400;
+const SPEND_RETENTION_MS = 30 * 24 * 3600 * 1000;
 
 type Gap = { s: number; c?: 1; k?: number }; // pausa (s); c=1: censurada (fechou sem voltar); k: tokens do contexto (peso)
 type Payload = Record<string, any>;
@@ -173,9 +174,40 @@ export default function cacheKeeper(pi: ExtensionAPI) {
 
   }
 
+  const keeperDir = join(process.env.PI_CODING_AGENT_DIR || join(homedir(), ".agent"), "cache-keeper");
+  const spendDir = join(keeperDir, "spend");
+  const spendPath = (id: string) => join(spendDir, createHash("sha256").update(id).digest("hex") + ".json");
+  const loadSpend = (id: string | undefined): number => {
+    if (id === undefined) return 0;
+    try {
+      const { estimatedCost } = JSON.parse(readFileSync(spendPath(id), "utf8"));
+      return Number.isFinite(estimatedCost) && estimatedCost >= 0 ? estimatedCost : 0;
+    } catch { return 0; }
+  };
+  const saveSpend = (id: string, estimatedCost: number) => {
+    const path = spendPath(id);
+    const tmp = `${path}.${randomUUID()}.tmp`;
+    try {
+      mkdirSync(spendDir, { recursive: true });
+      writeFileSync(tmp, JSON.stringify({ estimatedCost }) + "\n");
+      renameSync(tmp, path);
+    } catch {
+      try { unlinkSync(tmp); } catch { /* best-effort */ }
+    }
+  };
+  const pruneSpend = () => {
+    const cutoff = Date.now() - SPEND_RETENTION_MS;
+    try {
+      for (const entry of readdirSync(spendDir, { withFileTypes: true })) {
+        if (!entry.isFile() || !/^[a-f0-9]{64}\.json(?:\.[a-f0-9-]{36}\.tmp)?$/.test(entry.name)) continue;
+        const path = join(spendDir, entry.name);
+        try { if (statSync(path).mtimeMs < cutoff) unlinkSync(path); } catch { /* best-effort */ }
+      }
+    } catch { /* diretório ainda não existe ou não pôde ser lido */ }
+  };
+
   const store = (cwd: string) => {
-    const base = process.env.PI_CODING_AGENT_DIR || join(homedir(), ".agent");
-    const dir = join(base, "cache-keeper");
+    const dir = keeperDir;
     mkdirSync(dir, { recursive: true });
     return join(dir, createHash("sha1").update(cwd).digest("hex").slice(0, 12) + ".json");
   };
@@ -315,6 +347,7 @@ export default function cacheKeeper(pi: ExtensionAPI) {
     }
     // Reserve before sending: even a failed request may have reached the provider.
     stats.estimatedCost += plan.worstCaseUsd;
+    if (sessionId !== undefined) saveSpend(sessionId, stats.estimatedCost);
     const refreshCycle = cycle;
     pinging = true;
     let kill: ReturnType<typeof setTimeout> | undefined;
@@ -420,14 +453,17 @@ export default function cacheKeeper(pi: ExtensionAPI) {
     deferredTurns = 0;
     idleCompacting = false;
     decidido = new WeakMap();
-    stats = { pings: 0, misses: 0, cost: 0, estimatedCost: 0 };
     sessionId = ctx.sessionManager?.getSessionId?.();
+    stats = { pings: 0, misses: 0, cost: 0, estimatedCost: loadSpend(sessionId) };
     lastSkip = undefined;
     ctxRef = ctx;
     epoch.sync(branchOf(ctx));
     unbindPolicy = bindSessionCachePolicy(ctx, { cacheState, deferCompaction, idleCompacting: () => idleCompacting });
   }
-  pi.on("session_start", (_e, ctx) => resetSession(ctx));
+  pi.on("session_start", (_e, ctx) => {
+    pruneSpend();
+    resetSession(ctx);
+  });
 
   // J — quebra de cache com causa: resposta que leu < 50% do prompt depois de um request anterior.
   pi.on("message_end", (event: any) => {

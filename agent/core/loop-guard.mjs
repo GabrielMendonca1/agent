@@ -3,7 +3,7 @@ import { createHash } from "node:crypto";
 export const NUDGE = "loop guard: esta chamada rodou 3 vezes com o mesmo resultado. Mude a abordagem.";
 export const STOP = "loop guard: sexta chamada idêntica após 5 resultados iguais. Execução interrompida.";
 export const CYCLE_NUDGE = "loop guard: este ciclo de chamadas rodou 3 vezes com os mesmos resultados. Mude a abordagem.";
-export const CYCLE_STOP = "loop guard: início do sexto ciclo de chamadas após 5 repetições com os mesmos resultados. Execução interrompida.";
+export const CYCLE_STOP = "loop guard: início do sexto ciclo de chamadas após 5 repetições com os mesmos erros. Execução interrompida.";
 export const EMPTY_STOP = "loop guard: 3 turnos sem texto e sem chamadas bem-sucedidas. Execução interrompida.";
 
 export function stableStringify(value) {
@@ -40,7 +40,9 @@ export function next(state = initialState(), event) {
   if (event.type === "tool_call") {
     const key = `${event.toolName}:${stableStringify(event.input)}`;
     if (key === state.key && state.streak >= 5) return { state, stop: true };
-    if (PERIODS.some((period) => repeatedSuffix(state.history, period, 5) && key === state.history.at(-period).key)) {
+    if (PERIODS.some((period) => key === state.history.at(-period)?.key
+      && repeatedSuffix(state.history, period, 5)
+      && state.history.slice(-period * 5).every(({ isError }) => isError))) {
       return { state, stop: true, cycle: true };
     }
     return { state: {
@@ -58,7 +60,7 @@ export function next(state = initialState(), event) {
       isError: event.isError, content: event.content, structuredContent: event.structuredContent,
     })).digest("hex");
     const streak = key === state.key && hash === state.hash ? state.streak + 1 : 1;
-    const history = [...state.history, { key, hash }].slice(-HISTORY_SIZE);
+    const history = [...state.history, { key, hash, isError: event.isError === true }].slice(-HISTORY_SIZE);
     // A rotated suffix on the next result is still the same cycle, not a new nudge.
     const cycle = PERIODS.some((period) => repeatedSuffix(history, period, 3) && !repeatedSuffix(state.history, period, 3));
     return { state: { ...state, key, hash, streak, history, pending }, nudge: streak === 3 || cycle, ...(cycle ? { cycle } : {}) };

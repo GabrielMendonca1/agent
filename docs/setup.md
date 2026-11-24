@@ -287,7 +287,7 @@ Nenhum patch é necessário para as extensões carregarem; eles dão funcionalid
 
 ## Proteção contra loops de ferramentas
 
-O loop guard avisa após 3 resultados idênticos seguidos, ou 3 repetições de um ciclo de 2 ou 3 chamadas com os mesmos argumentos e resultados. Após 5 repetições, bloqueia a chamada que continuaria a sequência. Resultados diferentes quebram a repetição, chamadas aninhadas não contam e uma nova mensagem sua limpa o histórico. Para desligar: `AGENT_LOOP_GUARD=0`.
+O loop guard avisa após 3 resultados idênticos seguidos, ou 3 repetições de um ciclo de 2 ou 3 chamadas com os mesmos argumentos e resultados. Após 5 repetições, bloqueia a sexta tentativa da mesma chamada. Para ciclos, só bloqueia a chamada que iniciaria a sexta repetição se todas as chamadas do ciclo retornaram erro; se houve sucesso, só avisa. Resultados diferentes quebram a repetição, chamadas aninhadas não contam e uma nova mensagem sua limpa o histórico. Para desligar: `AGENT_LOOP_GUARD=0`.
 
 ## Custo: o que roda sem prompt
 
@@ -308,7 +308,7 @@ Cache-keeper em detalhe:
 
 - Só a sessão principal aquece; subagentes não. Só Anthropic Messages API, com o mesmo provider/modelo do último request real.
 - Janela de aquecimento: 3h de ociosidade com menos de 30 pausas registradas no projeto; depois, aprendida das pausas, até 24h. Pausas ficam em `<perfil>/cache-keeper/<hash do cwd>.json`.
-- Teto por ping: `AGENT_CACHE_KEEPER_MAX_PING_USD` (padrão US$ 0,50). Teto por sessão: `AGENT_CACHE_KEEPER_MAX_SESSION_USD` (padrão US$ 5; `0` desliga os pings). A cada tentativa, o keeper soma a estimativa de leitura de cache e saída máxima; não agenda outro ping se o saldo não cobrir a próxima estimativa. O orçamento reinicia com a sessão e aparece no comando `/cache`; o rodapé indica quando o teto impede o aquecimento. É um teto de custo estimado, não de cobrança: um ping que erra o cache paga escrita antes de parar.
+- Teto por ping: `AGENT_CACHE_KEEPER_MAX_PING_USD` (padrão US$ 0,50). Teto por sessão: `AGENT_CACHE_KEEPER_MAX_SESSION_USD` (padrão US$ 5; `0` desliga os pings). A cada tentativa, o keeper soma a estimativa de leitura de cache e saída máxima; não agenda outro ping se o saldo não cobrir a próxima estimativa. O teto vale por sessão, inclusive ao retomá-la. O keeper guarda o gasto estimado no perfil e remove registros com mais de 30 dias ao iniciar uma sessão. O orçamento aparece no comando `/cache`; o rodapé indica quando o teto impede o aquecimento. É um teto de custo estimado, não de cobrança: um ping que erra o cache paga escrita antes de parar.
 - Thinking com budget fixo B: o ping usa `max_tokens` B+1 e só sai se o pior caso couber no teto e em 25% da perda evitada; senão é pulado. Sem thinking, ou thinking adaptive, `max_tokens` 1.
 - Para no primeiro ping sem acerto, em qualquer entrada sua e no fim da sessão.
 - Message threads (chave de API Anthropic, padrão do Pi em `api.anthropic.com` desde a 1.5.2, ou `compat.supportsMessageThreads`): não aquece. O keeper guarda o request completo (o hook roda antes de o provider aplicar a thread), mas o request seguinte sai como `thread: continue` só com as mensagens novas, e o ping sairia completo e sem `thread`. Que um acerte o cache do outro não foi verificado com chamada real; um erro pagaria escrita do contexto inteiro. A barra mostra `cache ❄ (message-threads)` e a compactação ociosa segue o fim do TTL. A lane OAuth não usa threads e continua aquecendo.

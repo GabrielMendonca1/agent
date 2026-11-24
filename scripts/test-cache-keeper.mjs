@@ -534,12 +534,16 @@ assert.ok(historyFp.messages.every(hash => /^[0-9a-f]{16}$/.test(hash)), 'only m
   if (saved === undefined) delete process.env.AGENT_CACHE_KEEPER_TEST; else process.env.AGENT_CACHE_KEEPER_TEST = saved;
 }
 
-// Um ping consome orçamento mesmo se o provider não informar custo; o próximo não é agendado.
+// Um ping consome orçamento mesmo sem custo informado; o saldo persiste ao reabrir a sessão.
 {
   const saved = { AGENT_CACHE_KEEPER_TEST: process.env.AGENT_CACHE_KEEPER_TEST, AGENT_CACHE_KEEPER_MAX_SESSION_USD: process.env.AGENT_CACHE_KEEPER_MAX_SESSION_USD };
   process.env.AGENT_CACHE_KEEPER_MAX_SESSION_USD = '0.25';
-  const h = {}; const commands = {}; const statuses = []; const notes = [];
-  mod.default({ on: (n, f) => { (h[n] ??= []).push(f); }, registerCommand: (n, c) => { commands[n] = c; } });
+  let h = {}; const commands = {}; const statuses = []; const notes = [];
+  const register = () => {
+    h = {};
+    mod.default({ on: (n, f) => { (h[n] ??= []).push(f); }, registerCommand: (n, c) => { commands[n] = c; } });
+  };
+  register();
   let id = 'first'; let pings = 0;
   const ctx = {
     sessionManager: { getSessionId: () => id }, cwd: isolated, hasUI: true, model: opus,
@@ -562,13 +566,28 @@ assert.ok(historyFp.messages.every(hash => /^[0-9a-f]{16}$/.test(hash)), 'only m
     await commands.cache.handler('', ctx);
     assert.match(notes.at(-1), /US\$0\.2300 estimados \/ US\$0\.25 \(teto da sessão\)/);
 
+    const spendDir = join(process.env.PI_CODING_AGENT_DIR, 'cache-keeper', 'spend');
+    const [firstFile] = listDir(spendDir);
+    for (const f of h.session_shutdown) f({}, ctx);
+    register();
+    for (const f of h.session_start) f({}, ctx);
+    capture();
     process.env.AGENT_CACHE_KEEPER_TEST = '1';
     await h.agent_settled[0]({}, ctx);
-    assert.equal(pings, 1);
+    assert.equal(pings, 1, 'reabrir a mesma sessão não libera outro ping');
+    await commands.cache.handler('', ctx);
+    assert.match(notes.at(-1), /US\$0\.2300 estimados \/ US\$0\.25 \(teto da sessão\)/);
+
     id = 'second';
     capture();
     await h.agent_settled[0]({}, ctx);
-    assert.equal(pings, 2);
+    assert.equal(pings, 2, 'outra sessão tem orçamento próprio');
+    const old = new Date(Date.now() - 31 * 24 * 3600 * 1000);
+    fs.utimesSync(join(spendDir, firstFile), old, old);
+    for (const f of h.session_start) f({}, ctx);
+    const remaining = listDir(spendDir);
+    assert.equal(remaining.length, 1);
+    assert.notEqual(remaining[0], firstFile, 'só o gasto antigo foi removido');
   } finally {
     for (const f of h.session_shutdown) f({}, ctx);
     for (const [key, value] of Object.entries(saved)) {
@@ -593,5 +612,5 @@ assert.equal(policy.idleCompactionDecision({ ...idleOk, pending: true }).reason,
 assert.equal(policy.idleCompactionDecision({ ...idleOk, editorText: 'oi' }).reason, 'typing');
 assert.equal(policy.idleCompactionDecision({ ...idleOk, tokens: 120_000 }).reason, 'small');
 
-assert.ok(listDir(process.env.PI_CODING_AGENT_DIR).every(name => name === 'cache-keeper'), 'somente estado de pausas no perfil');
+assert.ok(listDir(process.env.PI_CODING_AGENT_DIR).every(name => name === 'cache-keeper'), 'somente estado de pausas e gastos no perfil');
 console.log('PASS cache-keeper');
