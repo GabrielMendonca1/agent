@@ -858,8 +858,10 @@ async function runAgyAgent(agent: AgentConfig, opts: RunAgentOptions): Promise<S
 	// Headless read-only agy auto-denies every shell command; say so, or the model ends with no answer.
 	const readOnlyNote = readOnly ? "Read-only run: shell commands are denied here. Use only your file reading tools, and state what you could not verify." : "";
 	const prompt = [agent.systemPrompt.trim(), readOnlyNote, `Task: ${task}`, instructions, guidance].filter(Boolean).join("\n\n");
+	// Writers run with full permissions; --sandbox stays as an extra layer (it blocks writes to <cwd>/.git
+	// but leaves shell, network and isolated-worktree commits working).
 	const args = ["-p", prompt, "--output-format", "json", "--disable-slash-commands",
-		"--mode", readOnly ? "plan" : "auto", readOnly ? "--sandbox" : "--dangerously-skip-permissions"];
+		...(readOnly ? ["--mode", "plan"] : ["--mode", "auto", "--dangerously-skip-permissions"]), "--sandbox"];
 	if (model) args.push("--model", model);
 	if (effort) args.push("--effort", effort);
 	try { opts.onStart?.(result); } catch { /* audit bookkeeping must not break the run */ }

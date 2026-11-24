@@ -923,8 +923,7 @@ export default function (pi: ExtensionAPI) {
 							...outcome.record.tasks.flatMap((task) => {
 								const role = agents.find((agent) => agent.name === task.agent);
 								if (role?.runner === "agy") {
-									return role.tools?.some((tool) => tool === "edit" || tool === "write") ? []
-										: [`Sandbox: ${task.agent}=agy (plan mode).`];
+									return [`Sandbox: ${task.agent}=agy (${role.tools?.some((tool) => tool === "edit" || tool === "write") ? "auto, --sandbox" : "plan mode"}).`];
 								}
 								const sandbox = sandboxForTools(role?.tools);
 								return sandbox ? [`Sandbox: ${task.agent}=${sandbox}${sandbox === "none" ? " (writes detected after the run)" : ""}.`] : [];
