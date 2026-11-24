@@ -564,7 +564,12 @@ async function runChild(opts: ChildRunOptions): Promise<void> {
 	const agy = opts.runner === "agy";
 	let processFinished: (() => void) | undefined;
 	let releaseSlot: (() => void) | null | undefined;
-	let finishCheckpoint: (() => void) | undefined;
+	let finishCheckpoint: (() => Promise<void>) | undefined;
+	let checkpointNote: string | undefined;
+	const checkpointSkipped = (phase: string, error: unknown) => {
+		const reason = error instanceof Error ? error.message : String(error);
+		checkpointNote = `Checkpoint skipped (${phase}: ${reason}). /rewind will not cover this dispatch.`;
+	};
 	try {
 		// Slot first: the global ceiling must bound spawned processes, not queued work.
 		if (opts.acquireSlot) {
@@ -591,9 +596,21 @@ async function runChild(opts: ChildRunOptions): Promise<void> {
 		let authRequired = false;
 		let agyOutput = "";
 
+		const invocation = agy ? { command: "agy", args: opts.args } : runnerHooks.getPiInvocation(opts.args);
+		if (opts.writerCheckpoint) {
+			try {
+				finishCheckpoint = await captureWriter(opts.cwd, opts.writerCheckpoint, signal);
+			} catch (error) {
+				checkpointSkipped("pre-scan", error);
+			}
+			if (signal?.aborted) {
+				result.exitCode = 143;
+				result.stopReason = "aborted";
+				result.errorMessage = "Subagent aborted before start";
+				return;
+			}
+		}
 		const exitCode = await new Promise<number>((resolve) => {
-			const invocation = agy ? { command: "agy", args: opts.args } : runnerHooks.getPiInvocation(opts.args);
-			if (opts.writerCheckpoint) finishCheckpoint = captureWriter(opts.cwd, opts.writerCheckpoint);
 			const proc = runnerHooks.spawn(invocation.command, invocation.args, {
 				cwd: opts.cwd,
 				shell: false,
@@ -839,7 +856,12 @@ async function runChild(opts: ChildRunOptions): Promise<void> {
 
 	} finally {
 		try {
-			finishCheckpoint?.();
+			try {
+				if (finishCheckpoint) await finishCheckpoint();
+			} catch (error) {
+				checkpointSkipped("post-scan", error);
+			}
+			if (checkpointNote) result.finalText = [checkpointNote, result.finalText].filter(Boolean).join("\n\n");
 			processFinished?.();
 		}
 		finally { releaseSlot?.(); }

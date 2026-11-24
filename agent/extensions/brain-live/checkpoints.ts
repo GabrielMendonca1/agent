@@ -8,7 +8,7 @@
  * significa mudança por fora (editor, bash, outro processo) e pede confirmação.
  *
  * Bash da sessão principal não é rastreado. Filhos (AGENT_CHILD=1) não gravam; o pai
- * registra o antes/depois de escritores que executam direto num checkout Git.
+ * compara o antes/depois de escritores que executam direto num checkout Git, sem atribuir autoria.
  *
  * Disco: `<perfil>/checkpoints/<sessionId>/` com `index.jsonl` (append-only) e `blobs/<sha256>`.
  * Persistem ao retomar a sessão (mesmo sessionId). Limpeza no session_start: sessões sem uso há
@@ -173,6 +173,7 @@ export default function checkpoints(pi: ExtensionAPI) {
 			if (picked === undefined) return;
 			const turn = turns[labels.indexOf(picked)];
 			const since = Date.parse(turn.timestamp) || 0;
+			s.refresh();
 			let plans = s.plan(turn.id, since);
 
 			const CODE_AND_CHAT = "Código e conversa";
@@ -182,8 +183,10 @@ export default function checkpoints(pi: ExtensionAPI) {
 			const summary = plans.length
 				? plans
 						.map((p) => {
-							const how = p.target === null ? "remover (criado pelo agente)" : p.target === undefined ? "não restaurável (> 20 MB)" : "restaurar";
-							return `  ${rel(p.path, ctx.cwd)}: ${how}${p.conflict ? " · mudou por fora" : ""}`;
+							const how = p.target === null
+								? (p.unattributed ? "remover (não existia no checkpoint)" : "remover (criado pelo agente)")
+								: p.target === undefined ? "não restaurável (> 20 MB)" : "restaurar";
+							return `  ${rel(p.path, ctx.cwd)}: ${how}${p.conflict ? " · mudou por fora" : ""}${p.unattributed ? " · autoria incerta (subagente)" : ""}`;
 						})
 						.join("\n")
 				: "  nenhum arquivo a restaurar";
@@ -194,20 +197,22 @@ export default function checkpoints(pi: ExtensionAPI) {
 			let report: string | undefined;
 			if (action === CODE_AND_CHAT || action === CODE) {
 				const conflicts = plans.filter((p) => p.conflict);
-				if (conflicts.length) {
+				const unattributed = plans.filter((p) => p.unattributed);
+				if (conflicts.length || unattributed.length) {
 					const OVERWRITE = "Sobrescrever mesmo assim";
 					const SKIP = "Pular os alterados";
-					const choice = await ctx.ui.select(
-						`Mudaram depois da última edição do agente (editor, bash ou outro processo):\n${conflicts.map((p) => `  ${rel(p.path, ctx.cwd)}`).join("\n")}`,
-						[OVERWRITE, SKIP, CANCEL],
-					);
-					if (choice === undefined || choice === CANCEL) return;
-					if (choice === SKIP) plans = plans.filter((p) => !p.conflict);
+					const list = (files: typeof plans) => files.map((p) => `  ${rel(p.path, ctx.cwd)}`).join("\n");
+					const warnings = [];
+					if (conflicts.length) warnings.push(`Mudaram depois da última edição do agente (editor, bash ou outro processo):\n${list(conflicts)}`);
+					if (unattributed.length) warnings.push(`Alterações sem autoria confirmada (varredura de subagente; podem incluir edições suas):\n${list(unattributed)}`);
+					const choice = await ctx.ui.select(warnings.join("\n\n"), [OVERWRITE, SKIP, CANCEL]);
+					if (choice === SKIP) plans = plans.filter((p) => !p.conflict && !p.unattributed);
+					else if (choice !== OVERWRITE) return;
 				}
-				const done = s.apply(plans);
+				const { done, skipped } = s.apply(plans);
 				if (done.length) s.rewound(turn.id, done);
 				const lost = plans.filter((p) => p.target === undefined).map((p) => rel(p.path, ctx.cwd));
-				report = `Restaurados ${done.length} arquivo(s).${lost.length ? ` Não restaurável: ${lost.join(", ")}.` : ""} Bash da sessão não é rastreado.`;
+				report = `Restaurados ${done.length} arquivo(s).${lost.length ? ` Não restaurável: ${lost.join(", ")}.` : ""}${skipped.length ? ` Pulados após a revisão (estado diferente ou não verificável): ${skipped.map((p) => rel(p, ctx.cwd)).join(", ")}.` : ""} Bash da sessão não é rastreado.`;
 			}
 			if (action === CODE_AND_CHAT || action === CHAT) {
 				await ctx.waitForIdle();

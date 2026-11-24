@@ -1,15 +1,17 @@
-import { execFileSync } from "node:child_process";
-import { createHash } from "node:crypto";
-import { appendFileSync, closeSync, constants, existsSync, fstatSync, lstatSync, mkdirSync, openSync, readFileSync, readSync, realpathSync, statSync, unlinkSync, writeFileSync } from "node:fs";
+import { execFile } from "node:child_process";
+import { createHash, randomUUID } from "node:crypto";
+import { appendFileSync, constants, existsSync, lstatSync, mkdirSync, readFileSync, realpathSync, statSync, unlinkSync, writeFileSync } from "node:fs";
+import { lstat, mkdir, open, realpath, rename, unlink, writeFile } from "node:fs/promises";
 import { dirname, isAbsolute, join, relative, sep } from "node:path";
+import { promisify } from "node:util";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 
 const MAX_FILE_BYTES = 20 * 1024 * 1024;
 
 type Rec =
 	| { t: "turn"; turn: string; ts: number; prompt: string }
-	| { t: "snap"; turn: string; ts: number; path: string; before: string | null; checkout?: string; skipped?: "too-large" }
-	| { t: "after"; turn: string; ts: number; path: string; hash: string | null }
+	| { t: "snap"; turn: string; ts: number; path: string; before: string | null; checkout?: string; source?: "subagent"; skipped?: "too-large" }
+	| { t: "after"; turn: string; ts: number; path: string; hash: string | null; source?: "subagent" }
 	| { t: "rewind"; turn: string; ts: number; files: { path: string; hash: string | null }[] };
 
 export interface Plan {
@@ -21,6 +23,7 @@ export interface Plan {
 	/** Hash que o agente deixou por último (edit/write ou rewind); undefined se nunca mudou com sucesso. */
 	expected: string | null | undefined;
 	conflict: boolean;
+	unattributed: boolean;
 }
 
 function sha(buf: Buffer): string {
@@ -124,8 +127,8 @@ export class Store {
 		return readFileSync(join(this.dir, "blobs", hash));
 	}
 
-	hasSnap(turn: string, path: string, ts = Infinity): boolean {
-		return this.records.some((r) => r.t === "snap" && r.turn === turn && r.path === path && r.ts <= ts);
+	hasSnap(turn: string, path: string): boolean {
+		return this.records.some((r) => r.t === "snap" && r.turn === turn && r.path === path);
 	}
 
 	/** Snapshot do estado anterior; só a primeira vez de cada arquivo no turno. */
@@ -144,14 +147,6 @@ export class Store {
 		this.append({ t: "snap", turn, ts: Date.now(), path, before, ...(skipped ? { skipped } : {}) });
 	}
 
-	recordWriter(turn: string, prompt: string, checkout: string, ts: number, path: string, before: Buffer | null, after: string | null) {
-		if (!this.hasSnap(turn, path, ts)) {
-			if (!this.records.some((r) => r.t === "turn" && r.turn === turn)) this.append({ t: "turn", turn, ts, prompt });
-			this.append({ t: "snap", turn, ts, path, checkout, before: before === null ? null : this.putBlob(before) });
-		}
-		this.append({ t: "after", turn, ts: Date.now(), path, hash: after });
-	}
-
 	after(turn: string, path: string) {
 		this.append({ t: "after", turn, ts: Date.now(), path, hash: hashOf(path) });
 	}
@@ -167,56 +162,78 @@ export class Store {
 		return out;
 	}
 
-	expected(path: string): string | null | undefined {
-		let hash: string | null | undefined;
-		for (const r of this.records) {
-			if (r.t === "after" && r.path === path) hash = r.hash;
-			else if (r.t === "rewind") for (const f of r.files) if (f.path === path) hash = f.hash;
-		}
-		return hash;
-	}
-
 	/**
 	 * O que restaurar para voltar ao estado de antes do turno: para cada arquivo, o snapshot mais
 	 * antigo gravado a partir do turno (ordem cronológica da captura, qualquer ramo da conversa).
 	 */
 	plan(turn: string, since: number): Plan[] {
 		const first = new Map<string, Extract<Rec, { t: "snap" }>>();
+		const unattributedPaths = new Set<string>();
+		const checkouts = new Map<string, string>();
+		const latest = new Map<string, { hash: string | null; source?: "subagent" }>();
 		for (const r of this.records) {
-			if (r.t === "snap" && (r.turn === turn || r.ts >= since) && r.ts < (first.get(r.path)?.ts ?? Infinity)) first.set(r.path, r);
+			const inRange = r.turn === turn || r.ts >= since;
+			if (r.t === "after") {
+				latest.set(r.path, r);
+				if (inRange && r.source === "subagent") unattributedPaths.add(r.path);
+			} else if (r.t === "rewind") {
+				for (const f of r.files) latest.set(f.path, f);
+			} else if (r.t === "snap" && inRange) {
+				// Os snapshots antigos com checkout também vieram de uma varredura.
+				if (r.source === "subagent" || r.checkout) unattributedPaths.add(r.path);
+				if (r.checkout) checkouts.set(r.path, r.checkout);
+				if (r.ts < (first.get(r.path)?.ts ?? Infinity)) first.set(r.path, r);
+			}
 		}
 		const plans: Plan[] = [];
 		for (const [path, snap] of first) {
-			if (snap.checkout && !safeCheckoutPath(snap.checkout, path)) continue;
+			const checkout = checkouts.get(path);
+			if (checkout && !safeCheckoutPath(checkout, path)) continue;
 			const target = snap.skipped ? undefined : snap.before;
 			const current = hashOf(path);
 			if (target !== undefined && current === target) continue;
-			const expected = this.expected(path);
-			// Nunca mudou com sucesso pelo agente e está igual ao snapshot: nada a fazer (acima).
+			const last = latest.get(path);
+			const expected = last?.hash;
 			const conflict = expected !== undefined && current !== expected;
-			plans.push({ path, ...(snap.checkout ? { checkout: snap.checkout } : {}), target, current, expected, conflict });
+			const unattributed = unattributedPaths.has(path) || last?.source === "subagent";
+			plans.push({ path, checkout, target, current, expected, conflict, unattributed });
 		}
 		return plans;
 	}
 
-	/** Aplica o plano; devolve os caminhos tocados com o hash resultante. */
-	apply(plans: Plan[]): { path: string; hash: string | null }[] {
+	/** Não toca arquivos cujo estado já não é o revisado, mesmo após confirmação. */
+	apply(plans: Plan[]) {
 		const done: { path: string; hash: string | null }[] = [];
+		const skipped: string[] = [];
 		for (const p of plans) {
-			if (p.target === undefined || (p.checkout && !safeCheckoutPath(p.checkout, p.path))) continue;
-			if (p.target === null) {
+			if (p.target === undefined) continue;
+			const blob = p.target === null ? null : this.blob(p.target);
+			const stillReviewed = () => {
+				try {
+					return (!p.checkout || safeCheckoutPath(p.checkout, p.path)) && hashOf(p.path) === p.current;
+				} catch {
+					return false;
+				}
+			};
+			if (blob !== null && p.current === null && stillReviewed()) mkdirSync(dirname(p.path), { recursive: true });
+			if (!stillReviewed()) {
+				skipped.push(p.path);
+				continue;
+			}
+			if (blob === null) {
 				try {
 					unlinkSync(p.path);
 				} catch (error: any) {
 					if (error?.code !== "ENOENT") throw error;
+					skipped.push(p.path);
+					continue;
 				}
 			} else {
-				mkdirSync(dirname(p.path), { recursive: true });
-				writeFileSync(p.path, this.blob(p.target));
+				writeFileSync(p.path, blob);
 			}
 			done.push({ path: p.path, hash: p.target });
 		}
-		return done;
+		return { done, skipped };
 	}
 }
 
@@ -230,55 +247,99 @@ export interface WriterCheckpoint {
 const MAX_SCAN_BYTES = 64 * 1024 * 1024;
 const MAX_SCAN_PATHS = 10_000;
 
-function git(cwd: string, ...args: string[]): string {
-	return new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(execFileSync("git", args, {
-		cwd, maxBuffer: 2 * 1024 * 1024, timeout: 5000, stdio: ["ignore", "pipe", "pipe"],
-	}));
+const SCAN_BUDGET_MS = 3000;
+const execFileAsync = promisify(execFile);
+
+async function withScanBudget<T>(dispatch: AbortSignal | undefined, scan: (signal: AbortSignal) => Promise<T>): Promise<T> {
+	const timeout = AbortSignal.timeout(SCAN_BUDGET_MS);
+	const signal = dispatch ? AbortSignal.any([dispatch, timeout]) : timeout;
+	const abortError = () => new Error(dispatch?.aborted ? "dispatch cancelled" : "3s scan budget exceeded");
+	if (signal.aborted) throw abortError();
+	let onAbort!: () => void;
+	const aborted = new Promise<never>((_, reject) => {
+		onAbort = () => reject(abortError());
+		signal.addEventListener("abort", onAbort, { once: true });
+	});
+	try {
+		return await Promise.race([aborted, scan(signal)]);
+	} catch {
+		if (signal.aborted) throw abortError();
+		throw new Error("checkout unavailable or scan limits exceeded");
+	} finally {
+		signal.removeEventListener("abort", onAbort);
+	}
 }
 
-function gitPaths(root: string, ...args: string[]): string[] {
-	return git(root, "ls-files", "-z", ...args).split("\0").filter(Boolean);
+async function git(cwd: string, signal: AbortSignal, ...args: string[]): Promise<string> {
+	const { stdout } = await execFileAsync("git", args, { cwd, signal, encoding: "buffer", maxBuffer: 2 * 1024 * 1024, killSignal: "SIGKILL" });
+	return new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(stdout);
 }
 
-function visiblePaths(root: string): string[] {
-	return gitPaths(root, "--cached", "--others", "--exclude-standard");
+async function gitPaths(root: string, signal: AbortSignal, ...args: string[]): Promise<string[]> {
+	return (await git(root, signal, "ls-files", "-z", ...args)).split("\0").filter(Boolean);
+}
+
+function visiblePaths(root: string, signal: AbortSignal): Promise<string[]> {
+	return gitPaths(root, signal, "--cached", "--others", "--exclude-standard");
+}
+
+// Não segue links. null indica caminho ausente; undefined indica caminho não regular.
+async function scanPath(root: string, file: string, signal: AbortSignal) {
+	const rel = relative(root, file);
+	if (!rel || rel === ".." || rel.startsWith(`..${sep}`) || isAbsolute(rel)) return;
+	let path = root;
+	try {
+		if (await realpath(root) !== root) return;
+		const parts = rel.split(sep);
+		for (const [i, part] of parts.entries()) {
+			signal.throwIfAborted();
+			path = join(path, part);
+			const st = await lstat(path);
+			if (i === parts.length - 1) return st.isFile() ? st : undefined;
+			if (!st.isDirectory()) return;
+		}
+	} catch (error: any) {
+		if (path !== root && error?.code === "ENOENT") return null;
+		throw error;
+	}
 }
 
 // O tamanho pode mudar entre lstat e open. Não leia além do limite da captura.
-function readScanFile(file: string, remaining: number): Buffer | undefined {
-	const fd = openSync(file, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+async function readScanFile(file: string, remaining: number, signal: AbortSignal): Promise<Buffer | undefined> {
+	const fd = await open(file, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
 	try {
-		const st = fstatSync(fd);
+		signal.throwIfAborted();
+		const st = await fd.stat();
 		if (!st.isFile() || st.size > MAX_FILE_BYTES) return;
 		if (st.size > remaining) throw new Error("writer checkpoint byte limit exceeded");
 		const buf = Buffer.allocUnsafe(st.size);
 		let read = 0;
 		while (read < buf.length) {
-			const n = readSync(fd, buf, read, buf.length - read, null);
-			if (!n) return;
-			read += n;
+			signal.throwIfAborted();
+			const { bytesRead } = await fd.read(buf, read, buf.length - read, null);
+			if (!bytesRead) return;
+			read += bytesRead;
 		}
-		if (fstatSync(fd).size === st.size) return buf;
+		signal.throwIfAborted();
+		if ((await fd.stat()).size === st.size) return buf;
 	} finally {
-		closeSync(fd);
+		await fd.close();
 	}
 }
 
-function scanFiles<T>(root: string, paths: Set<string>, save: (buf: Buffer) => T): Map<string, T | null | undefined> {
+async function scanFiles<T>(root: string, paths: Set<string>, signal: AbortSignal, save: (buf: Buffer) => T): Promise<Map<string, T | null | undefined>> {
 	if (paths.size > MAX_SCAN_PATHS) throw new Error("writer checkpoint path limit exceeded");
 	let bytes = 0;
 	const files = new Map<string, T | null | undefined>();
 	for (const name of paths) {
+		signal.throwIfAborted();
 		const file = join(root, name);
-		if (!safeCheckoutPath(root, file)) {
-			files.set(name, undefined);
-			continue;
-		}
-		const st = lstatSync(file, { throwIfNoEntry: false });
-		if (!st) files.set(name, null);
-		else if (st.size > MAX_FILE_BYTES) files.set(name, undefined);
+		const st = await scanPath(root, file, signal);
+		if (st === null) files.set(name, null);
+		else if (!st || st.size > MAX_FILE_BYTES) files.set(name, undefined);
 		else {
-			const buf = readScanFile(file, MAX_SCAN_BYTES - bytes);
+			signal.throwIfAborted();
+			const buf = await readScanFile(file, MAX_SCAN_BYTES - bytes, signal);
 			if (buf) bytes += buf.length;
 			files.set(name, buf && save(buf));
 		}
@@ -286,34 +347,77 @@ function scanFiles<T>(root: string, paths: Set<string>, save: (buf: Buffer) => T
 	return files;
 }
 
-/** Captura antes do spawn; persiste só arquivos que mudaram, inclusive se o filho falhar. */
-export function captureWriter(cwd: string, checkpoint: WriterCheckpoint): (() => void) | undefined {
-	try {
-		const root = realpathSync(git(cwd, "rev-parse", "--show-toplevel").replace(/\n$/, ""));
-		const ts = Date.now();
-		const names = visiblePaths(root);
-		// Um ignorado já existente pode entrar no índice (git add -f). Não marque como novo.
-		const ignored = gitPaths(root, "--others", "--ignored", "--exclude-standard", "--directory");
-		if (names.length + ignored.length > MAX_SCAN_PATHS) return;
-		const excluded = new Set([...ignored, ...names.filter((name) => name.endsWith("/"))]);
-		const wasExcluded = (name: string) => {
-			for (let part = name; part !== "."; part = dirname(part)) {
-				if (excluded.has(part) || excluded.has(`${part}/`)) return true;
-			}
-			return false;
-		};
-		const before = scanFiles(root, new Set(names), (buf) => buf);
-		return () => {
+type WriterChange = { path: string; before: { buf: Buffer; hash: string } | null; after: string | null };
+
+async function recordWriter(checkpoint: WriterCheckpoint, checkout: string, ts: number, changes: WriterChange[], signal?: AbortSignal) {
+	if (!changes.length) return;
+	const { root, sessionId, turn, prompt } = checkpoint;
+	const dir = join(root, sessionId);
+	const blobs = join(dir, "blobs");
+	await mkdir(blobs, { recursive: true });
+	const records: Rec[] = [{ t: "turn", turn, ts, prompt }];
+	const saved = new Set<string>();
+	for (const { path, before, after } of changes) {
+		signal?.throwIfAborted();
+		if (before && !saved.has(before.hash)) {
+			// Publica apenas blobs completos, inclusive se outra gravação usar o mesmo hash.
+			const tmp = join(blobs, `.${randomUUID()}`);
 			try {
-				const after = scanFiles(root, new Set([...before.keys(), ...visiblePaths(root)]), sha);
-				const store = new Store(checkpoint.root, checkpoint.sessionId);
-				for (const [name, hash] of after) {
-					if (hash === undefined || (!before.has(name) && wasExcluded(name))) continue;
-					const old = before.has(name) ? before.get(name) : null;
-					if (old === undefined || (old === null ? null : sha(old)) === hash) continue;
-					store.recordWriter(checkpoint.turn, checkpoint.prompt, root, ts, join(root, name), old, hash);
-				}
-			} catch { /* best-effort: não muda o resultado do subagente */ }
-		};
-	} catch { return undefined; /* checkout ausente ou captura indisponível */ }
+				await writeFile(tmp, before.buf, { signal });
+				await rename(tmp, join(blobs, before.hash));
+			} catch (error) {
+				await unlink(tmp).catch(() => {});
+				throw error;
+			}
+			saved.add(before.hash);
+		}
+		records.push({ t: "snap", turn, ts, path, checkout, before: before?.hash ?? null, source: "subagent" });
+		records.push({ t: "after", turn, ts: Date.now(), path, hash: after, source: "subagent" });
+	}
+	const data = Buffer.from(records.map((r) => `${JSON.stringify(r)}\n`).join(""));
+	const index = await open(join(dir, "index.jsonl"), "a");
+	try {
+		signal?.throwIfAborted();
+		// Um append, sem intercalar linhas com os checkpoints do pai ou de outro job.
+		if ((await index.write(data)).bytesWritten !== data.length) throw new Error("incomplete checkpoint index write");
+	} finally {
+		await index.close();
+	}
+}
+
+/** Captura antes do spawn; persiste só arquivos que mudaram, inclusive se o filho falhar. */
+export async function captureWriter(cwd: string, checkpoint: WriterCheckpoint, dispatch?: AbortSignal): Promise<() => Promise<void>> {
+	const { root, ts, before, excluded } = await withScanBudget(dispatch, async (signal) => {
+		const root = await realpath((await git(cwd, signal, "rev-parse", "--show-toplevel")).replace(/\n$/, ""));
+		const ts = Date.now();
+		const names = await visiblePaths(root, signal);
+		// Um ignorado já existente pode entrar no índice (git add -f). Não marque como novo.
+		const ignored = await gitPaths(root, signal, "--others", "--ignored", "--exclude-standard", "--directory");
+		if (names.length + ignored.length > MAX_SCAN_PATHS) throw new Error("writer checkpoint path limit exceeded");
+		const excluded = new Set([...ignored, ...names.filter((name) => name.endsWith("/"))]);
+		const before = await scanFiles(root, new Set(names), signal, (buf) => ({ buf, hash: sha(buf) }));
+		return { root, ts, before, excluded };
+	});
+	const wasExcluded = (name: string) => {
+		for (let part = name; part !== "."; part = dirname(part)) {
+			if (excluded.has(part) || excluded.has(`${part}/`)) return true;
+		}
+		return false;
+	};
+	return async () => {
+		const after = await withScanBudget(dispatch, async (signal) =>
+			scanFiles(root, new Set([...before.keys(), ...await visiblePaths(root, signal)]), signal, sha));
+		const changes: WriterChange[] = [];
+		for (const [name, hash] of after) {
+			if (hash === undefined || (!before.has(name) && wasExcluded(name))) continue;
+			const old = before.has(name) ? before.get(name) : null;
+			if (old === undefined || (old?.hash ?? null) === hash) continue;
+			changes.push({ path: join(root, name), before: old, after: hash });
+		}
+		try {
+			await recordWriter(checkpoint, root, ts, changes, dispatch);
+		} catch {
+			throw new Error(dispatch?.aborted ? "dispatch cancelled" : "checkpoint could not be saved");
+		}
+	};
 }
