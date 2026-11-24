@@ -35,8 +35,8 @@
  *
  * Desliga: AGENT_CACHE_KEEPER=0. Teste: AGENT_CACHE_KEEPER_TEST=1 faz um refresh já no agent_settled.
  */
-import { createHash } from "node:crypto";
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { createHash, randomUUID } from "node:crypto";
+import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
@@ -49,6 +49,7 @@ const DEFAULT_WINDOW_S = 3 * 3600; // ótimo nas pausas do Gabriel pesadas por c
 const MAX_WINDOW_S = 24 * 3600;
 const MIN_SAMPLES = 30;
 const MAX_SAMPLES = 400;
+const SPEND_RETENTION_MS = 30 * 24 * 3600 * 1000;
 
 type Gap = { s: number; c?: 1; k?: number }; // pausa (s); c=1: censurada (fechou sem voltar); k: tokens do contexto (peso)
 type Payload = Record<string, any>;
@@ -108,6 +109,8 @@ export default function cacheKeeper(pi: ExtensionAPI) {
   pi.on("cache_warming_decision", async () => ({ action: "stop" as const }));
   if (process.env.AGENT_CACHE_KEEPER === "0") return;
   const child = isChild();
+  const configuredSessionUsd = Number(process.env.AGENT_CACHE_KEEPER_MAX_SESSION_USD ?? 5);
+  const maxSessionUsd = Number.isFinite(configuredSessionUsd) && configuredSessionUsd >= 0 ? configuredSessionUsd : 5;
 
   // H — vale também em subagentes: chave do prefixo estável quando falta ou é por sessão de filho.
   pi.on("before_provider_request", (event: { payload: Payload }) => {
@@ -147,7 +150,8 @@ export default function cacheKeeper(pi: ExtensionAPI) {
   let idleSince: number | undefined;
   let idleTokens: number | undefined;
   let warmUntil: number | undefined; // até quando o cache está garantido
-  let stats = { pings: 0, misses: 0, cost: 0 };
+  let stats = { pings: 0, misses: 0, cost: 0, estimatedCost: 0 };
+  let sessionId: string | undefined;
   let lastSkip: string | undefined;
   let ctxRef: ExtensionContext | undefined;
   let prevFp: { fp: ReturnType<typeof fingerprint>; at: number; ttl: number } | undefined;
@@ -170,9 +174,40 @@ export default function cacheKeeper(pi: ExtensionAPI) {
 
   }
 
+  const keeperDir = join(process.env.PI_CODING_AGENT_DIR || join(homedir(), ".agent"), "cache-keeper");
+  const spendDir = join(keeperDir, "spend");
+  const spendPath = (id: string) => join(spendDir, createHash("sha256").update(id).digest("hex") + ".json");
+  const loadSpend = (id: string | undefined): number => {
+    if (id === undefined) return 0;
+    try {
+      const { estimatedCost } = JSON.parse(readFileSync(spendPath(id), "utf8"));
+      return Number.isFinite(estimatedCost) && estimatedCost >= 0 ? estimatedCost : 0;
+    } catch { return 0; }
+  };
+  const saveSpend = (id: string, estimatedCost: number) => {
+    const path = spendPath(id);
+    const tmp = `${path}.${randomUUID()}.tmp`;
+    try {
+      mkdirSync(spendDir, { recursive: true });
+      writeFileSync(tmp, JSON.stringify({ estimatedCost }) + "\n");
+      renameSync(tmp, path);
+    } catch {
+      try { unlinkSync(tmp); } catch { /* best-effort */ }
+    }
+  };
+  const pruneSpend = () => {
+    const cutoff = Date.now() - SPEND_RETENTION_MS;
+    try {
+      for (const entry of readdirSync(spendDir, { withFileTypes: true })) {
+        if (!entry.isFile() || !/^[a-f0-9]{64}\.json(?:\.[a-f0-9-]{36}\.tmp)?$/.test(entry.name)) continue;
+        const path = join(spendDir, entry.name);
+        try { if (statSync(path).mtimeMs < cutoff) unlinkSync(path); } catch { /* best-effort */ }
+      }
+    } catch { /* diretório ainda não existe ou não pôde ser lido */ }
+  };
+
   const store = (cwd: string) => {
-    const base = process.env.PI_CODING_AGENT_DIR || join(homedir(), ".agent");
-    const dir = join(base, "cache-keeper");
+    const dir = keeperDir;
     mkdirSync(dir, { recursive: true });
     return join(dir, createHash("sha1").update(cwd).digest("hex").slice(0, 12) + ".json");
   };
@@ -246,6 +281,7 @@ export default function cacheKeeper(pi: ExtensionAPI) {
 
   // Request real → guarda; refresh do keeper → troca pelo último payload real com max_tokens 1.
   pi.on("before_provider_request", (event: { payload: Payload }, ctx?: ExtensionContext) => {
+    if (ctx) syncSession(ctx);
     const p = event.payload;
     if (pinging) return;
     requestBreak = undefined;
@@ -282,6 +318,12 @@ export default function cacheKeeper(pi: ExtensionAPI) {
     warmUntil = last.at + ttlOf(p) * 1000;
   }
 
+  const pingPlan = (ctx: ExtensionContext, payload: Payload) => warmPlan(payload, {
+    model: ctx.model, promptTokens: ctx.getContextUsage?.()?.tokens ?? 0, ttlSeconds: ttlOf(payload),
+    maxPingUsd: MAX_PING_USD, sessionSpentUsd: stats.estimatedCost, maxSessionUsd,
+  });
+  const sessionCapLabel = "teto da sessão";
+
   async function refresh(ctx: ExtensionContext): Promise<boolean> {
     const model: any = ctx.model;
     if (!last || !model) return false;
@@ -298,12 +340,14 @@ export default function cacheKeeper(pi: ExtensionAPI) {
       return false;
     }
     const ttl = ttlOf(snapshot);
-    const plan = warmPlan(snapshot, { model, promptTokens: ctx.getContextUsage?.()?.tokens ?? 0, ttlSeconds: ttl, maxPingUsd: MAX_PING_USD });
+    const plan = pingPlan(ctx, snapshot);
     if (plan.action === "skip") {
-
-      lastSkip = plan.reason;
+      lastSkip = plan.reason === "session-cost-cap" ? sessionCapLabel : plan.reason;
       return false;
     }
+    // Reserve before sending: even a failed request may have reached the provider.
+    stats.estimatedCost += plan.worstCaseUsd;
+    if (sessionId !== undefined) saveSpend(sessionId, stats.estimatedCost);
     const refreshCycle = cycle;
     pinging = true;
     let kill: ReturnType<typeof setTimeout> | undefined;
@@ -356,6 +400,11 @@ export default function cacheKeeper(pi: ExtensionAPI) {
       status(`cache até ${hhmm(base)} · ❄ (${THREADS_SKIP})` + (idleAt ? ` · resumo ${hhmm(idleAt)}` : ""));
       return;
     }
+    if (pingPlan(ctx, last.payload).reason === "session-cost-cap") {
+      planIdleCompaction(ctx, at);
+      status(`cache até ${hhmm(base)} · ❄ (${sessionCapLabel})` + (idleAt ? ` · resumo ${hhmm(idleAt)}` : ""));
+      return;
+    }
     if (at - idleSince > window) {
 
       planIdleCompaction(ctx, at);
@@ -366,7 +415,8 @@ export default function cacheKeeper(pi: ExtensionAPI) {
     const scheduledCycle = cycle;
     timer = setTimeout(async () => {
       timer = undefined;
-      if (idleSince === undefined) return;
+      syncSession(ctx);
+      if (scheduledCycle !== cycle || idleSince === undefined) return;
       const ok = await refresh(ctx);
       if (scheduledCycle !== cycle) return;
       if (!ok) {
@@ -382,7 +432,11 @@ export default function cacheKeeper(pi: ExtensionAPI) {
   }
 
   let unbindPolicy: (() => void) | undefined;
-  pi.on("session_start", (_e, ctx) => {
+  function syncSession(ctx: ExtensionContext) {
+    const nextId = ctx.sessionManager?.getSessionId?.();
+    if (nextId !== undefined && nextId !== sessionId) resetSession(ctx);
+  }
+  function resetSession(ctx: ExtensionContext) {
     unbindPolicy?.();
     cycle += 1;
     refreshController?.abort();
@@ -399,11 +453,16 @@ export default function cacheKeeper(pi: ExtensionAPI) {
     deferredTurns = 0;
     idleCompacting = false;
     decidido = new WeakMap();
-    stats = { pings: 0, misses: 0, cost: 0 };
+    sessionId = ctx.sessionManager?.getSessionId?.();
+    stats = { pings: 0, misses: 0, cost: 0, estimatedCost: loadSpend(sessionId) };
     lastSkip = undefined;
     ctxRef = ctx;
     epoch.sync(branchOf(ctx));
     unbindPolicy = bindSessionCachePolicy(ctx, { cacheState, deferCompaction, idleCompacting: () => idleCompacting });
+  }
+  pi.on("session_start", (_e, ctx) => {
+    pruneSpend();
+    resetSession(ctx);
   });
 
   // J — quebra de cache com causa: resposta que leu < 50% do prompt depois de um request anterior.
@@ -499,6 +558,7 @@ export default function cacheKeeper(pi: ExtensionAPI) {
   // Troca de modelo (inclusive restore/alias para outro id): o payload guardado não serve mais.
   pi.on("model_select", (event: any) => { if (last && !sameModel(last.model, event?.model)) forget(); });
   pi.on("agent_start", (_e, ctx) => {
+    syncSession(ctx);
     ctxRef = ctx;
     clear();
     if (idleSince !== undefined) saveGap(ctx.cwd, { s: Math.round((Date.now() - idleSince) / 1000), k: idleTokens });
@@ -506,13 +566,16 @@ export default function cacheKeeper(pi: ExtensionAPI) {
     status(undefined);
   });
   pi.on("agent_settled", async (_e, ctx) => {
+    syncSession(ctx);
     ctxRef = ctx;
     if (!last) return;
     idleSince = Date.now();
     idleTokens = ctx.getContextUsage?.()?.tokens ?? undefined;
     if (process.env.AGENT_CACHE_KEEPER_TEST === "1") {
       const delay = Number(process.env.AGENT_CACHE_KEEPER_TEST_DELAY ?? 0) * 1000;
+      const testCycle = cycle;
       if (delay) await new Promise((r) => setTimeout(r, delay));
+      if (testCycle !== cycle) return;
       const ok = await refresh(ctx);
       process.stderr.write(`cache-keeper test: ${ok ? "hit" : "miss"} (${stats.pings} ping)${lastSkip ? ` skip=${lastSkip}` : ""}\n`);
       lastSkip = undefined;
@@ -539,6 +602,7 @@ export default function cacheKeeper(pi: ExtensionAPI) {
   pi.registerCommand("cache", {
     description: "Estado do cache-keeper: janela de aquecimento, pings e pausas registradas",
     handler: async (_args: string, ctx: ExtensionContext) => {
+      syncSession(ctx);
       const gaps = loadGaps(ctx.cwd);
       const ttl = last ? ttlOf(last.payload) : 3600;
       const win = warmWindow(gaps, ttl);
@@ -546,6 +610,8 @@ export default function cacheKeeper(pi: ExtensionAPI) {
         `TTL ${ttl >= 3600 ? "1 h" : "5 min"} · janela de aquecimento ${(win / 3600).toFixed(1)} h${gaps.length < MIN_SAMPLES ? ` (padrão; ${gaps.length}/${MIN_SAMPLES} pausas registradas)` : ` (${gaps.length} pausas deste projeto)`}`,
         `compactação ociosa: ${idleEnabled ? `≥${Math.round(idleMin / 1000)}k tokens${idleAt ? ` · agendada ${hhmm(idleAt)}` : ""}` : "desligada (AGENT_IDLE_COMPACT=0)"}`,
         `pings nesta sessão: ${stats.pings} (${stats.misses} sem acerto, US$${stats.cost.toFixed(4)})` + (warmUntil ? ` · cache garantido até ${hhmm(warmUntil)}` : ""),
+        `orçamento de pings: US$${stats.estimatedCost.toFixed(4)} estimados / US$${maxSessionUsd}`
+          + (stats.estimatedCost >= maxSessionUsd || (last && pingPlan(ctx, last.payload).reason === "session-cost-cap") ? ` (${sessionCapLabel})` : ""),
         ...(dropLabel() ? [dropLabel()!] : []),
       ].join("\n"), "info");
     },

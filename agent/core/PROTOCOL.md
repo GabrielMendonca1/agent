@@ -37,7 +37,8 @@ automaticamente. Sem ele, scout=apoio e os demais papéis=principal. Ordem de
 decisão do modelo de um papel: config do papel em `/models` > frontmatter do
 papel > slot. Não há classificador de dispatch. Sem modelo de apoio, o slot
 `apoio` cai no principal: herdam o modelo principal os papéis sem config própria
-em `/models` e sem `model` no frontmatter.
+em `/models` e sem `model` no frontmatter. Se o apoio estiver sem modelo, a
+sessão principal avisa uma vez por processo e sugere configurá-lo em `/models`.
 
 `gemini` com `runner: agy` não usa slots, tiers ou allowlists do Pi. Sua
 preferência opcional no `agent-models.json` do perfil é `agyModels.gemini`, com
@@ -58,8 +59,13 @@ legado de workflow.md (até 8 KB; fonte acima de 64 KB é ignorada).
 `extensions/brain-live/cache-keeper.ts`, pela compactação e pelo runner de
 subagentes: plano de ping (`warmPlan`), adiamento da compactação por limiar
 (`compactionDecision`), compactação ociosa, chave `prompt_cache_key` da OpenAI,
-causa de quebra de cache e leque escalonado. Não guarda texto de payload. Custos,
-gatilhos e variáveis: `docs/setup.md`, "Custo: o que roda sem prompt".
+causa de quebra de cache e leque escalonado. Não guarda texto de payload.
+`warmPlan` limita o custo estimado por ping e pelo saldo da sessão
+(`AGENT_CACHE_KEEPER_MAX_SESSION_USD`, padrão US$ 5). O teto vale por sessão,
+inclusive ao retomá-la: o keeper registra cada tentativa no perfil antes do envio
+e remove registros com mais de 30 dias ao iniciar uma sessão.
+Custos, gatilhos e variáveis: `docs/setup.md`,
+"Custo: o que roda sem prompt".
 
 ## Compatibilidade de leitura
 

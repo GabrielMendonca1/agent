@@ -8,11 +8,11 @@ function machine() {
   let state = initialState();
   let id = 0;
   const send = (event) => { const outcome = next(state, event); state = outcome.state; return outcome; };
-  const call = (input = { command: "ls dist/" }, content = "missing") => {
+  const call = (input = { command: "ls dist/" }, content = "missing", isError = false) => {
     const toolCallId = String(++id);
     const outcome = send({ type: "tool_call", toolCallId, toolName: "bash", input });
     if (outcome.stop) return outcome;
-    return send({ type: "tool_result", toolCallId, isError: false, content: [{ type: "text", text: content }] });
+    return send({ type: "tool_result", toolCallId, isError, content: [{ type: "text", text: content }] });
   };
   return { send, call };
 }
@@ -25,6 +25,38 @@ test("nudge at 3, block sixth attempt", () => {
     assert.equal(outcome.stop, undefined);
   }
   assert.equal(m.call().stop, true);
+});
+
+test("periods 2 and 3 nudge once; only all-error cycles block the continuing call", () => {
+  for (const keys of [["A", "B"], ["A", "B", "A"]]) {
+    for (const mode of ["success", "mixed", "error"]) {
+      const m = machine();
+      const call = (command) => m.call({ command }, "same result", mode === "error" || (mode === "mixed" && command === "A"));
+      call("prefix");
+      for (let i = 0; i < 5 * keys.length; i++) {
+        const outcome = call(keys[i % keys.length]);
+        assert.equal(outcome.nudge, i + 1 === 3 * keys.length);
+        assert.equal(outcome.stop, undefined);
+      }
+      assert.equal(call(keys[0]).stop, mode === "error" ? true : undefined);
+      assert.equal(call("different").stop, undefined);
+    }
+  }
+});
+
+test("changed hashes break cycles and a user message clears cycle history", () => {
+  const m = machine();
+  for (let i = 0; i < 6; i++) {
+    assert.equal(m.call({ command: "A" }).nudge, false);
+    assert.equal(m.call({ command: "B" }, `result ${i}`).nudge, false);
+  }
+  for (let i = 0; i < 5; i++) {
+    m.call({ command: "C" }, "error", true);
+    m.call({ command: "D" }, "error", true);
+  }
+  assert.equal(m.call({ command: "C" }).stop, true);
+  m.send({ type: "before_agent_start", messageType: "user" });
+  assert.equal(m.call({ command: "C" }).stop, undefined);
 });
 
 test("new user run resets repetition and empty turns", () => {

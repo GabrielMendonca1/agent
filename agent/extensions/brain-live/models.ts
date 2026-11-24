@@ -17,7 +17,7 @@
 import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
 import { getSelectListTheme } from "@earendil-works/pi-coding-agent";
 import { Container, fuzzyFilter, Input, Key, matchesKey, type SelectItem, SelectList, Spacer, Text, truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
-import { getAgentPreferences, runtimeEnabled, setAgentPreferences } from "../../core/client.mjs";
+import { getAgentPreferences, isChild, runtimeEnabled, setAgentPreferences } from "../../core/client.mjs";
 import { AGY_FAMILIES, AGY_THINKING, agyFamilyRef, DEFAULT_GEMINI_MODEL, getGeminiPreference, resolveAgyFamily, setGeminiPreference } from "./lib/tiers.ts";
 import { loadRoleModels, loadTiers, MODELS_FILE, ROLE_NAMES, type RoleModelChoice, saveTiers, setRolePreference, TIER_NAMES, type Tier, type TierName, type TiersFile } from "./lib/tiers.ts";
 import { type AgentConfig, discoverAgents } from "./subagent/agents.ts";
@@ -161,7 +161,18 @@ interface Row {
 	extra: () => string[]; // colunas à direita (origem · thinking / quality · size)
 }
 
+const supportWarningKey = Symbol.for("agent.models.support-warning-shown");
+const processFlags = globalThis as typeof globalThis & Record<symbol, boolean | undefined>;
+
 export default function (pi: ExtensionAPI) {
+	pi.on("session_start", (_event, ctx) => {
+		if (!runtimeEnabled() || isChild() || processFlags[supportWarningKey]) return;
+		try {
+			if (getAgentPreferences().supportModel) return;
+			processFlags[supportWarningKey] = true;
+			ctx.ui.notify("Modelo de apoio não configurado: sem uma escolha própria, o scout herda o modelo principal. Configure o apoio em /models.", "warning");
+		} catch { /* Aviso de custo não impede a abertura da sessão. */ }
+	});
 	pi.registerCommand("models", {
 		description: "Painel de tiers de modelo (default · fast · standard · deep · visual · image)",
 		handler: async (_args, ctx) => {

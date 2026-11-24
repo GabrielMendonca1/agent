@@ -285,6 +285,10 @@ Nenhum patch é necessário para as extensões carregarem; eles dão funcionalid
 - O banner "pi has joined Earendil" não é automático; só aparece por comando.
 - Custo em USD no rodapé é preço de lista calculado localmente, não fatura. Com assinatura, representa consumo de cota.
 
+## Proteção contra loops de ferramentas
+
+O loop guard avisa após 3 resultados idênticos seguidos, ou 3 repetições de um ciclo de 2 ou 3 chamadas com os mesmos argumentos e resultados. Após 5 repetições, bloqueia a sexta tentativa da mesma chamada. Para ciclos, só bloqueia a chamada que iniciaria a sexta repetição se todas as chamadas do ciclo retornaram erro; se houve sucesso, só avisa. Resultados diferentes quebram a repetição, chamadas aninhadas não contam e uma nova mensagem sua limpa o histórico. Para desligar: `AGENT_LOOP_GUARD=0`.
+
 ## Custo: o que roda sem prompt
 
 Chamadas pagas que não saem de uma mensagem sua. Todas usam a sua conta ou chave do provider.
@@ -304,7 +308,7 @@ Cache-keeper em detalhe:
 
 - Só a sessão principal aquece; subagentes não. Só Anthropic Messages API, com o mesmo provider/modelo do último request real.
 - Janela de aquecimento: 3h de ociosidade com menos de 30 pausas registradas no projeto; depois, aprendida das pausas, até 24h. Pausas ficam em `<perfil>/cache-keeper/<hash do cwd>.json`.
-- Teto por ping: `AGENT_CACHE_KEEPER_MAX_PING_USD` (padrão 0.5), calculado a preço de leitura de cache. Um ping que erra o cache paga escrita antes de parar. Não há teto por sessão: o custo total é pings × janela.
+- Teto por ping: `AGENT_CACHE_KEEPER_MAX_PING_USD` (padrão US$ 0,50). Teto por sessão: `AGENT_CACHE_KEEPER_MAX_SESSION_USD` (padrão US$ 5; `0` desliga os pings). A cada tentativa, o keeper soma a estimativa de leitura de cache e saída máxima; não agenda outro ping se o saldo não cobrir a próxima estimativa. O teto vale por sessão, inclusive ao retomá-la. O keeper guarda o gasto estimado no perfil e remove registros com mais de 30 dias ao iniciar uma sessão. O orçamento aparece no comando `/cache`; o rodapé indica quando o teto impede o aquecimento. É um teto de custo estimado, não de cobrança: um ping que erra o cache paga escrita antes de parar.
 - Thinking com budget fixo B: o ping usa `max_tokens` B+1 e só sai se o pior caso couber no teto e em 25% da perda evitada; senão é pulado. Sem thinking, ou thinking adaptive, `max_tokens` 1.
 - Para no primeiro ping sem acerto, em qualquer entrada sua e no fim da sessão.
 - Message threads (chave de API Anthropic, padrão do Pi em `api.anthropic.com` desde a 1.5.2, ou `compat.supportsMessageThreads`): não aquece. O keeper guarda o request completo (o hook roda antes de o provider aplicar a thread), mas o request seguinte sai como `thread: continue` só com as mensagens novas, e o ping sairia completo e sem `thread`. Que um acerte o cache do outro não foi verificado com chamada real; um erro pagaria escrita do contexto inteiro. A barra mostra `cache ❄ (message-threads)` e a compactação ociosa segue o fim do TTL. A lane OAuth não usa threads e continua aquecendo.
@@ -361,7 +365,7 @@ Ordem de decisão:
 2. Frontmatter do papel (`model`, `thinking`).
 3. Slot: `.agent/rules.md`, com fallback para `.agent/workflow.md`; senão scout=apoio e os demais=principal.
 
-O slot `apoio` usa o modelo de apoio; `principal`, o modelo da sessão. Não há classificador de dispatch. Sem modelo de apoio configurado, o slot `apoio` cai no modelo principal: papéis sem config própria em `/models` e sem `model` no frontmatter herdam o principal; os demais seguem os itens 1 e 2. Risco de custo: configure o apoio em `/models`.
+O slot `apoio` usa o modelo de apoio; `principal`, o modelo da sessão. Não há classificador de dispatch. Sem modelo de apoio configurado, o slot `apoio` cai no modelo principal: papéis sem config própria em `/models` e sem `model` no frontmatter herdam o principal; os demais seguem os itens 1 e 2. Na sessão principal, o Agent avisa uma vez por processo se o apoio estiver sem modelo e sugere configurá-lo em `/models`.
 
 O repo não distribui uma lista padrão de modelos por papel. Instalações antigas liam `~/Sistema/Pi/models.json` (ou `$PI_SYSTEM_DIR/Pi/models.json`); o runtime atual não lê esse caminho. Para preservar as escolhas antigas, faça backup e copie a configuração para `<perfil>/agent-models.json`, mantendo `tiers` e `roleModels`. A primeira opção de cada papel é a preferida, com seu `thinking`.
 
