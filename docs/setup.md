@@ -365,7 +365,7 @@ Ordem de decisão:
 2. Frontmatter do papel (`model`, `thinking`).
 3. Slot: `.agent/rules.md`, com fallback para `.agent/workflow.md`; senão scout=apoio e os demais=principal.
 
-O slot `apoio` usa o modelo de apoio; `principal`, o modelo da sessão. Não há classificador de dispatch. Sem modelo de apoio configurado, o slot `apoio` cai no modelo principal: papéis sem config própria em `/models` e sem `model` no frontmatter herdam o principal; os demais seguem os itens 1 e 2. Na sessão principal, o Agent avisa uma vez por processo se o apoio estiver sem modelo e sugere configurá-lo em `/models`.
+O slot `apoio` usa o modelo de apoio; `principal`, o modelo da sessão. Não há classificador de dispatch. Sem modelo de apoio configurado, o slot `apoio` cai no modelo principal: papéis sem config própria em `/models` e sem `model` no frontmatter herdam o principal; os demais seguem os itens 1 e 2. Na sessão principal, o Agent avisa uma vez por processo se o apoio estiver sem modelo e o `scout` não tiver modelo próprio em `/models`, e sugere configurá-lo em `/models`.
 
 O repo não distribui uma lista padrão de modelos por papel. Instalações antigas liam `~/Sistema/Pi/models.json` (ou `$PI_SYSTEM_DIR/Pi/models.json`); o runtime atual não lê esse caminho. Para preservar as escolhas antigas, faça backup e copie a configuração para `<perfil>/agent-models.json`, mantendo `tiers` e `roleModels`. A primeira opção de cada papel é a preferida, com seu `thinking`.
 

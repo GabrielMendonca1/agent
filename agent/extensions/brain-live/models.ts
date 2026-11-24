@@ -168,7 +168,8 @@ export default function (pi: ExtensionAPI) {
 	pi.on("session_start", (_event, ctx) => {
 		if (!runtimeEnabled() || isChild() || processFlags[supportWarningKey]) return;
 		try {
-			if (getAgentPreferences().supportModel) return;
+			// Só avisa quando o scout de fato herdaria o principal: sem apoio e sem modelo próprio do papel.
+			if (getAgentPreferences().supportModel || (loadRoleModels().scout?.length ?? 0) > 0) return;
 			processFlags[supportWarningKey] = true;
 			ctx.ui.notify("Modelo de apoio não configurado: sem uma escolha própria, o scout herda o modelo principal. Configure o apoio em /models.", "warning");
 		} catch { /* Aviso de custo não impede a abertura da sessão. */ }
