@@ -16,6 +16,7 @@ import { fileURLToPath } from "node:url";
 import type { AgentToolResult, ThinkingLevel } from "@earendil-works/pi-agent-core";
 import type { Message } from "@earendil-works/pi-ai";
 import { getAgentDir, getPackageDir, loadProjectContextFiles, SessionManager, withFileMutationQueue } from "@earendil-works/pi-coding-agent";
+import { captureWriter, type WriterCheckpoint } from "../lib/checkpoint-store.ts";
 import { resolveModelRef } from "../lib/tiers.ts";
 import { NO_DELEGATE_ENV, subagentEnv, userCommandEnv } from "../../../core/child-env.mjs";
 import { hasRules, selectProjectContext } from "../../../core/project-context.mjs";
@@ -110,6 +111,7 @@ export interface SubagentDetails {
 
 export interface DispatchDefaults {
 	parentSession?: string;
+	writerCheckpoint?: WriterCheckpoint;
 	model?: string;
 	thinkingLevel?: ThinkingLevel;
 	/** Resource choices snapshotted at launch. */
@@ -501,6 +503,8 @@ export interface RunAgentOptions {
 }
 
 interface ChildRunOptions {
+	stdin?: string;
+	writerCheckpoint?: WriterCheckpoint;
 	runner?: AgentConfig["runner"];
 	args: string[];
 	cwd: string;
@@ -560,6 +564,12 @@ async function runChild(opts: ChildRunOptions): Promise<void> {
 	const agy = opts.runner === "agy";
 	let processFinished: (() => void) | undefined;
 	let releaseSlot: (() => void) | null | undefined;
+	let finishCheckpoint: (() => Promise<void>) | undefined;
+	let checkpointNote: string | undefined;
+	const checkpointSkipped = (phase: string, error: unknown) => {
+		const reason = error instanceof Error ? error.message : String(error);
+		checkpointNote = `Checkpoint skipped (${phase}: ${reason}). /rewind will not cover this dispatch.`;
+	};
 	try {
 		// Slot first: the global ceiling must bound spawned processes, not queued work.
 		if (opts.acquireSlot) {
@@ -586,12 +596,25 @@ async function runChild(opts: ChildRunOptions): Promise<void> {
 		let authRequired = false;
 		let agyOutput = "";
 
+		const invocation = agy ? { command: "agy", args: opts.args } : runnerHooks.getPiInvocation(opts.args);
+		if (opts.writerCheckpoint) {
+			try {
+				finishCheckpoint = await captureWriter(opts.cwd, opts.writerCheckpoint, signal);
+			} catch (error) {
+				checkpointSkipped("pre-scan", error);
+			}
+			if (signal?.aborted) {
+				result.exitCode = 143;
+				result.stopReason = "aborted";
+				result.errorMessage = "Subagent aborted before start";
+				return;
+			}
+		}
 		const exitCode = await new Promise<number>((resolve) => {
-			const invocation = agy ? { command: "agy", args: opts.args } : runnerHooks.getPiInvocation(opts.args);
 			const proc = runnerHooks.spawn(invocation.command, invocation.args, {
 				cwd: opts.cwd,
 				shell: false,
-				stdio: ["ignore", "pipe", "pipe"],
+				stdio: [opts.stdin === undefined ? "ignore" : "pipe", "pipe", "pipe"],
 				env: agy ? userCommandEnv({ ...process.env, [NO_DELEGATE_ENV]: "1" })
 					: subagentEnv({ ...process.env, ...opts.extraEnv }),
 			});
@@ -784,6 +807,12 @@ async function runChild(opts: ChildRunOptions): Promise<void> {
 				finish(1);
 			});
 
+			if (opts.stdin !== undefined && proc.stdin) {
+				// O CLI pode fechar o pipe cedo (por exemplo, quando falha a autenticação).
+				proc.stdin.on("error", () => {});
+				proc.stdin.end(opts.stdin, "utf8");
+			}
+
 			// Handlers existem ANTES dos callbacks: uma falha de tracking não abandona
 			// o processo nem libera o slot antes de observar sua saída.
 			try { processFinished = opts.onProcessStarted?.(opts.agentName); }
@@ -826,7 +855,15 @@ async function runChild(opts: ChildRunOptions): Promise<void> {
 		}
 
 	} finally {
-		try { processFinished?.(); }
+		try {
+			try {
+				if (finishCheckpoint) await finishCheckpoint();
+			} catch (error) {
+				checkpointSkipped("post-scan", error);
+			}
+			if (checkpointNote) result.finalText = [checkpointNote, result.finalText].filter(Boolean).join("\n\n");
+			processFinished?.();
+		}
 		finally { releaseSlot?.(); }
 	}
 }
@@ -834,6 +871,14 @@ async function runChild(opts: ChildRunOptions): Promise<void> {
 function agyEffort(thinking?: string): string | undefined {
 	if (thinking === "minimal" || thinking === "off") return "low";
 	return thinking && ["low", "medium", "high", "xhigh", "max"].includes(thinking) ? thinking : undefined;
+}
+
+function writerCheckpointFor(agent: AgentConfig, opts: RunAgentOptions): WriterCheckpoint | undefined {
+	// sourceCwd só é definido para tarefas transferidas para um worktree isolado.
+	if (opts.prefetch || opts.sourceCwd !== undefined) return;
+	const writes = agent.tools?.length
+		? agent.tools.some((tool) => tool === "edit" || tool === "write") : agent.runner !== "agy";
+	return writes ? opts.dispatchDefaults.writerCheckpoint : undefined;
 }
 
 async function runAgyAgent(agent: AgentConfig, opts: RunAgentOptions): Promise<SingleResult> {
@@ -860,7 +905,9 @@ async function runAgyAgent(agent: AgentConfig, opts: RunAgentOptions): Promise<S
 	const prompt = [agent.systemPrompt.trim(), readOnlyNote, `Task: ${task}`, instructions, guidance].filter(Boolean).join("\n\n");
 	// Writers run with full permissions; --sandbox stays as an extra layer (it blocks writes to <cwd>/.git
 	// but leaves shell, network and isolated-worktree commits working).
-	const args = ["-p", prompt, "--output-format", "json", "--disable-slash-commands",
+	// Sem -p, o agy usa o texto de stdin como prompt e mantém o envelope JSON.
+	const largePrompt = Buffer.byteLength(prompt, "utf8") > ARG_INLINE_CAP;
+	const args = [...(largePrompt ? [] : ["-p", prompt]), "--output-format", "json", "--disable-slash-commands",
 		...(readOnly ? ["--mode", "plan"] : ["--mode", "auto", "--dangerously-skip-permissions"]), "--sandbox"];
 	if (model) args.push("--model", model);
 	if (effort) args.push("--effort", effort);
@@ -868,6 +915,7 @@ async function runAgyAgent(agent: AgentConfig, opts: RunAgentOptions): Promise<S
 	const before = readOnly ? checkoutSnapshot(cwd) : undefined;
 	await runChild({
 		runner: "agy", args, cwd, signal, result, agentName: agent.name,
+		stdin: largePrompt ? prompt : undefined, writerCheckpoint: writerCheckpointFor(agent, opts),
 		onProcessStarted: opts.onProcessStarted, acquireSlot: opts.acquireSlot,
 		emitUpdate: () => opts.onUpdate?.({
 			content: [{ type: "text", text: previewOutput(result.finalText) || "(running...)" }],
@@ -1041,6 +1089,7 @@ export async function runSingleAgent(opts: RunAgentOptions): Promise<SingleResul
 				onProcessStarted: opts.onProcessStarted,
 				acquireSlot: opts.acquireSlot,
 				onFirstToken: opts.onFirstToken,
+				writerCheckpoint: writerCheckpointFor(agent, opts),
 				extraEnv,
 				...(opts.prefetch ? { prefetch: true } : {}),
 			},

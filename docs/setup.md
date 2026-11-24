@@ -205,7 +205,7 @@ Antes de cada `edit`/`write` do agente na sessão principal (também os chamados
 `/rewind` lista os turnos do ramo atual, do mais novo ao mais antigo, com o texto do pedido e os arquivos que o agente mudou nele:
 
 ```
-Voltar para antes de qual turno? (só edições feitas por edit/write do agente; bash (rm, mv, sed…) não é rastreado)
+Voltar para antes de qual turno? (edit/write da sessão e escritores sem worktree em Git; bash da sessão não é rastreado)
 → 2. segundo pedido · novo.txt
   1. primeiro pedido · a.txt
 
@@ -218,10 +218,10 @@ O que desfazer?
   Cancelar
 ```
 
-- Código: cada arquivo tocado desde o turno escolhido volta ao estado de antes dele; arquivo criado pelo agente é apagado. Vale a ordem em que as edições aconteceram no disco, de qualquer ramo da conversa.
+- Código: cada arquivo tocado desde o turno escolhido volta ao estado de antes dele; arquivo criado pelo agente é apagado. Vale a ordem de captura dos arquivos, de qualquer ramo da conversa.
 - Conversa: `ctx.navigateTree` até a mensagem escolhida, o mesmo mecanismo do `/tree` (sem resumo do ramo abandonado). O ramo antigo continua no `/tree` e o texto do pedido volta ao editor.
 - Se um arquivo mudou depois da última edição do agente (editor, `bash`, outro processo), o `/rewind` lista os arquivos e pergunta: sobrescrever, pular os alterados ou cancelar.
-- Não rastreia `bash` (rm, mv, `sed -i`, geradores) nem filhos (`AGENT_CHILD=1`), que escrevem em worktree próprio. Arquivo acima de 20 MB fica marcado como não restaurável.
+- Não rastreia `bash` da sessão principal nem grava checkpoints dentro dos filhos (`AGENT_CHILD=1`). O pai tenta capturar as mudanças dos escritores sem worktree próprio em Git, mesmo se o filho falhar. Espere o job terminar antes de usar `/rewind`. As mudanças detectadas pela varredura podem incluir edições suas: o `/rewind` lista os arquivos e exige confirmação explícita antes de restaurá-los. Se um arquivo mudar entre a revisão e a aplicação, ele é pulado e aparece no relatório. Arquivos acima de 20 MiB não têm restauração.
 - Só roda com o agente parado. `/fork` e `/clone` criam sessão nova sem os checkpoints da anterior. O double-Esc continua abrindo o `/tree`, que não mexe em arquivos.
 
 Disco: `<perfil>/checkpoints/<sessionId>/index.jsonl` (registro append-only) e `blobs/<sha256>` (conteúdo, deduplicado). Persistem ao retomar a sessão. No início de cada sessão, apaga os checkpoints de sessões sem uso há mais de `AGENT_CHECKPOINTS_DAYS` dias (30) e, se o total passar de `AGENT_CHECKPOINTS_MAX_MB` (500), os das sessões menos recentes; a sessão atual nunca. `AGENT_CHECKPOINTS=0` desliga a gravação e o comando. Não adiciona tool nem texto ao prompt.
@@ -302,7 +302,7 @@ Chamadas pagas que não saem de uma mensagem sua. Todas usam a sua conta ou chav
 
 O aquecedor nativo do Pi (`cacheWarming`) fica parado, inclusive com `AGENT_CACHE_KEEPER=0`; a lane OAuth Anthropic não usa message threads (cada request leva system, tools e a conversa inteira).
 
-Prompt cache: o launcher define `PI_CACHE_RETENTION=long` (TTL 1h) quando a variável não está definida; um valor do usuário, inclusive `none`, prevalece. Isso vale para a sessão principal; subagentes usam 5 min (ver Custo dos filhos). Escrita de cache custa 2× a entrada com TTL 1h e 1,25× com 5 min; leitura, 0,1×. Medido na auditoria do commit 6f77207: o prefixo fixo da 1ª requisição tem 10,2 KB de system e 20,0 KB de tools (o schema de `subagent` ocupa 8,9 KB), idêntico entre requisições e processos; cada passo do modelo é uma requisição.
+Prompt cache: o launcher define `PI_CACHE_RETENTION=long` (TTL 1h) quando a variável não está definida; um valor do usuário, inclusive `none`, prevalece. Isso vale para a sessão principal; subagentes usam 5 min (ver Custo dos filhos). Escrita de cache custa 2× a entrada com TTL 1h e 1,25× com 5 min; leitura, 0,1×. Medido na auditoria do commit 6f77207: o prefixo fixo da 1ª requisição tem 10,2 KB de system e 20,0 KB de tools (8,9 KB da declaração de `subagent`), idêntico entre requisições e processos; cada passo do modelo é uma requisição. Na fixture Anthropic do check `test-agent-headless.mjs`, a compactação reduziu a declaração de `subagent` de 9.398 para 5.657 bytes e o total de tools do perfil completo de 20.239 para 16.498 bytes.
 
 Cache-keeper em detalhe:
 
@@ -399,8 +399,8 @@ O resultado e o uso disponível ficam no registro do job; não há sessão JSONL
 ### Lacunas
 
 - stderr do filho fica só em memória (até 64 KB) e só aparece no resultado quando a tarefa falha.
-- O system prompt do papel vai por arquivo temporário, apagado no fim. O registro guarda o nome do papel, não o texto. As fontes `.agent/rules.md` + `.agent/header.md` (ou workflow.md legado sem rules.md) anexadas à tarefa ficam no JSONL do filho.
-- Escritor único (single, chain, ou `parallel` com um só escritor) grava direto no `cwd`, sem worktree nem diff registrado. Use `git` para ver o que mudou.
+- No runner Pi, o system prompt do papel vai por arquivo temporário, apagado no fim. No agy, o prompt completo vai por stdin quando excede 16 KiB. O registro guarda o nome do papel, não o texto. As fontes `.agent/rules.md` + `.agent/header.md` (ou workflow.md legado sem rules.md) anexadas à tarefa ficam no JSONL do filho Pi.
+- Escritores sem worktree próprio (`single`, `chain` ou `parallel` com um só escritor no repositório) gravam direto no `cwd`. Em Git, o pai compara o conteúdo antes e depois de cada filho e registra as mudanças para `/rewind` no turno que lançou o job. A captura cobre arquivos regulares rastreados ou não ignorados (até 10.000 caminhos e 64 MiB por leitura; até 20 MiB por arquivo). Não cobre `cwd` sem Git, links, arquivos ignorados, permissões, índice ou commits. A comparação não distingue uma edição concorrente de uma feita pelo filho, então o `/rewind` exige confirmação para esses arquivos. Cada varredura assíncrona tem até 3 s. Se a captura falhar, exceder os limites da varredura (tempo, caminhos ou soma dos bytes) ou for cancelada, o resultado informa que o checkpoint foi pulado e o `/rewind` não cobre aquele despacho.
 - O sandbox cobre apenas o `bash` de papéis sem `edit`/`write`: Seatbelt no macOS, bwrap no Linux, `none` sem suporte. Com sandbox, `<cwd>/.pi` não é gravável e o bash não lê `~/.ssh`, `~/.aws`, `~/.gnupg`, `~/.agent/auth.json`, `~/.pi/agent/auth.json` nem `auth.json` do perfil ativo (`PI_CODING_AGENT_DIR`). A rede continua disponível. O resultado informa `sandbox=`. Sem sandbox, o detector compara só o `git status` do checkout antes e depois; escrita fora do checkout Git não é vista.
 - Na sessão principal, tanto a ferramenta `bash` do modelo quanto `!cmd` e o bash via RPC usam `shellPath` e `shellCommandPrefix` do perfil global. Para permitir que `<cwd>/.pi/settings.json` sobrescreva essas opções, inicie o Agent com `AGENT_TRUST_PROJECT_SHELL=1` apenas em projetos confiáveis: essas opções podem executar código.
 - `list` apaga o registro de jobs terminados há mais de 30 dias, junto com worktrees limpos e já integrados. Worktree sujo ou não integrado preserva o registro. Os JSONL dos filhos ficam.

@@ -7,8 +7,8 @@
  * Depois de cada edição registra o hash que o agente deixou; no /rewind, hash diferente no disco
  * significa mudança por fora (editor, bash, outro processo) e pede confirmação.
  *
- * Bash não é rastreado (rm, mv, sed -i, geradores…). Filhos (AGENT_CHILD=1) não gravam: escritores
- * já rodam em worktree isolado.
+ * Bash da sessão principal não é rastreado. Filhos (AGENT_CHILD=1) não gravam; o pai
+ * compara o antes/depois de escritores que executam direto num checkout Git, sem atribuir autoria.
  *
  * Disco: `<perfil>/checkpoints/<sessionId>/` com `index.jsonl` (append-only) e `blobs/<sha256>`.
  * Persistem ao retomar a sessão (mesmo sessionId). Limpeza no session_start: sessões sem uso há
@@ -18,55 +18,27 @@
  * Não registra tool nem mexe no prompt: é só comando do usuário.
  */
 
-import { createHash } from "node:crypto";
-import { appendFileSync, existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, unlinkSync, writeFileSync } from "node:fs";
+import { existsSync, readdirSync, rmSync, statSync } from "node:fs";
 import { homedir } from "node:os";
-import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
+import { isAbsolute, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { getAgentDir } from "@earendil-works/pi-coding-agent";
 import type { ExtensionAPI, ExtensionCommandContext, ExtensionContext } from "@earendil-works/pi-coding-agent";
 
+import { lastUser, oneLine, Store, textOf } from "./lib/checkpoint-store.ts";
+export { type Plan, Store } from "./lib/checkpoint-store.ts";
+
 const DAY_MS = 24 * 60 * 60 * 1000;
-const MAX_FILE_BYTES = 20 * 1024 * 1024;
 const PROMPT_WIDTH = 60;
 const FILES_SHOWN = 3;
 const TRACKED = new Set(["edit", "write"]);
 
-export const BASH_NOTE = "só edições feitas por edit/write do agente; bash (rm, mv, sed…) não é rastreado";
-
-type Rec =
-	| { t: "turn"; turn: string; ts: number; prompt: string }
-	| { t: "snap"; turn: string; ts: number; path: string; before: string | null; skipped?: "too-large" }
-	| { t: "after"; turn: string; ts: number; path: string; hash: string | null }
-	| { t: "rewind"; turn: string; ts: number; files: { path: string; hash: string | null }[] };
-
-export interface Plan {
-	path: string;
-	/** Conteúdo-alvo: sha do blob, null = não existia (remover), undefined = não restaurável. */
-	target: string | null | undefined;
-	current: string | null;
-	/** Hash que o agente deixou por último (edit/write ou rewind); undefined se nunca mudou com sucesso. */
-	expected: string | null | undefined;
-	conflict: boolean;
-}
+export const BASH_NOTE = "edit/write da sessão e escritores sem worktree em Git; bash da sessão não é rastreado";
 
 const num = (raw: string | undefined, fallback: number) => {
 	const n = Number(raw);
 	return Number.isFinite(n) && n > 0 ? n : fallback;
 };
-
-function sha(buf: Buffer): string {
-	return createHash("sha256").update(buf).digest("hex");
-}
-
-function hashOf(path: string): string | null {
-	try {
-		return sha(readFileSync(path));
-	} catch (error: any) {
-		if (error?.code === "ENOENT" || error?.code === "ENOTDIR") return null;
-		throw error;
-	}
-}
 
 /** Mesma resolução de caminho das tools edit/write do Pi (resolveToCwd). */
 export function resolveToolPath(input: string, cwd: string): string {
@@ -76,142 +48,6 @@ export function resolveToolPath(input: string, cwd: string): string {
 	else if (p.startsWith("~/")) p = join(homedir(), p.slice(2));
 	if (/^file:\/\//.test(p)) p = fileURLToPath(p);
 	return isAbsolute(p) ? resolve(p) : resolve(cwd, p);
-}
-
-function textOf(content: unknown): string {
-	if (typeof content === "string") return content;
-	if (!Array.isArray(content)) return "";
-	return content.map((b: any) => (b?.type === "text" ? b.text : "")).join(" ");
-}
-
-function oneLine(text: string, width: number): string {
-	const flat = text.replace(/\s+/g, " ").trim();
-	return flat.length > width ? `${flat.slice(0, width - 1)}…` : flat;
-}
-
-export class Store {
-	readonly dir: string;
-	records: Rec[] = [];
-
-	constructor(root: string, sessionId: string) {
-		this.dir = join(root, sessionId);
-		const index = join(this.dir, "index.jsonl");
-		if (!existsSync(index)) return;
-		for (const line of readFileSync(index, "utf8").split("\n")) {
-			if (!line.trim()) continue;
-			try {
-				this.records.push(JSON.parse(line));
-			} catch {
-				/* linha truncada: ignora */
-			}
-		}
-	}
-
-	private append(rec: Rec) {
-		mkdirSync(this.dir, { recursive: true });
-		appendFileSync(join(this.dir, "index.jsonl"), `${JSON.stringify(rec)}\n`);
-		this.records.push(rec);
-	}
-
-	private putBlob(buf: Buffer): string {
-		const hash = sha(buf);
-		const blob = join(this.dir, "blobs", hash);
-		if (!existsSync(blob)) {
-			mkdirSync(dirname(blob), { recursive: true });
-			writeFileSync(blob, buf);
-		}
-		return hash;
-	}
-
-	blob(hash: string): Buffer {
-		return readFileSync(join(this.dir, "blobs", hash));
-	}
-
-	hasSnap(turn: string, path: string): boolean {
-		return this.records.some((r) => r.t === "snap" && r.turn === turn && r.path === path);
-	}
-
-	/** Snapshot do estado anterior; só a primeira vez de cada arquivo no turno. */
-	snapshot(turn: string, prompt: string, path: string) {
-		if (this.hasSnap(turn, path)) return;
-		if (!this.records.some((r) => r.t === "turn" && r.turn === turn)) this.append({ t: "turn", turn, ts: Date.now(), prompt });
-		let before: string | null = null;
-		let skipped: "too-large" | undefined;
-		try {
-			const st = statSync(path);
-			if (st.size > MAX_FILE_BYTES) skipped = "too-large";
-			else before = this.putBlob(readFileSync(path));
-		} catch (error: any) {
-			if (error?.code !== "ENOENT" && error?.code !== "ENOTDIR") throw error;
-		}
-		this.append({ t: "snap", turn, ts: Date.now(), path, before, ...(skipped ? { skipped } : {}) });
-	}
-
-	after(turn: string, path: string) {
-		this.append({ t: "after", turn, ts: Date.now(), path, hash: hashOf(path) });
-	}
-
-	rewound(turn: string, files: { path: string; hash: string | null }[]) {
-		this.append({ t: "rewind", turn, ts: Date.now(), files });
-	}
-
-	/** Arquivos alterados com sucesso no turno. */
-	changedIn(turn: string): string[] {
-		const out: string[] = [];
-		for (const r of this.records) if (r.t === "after" && r.turn === turn && !out.includes(r.path)) out.push(r.path);
-		return out;
-	}
-
-	expected(path: string): string | null | undefined {
-		let hash: string | null | undefined;
-		for (const r of this.records) {
-			if (r.t === "after" && r.path === path) hash = r.hash;
-			else if (r.t === "rewind") for (const f of r.files) if (f.path === path) hash = f.hash;
-		}
-		return hash;
-	}
-
-	/**
-	 * O que restaurar para voltar ao estado de antes do turno: para cada arquivo, o snapshot mais
-	 * antigo gravado a partir do turno (ordem cronológica do disco, qualquer ramo da conversa).
-	 */
-	plan(turn: string, since: number): Plan[] {
-		const start = this.records.findIndex((r) => (r.t === "turn" && r.turn === turn) || (r.t === "snap" && r.ts >= since));
-		if (start < 0) return [];
-		const first = new Map<string, Extract<Rec, { t: "snap" }>>();
-		for (const r of this.records.slice(start)) if (r.t === "snap" && !first.has(r.path)) first.set(r.path, r);
-		const plans: Plan[] = [];
-		for (const [path, snap] of first) {
-			const target = snap.skipped ? undefined : snap.before;
-			const current = hashOf(path);
-			if (target !== undefined && current === target) continue;
-			const expected = this.expected(path);
-			// Nunca mudou com sucesso pelo agente e está igual ao snapshot: nada a fazer (acima).
-			const conflict = expected !== undefined && current !== expected;
-			plans.push({ path, target, current, expected, conflict });
-		}
-		return plans;
-	}
-
-	/** Aplica o plano; devolve os caminhos tocados com o hash resultante. */
-	apply(plans: Plan[]): { path: string; hash: string | null }[] {
-		const done: { path: string; hash: string | null }[] = [];
-		for (const p of plans) {
-			if (p.target === undefined) continue;
-			if (p.target === null) {
-				try {
-					unlinkSync(p.path);
-				} catch (error: any) {
-					if (error?.code !== "ENOENT") throw error;
-				}
-			} else {
-				mkdirSync(dirname(p.path), { recursive: true });
-				writeFileSync(p.path, this.blob(p.target));
-			}
-			done.push({ path: p.path, hash: p.target });
-		}
-		return done;
-	}
 }
 
 function dirSize(dir: string): number {
@@ -259,15 +95,6 @@ export function prune(root: string, keep: string, maxDays: number, maxMb: number
 	}
 }
 
-function lastUser(ctx: ExtensionContext): { id: string; prompt: string } | undefined {
-	const branch = ctx.sessionManager.getBranch();
-	for (let i = branch.length - 1; i >= 0; i--) {
-		const e: any = branch[i];
-		if (e?.type === "message" && e.message?.role === "user") return { id: e.id, prompt: oneLine(textOf(e.message.content), 200) };
-	}
-	return undefined;
-}
-
 export default function checkpoints(pi: ExtensionAPI) {
 	if (process.env.AGENT_CHECKPOINTS === "0" || process.env.AGENT_CHILD === "1") return;
 	const root = join(getAgentDir(), "checkpoints");
@@ -276,6 +103,7 @@ export default function checkpoints(pi: ExtensionAPI) {
 	const storeFor = (ctx: ExtensionContext) => {
 		const id = ctx.sessionManager.getSessionId();
 		if (!store || store.dir !== join(root, id)) store = new Store(root, id);
+		else store.refresh();
 		return store;
 	};
 	const rel = (path: string, cwd: string) => {
@@ -345,6 +173,7 @@ export default function checkpoints(pi: ExtensionAPI) {
 			if (picked === undefined) return;
 			const turn = turns[labels.indexOf(picked)];
 			const since = Date.parse(turn.timestamp) || 0;
+			s.refresh();
 			let plans = s.plan(turn.id, since);
 
 			const CODE_AND_CHAT = "Código e conversa";
@@ -354,8 +183,10 @@ export default function checkpoints(pi: ExtensionAPI) {
 			const summary = plans.length
 				? plans
 						.map((p) => {
-							const how = p.target === null ? "remover (criado pelo agente)" : p.target === undefined ? "não restaurável (> 20 MB)" : "restaurar";
-							return `  ${rel(p.path, ctx.cwd)}: ${how}${p.conflict ? " · mudou por fora" : ""}`;
+							const how = p.target === null
+								? (p.unattributed ? "remover (não existia no checkpoint)" : "remover (criado pelo agente)")
+								: p.target === undefined ? "não restaurável (> 20 MB)" : "restaurar";
+							return `  ${rel(p.path, ctx.cwd)}: ${how}${p.conflict ? " · mudou por fora" : ""}${p.unattributed ? " · autoria incerta (subagente)" : ""}`;
 						})
 						.join("\n")
 				: "  nenhum arquivo a restaurar";
@@ -366,20 +197,22 @@ export default function checkpoints(pi: ExtensionAPI) {
 			let report: string | undefined;
 			if (action === CODE_AND_CHAT || action === CODE) {
 				const conflicts = plans.filter((p) => p.conflict);
-				if (conflicts.length) {
+				const unattributed = plans.filter((p) => p.unattributed);
+				if (conflicts.length || unattributed.length) {
 					const OVERWRITE = "Sobrescrever mesmo assim";
 					const SKIP = "Pular os alterados";
-					const choice = await ctx.ui.select(
-						`Mudaram depois da última edição do agente (editor, bash ou outro processo):\n${conflicts.map((p) => `  ${rel(p.path, ctx.cwd)}`).join("\n")}`,
-						[OVERWRITE, SKIP, CANCEL],
-					);
-					if (choice === undefined || choice === CANCEL) return;
-					if (choice === SKIP) plans = plans.filter((p) => !p.conflict);
+					const list = (files: typeof plans) => files.map((p) => `  ${rel(p.path, ctx.cwd)}`).join("\n");
+					const warnings = [];
+					if (conflicts.length) warnings.push(`Mudaram depois da última edição do agente (editor, bash ou outro processo):\n${list(conflicts)}`);
+					if (unattributed.length) warnings.push(`Alterações sem autoria confirmada (varredura de subagente; podem incluir edições suas):\n${list(unattributed)}`);
+					const choice = await ctx.ui.select(warnings.join("\n\n"), [OVERWRITE, SKIP, CANCEL]);
+					if (choice === SKIP) plans = plans.filter((p) => !p.conflict && !p.unattributed);
+					else if (choice !== OVERWRITE) return;
 				}
-				const done = s.apply(plans);
+				const { done, skipped } = s.apply(plans);
 				if (done.length) s.rewound(turn.id, done);
 				const lost = plans.filter((p) => p.target === undefined).map((p) => rel(p.path, ctx.cwd));
-				report = `Restaurados ${done.length} arquivo(s).${lost.length ? ` Não restaurável: ${lost.join(", ")}.` : ""} Bash não é rastreado.`;
+				report = `Restaurados ${done.length} arquivo(s).${lost.length ? ` Não restaurável: ${lost.join(", ")}.` : ""}${skipped.length ? ` Pulados após a revisão (estado diferente ou não verificável): ${skipped.map((p) => rel(p, ctx.cwd)).join(", ")}.` : ""} Bash da sessão não é rastreado.`;
 			}
 			if (action === CODE_AND_CHAT || action === CHAT) {
 				await ctx.waitForIdle();

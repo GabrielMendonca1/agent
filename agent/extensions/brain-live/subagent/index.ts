@@ -25,6 +25,7 @@ import {
 } from "@earendil-works/pi-coding-agent";
 import { type Component, Container, Markdown, Spacer, Text, truncateToWidth } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
+import { lastUser } from "../lib/checkpoint-store.ts";
 import { formatRoleModelChoices, getRoleModelChoices, resolveGeminiPreference } from "../lib/tiers.ts";
 import { getAgentPreferences, isChild } from "../../../core/client.mjs";
 import { NO_DELEGATE_ENV } from "../../../core/child-env.mjs";
@@ -160,45 +161,28 @@ const BRIEF_HEADINGS: Record<BriefField, string> = {
 
 type Brief = Partial<Record<BriefField, string>>;
 
-const BriefSchema = Type.Object(
-	{
-		objective: Type.Optional(Type.String({ description: "What success looks like for this delegation" })),
-		context: Type.Optional(
-			Type.String({
-				description:
-					"Facts already known: absolute paths, findings, decisions made, so the subagent does not redo recon",
-			}),
-		),
-		scope: Type.Optional(Type.String({ description: "What the subagent may touch or look at" })),
-		out_of_scope: Type.Optional(Type.String({ description: "What it must not touch" })),
-		constraints: Type.Optional(Type.String({ description: "Task-specific rules it must respect" })),
-		done_when: Type.Optional(Type.String({ description: "Acceptance criterion for the work" })),
-		stop_if: Type.Optional(
-			Type.String({ description: "Conditions under which it stops and reports back instead of deciding" }),
-		),
-		return_format: Type.Optional(
-			Type.String({ description: "What to return and how; omit to use the role's default" }),
-		),
-	},
-	{ description: "Structured brief; each role requires some of these fields (the error lists them if missing)" },
-);
+// Document the brief once; nested items have the same fields without duplicate prose.
+function briefSchema(described: boolean) {
+	const field = (description: string) => Type.Optional(Type.String(described ? { description } : {}));
+	return Type.Object({
+		objective: field("Goal for the delegation"),
+		context: field("Known facts, absolute paths, findings and decisions"),
+		scope: field("What the agent may inspect or change"),
+		out_of_scope: field("What the agent must not touch"),
+		constraints: field("Task-specific rules"),
+		done_when: field("Acceptance criteria"),
+		stop_if: field("When to stop and report instead of deciding"),
+		return_format: field("Output format; omit for the role's default"),
+	});
+}
 
+const BriefSchema = briefSchema(true);
 const TaskItem = Type.Object({
-	agent: Type.String({ description: "Name of the agent to invoke" }),
-	task: Type.Optional(Type.String({ description: "Free-form extra notes for the agent (optional when brief is given)" })),
-	brief: Type.Optional(BriefSchema),
-	cwd: Type.Optional(Type.String({ description: "Working directory for the agent process" })),
-	model: Type.Optional(Type.String({ description: "Authorized provider/model choice for this role; omit to use its preference" })),
-});
-
-const ChainItem = Type.Object({
-	agent: Type.String({ description: "Name of the agent to invoke" }),
-	task: Type.Optional(
-		Type.String({ description: "Free-form extra notes, with optional {previous} placeholder for prior output" }),
-	),
-	brief: Type.Optional(BriefSchema),
-	cwd: Type.Optional(Type.String({ description: "Working directory for the agent process" })),
-	model: Type.Optional(Type.String({ description: "Authorized provider/model choice for this role; omit to use its preference" })),
+	agent: Type.String(),
+	task: Type.Optional(Type.String()),
+	brief: Type.Optional(briefSchema(false)),
+	cwd: Type.Optional(Type.String()),
+	model: Type.Optional(Type.String()),
 });
 
 interface BriefItem {
@@ -240,36 +224,34 @@ function composeTaskText(item: BriefItem, agent: AgentConfig | undefined): strin
 }
 
 const AgentScopeSchema = StringEnum(["user", "project", "both"] as const, {
-	description: 'Which agent directories to use. Default: "user". Use "both" to include project-local agents.',
 	default: "user",
 });
 
 const ActionSchema = StringEnum(["launch", "status", "result", "trace", "list", "cancel", "integrate", "discard"] as const, {
-	description: 'What to do. Default "launch" (dispatch a background job). Others inspect, stop, integrate or discard jobs of this session.',
 	default: "launch",
 });
 
 const SubagentParams = Type.Object({
 	action: Type.Optional(ActionSchema),
-	taskIndex: Type.Optional(Type.Integer({ minimum: 1, description: "1-based task index for trace/integrate/discard; omit for all" })),
-	force: Type.Optional(Type.Boolean({ description: "Allow discard of uncommitted work (never applies to integrate)" })),
-	jobId: Type.Optional(Type.String({ description: 'Job id (required for action status|result|trace|cancel|integrate|discard)' })),
-	offset: Type.Optional(Type.Number({ description: 'Byte offset for action "result"/"trace" (default 0)' })),
-	limit: Type.Optional(Type.Number({ description: `Max bytes for action "result"/"trace" (default/cap ${RESULT_READ_CAP})` })),
-	agent: Type.Optional(Type.String({ description: "Name of the agent to invoke (for single mode)" })),
-	task: Type.Optional(Type.String({ description: "Free-form extra notes for the agent (for single mode)" })),
+	taskIndex: Type.Optional(Type.Integer({ minimum: 1, description: "1-based task for trace/integrate/discard; omit for all" })),
+	force: Type.Optional(Type.Boolean({ description: "Permit discard of uncommitted work" })),
+	jobId: Type.Optional(Type.String({ description: 'Required except for launch/list' })),
+	offset: Type.Optional(Type.Number({ description: 'Result/trace byte offset (default 0)' })),
+	limit: Type.Optional(Type.Number({ description: `Result/trace bytes (default/cap ${RESULT_READ_CAP})` })),
+	agent: Type.Optional(Type.String({ description: "Role name (single mode)" })),
+	task: Type.Optional(Type.String({ description: "Extra notes (single mode)" })),
 	brief: Type.Optional(BriefSchema),
-	model: Type.Optional(Type.String({ description: "Authorized provider/model choice for the single role; omit to use its preference" })),
-	tasks: Type.Optional(Type.Array(TaskItem, { description: "Array of {agent, brief, task} for parallel execution" })),
-	chain: Type.Optional(Type.Array(ChainItem, { description: "Array of {agent, brief, task} for sequential execution" })),
+	model: Type.Optional(Type.String({ description: "Allowed provider/model override (single mode)" })),
+	tasks: Type.Optional(Type.Array(TaskItem, { description: "Parallel tasks" })),
+	chain: Type.Optional(Type.Array(TaskItem, { description: "Sequential tasks" })),
 	agentScope: Type.Optional(AgentScopeSchema),
 	confirmProjectAgents: Type.Optional(
-		Type.Boolean({ description: "Prompt before running project-local agents. Default: true.", default: true }),
+		Type.Boolean({ description: "Confirm project-local agents", default: true }),
 	),
-	cwd: Type.Optional(Type.String({ description: "Working directory for the agent process (single mode)" })),
+	cwd: Type.Optional(Type.String({ description: "Child working directory (single mode)" })),
 	timeoutSeconds: Type.Optional(
 		Type.Number({
-			description: `Max runtime for the whole job, 1..${MAX_TIMEOUT_SECONDS}. Default ${DEFAULT_TIMEOUT_SECONDS}.`,
+			description: `Job timeout, 1..${MAX_TIMEOUT_SECONDS}s (default ${DEFAULT_TIMEOUT_SECONDS}s)`,
 		}),
 	),
 });
@@ -293,7 +275,7 @@ export function describeAgentTools(agent: Pick<AgentConfig, "tools">): string {
  * read/grep/find/ls, e voltou sem executar nada.
  */
 export const SUBAGENT_CAPABILITY_RULE =
-	"Route by the tool list printed for each role below, not by how the task sounds: a task that must run an executable (ffmpeg, whisper, a test command, any shell step) needs a role whose tools include `bash`, and a role limited to read/grep/find/ls will report instead of running it. On Agent, `read` supports image files when the selected model supports images. A provider 503 is an availability failure, not a missing tool: report it and do not silently change the role's authorized model.";
+	"Route by tools: executables (e.g. ffmpeg or tests) need `bash`; read/grep/find/ls roles can only report. `read` handles images if the selected model supports images. Report provider 503 as an availability failure, not a missing tool; do not silently switch models.";
 
 export function describeUserAgents(): string {
 	try {
@@ -315,8 +297,8 @@ export function describeUserAgents(): string {
 				const legacy = a.model ? `${a.model.startsWith("tier:") ? a.model.slice(5) : a.model}` : undefined;
 				const modelHint = a.runner === "agy" ? ` [agy model: ${agyModel}]`
 					: choices ? ` [allowed: ${choices}]` : legacy ? ` [legacy default: ${legacy}]` : "";
-				const required = a.briefRequired?.length ? ` [brief requires: ${a.briefRequired.join(", ")}]` : "";
-				const tools = a.runner === "agy" ? `${describeAgentTools(a)} (capabilities; tools managed by agy)` : describeAgentTools(a);
+				const required = a.briefRequired?.length ? ` [brief: ${a.briefRequired.join(", ")}]` : "";
+				const tools = a.runner === "agy" ? `${describeAgentTools(a)} (agy-managed capabilities)` : describeAgentTools(a);
 				return `${a.name} — ${a.description} [${tools}]${required}${modelHint}`;
 			})
 			.join("; ");
@@ -609,19 +591,14 @@ export default function (pi: ExtensionAPI) {
 		name: "subagent",
 		label: "Subagent",
 		description: [
-			"Delegate tasks to specialized subagents with isolated context. Each subagent is a separate pi process that does NOT see this conversation: fill the structured `brief` (objective, context, scope, out_of_scope, constraints, done_when, stop_if, return_format); `context` must carry the facts, absolute paths and decisions you already have so the subagent does not redo your recon. `task` is only extra free-form notes.",
-			"Each role requires some brief fields; a call missing them is rejected before anything is spawned and the error lists what is missing.",
-			"ASYNC: the call returns a jobId immediately and the subagent keeps running in the background. Do NOT poll in a loop — continue with other work; the result arrives later as a `subagent-result` message.",
-			"Independent tasks go in one call as `tasks` (parallel), so they run at the same time instead of one after the other.",
-			'Parallel writers sharing a repository use isolated worktrees: inspect their commits, then explicitly integrate (jobId, optional 1-based taskIndex) or discard (force:true permits uncommitted deletion); merges are never automatic.',
-			'Control the job with the same tool: action "status" | "result" | "trace" (jobId, optional offset/limit) | "list" | "cancel".',
-			'Each task\'s full transcript stays in the child JSONL listed by status; "trace" summarizes its steps and decisions.',
-			"Modes: single (agent + brief), parallel (tasks array), chain (sequential with {previous} placeholder). Omit model to retain the role's configured model/thinking; otherwise the role uses its principal/apoio slot from /models. Explicit models must respect the role's allowed choices.",
+			"Delegate to a separate process that cannot see this conversation. Provide a structured brief with known facts, absolute paths and decisions in context; task adds optional notes. Missing role-required brief fields are listed before anything spawns.",
+			"Launch (default) in one mode: single (agent + brief), parallel (tasks), or sequential (chain; {previous} inserts prior output). Independent tasks go in one call as tasks. Items use the same brief, task, cwd and model fields as single mode.",
+			"ASYNC: the call returns a jobId immediately. Continue other work; don't poll in a loop. A subagent-result message arrives later.",
+			"Actions: list jobs, check status (includes child JSONL paths), read result or trace steps and decisions, cancel, integrate or discard. Parallel writers in one repo use isolated worktrees; review commits before integrating. No automatic merges.",
+			"Use only allowed model overrides. Omit model to use the role's configured model/thinking, or choose its principal/apoio slot via /models. Quota/rate failures aren't retried; review partial work before explicitly redispatching to an allowed alternative.",
 			SUBAGENT_CAPABILITY_RULE,
-			"Quota/rate failures are returned as failures and are never silently retried. For mutating work, inspect the failure and explicitly redispatch to an allowed alternative so partial work is not replayed automatically.",
-			`Available agents and model choices: ${describeUserAgents()}.`,
-			`Default agent scope is "user" (from ${path.join(getAgentDir(), "agents")}).`,
-			`To enable project-local agents in ${CONFIG_DIR_NAME}/agents, set agentScope: "both" (or "project").`,
+			`Default scope: user (${path.join(getAgentDir(), "agents")}). Set agentScope to both or project for ${CONFIG_DIR_NAME}/agents.`,
+			`Roles (brief = required fields): ${describeUserAgents()}.`,
 		].join(" "),
 		promptSnippet: "Delegate reading, recon, review and self-contained implementation to subagents (async: returns a jobId, result arrives later)",
 		promptGuidelines: [
@@ -876,6 +853,12 @@ export default function (pi: ExtensionAPI) {
 
 			if (signal?.aborted) return fail("Dispatch aborted before launch.");
 			if (!isSafeId(sessionId)) return fail("Unsafe session id; refusing to launch a subagent job.");
+			if (process.env.AGENT_CHECKPOINTS !== "0") {
+				const user = lastUser(ctx);
+				if (user) dispatchDefaults.writerCheckpoint = {
+					root: path.join(getAgentDir(), "checkpoints"), sessionId, turn: user.id, prompt: user.prompt,
+				};
+			}
 
 			// Anchor: the leaf at dispatch belongs to a shared ancestor, so a sibling
 			// branch forked from it would accept this job's result. Append our own entry
