@@ -53,7 +53,7 @@ A seleção vive em `<store>/layers.json` (`{"optional":["<camada>"]}`) e só é
 
 A tool nativa `codemode` do Pi é ativada em toda sessão do Agent quando registrada, por `activeToolsFor` em `agent/extensions/brain-live/project-prompt.ts`. Ela executa JavaScript isolado e chama as tools do Pi; substitui ipython, sem kernel adicional para compilar.
 
-`agent-patches/` contém `02-optional-role-models.patch`, `03-sessions-explicit-gc-only.patch` e `vault-runtime-quiet.patch`. `agent/core/` guarda o preload, as preferências, a política de subagentes e a de cache, sem binário. Ledger, contabilidade e aprendizado automático foram removidos no runtime atual; contrato em `agent/core/PROTOCOL.md`.
+`agent/core/` guarda o preload, as preferências, a política de subagentes e a de cache, sem binário. Ledger, contabilidade e aprendizado automático foram removidos no runtime atual; contrato em `agent/core/PROTOCOL.md`.
 
 Subagentes são processos `pi -p`; `parentSession` liga o JSONL do filho ao do pai. Não há execução de subagente em host durável nem retomada automática de run interrompida.
 

@@ -85,7 +85,7 @@ try {
 
 	test("as libs usadas nas duas árvores estão na cópia", () => {
 		const files = new Set(agentSetupFiles(repo));
-		// Mesmo nome, árvore diferente: o que tem consumidor em cada uma continua vendorizado lá.
+		// As duas árvores viajam juntas; o normalizador de brain-live também atende à TUI.
 		for (const kept of [
 			`${BRAIN_LIVE_TREE}/lib/tiers.ts`,
 			`${BRAIN_LIVE_TREE}/lib/compaction-epoch.ts`,
@@ -94,7 +94,6 @@ try {
 			`${BRAIN_LIVE_TREE}/lib/durable-sessions.ts`,
 			`${BRAIN_LIVE_TREE}/lib/image-normalize.ts`,
 			`${AGENT_TREE}/lib/json-file.ts`,
-			`${AGENT_TREE}/lib/image-normalize.ts`,
 			`${AGENT_TREE}/lib/prompt-slot.ts`,
 			`${AGENT_TREE}/lib/secret-scan.ts`,
 		]) {

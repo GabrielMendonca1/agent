@@ -21,7 +21,6 @@ Agent is the current Mark tree, renamed. Nothing else changes: no refactor, no n
 | `MARK_*` env (`MARK_DIR`, `MARK_TREE`, `MARK_WARM_START`…) | `AGENT_*` |
 | tree `mark/`, `MARK_SUBDIR = "mark"` | `agent/`, `"agent"` (paths already moved) |
 | `mark/extensions/mark` (extension `mark`) | `agent/extensions/agent` (already moved) |
-| `mark-patches/` | `agent-patches/` (already moved) |
 | `.mark/`, `.mark-themes`, `.mark-agents.json` | `.agent/`, `.agent-themes`, `.agent-agents.json` |
 | prompt tags `mark_autonomy`, `mark_complex`, `mark_notes`, `mark_skill_categories`, `mark_tickets` | `agent_*` |
 | `mark-meta-peers`, `Symbol.for("mark.askUser.requests")` | `agent-meta-peers`, `"agent.askUser.requests"` |
