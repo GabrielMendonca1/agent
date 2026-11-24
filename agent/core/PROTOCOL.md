@@ -37,7 +37,8 @@ automaticamente. Sem ele, scout=apoio e os demais papéis=principal. Ordem de
 decisão do modelo de um papel: config do papel em `/models` > frontmatter do
 papel > slot. Não há classificador de dispatch. Sem modelo de apoio, o slot
 `apoio` cai no principal: herdam o modelo principal os papéis sem config própria
-em `/models` e sem `model` no frontmatter.
+em `/models` e sem `model` no frontmatter. Se o apoio estiver sem modelo, a
+sessão principal avisa uma vez por processo e sugere configurá-lo em `/models`.
 
 `gemini` com `runner: agy` não usa slots, tiers ou allowlists do Pi. Sua
 preferência opcional no `agent-models.json` do perfil é `agyModels.gemini`, com
