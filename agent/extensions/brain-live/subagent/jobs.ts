@@ -121,6 +121,8 @@ export interface JobTaskSpec {
 	slot?: "apoio" | "principal";
 	/** Populated internally from the authorized model-role pair; never caller-controlled. */
 	thinking?: string;
+	/** Internal: model/thinking already came from the agy role preference (/models), not from the caller. */
+	agyResolved?: boolean;
 	/** Audit, written by the manager: per-task lifecycle, child session and usage. */
 	state?: TaskState;
 	sessionFile?: string;
@@ -152,12 +154,15 @@ export function resolveJobTaskModels(tasks: JobTaskSpec[], defaults?: DispatchDe
 	const externalTask = (task: JobTaskSpec): JobTaskSpec | undefined => {
 		const role = roleFiles?.find((file) => file.name === task.agent);
 		if (role?.runner !== "agy") return undefined;
+		// Dispatch resolves once before approval and launch() resolves again: the
+		// model filled by the first pass is the role preference, not a caller override.
+		if (task.agyResolved) return task;
 		if (task.model !== undefined) {
 			const source = role.name === "gemini" ? "choose its model in /models" : "set a native model ID in the role file";
 			throw new Error(`Agent: ${task.agent} uses agy; ${source} instead of passing a Pi model override.`);
 		}
 		const choice = role.name === "gemini" ? resolveGeminiPreference(role) : undefined;
-		return { ...task, ...choice };
+		return { ...task, ...choice, agyResolved: true };
 	};
 	try {
 		if (defaults?.resources) {

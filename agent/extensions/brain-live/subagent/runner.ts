@@ -521,6 +521,7 @@ interface ChildRunOptions {
 /** Decode the final Antigravity envelope; stdout is not a Pi event stream. */
 function settleAgyResult(result: SingleResult, stdout: string, exitCode: number): void {
 	let envelope: { status?: string; response?: string; error?: string | { message?: string }; num_turns?: number;
+		denied_actions?: { action?: string; display_name?: string }[];
 		usage?: { input_tokens?: number; output_tokens?: number; cache_read_tokens?: number } } | undefined;
 	try { envelope = JSON.parse(stdout); } catch { /* exit 1 can also write plain diagnostics */ }
 	const count = (n: unknown) => typeof n === "number" && Number.isFinite(n) && n >= 0 ? n : 0;
@@ -529,8 +530,18 @@ function settleAgyResult(result: SingleResult, stdout: string, exitCode: number)
 	result.usage.cacheRead = count(envelope?.usage?.cache_read_tokens);
 	result.usage.turns = count(envelope?.num_turns);
 	const response = typeof envelope?.response === "string" ? envelope.response : "";
-	if (exitCode === 0 && envelope?.status === "SUCCESS" && typeof envelope.response === "string") {
+	if (exitCode === 0 && envelope?.status === "SUCCESS" && typeof envelope.response === "string" && response.trim()) {
 		result.finalText = response;
+		return;
+	}
+	// SUCCESS with an empty response: headless agy auto-denied a tool and produced nothing.
+	const denied = (envelope?.denied_actions ?? []).map((d) => d?.display_name || d?.action).filter(Boolean);
+	const diagnostics = result.stderr.split("\n").filter((line) => line.trim() && !line.startsWith("warning:")).join("\n").trim();
+	if (exitCode === 0 && envelope?.status === "SUCCESS") {
+		result.finalText = result.errorMessage = diagnostics ||
+			(denied.length ? `agy produced no output; denied tools: ${denied.join(", ")}` : "agy returned an empty response");
+		result.stopReason = "error";
+		result.exitCode = 1;
 		return;
 	}
 	const error = typeof envelope?.error === "string" ? envelope.error : envelope?.error?.message;
@@ -844,7 +855,9 @@ async function runAgyAgent(agent: AgentConfig, opts: RunAgentOptions): Promise<S
 	const sourceCwd = opts.sourceCwd ?? cwd;
 	const guidance = path.resolve(sourceCwd) === path.resolve(cwd) && hasRules(cwd)
 		&& instructions.includes(`path="${path.join(cwd, ".agent", "rules.md")}"`) ? "" : projectRules(sourceCwd);
-	const prompt = [agent.systemPrompt.trim(), `Task: ${task}`, instructions, guidance].filter(Boolean).join("\n\n");
+	// Headless read-only agy auto-denies every shell command; say so, or the model ends with no answer.
+	const readOnlyNote = readOnly ? "Read-only run: shell commands are denied here. Use only your file reading tools, and state what you could not verify." : "";
+	const prompt = [agent.systemPrompt.trim(), readOnlyNote, `Task: ${task}`, instructions, guidance].filter(Boolean).join("\n\n");
 	const args = ["-p", prompt, "--output-format", "json", "--disable-slash-commands",
 		"--mode", readOnly ? "plan" : "auto", readOnly ? "--sandbox" : "--dangerously-skip-permissions"];
 	if (model) args.push("--model", model);
