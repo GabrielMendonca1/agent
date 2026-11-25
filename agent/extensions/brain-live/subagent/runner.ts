@@ -1127,10 +1127,9 @@ export async function runSingleAgent(opts: RunAgentOptions): Promise<SingleResul
 	// AGENT_CHECKS_READONLY marca o papel sem edit/write mesmo sem sandbox disponível:
 	// ali checks só lê (list/last); executar o manifesto escaparia do sandbox.
 	const extraEnv: Record<string, string> = { AGENT_BASH_SANDBOX: "", AGENT_SANDBOX_CWD: "", AGENT_CHECKS_READONLY: sandbox ? "1" : "",
-		AGENT_CHILD_SOFT_DEADLINE_MS: !opts.prefetch && opts.softDeadlineMs ? String(Math.floor(opts.softDeadlineMs)) : "",
-		// From the invocation, so a continue keeps the board; empty clears an inherited value.
-		AGENT_BOARD_PATH: !opts.prefetch && invocation.board ? invocation.board.path : "",
-		AGENT_BOARD_HANDLE: !opts.prefetch && invocation.board ? invocation.board.handle : "" };
+		AGENT_CHILD_SOFT_DEADLINE_MS: !opts.prefetch && opts.softDeadlineMs ? String(Math.floor(opts.softDeadlineMs)) : "" };
+	// From the invocation, so a continue keeps the board. The parent never carries these (userCommandEnv strips them).
+	if (!opts.prefetch && invocation.board) Object.assign(extraEnv, { AGENT_BOARD_PATH: invocation.board.path, AGENT_BOARD_HANDLE: invocation.board.handle });
 	if (sandbox && sandbox !== "none") {
 		extraEnv.AGENT_BASH_SANDBOX = sandbox;
 		extraEnv.AGENT_SANDBOX_CWD = cwd;
