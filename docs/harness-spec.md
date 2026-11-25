@@ -149,7 +149,18 @@ Ordem de execução proposta: **0 → 1 → 2 → 3 → 4**. A suíte de evals e
 
 ## 3. Ontologia das tools + idioma do prompt
 
-**Hoje**
+**Status:** implementado na branch `harness/item3`. `plan` aceita só `steps`; `todo` é registrada em `plan.ts` com `exposure: "deferred"` e fica fora do schema declarado. O texto lido pelo modelo está em inglês: descriptions e parâmetros de `ask_user`, `peers_*`, `web_*` e `megamind_*`, a política (com "Reply to the user in their language."), `agent_notes`, as categorias de skills, o slot de peers, os avisos do loop guard, os prompts de `/notes` e `/rules init` e o `description:` dos papéis. O check `tool-language` guarda tudo isso. Bytes medidos por commit com `scripts/test-agent-headless.mjs` (mesmo Pi do store, mesmo provedor falso, `claude-sonnet-4-5`):
+
+| | base `209a8bc` | item 3 |
+|---|---|---|
+| system prompt, perfil completo | 8176 B | 8153 B |
+| system prompt, headless | 6040 B | 6074 B |
+| schemas das tools, perfil completo | 17202 B | 16097 B |
+| schemas das tools, headless | 12326 B | 12301 B |
+
+Fica em português o que o usuário lê e os blocos de mensagem de `peers`/`megamind` (`[peers PEDIDO …]`, `[arca-megamind …]`), cujo formato os renderers e o Megamind remoto interpretam.
+
+**Antes do item 3**
 - `plan` é uma tool só com dois domínios (`plan.ts:236-258`):
   - `steps`: checklist efêmero, guardado como entrada da sessão (`appendEntry('garime-plan')`);
   - ações de task: `.pi/todos/*.md` persistentes, delegadas para `todos.ts:673`, cujo `createTaskTool` não é registrado sozinho.
@@ -164,7 +175,7 @@ Ordem de execução proposta: **0 → 1 → 2 → 3 → 4**. A suíte de evals e
 **Proposta**
 - **Separar** `plan` (só `steps`, efêmero) de `todo` (tasks persistentes, registrando o `createTaskTool` que já existe).
   - Cada schema fica menor e sem campos que se excluem.
-  - `codemode-mode.ts:9` mantém os dois declarados diretamente.
+  - Só `plan` continua em `alwaysDeclared` (`codemode-mode.ts:10`); `todo` é deferred e o `tool_search` a encontra (decisão f).
 - **Regra de idioma:**
   - tudo que o **modelo** lê (description, promptSnippet, promptGuidelines e seções de policy) fica em **inglês**;
   - tudo que o **usuário** lê (UI, notificações e docs) fica em **português**.
@@ -175,8 +186,8 @@ Ordem de execução proposta: **0 → 1 → 2 → 3 → 4**. A suíte de evals e
 **Decididas** (ver a tabela no topo)
 
 **Verificação:**
-- Bench: comparar pass-rate e tokens do pai entre `AGENT_PROMPT_LANG=pt` e `en`.
-- Medir os bytes do system prompt antes e depois.
+- Bench: comparar pass-rate e tokens do pai entre a linha de base e o commit do item 3, sem flag de idioma (ponto 4 do item 0).
+- Medir os bytes do system prompt antes e depois (tabela no status).
 
 **Tamanho:** pequeno a médio. **Risco:** baixo. O ganho de idioma é incerto, e o bench decide se fica.
 
