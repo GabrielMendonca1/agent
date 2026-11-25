@@ -293,6 +293,80 @@ try {
   }
   checks++; console.log('ok dispatch sem recursos mantém isolamento e catálogo de skills');
 
+  // Allowlist de skills: `skills:` do papel + nomes do launch, resolvidos no catálogo do filho.
+  {
+    const skillsDir = join(process.env.PI_CODING_AGENT_DIR, 'skills');
+    for (const [name, hidden] of [['alpha', true], ['beta', false]]) {
+      mkdirSync(join(skillsDir, name), { recursive: true });
+      writeFileSync(join(skillsDir, name, 'SKILL.md'), `---\nname: ${name}\ndescription: fixture ${name}\n${hidden ? 'disable-model-invocation: true\n' : ''}---\nbody\n`);
+    }
+    const skillFile = (name) => join(skillsDir, name, 'SKILL.md');
+    const details = (results) => ({ mode: 'single', agentScope: 'user', projectAgentsDir: null, results });
+    const run = (role, extra = {}) => runner.runSingleAgent({ defaultCwd: root, dispatchDefaults: { model: 'test/principal' }, agents: [role], agentName: role.name, task: 'fixture', makeDetails: details, ...extra });
+    const skillArgv = (args) => args.filter((arg, i) => arg === '--no-skills' || arg === '--skill' || args[i - 1] === '--skill');
+
+    const allow = await run({ ...agent, name: 'allow', skills: ['alpha'] }, { skills: ['beta', 'alpha'] });
+    assert.equal(allow.exitCode, 0);
+    assert.deepEqual(skillArgv(captured.args), ['--no-skills', '--skill', skillFile('alpha'), '--skill', skillFile('beta')]);
+    assert.equal(captured.opts.env.AGENT_CHILD_SKILLS, 'alpha,beta', 'hidden skill is advertised in the child');
+    assert.equal(captured.opts.env.PI_AUTOMATIC_SKILLS, 'alpha,beta');
+    assert.deepEqual(allow.invocation.skills, { only: true, paths: [skillFile('alpha'), skillFile('beta')], advertised: ['alpha', 'beta'] });
+    const launchArgs = captured.args;
+    // continue: same skill argv from the snapshot even if the role and the catalog change.
+    rmSync(join(skillsDir, 'beta'), { recursive: true });
+    await run({ ...agent, name: 'allow', skills: [] }, { resume: { invocation: allow.invocation, sessionFile: allow.sessionFile } });
+    assert.deepEqual(skillArgv(captured.args), skillArgv(launchArgs), 'continue keeps the skill prefix');
+    assert.equal(captured.opts.env.AGENT_CHILD_SKILLS, 'alpha,beta');
+    mkdirSync(join(skillsDir, 'beta'), { recursive: true });
+    writeFileSync(skillFile('beta'), '---\nname: beta\ndescription: fixture beta\n---\nbody\n');
+
+    await run({ ...agent, name: 'none', skills: [] });
+    assert.deepEqual(skillArgv(captured.args), ['--no-skills'], 'empty allowlist = --no-skills only');
+    assert.equal(captured.opts.env.AGENT_CHILD_SKILLS, '');
+    const full = await run({ ...agent, name: 'full' }, { skills: ['alpha'] });
+    assert.deepEqual(skillArgv(captured.args), ['--skill', skillFile('alpha')], 'role without skills: full catalog plus the requested one');
+    assert.ok(captured.opts.env.AGENT_CHILD_SKILLS.split(',').includes('alpha'));
+    assert.equal(full.invocation.skills.only, false);
+
+    for (const [extra, pattern] of [[['gamma'], /Unknown skill\(s\) for agent "allow": gamma\. Available skills: .*\balpha, .*\bbeta, .*\bdebug\b/], [['../alpha/SKILL.md'], /catalog names, not paths/]]) {
+      captured = undefined;
+      const bad = await run({ ...agent, name: 'allow', skills: ['alpha'] }, { skills: extra });
+      assert.equal(bad.exitCode, 1);
+      assert.match(bad.errorMessage, pattern);
+      assert.equal(captured, undefined, 'nothing spawns on an invalid skill');
+    }
+    const badRole = await run({ ...agent, name: 'typo', skills: ['nope'] });
+    assert.match(badRole.errorMessage, /Agent "typo" lists unknown skill\(s\): nope/);
+
+    // Warmup uses the same skill argv and env as the real child.
+    const prefetchHooks = { ...runner.runnerHooks };
+    try {
+      await runner.prefetchAgent({ defaultCwd: root, dispatchDefaults: { model: 'test/principal' }, agents: [{ ...agent, name: 'allow', skills: ['alpha'] }], agentName: 'allow', skills: ['beta'] });
+    } finally { Object.assign(runner.runnerHooks, prefetchHooks); }
+    assert.deepEqual(skillArgv(captured.args), skillArgv(launchArgs), 'prefetch skill argv matches the child');
+    assert.equal(captured.opts.env.AGENT_CHILD_SKILLS, 'alpha,beta');
+
+    // Role parsing: absent = full catalog, [] = none; a user override without the field inherits the bundled role.
+    const agentsMod = await jiti.import(join(repo, 'agent/extensions/brain-live/subagent/agents.ts'));
+    const bundled = agentsMod.discoverAgents(root, 'user').agents;
+    const skillsOf = (list, name) => list.find((a) => a.name === name)?.skills;
+    assert.deepEqual(skillsOf(bundled, 'worker'), ['debug', 'tdd']);
+    for (const name of ['scout', 'reviewer', 'visual']) assert.deepEqual(skillsOf(bundled, name), [], `${name}: skills []`);
+    for (const name of ['planner', 'gemini']) assert.equal(skillsOf(bundled, name), undefined, `${name}: full catalog`);
+    const userRoles = join(process.env.PI_CODING_AGENT_DIR, 'agents');
+    mkdirSync(userRoles, { recursive: true });
+    writeFileSync(join(userRoles, 'worker.md'), '---\nname: worker\ndescription: personal\ntools: read\n---\nx');
+    writeFileSync(join(userRoles, 'scout.md'), '---\nname: scout\ndescription: personal\ntools: read\nskills: [alpha]\n---\nx');
+    writeFileSync(join(userRoles, 'custom.md'), '---\nname: custom\ndescription: personal\ntools: read\n---\nx');
+    const personal = agentsMod.discoverAgents(root, 'user').agents;
+    assert.deepEqual(skillsOf(personal, 'worker'), ['debug', 'tdd'], 'override without skills inherits the bundled role');
+    assert.deepEqual(skillsOf(personal, 'scout'), ['alpha'], 'explicit field wins');
+    assert.equal(skillsOf(personal, 'custom'), undefined, 'custom role keeps the full catalog');
+    rmSync(userRoles, { recursive: true });
+    rmSync(skillsDir, { recursive: true });
+    checks++; console.log('ok skills: allowlist do papel + launch, --no-skills/--skill, continue e prefetch com o mesmo prefixo, herança do papel embutido');
+  }
+
   // Launcher: argv[1] só vale se for CLI declarado do pacote Pi; host do SDK cai no CLI do Pi carregado.
   const piPkg = JSON.parse(readFileSync(join(pkg, 'package.json'), 'utf8'));
   const bundleCli = realpathSync(join(pkg, piPkg.bin.pi));

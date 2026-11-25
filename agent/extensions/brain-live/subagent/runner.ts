@@ -25,6 +25,7 @@ import { readHostFreePercent, waitForHostMemory } from "./host-memory.ts";
 import { isProcessAlive, listDescendants, signalProcesses } from "./process-tree.ts";
 import type { AgentConfig, AgentScope } from "./agents.ts";
 import { type ChildInvocation, fileSha } from "./handles.ts";
+import { type ChildSkills, resolveChildSkills, skillArgs } from "./skills.ts";
 
 /** Preview cap. Never applied to what is stored: full outputs are kept in the job record. */
 export const PREVIEW_OUTPUT_CAP = 50 * 1024;
@@ -353,7 +354,8 @@ export const PREFETCH_EXIT = { warmed: 0, unsupported: 3, timeout: 4, providerEr
 
 /**
  * Aquece o cache do prefixo (system+tools) de um papel: mesmo argv do filho real
- * (agente/modelo/thinking/tools/skills), tarefa ".", `--no-session`, sem UI.
+ * (agente/modelo/thinking/tools e o mesmo conjunto de skills via `opts.skills`), tarefa ".",
+ * `--no-session`, sem UI.
  * Nunca lança; devolve o exit code (0 aquecido, 3 sem suporte, 4 timeout, 5 erro, outro = falha).
  */
 export async function prefetchAgent(
@@ -530,6 +532,8 @@ export interface RunAgentOptions {
 	sourceCwd?: string;
 	/** Already-authorized central role choice. Takes precedence over legacy frontmatter/defaults. */
 	roleModel?: { model: string; thinking: string };
+	/** Extra skill names from the caller, on top of the role allowlist (resolved at launch). */
+	skills?: string[];
 	step?: number;
 	signal?: AbortSignal;
 	onUpdate?: OnUpdateCallback;
@@ -1009,12 +1013,12 @@ function verifyCheckout(before: Map<string, string> | undefined, cwd: string, re
  * prompt text and effective cwd. `continue` rebuilds the argv from it, so a role or
  * environment change after the launch cannot alter the cached prefix.
  */
-function launchInvocation(agent: AgentConfig, opts: RunAgentOptions): ChildInvocation {
+function launchInvocation(agent: AgentConfig, opts: RunAgentOptions, skills: ChildSkills | undefined): ChildInvocation {
 	const cwd = opts.cwd ?? opts.defaultCwd;
 	const sandbox = sandboxForTools(agent.tools);
 	const extensions: string[] = [];
 	if (sandbox && sandbox !== "none") extensions.push(path.join(path.dirname(CACHE_KEEPER_PATH), "bash-sandbox.ts"));
-	// Every child keeps cache keys, limits and the skill catalog, without warming timers.
+	// Every child keeps cache keys and limits, without warming timers. Skills follow the role allowlist.
 	if (fs.existsSync(CACHE_KEEPER_PATH)) extensions.push(CACHE_KEEPER_PATH);
 	if (fs.existsSync(CHILD_OUTPUT_CAP_PATH)) extensions.push(CHILD_OUTPUT_CAP_PATH);
 	if (fs.existsSync(CHILD_CACHE_PREFIX_PATH)) extensions.push(CHILD_CACHE_PREFIX_PATH);
@@ -1047,6 +1051,7 @@ function launchInvocation(agent: AgentConfig, opts: RunAgentOptions): ChildInvoc
 		tools: agent.tools && agent.tools.length > 0 ? [...agent.tools] : undefined,
 		sandbox,
 		extensions,
+		...(skills ? { skills } : {}),
 		systemPrompt: agent.systemPrompt,
 		cwd,
 		sourceCwd: opts.sourceCwd,
@@ -1088,12 +1093,23 @@ export async function runSingleAgent(opts: RunAgentOptions): Promise<SingleResul
 
 	if (agent.runner === "agy") return runAgyAgent(agent, opts);
 
-	// Garime: filho enxuto. Sem extensões (presence, relay, vault, kernel…) nem skills;
+	// Garime: filho enxuto. Sem as extensões do pai (presence, relay, vault, kernel…); skills pela
+	// allowlist do papel (`skills:`) mais as pedidas no launch, ou o catálogo inteiro sem o campo.
 	// AGENTS.md/CLAUDE.md continuam valendo, na mensagem da tarefa (contextFilesMessage),
 	// não no system. Só as tools do frontmatter.
 	// `continue` reusa o snapshot do launch: mesmo argv, mesmo --session, só a mensagem muda.
 	const resume = opts.prefetch ? undefined : opts.resume;
-	const invocation = resume?.invocation ?? launchInvocation(agent, opts);
+	let invocation = resume?.invocation;
+	if (!invocation) {
+		// No allowlist and no extra names: stay synchronous up to onStart (the full catalog needs no lookup).
+		const skills = agent.skills !== undefined || opts.skills?.length
+			? await resolveChildSkills(agent, opts.skills, opts.cwd ?? opts.defaultCwd)
+			: { ok: true as const, skills: undefined };
+		if (!skills.ok) {
+			return { agent: agentName, agentSource: agent.source, task, exitCode: 1, finalText: "", stderr: skills.error, errorMessage: skills.error, stopReason: "error", usage: emptyUsage(), step };
+		}
+		invocation = launchInvocation(agent, opts, skills.skills);
+	}
 	const args: string[] = ["--mode", "json", "-p", "--no-extensions", "--no-context-files"];
 	const cwd = invocation.cwd;
 	const sandbox = invocation.sandbox;
@@ -1106,6 +1122,11 @@ export async function runSingleAgent(opts: RunAgentOptions): Promise<SingleResul
 		extraEnv.AGENT_SANDBOX_CWD = cwd;
 	}
 	if (opts.prefetch) Object.assign(extraEnv, { AGENT_CACHE_PREFETCH: "1", AGENT_CHILD: "1" });
+	// The child's preload copies AGENT_CHILD_SKILLS into PI_AUTOMATIC_SKILLS; set both for children without it.
+	if (invocation.skills) {
+		extraEnv.AGENT_CHILD_SKILLS = invocation.skills.advertised.join(",");
+		extraEnv.PI_AUTOMATIC_SKILLS = extraEnv.AGENT_CHILD_SKILLS;
+	}
 	let sessionFile: string | undefined;
 	if (opts.prefetch) args.push("--no-session");
 	else if (resume) {
@@ -1128,6 +1149,7 @@ export async function runSingleAgent(opts: RunAgentOptions): Promise<SingleResul
 	const thinking = invocation.thinking;
 	if (thinking) args.push("--thinking", thinking);
 	if (invocation.tools && invocation.tools.length > 0) args.push("--tools", invocation.tools.join(","));
+	args.push(...skillArgs(invocation.skills));
 
 	let tmpPromptDir: string | null = null;
 	let tmpPromptPath: string | null = null;

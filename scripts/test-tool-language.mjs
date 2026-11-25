@@ -229,7 +229,20 @@ try {
   const reason = blocked.find(r => r?.block)?.reason;
   assert.ok(reason, 'ask_user bloqueado com goal em execução');
   check('ask_user goal block reason', reason);
-  console.log('ok wrappers de runtime: peers, megamind, soft timeout e bloqueio do ask_user');
+  // Erros de skills do launch (nome desconhecido, caminho, agy, papel com nome inválido).
+  const childSkills = await jiti.import(join(repo, 'agent/extensions/brain-live/subagent/skills.ts'));
+  childSkills.runnerSkillHooks.catalog = async () => [{ name: 'debug', filePath: '/skills/debug/SKILL.md' }];
+  for (const [role, extra] of [
+    [{ name: 'worker', skills: ['debug'] }, ['nope']],
+    [{ name: 'worker', skills: ['debug'] }, ['../x/SKILL.md']],
+    [{ name: 'gemini', runner: 'agy' }, ['debug']],
+    [{ name: 'custom', skills: ['nope'] }, []],
+  ]) {
+    const resolved = await childSkills.resolveChildSkills(role, extra, sandbox);
+    assert.equal(resolved.ok, false, `skills error for ${role.name}`);
+    check(`subagent skills error ${role.name}`, resolved.error);
+  }
+  console.log('ok wrappers de runtime: peers, megamind, soft timeout, bloqueio do ask_user e erros de skills');
 
   // Papéis: o description: entra na descrição da tool subagent.
   for (const file of readdirSync(join(repo, 'agent/agents')).filter(f => f.endsWith('.md'))) {

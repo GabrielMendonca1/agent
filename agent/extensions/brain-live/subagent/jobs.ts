@@ -62,7 +62,7 @@ export const MAX_CONCURRENCY = GLOBAL_CHILD_LIMIT;
 
 /** Prefixo de cache de um filho: papel + modelo + thinking + cwd (system e tools derivam disso). */
 export function prefixKey(task: JobTaskSpec, defaultCwd: string): string {
-	return JSON.stringify([task.agent, task.model ?? null, task.thinking ?? null, task.sourceCwd ?? task.cwd ?? defaultCwd]);
+	return JSON.stringify([task.agent, task.model ?? null, task.thinking ?? null, task.sourceCwd ?? task.cwd ?? defaultCwd, task.skills ?? []]);
 }
 
 /**
@@ -129,6 +129,8 @@ export interface JobTaskSpec {
 	worktreeRemoved?: boolean;
 	/** Optional per-call selection. It must match this role's central allowlist. */
 	model?: string;
+	/** Extra skill names requested at launch, on top of the role allowlist. */
+	skills?: string[];
 	/** Internal per-brief decision; role defaults never overwrite a sibling task's choice. */
 	slot?: "apoio" | "principal";
 	/** Populated internally from the authorized model-role pair; never caller-controlled. */
@@ -687,6 +689,7 @@ export class SubagentJobManager {
 				cwd: t.cwd,
 				model: t.model,
 				thinking: t.thinking,
+				...(t.skills?.length ? { skills: [...t.skills] } : {}),
 			})),
 			cwd: spec.cwd,
 			agentScope: spec.agentScope,
@@ -806,6 +809,7 @@ export class SubagentJobManager {
 			cwd: task.cwd,
 			sourceCwd: task.sourceCwd,
 			roleModel: task.model && task.thinking ? { model: task.model, thinking: task.thinking } : undefined,
+			skills: task.skills,
 			signal: warm.controller.signal,
 			acquireSlot: (s?: AbortSignal) => this.slots.acquire(s),
 		}).then((code) => {
@@ -845,6 +849,7 @@ export class SubagentJobManager {
 			sourceCwd: resume ? resume.invocation.sourceCwd : task.sourceCwd,
 			resume,
 			roleModel: task.model && task.thinking ? { model: task.model, thinking: task.thinking } : undefined,
+			skills: task.skills,
 			step: opts.step,
 			signal,
 			makeDetails,

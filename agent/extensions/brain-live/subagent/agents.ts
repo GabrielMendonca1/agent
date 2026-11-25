@@ -13,6 +13,12 @@ export interface AgentConfig {
 	name: string;
 	description: string;
 	tools?: string[];
+	/**
+	 * Skill allowlist (frontmatter `skills`): names from the child's catalog. Absent = the full
+	 * catalog; `[]` = none. A user/project override without the field inherits the bundled
+	 * role of the same name.
+	 */
+	skills?: string[];
 	runner?: "agy";
 	model?: string;
 	thinking?: string;
@@ -42,6 +48,7 @@ type AgentFrontmatter = {
 	name?: unknown;
 	description?: unknown;
 	tools?: unknown;
+	skills?: unknown;
 	runner?: unknown;
 	model?: unknown;
 	thinking?: unknown;
@@ -68,6 +75,13 @@ function parseNameList(value: unknown): string[] | undefined {
 		.map((t) => t.trim())
 		.filter(Boolean);
 	return names.length > 0 ? names : undefined;
+}
+
+/** `skills` keeps the difference between absent (full catalog) and empty (no skills). */
+function parseSkillList(value: unknown): string[] | undefined {
+	if (value === undefined) return undefined;
+	if (value === null) return [];
+	return parseNameList(value) ?? [];
 }
 
 function loadAgentsFromDir(dir: string, source: AgentConfig["source"]): AgentConfig[] {
@@ -106,6 +120,7 @@ function loadAgentsFromDir(dir: string, source: AgentConfig["source"]): AgentCon
 			name: frontmatter.name,
 			description: frontmatter.description,
 			tools: parseNameList(frontmatter.tools),
+			...(Object.hasOwn(frontmatter, "skills") ? { skills: parseSkillList(frontmatter.skills) } : {}),
 			...(frontmatter.runner === "agy" ? { runner: "agy" as const } : {}),
 			model: typeof frontmatter.model === "string" ? frontmatter.model : undefined,
 			thinking: typeof frontmatter.thinking === "string" ? frontmatter.thinking : undefined,
@@ -146,11 +161,18 @@ export function discoverAgents(cwd: string, scope: AgentScope): AgentDiscoveryRe
 
 	// Bundled roles travel with the runtime; never copy them into the personal profile.
 	const bundledDir = fileURLToPath(new URL("../../../agents/", import.meta.url));
+	const bundled = loadAgentsFromDir(bundledDir, "bundled");
+	// An override without `skills:` keeps the bundled role's allowlist; a new role keeps the full catalog.
+	const inheritSkills = (agent: AgentConfig): AgentConfig => {
+		if (agent.skills !== undefined) return agent;
+		const base = bundled.find((role) => role.name === agent.name);
+		return base?.skills !== undefined ? { ...agent, skills: [...base.skills] } : agent;
+	};
 	const userAgents = scope === "project" ? [] : [
-		...loadAgentsFromDir(bundledDir, "bundled"),
-		...loadAgentsFromDir(userDir, "user"),
+		...bundled,
+		...loadAgentsFromDir(userDir, "user").map(inheritSkills),
 	];
-	const projectAgents = scope === "user" || !projectAgentsDir ? [] : loadAgentsFromDir(projectAgentsDir, "project");
+	const projectAgents = scope === "user" || !projectAgentsDir ? [] : loadAgentsFromDir(projectAgentsDir, "project").map(inheritSkills);
 
 	const agentMap = new Map<string, AgentConfig>();
 

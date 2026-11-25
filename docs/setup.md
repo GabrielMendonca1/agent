@@ -395,6 +395,16 @@ O resultado e o uso disponível ficam no registro do job; não há sessão JSONL
 - No fim de um job, cada tarefa de papel escritor com `checks` ganha no resultado a linha `gate: N/M green, new failures: […] (fresh|stale…)`, ou `gate: not run in this job`.
 - A baseline serializa `git worktree add`/`remove`/`prune` por repositório (`<git-common-dir>/pi-checks.lock`); o cache é gravado com tmp+rename.
 
+### Skills nos filhos
+
+- O frontmatter do papel aceita `skills:` opcional, uma allowlist de nomes do catálogo. `skills: []` = nenhuma skill; sem o campo = catálogo inteiro, como antes. Papéis padrão: `scout`, `reviewer` e `visual` com `[]`; `worker` com `[debug, tdd]`; `planner` e `gemini` sem o campo.
+- Com allowlist, o filho roda `pi --no-skills --skill <SKILL.md>…`. No Pi 1.5.2, `--no-skills` desliga a descoberta (settings, perfil, projeto), mas mantém cada `--skill`. O runner também passa `AGENT_CHILD_SKILLS` com os nomes; o preload do filho copia a lista para `PI_AUTOMATIC_SKILLS`. Sem isso, a curadoria esconderia `debug` e `tdd`, que têm `disable-model-invocation`. O bash do filho não herda `AGENT_CHILD_SKILLS`.
+- O `launch` aceita `skills` (por task, ou no modo single) com nomes extras, somados aos do papel. Num papel sem o campo, os extras entram com `--skill` sobre o catálogo inteiro. Nome desconhecido, caminho ou skill pedida para um papel `agy` falham antes de qualquer spawn, com a lista das skills disponíveis.
+- O catálogo usado para resolver nomes é o que o filho descobriria no `cwd`, mais as skills de empresa do usuário e as skills embutidas no runtime (`agent/skills`). Assim, `debug` e `tdd` existem mesmo num perfil sem `skills` nas settings.
+- O conjunto efetivo (caminhos, `--no-skills` e nomes anunciados) entra no snapshot do launch. `continue` e o aquecimento do cache usam o mesmo argv do filho real.
+- Override do usuário (`<perfil>/agents/<nome>.md`) ou do projeto sem `skills:` herda a allowlist do papel embutido de mesmo nome. Um papel novo sem o campo fica com o catálogo inteiro. Um override que precise de outras skills as lista no campo.
+- Tamanho do bloco `<skills>` no system do filho, medido com o catálogo desta máquina: antes, 3041 bytes em todo filho Pi (7 skills automáticas). Depois, 0 bytes em `scout`, `reviewer` e `visual`; 862 bytes em `worker` (`debug`, `tdd`); `planner` continua com 3041 bytes.
+
 ### Custo dos filhos
 
 - `AGENT_CHILD_TOOL_OUTPUT_MAX` (padrão 8000 caracteres; `0` desliga): saída de `bash`/`read`/`grep`/`find`/`ls` maior que isso chega ao filho como cabeça (~6k) + cauda (~2k) e uma linha com o total omitido e o arquivo com a saída completa (`$TMPDIR/agent-child-output/<sessão>/`); com `skim` no papel, a linha sugere `skim path=<arquivo>`. A chamada de `bash` feita pelo próprio `skim` não é cortada. Motivo: saídas acima de 10k caracteres nos filhos custaram ~US$ 327 no 1º envio e ~US$ 390 em leitura de cache nos turnos seguintes em 30 dias. `read` com `limit` ≤ 200 linhas não é cortado. Os papéis pedem `rg -n` e trechos de até ~150 linhas.
