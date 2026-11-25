@@ -24,6 +24,15 @@ import {
 	sessionMayBeOwned,
 } from "./legacy-runs.ts";
 import { ownerMayBeAlive, readProcessIdentity, type ProcessIdentity } from "./process-owner.ts";
+import {
+	acquireSessionLock,
+	assignHandles,
+	type ChildInvocation,
+	fileSha,
+	type HandleEntry,
+	readRegistry,
+	updateRegistry,
+} from "./handles.ts";
 // @ts-ignore — módulo JS compartilhado, sem tipos
 import { staggeredFanout } from "../../../core/cache-policy.mjs";
 import { childCacheRetention } from "../../../core/child-env.mjs";
@@ -128,6 +137,12 @@ export interface JobTaskSpec {
 	sessionFile?: string;
 	usage?: UsageStats;
 	error?: string;
+	/** Launch input only: caller-chosen handle for this task. */
+	name?: string;
+	/** Stable per-session name (`<role>-<n>` or `name`); `continue` addresses the task by it. */
+	handle?: string;
+	/** Launch snapshot of the child invocation (see handles.ts). */
+	invocation?: ChildInvocation;
 }
 
 /**
@@ -235,7 +250,27 @@ export interface JobRecord {
 	runs?: DurableRunState[];
 	/** Total de retomadas para telemetria; MAX_RESUMES vale por slot. */
 	resumes?: number;
+	/** `continue` job: the launch task whose child session this job resumed. */
+	continuesFrom?: { jobId: string; taskIndex: number; handle: string };
 }
+
+export interface ContinueSpec {
+	jobId: string;
+	sessionId: string;
+	sessionGeneration: number;
+	anchorEntryId?: string | null;
+	handle: string;
+	message: string;
+	agents: AgentConfig[];
+	agentScope: AgentScope;
+	projectAgentsDir: string | null;
+	dispatchDefaults: DispatchDefaults;
+	timeoutSeconds: number;
+}
+
+export type ContinueOutcome =
+	| { ok: true; record: JobRecord; resultPath: string; entry: HandleEntry; warnings: string[] }
+	| { ok: false; error: string };
 
 export interface LaunchSpec {
 	/** Pre-reserved id (so the launch anchor entry can name the job). */
@@ -408,6 +443,8 @@ interface ActiveJob {
 	returned: Map<number, SingleResult>;
 	/** Tasks that threw, with the message. */
 	thrown: Map<number, string>;
+	/** `continue`: lock next to the child JSONL, released when the job settles. */
+	releaseLock?: () => void;
 }
 
 export type LaunchOutcome = { ok: true; record: JobRecord; resultPath: string } | { ok: false; error: string };
@@ -529,6 +566,19 @@ export class SubagentJobManager {
 			parentIdentity: readProcessIdentity(process.pid),
 		};
 
+		// Handles are reserved with the record: names are unique per parent session.
+		try {
+			const handles = updateRegistry(this.deps.baseDir, spec.sessionId, (registry) => {
+				const names = spec.tasks.map((t) => t.name).filter((name): name is string => Boolean(name));
+				const taken = names.filter((name, i) => registry.handles[name] || names.indexOf(name) !== i);
+				if (taken.length > 0) throw new Error(`Handle name(s) already used in this session: ${taken.join(", ")}. Pick another name or omit it.`);
+				return assignHandles(registry, spec.tasks, jobId, record.createdAt);
+			});
+			record.tasks.forEach((task, index) => { task.handle = handles[index]; });
+		} catch (error) {
+			return { ok: false, error: error instanceof Error ? error.message : String(error) };
+		}
+
 		// Persist the launch before acknowledging it, so a crash right after the
 		// ack still leaves a record that restore() can mark interrupted.
 		const resultPath = writeRecord(this.deps.baseDir, record);
@@ -537,11 +587,12 @@ export class SubagentJobManager {
 	}
 
 	/** Shared lifecycle for a fresh dispatch and a restored job. */
-	private start(record: JobRecord, spec: LaunchSpec): void {
+	private start(record: JobRecord, spec: LaunchSpec, releaseLock?: () => void): void {
 		const controller = new AbortController();
 		const job: ActiveJob = {
 			record,
 			controller,
+			releaseLock,
 			cancelRequested: false,
 			timedOut: false,
 			done: Promise.resolve(),
@@ -648,13 +699,18 @@ export class SubagentJobManager {
 		const key = prefixKey(task, spec.cwd);
 		const prev = prefetchState.get(key);
 		prefetchState.set(key, { inflight: prev?.inflight ?? false, until: Date.now() + cacheTtlSeconds() * 1000 * 0.9 });
+		// A continue job rebuilds the launch argv over the same child session.
+		const resume = job.record.continuesFrom && task.invocation && task.sessionFile
+			? { invocation: task.invocation, sessionFile: task.sessionFile }
+			: undefined;
 		const common = {
 			defaultCwd: spec.cwd,
 			dispatchDefaults: spec.dispatchDefaults,
 			agents: spec.agents,
 			agentName: task.agent,
 			cwd: task.cwd,
-			sourceCwd: task.sourceCwd,
+			sourceCwd: resume ? resume.invocation.sourceCwd : task.sourceCwd,
+			resume,
 			roleModel: task.model && task.thinking ? { model: task.model, thinking: task.thinking } : undefined,
 			step: opts.step,
 			signal,
@@ -664,7 +720,7 @@ export class SubagentJobManager {
 			onFirstToken,
 			onStart: (result: SingleResult) => this.taskStarted(job, slot, result),
 		};
-		const taskText = task.worktree ? `You are in an isolated worktree ${task.worktree} on branch ${task.branch}; commit your work there; do not touch ${task.sourceCwd}.\n${opts.taskText}` : opts.taskText;
+		const taskText = !resume && task.worktree ? `You are in an isolated worktree ${task.worktree} on branch ${task.branch}; commit your work there; do not touch ${task.sourceCwd}.\n${opts.taskText}` : opts.taskText;
 		let result: SingleResult;
 		try {
 			result = await runSingleAgent({ ...common, task: taskText, parentSession: spec.dispatchDefaults.parentSession });
@@ -699,7 +755,49 @@ export class SubagentJobManager {
 		// Role frontmatter or parent defaults: the record names the model actually used.
 		task.model ??= result.model;
 		task.thinking ??= result.thinking;
+		task.invocation ??= result.invocation;
 		this.persist(job.record);
+		if (task.handle && !job.record.continuesFrom) {
+			this.touchHandle(job.record, task.handle, (entry) => {
+				entry.sessionFile = task.sessionFile;
+				entry.invocation = task.invocation;
+				entry.cwd = task.invocation?.cwd ?? task.cwd;
+				entry.worktree = task.worktree;
+				entry.branch = task.branch;
+			});
+		}
+	}
+
+	/** Registry update for a handle this job still drives; a newer job owns it otherwise. */
+	private touchHandle(record: JobRecord, handle: string, change: (entry: HandleEntry) => void): void {
+		try {
+			updateRegistry(this.deps.baseDir, record.sessionId, (registry) => {
+				const entry = registry.handles[handle];
+				if (!entry || entry.lastJobId !== record.jobId) return;
+				change(entry);
+				entry.updatedAt = this.now();
+			});
+		} catch {
+			/* best-effort: the job record still names the session file */
+		}
+	}
+
+	/** Job end: a task with a live Pi session waits for `continue`; anything else closes. */
+	private settleHandles(record: JobRecord): void {
+		record.tasks.forEach((task) => {
+			if (!task.handle) return;
+			this.touchHandle(record, task.handle, (entry) => {
+				const resumable = task.invocation?.runner === "pi" && task.sessionFile && fs.existsSync(task.sessionFile);
+				if (entry.lifecycle === "closed") return;
+				if (resumable) {
+					entry.lifecycle = "waiting";
+					entry.closedReason = undefined;
+				} else {
+					entry.lifecycle = "closed";
+					entry.closedReason = task.invocation?.runner === "agy" ? "agy runner keeps no Pi session" : "the task never started a child session";
+				}
+			});
+		});
 	}
 
 	/**
@@ -861,7 +959,7 @@ export class SubagentJobManager {
 		}
 
 		const { usage, sessionFiles } = this.settleTasks(job, error);
-		const isolated = worktreeSummary(job.record);
+		const isolated = worktreeSummary(this.worktreeView(job.record));
 		if (isolated) output = `${isolated}\n\n${output}`;
 		const gates = gateSummary(job.record, spec.agents);
 		if (gates) output = `${output}\n\n${gates}`;
@@ -902,6 +1000,8 @@ export class SubagentJobManager {
 		}
 		// Só remover a fonte de recuperação depois que o resultado está seguro no registro.
 		if (persisted && !heldSession) removeJobRunDir(this.deps.baseDir, finished.sessionId, finished.jobId);
+		this.settleHandles(finished);
+		job.releaseLock?.();
 		try {
 			this.deps.onComplete(finished);
 		} catch {
@@ -925,11 +1025,181 @@ export class SubagentJobManager {
 		return listRecords(this.deps.baseDir, sessionId);
 	}
 
-	/** Integração e descarte são explícitos; nunca fazem parte do término do job. */
+	/** A continue job shows the worktree of the launch task it resumed. */
+	private worktreeView(record: JobRecord): JobRecord {
+		const from = record.continuesFrom;
+		if (!from) return record;
+		const entry = readRegistry(this.deps.baseDir, record.sessionId).handles[from.handle];
+		const origin = readRecord(this.deps.baseDir, record.sessionId, from.jobId)?.tasks[from.taskIndex - 1];
+		if (!entry?.worktree || !origin?.worktree || origin.worktreeRemoved) return { ...record, tasks: [] };
+		return { ...record, tasks: [{ ...origin }] };
+	}
+
+	/**
+	 * Refusals for `continue`, checked before anything is anchored or locked:
+	 * unknown handle, agy runner, still running, closed, worktree gone, no session.
+	 */
+	continueBlocker(sessionId: string, handle: string, agents: AgentConfig[]): { ok: true; entry: HandleEntry & { sessionFile: string }; invocation: ChildInvocation } | { ok: false; error: string } {
+		if (!isSafeId(sessionId)) return { ok: false, error: "Unsafe session id; refusing to continue." };
+		const registry = readRegistry(this.deps.baseDir, sessionId);
+		const entry = registry.handles[handle];
+		if (!entry) return { ok: false, error: `Unknown handle ${handle} in this session. Use action "list" to see handles.` };
+		const invocation = entry.invocation;
+		const roleRunner = agents.find((a) => a.name === entry.agent)?.runner;
+		if (invocation?.runner === "agy" || (!invocation && roleRunner === "agy"))
+			return { ok: false, error: `Handle ${entry.handle} ran on the agy runner (${entry.agent}), which keeps no Pi session to resume. Use action "launch" with a fresh brief.` };
+		if (entry.lifecycle === "running") {
+			const last = this.active.get(entry.lastJobId)?.record ?? readRecord(this.deps.baseDir, sessionId, entry.lastJobId);
+			if (this.active.has(entry.lastJobId) || (last?.status === "running" && ownedByLiveForeignParent(last)))
+				return { ok: false, error: `Handle ${entry.handle} is still running in job ${entry.lastJobId}. Wait for its result, then continue.` };
+		}
+		if (entry.lifecycle === "closed")
+			return { ok: false, error: `Handle ${entry.handle} is closed (${entry.closedReason ?? "closed"}). Launch a new task instead.` };
+		if (entry.worktree && !fs.existsSync(entry.worktree)) {
+			this.closeHandles(sessionId, [entry.handle], "worktree removed");
+			return { ok: false, error: `Handle ${entry.handle}: worktree ${entry.worktree} was removed. Launch a new task instead.` };
+		}
+		if (!invocation || !entry.sessionFile || !fs.existsSync(entry.sessionFile))
+			return { ok: false, error: `Handle ${entry.handle} has no child session to resume${entry.sessionFile ? ` (${entry.sessionFile} is missing)` : ""}. Launch a new task instead.` };
+		return { ok: true, entry: entry as HandleEntry & { sessionFile: string }, invocation };
+	}
+
+	/**
+	 * `continue`: a new async single-task job over the same child JSONL, cwd/worktree
+	 * and launch snapshot. The job ends with the usual terminal status; the handle
+	 * goes back to `waiting`.
+	 */
+	continueTask(spec: ContinueSpec): ContinueOutcome {
+		if (this.shuttingDown) return { ok: false, error: "Session is shutting down; no new subagent jobs." };
+		if (this.active.size >= MAX_ACTIVE_JOBS)
+			return { ok: false, error: `Too many subagent jobs running (${this.active.size}/${MAX_ACTIVE_JOBS}). Wait or cancel one (action: "list" / "cancel").` };
+		if (!isSafeId(spec.jobId)) return { ok: false, error: "Unsafe job id; refusing to continue." };
+		const checked = this.continueBlocker(spec.sessionId, spec.handle, spec.agents);
+		if (!checked.ok) return checked;
+		const { entry, invocation } = checked;
+		const lock = acquireSessionLock(entry.sessionFile, spec.jobId);
+		if (!lock.ok)
+			return { ok: false, error: `Another continue is already writing to ${entry.sessionFile}${lock.owner ? ` (job ${lock.owner.jobId}, pid ${lock.owner.pid})` : ""}. Wait for it to finish.` };
+
+		const warnings: string[] = [];
+		if (invocation.roleSha && fileSha(invocation.roleFile) !== invocation.roleSha)
+			warnings.push(`Role file of ${entry.agent} changed since launch; continuing with the launch snapshot (system prompt, tools, model).`);
+
+		const dispatchDefaults: DispatchDefaults = { ...spec.dispatchDefaults };
+		// Only a writer running in place gets a /rewind checkpoint; a worktree isolates it already.
+		if (!invocation.writes || invocation.sourceCwd !== undefined) delete dispatchDefaults.writerCheckpoint;
+		const now = this.now();
+		const record: JobRecord = {
+			version: 2,
+			jobId: spec.jobId,
+			sessionId: spec.sessionId,
+			mode: "single",
+			status: "running",
+			agents: [entry.agent],
+			tasks: [{
+				agent: entry.agent,
+				task: spec.message,
+				cwd: invocation.cwd,
+				model: invocation.model,
+				thinking: invocation.thinking,
+				handle: entry.handle,
+				invocation,
+				sessionFile: entry.sessionFile,
+			}],
+			cwd: invocation.cwd,
+			agentScope: spec.agentScope,
+			timeoutSeconds: spec.timeoutSeconds,
+			createdAt: now,
+			anchorEntryId: spec.anchorEntryId ?? null,
+			sessionGeneration: spec.sessionGeneration,
+			parentPid: process.pid,
+			parentIdentity: readProcessIdentity(process.pid),
+			continuesFrom: { jobId: entry.jobId, taskIndex: entry.taskIndex, handle: entry.handle },
+		};
+		let resultPath: string;
+		try {
+			resultPath = writeRecord(this.deps.baseDir, record);
+			updateRegistry(this.deps.baseDir, spec.sessionId, (current) => {
+				const live = current.handles[entry.handle];
+				if (!live) return;
+				live.lifecycle = "running";
+				live.lastJobId = record.jobId;
+				live.continues++;
+				live.updatedAt = now;
+			});
+		} catch (error) {
+			lock.release();
+			return { ok: false, error: `Could not persist the continue job: ${error instanceof Error ? error.message : String(error)}` };
+		}
+		this.start(record, {
+			jobId: record.jobId,
+			sessionId: spec.sessionId,
+			sessionGeneration: spec.sessionGeneration,
+			anchorEntryId: spec.anchorEntryId,
+			mode: "single",
+			tasks: record.tasks,
+			agents: spec.agents,
+			agentScope: spec.agentScope,
+			projectAgentsDir: spec.projectAgentsDir,
+			dispatchDefaults,
+			cwd: invocation.cwd,
+			timeoutSeconds: spec.timeoutSeconds,
+		}, lock.release);
+		return { ok: true, record, resultPath, entry: readRegistry(this.deps.baseDir, spec.sessionId).handles[entry.handle] ?? entry, warnings };
+	}
+
+	/** Handles of this session, oldest first. */
+	handles(sessionId: string): HandleEntry[] {
+		if (!isSafeId(sessionId)) return [];
+		return Object.values(readRegistry(this.deps.baseDir, sessionId).handles).sort((a, b) => a.createdAt - b.createdAt);
+	}
+
+	private closeHandles(sessionId: string, handles: string[], reason: string): void {
+		if (handles.length === 0) return;
+		try {
+			updateRegistry(this.deps.baseDir, sessionId, (registry) => {
+				for (const name of handles) {
+					const entry = registry.handles[name];
+					if (!entry || (entry.lifecycle === "running" && this.active.has(entry.lastJobId))) continue;
+					entry.lifecycle = "closed";
+					entry.closedReason = reason;
+					entry.updatedAt = this.now();
+				}
+			});
+		} catch {
+			/* best-effort */
+		}
+	}
+
+	/**
+	 * Integração e descarte são explícitos; nunca fazem parte do término do job.
+	 * On a continue job they act on the launch task that owns the worktree. Both close
+	 * the selected handles: the child session is done.
+	 */
 	async manage(sessionId: string, jobId: string, action: "integrate" | "discard", taskIndex?: number, force = false): Promise<string> {
-		const record = this.get(sessionId, jobId);
+		let record = this.get(sessionId, jobId);
 		if (!record) throw new Error(`Unknown job ${jobId}.`);
-		return manageWorktrees(record, action, taskIndex, force, () => writeRecord(this.deps.baseDir, record));
+		if (record.continuesFrom) {
+			if (record.status === "running") throw new Error("Job still running or has unresolved children.");
+			if (taskIndex !== undefined && taskIndex !== 1) throw new Error("taskIndex must be a 1-based task index.");
+			const from = record.continuesFrom;
+			const origin = this.get(sessionId, from.jobId);
+			if (!origin) throw new Error(`Launch job ${from.jobId} of handle ${from.handle} is gone; nothing to ${action}.`);
+			record = origin;
+			taskIndex = from.taskIndex;
+		}
+		const target = record;
+		const registry = readRegistry(this.deps.baseDir, sessionId);
+		const selected = target.tasks
+			.map((task, i) => ({ task, index: i + 1 }))
+			.filter(({ index }) => taskIndex === undefined || taskIndex === index)
+			.map(({ task, index }) => task.handle ?? Object.values(registry.handles).find((h) => h.jobId === target.jobId && h.taskIndex === index)?.handle)
+			.filter((handle): handle is string => Boolean(handle));
+		const busy = selected.filter((handle) => registry.handles[handle]?.lifecycle === "running" && this.active.has(registry.handles[handle].lastJobId));
+		if (busy.length > 0) throw new Error(`Handle(s) ${busy.join(", ")} still running a continue job; wait for it before ${action}.`);
+		const text = await manageWorktrees(target, action, taskIndex, force, () => writeRecord(this.deps.baseDir, target));
+		this.closeHandles(sessionId, selected, action === "integrate" ? "integrated" : "discarded");
+		return text;
 	}
 
 	/** Idempotent: returns promptly, terminal state lands when the child exits. */
