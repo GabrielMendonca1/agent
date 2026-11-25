@@ -671,22 +671,30 @@ function releaseMetadata(releaseDir) {
 	}
 }
 
-function missingReleaseOverlayMarkers(releaseDir) {
+/**
+ * `olderReleases: "warn"` marca um overlay acrescentado depois de releases já instaladas: no build
+ * e no reuso (`strict`) ele é exigido; no rollback/enable de uma release antiga a falta vira aviso,
+ * para não bloquear a volta a uma release que já rodava sem ele.
+ */
+function missingReleaseOverlayMarkers(releaseDir, { strict = true, warnings = [] } = {}) {
 	const problems = [];
 	for (const overlay of manifest.releaseOverlays ?? []) {
+		const sink = strict || overlay.olderReleases !== "warn" ? problems : warnings;
+		const before = sink.length;
 		const targets = findInstalledPackages(releaseDir, overlay.package);
 		if (targets.length === 0) {
-			problems.push(`release overlay "${overlay.name}": no installed copy of ${overlay.package}`);
+			sink.push(`release overlay "${overlay.name}": no installed copy of ${overlay.package}`);
 			continue;
 		}
 		for (const target of targets) {
 			const markerFile = join(target, overlay.markerFile);
 			if (!existsSync(markerFile) || !readFileSync(markerFile, "utf8").includes(overlay.requiredMarker)) {
-				problems.push(
+				sink.push(
 					`release overlay "${overlay.name}": marker ${JSON.stringify(overlay.requiredMarker)} absent from ${markerFile}`,
 				);
 			}
 		}
+		if (sink === warnings && sink.length > before) sink.push(`release overlay "${overlay.name}" is missing from this older release; rebuild it to get the fix`);
 	}
 	return problems;
 }
@@ -806,7 +814,7 @@ function verifyRelease(releaseDir, expected) {
 	const recordedPatches = metadata?.patches
 		? Object.keys(metadata.patches)
 		: (manifest.patches ?? []).map((patch) => patch.name);
-	problems.push(...missingReleaseOverlayMarkers(releaseDir));
+	problems.push(...missingReleaseOverlayMarkers(releaseDir, { strict: Boolean(expected), warnings }));
 	problems.push(...missingBundleMarkers(releaseDir, recordedPatches));
 	if (problems.length === 0 && existsSync(pi)) {
 		try {
