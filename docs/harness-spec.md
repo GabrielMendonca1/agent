@@ -195,7 +195,7 @@ Os blocos de mensagem, pedido e resposta de `peers` e `megamind` também estão 
 
 ## 4. `handoff.md` sem TTL frágil + skills nos filhos
 
-**Status:** implementado na branch `harness/item4`. O handoff usa carimbo, branch, `HEAD`, idade (24 h) e `/handoff`. As skills nos filhos usam a allowlist `skills:` e `skills` no `launch`. Override do usuário sem `skills:` herda o papel embutido de mesmo nome. Detalhes em `docs/setup.md` (Handoff entre sessões; Skills nos filhos).
+**Status:** implementado no `main` (merge `e364df0`). O handoff usa carimbo, branch, `HEAD`, idade (24 h) e `/handoff`. As skills nos filhos usam a allowlist `skills:` e `skills` no `launch`. Override do usuário sem `skills:` herda o papel embutido de mesmo nome. Detalhes em `docs/setup.md` (Handoff entre sessões; Skills nos filhos).
 
 **Hoje (handoff)**
 - O handoff só é injetado se `mtime` tiver menos de **10 min, fixo no código** (`project-prompt.ts:27-32`, travado em `test-agent-compaction.mjs:83-89`).
