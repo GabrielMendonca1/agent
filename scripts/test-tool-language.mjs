@@ -9,7 +9,7 @@
  *   (estruturadas e no prompt forçado), o slot de peers, o loop guard e os prompts de /notes e /rules init;
  * - `description:` dos papéis em agent/agents/*.md.
  * Falha com diacríticos do português ou palavras comuns (quando, sempre, antes, depois, arquivo,
- * usuário, tarefa, resultado, pedido, mensagem, nenhum, ainda, agora, sem, para, não, está).
+ * usuário, tarefa, resultado, pedido, mensagem, nenhum(a), ainda).
  * UI, notificações e docs não entram aqui.
  */
 import './lib/hermetic-test-env.mjs';
@@ -47,7 +47,8 @@ process.env.AGENT_CHILD = '0';
 process.env.PI_ACCOUNTS_MIRROR = '0';
 
 const DIACRITICS = /[áàâãäéèêëíìîïóòôõöúùûüçñ]/i;
-const STOPWORDS = /\b(quando|sempre|antes|depois|arquivo|usu[aá]rio|tarefa|resultado|pedido|mensagem|nenhum|nenhuma|ainda|agora|sem|para|n[aã]o|est[aá])\b/i;
+// Only words that are not English and not common in URLs or acronyms (no sem, para, agora, com, nao).
+const STOPWORDS = /\b(quando|sempre|antes|depois|arquivo|usu[aá]rio|tarefa|resultado|pedido|mensagem|nenhum|nenhuma|ainda)\b/i;
 const failures = [];
 let inspected = 0;
 function check(where, text) {
@@ -143,6 +144,11 @@ try {
   assert.deepEqual(failures.splice(before).map(f => f.split(':')[0]),
     ['probe.properties.title.description', 'probe.properties.description.title', 'probe.properties.description.properties.body.description'],
     'walkSchema desce em propriedades title/description');
+  // Stopwords: Portuguese without accents fails; English with look-alike tokens passes.
+  const stopBefore = failures.length;
+  check('probe-pt', 'megamind_reply: o resultado looks like a secret');
+  check('probe-en', 'SEM image at https://agora.example/para?com=1; nao.example is a host');
+  assert.deepEqual(failures.splice(stopBefore).map(f => f.split(':')[0]), ['probe-pt'], 'only the Portuguese probe fails');
   for (const [name, tool] of tools) checkTool(toolSource.get(name), tool);
   console.log(`ok ${tools.size} tools inspecionadas`);
 
