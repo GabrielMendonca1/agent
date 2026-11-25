@@ -32,9 +32,19 @@ function verifyMerged(t: JobTaskSpec): void {
 }
 
 /** Chamadas síncronas serializam worktree add antes de qualquer filho nascer. */
-/** Writer tasks isolateWriters moves into worktrees (2+ writers of one repository in parallel), by root. */
-export function plannedIsolation(record: Pick<JobRecord, "mode" | "tasks" | "cwd">, agents: AgentConfig[]): Map<string, { task: JobTaskSpec; index: number; cwd: string }[]> {
+/**
+ * Writer tasks isolateWriters moves into worktrees, by root: 2+ writers of one repository in
+ * parallel, or the single writer (task 1) of a swarm loop launched with isolate.
+ */
+export function plannedIsolation(record: Pick<JobRecord, "mode" | "tasks" | "cwd" | "swarm">, agents: AgentConfig[]): Map<string, { task: JobTaskSpec; index: number; cwd: string }[]> {
 	const groups = new Map<string, { task: JobTaskSpec; index: number; cwd: string }[]>();
+	if (record.mode === "swarm") {
+		const writer = record.tasks[0];
+		if (!record.swarm?.isolate || !writer) return groups;
+		const cwd = path.resolve(writer.cwd ?? record.cwd);
+		try { groups.set(git(cwd, ["rev-parse", "--show-toplevel"]), [{ task: writer, index: 0, cwd }]); } catch { /* not a repository: the launch refuses isolate */ }
+		return groups;
+	}
 	if (record.mode !== "parallel") return groups;
 	record.tasks.forEach((task, index) => {
 		const agent = agents.find((a) => a.name === task.agent)!;

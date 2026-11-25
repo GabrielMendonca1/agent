@@ -117,7 +117,7 @@ export interface JobSummary {
 	status: string;
 	/** Retomadas já gastas pelo job. */
 	resumes?: number;
-	mode: "single" | "parallel" | "chain";
+	mode: "single" | "parallel" | "chain" | "swarm";
 	agents: string[];
 	/** Effective authorized selections, aligned with tasks/agents. */
 	models?: Array<{ model?: string; thinking?: string }>;
@@ -129,7 +129,7 @@ export interface JobSummary {
 }
 
 export interface SubagentDetails {
-	mode: "single" | "parallel" | "chain" | "control";
+	mode: "single" | "parallel" | "chain" | "swarm" | "control";
 	agentScope: AgentScope;
 	projectAgentsDir: string | null;
 	results: SingleResult[];

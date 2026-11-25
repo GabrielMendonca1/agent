@@ -19,6 +19,7 @@ import { commitWip, gateSummary, gcWorktrees, isolateWriters, manageWorktrees, p
 import { getRoleModelChoices, isGoogleApiModel, resolveGeminiPreference, resolveModelRef, resolveRoleModel } from "../lib/tiers.ts";
 import type { AgentConfig, AgentScope } from "./agents.ts";
 import type { ChildSkills } from "./skills.ts";
+import { runSwarmLoop, type SwarmRecord } from "./swarm.ts";
 import {
 	type DurableRunState,
 	MAX_RESUMES,
@@ -116,7 +117,8 @@ export const NOTIFY_SUMMARY_CAP = 4 * 1024;
 const LEGACY_TASK_SNAPSHOT_CAP = 2000;
 
 export type JobStatus = "running" | "completed" | "failed" | "cancelled" | "timeout" | "interrupted";
-export type JobMode = "single" | "parallel" | "chain";
+/** "swarm": a swarm loop job (task 1 writer, task 2 reviewer); JobRecord.swarm holds its rounds. */
+export type JobMode = "single" | "parallel" | "chain" | "swarm";
 
 export interface JobTaskSpec {
 	agent: string;
@@ -366,6 +368,8 @@ export interface JobRecord {
 	resumes?: number;
 	/** `continue` job: the launch task whose child session this job resumed. */
 	continuesFrom?: { jobId: string; taskIndex: number; handle: string };
+	/** Swarm job: caps, rounds and outcome (mode "swarm" only). */
+	swarm?: SwarmRecord;
 }
 
 export interface ContinueSpec {
@@ -405,6 +409,8 @@ export interface LaunchSpec {
 	modelRegistry?: DispatchModelRegistry;
 	cwd: string;
 	timeoutSeconds: number;
+	/** Mode "swarm": initial swarm state (caps, isolate). */
+	swarm?: SwarmRecord;
 }
 
 export interface JobManagerDeps {
@@ -666,6 +672,7 @@ export class SubagentJobManager {
 			return { ok: false, error: `Too many parallel tasks (${spec.tasks.length}). Max is ${MAX_PARALLEL_TASKS}.` };
 		}
 		if (spec.mode === "single" && spec.tasks.length > 1) return { ok: false, error: "Single mode takes exactly one task." };
+		if (spec.mode === "swarm" && (spec.tasks.length !== 2 || !spec.swarm)) return { ok: false, error: "Swarm loop takes exactly one writer and one reviewer." };
 
 		// Unknown agents are rejected before anything is launched: no phantom jobs.
 		const known = new Set(spec.agents.map((a) => a.name));
@@ -719,6 +726,7 @@ export class SubagentJobManager {
 			sessionGeneration: spec.sessionGeneration,
 			parentPid: process.pid,
 			parentIdentity: readProcessIdentity(process.pid),
+			...(spec.mode === "swarm" && spec.swarm ? { swarm: structuredClone(spec.swarm) } : {}),
 		};
 
 		// Handles are reserved with the record: names are unique per parent session.
@@ -850,6 +858,10 @@ export class SubagentJobManager {
 			signal: AbortSignal;
 			makeDetails: (results: SingleResult[]) => SubagentDetails;
 			onFirstToken?: () => void;
+			/** Swarm rounds 2+: continue this task's own child session. */
+			resume?: { invocation: ChildInvocation; sessionFile: string };
+			/** Swarm rounds 2+: usage of the earlier rounds, added to this run's. */
+			carryUsage?: UsageStats;
 		},
 	): Promise<SingleResult> {
 		const { slot, task, signal, makeDetails, onFirstToken } = opts;
@@ -858,9 +870,9 @@ export class SubagentJobManager {
 		const prev = prefetchState.get(key);
 		prefetchState.set(key, { inflight: prev?.inflight ?? false, until: Date.now() + cacheTtlSeconds() * 1000 * 0.9 });
 		// A continue job rebuilds the launch argv over the same child session.
-		const resume = job.record.continuesFrom && task.invocation && task.sessionFile
+		const resume = opts.resume ?? (job.record.continuesFrom && task.invocation && task.sessionFile
 			? { invocation: task.invocation, sessionFile: task.sessionFile }
-			: undefined;
+			: undefined);
 		const common = {
 			defaultCwd: spec.cwd,
 			dispatchDefaults: spec.dispatchDefaults,
@@ -886,6 +898,7 @@ export class SubagentJobManager {
 		try {
 			result = await runSingleAgent({ ...common, task: taskText, parentSession: spec.dispatchDefaults.parentSession });
 			result = await this.quotaFallback(job, spec, task, result, common);
+			if (opts.carryUsage) for (const key of ["input", "output", "cacheRead", "cacheWrite", "cost", "turns"] as const) result.usage[key] += opts.carryUsage[key];
 			// The child and its process tree are gone here (runChild waits): safe to commit.
 			if (job.timedOut && result.stopReason === "aborted") this.commitTimeoutWip(job, task);
 		} catch (e) {
@@ -1060,6 +1073,34 @@ export class SubagentJobManager {
 		return { usage, sessionFiles };
 	}
 
+	/**
+	 * One swarm turn of task `slot`. Round 1 starts the child; later rounds resume its own
+	 * session JSONL under the session lock, so only the delta is sent and the cache stays warm.
+	 */
+	private async runSwarmTurn(job: ActiveJob, spec: LaunchSpec, slot: 0 | 1, text: string, resume: boolean, makeDetails: (results: SingleResult[]) => SubagentDetails): Promise<SingleResult> {
+		const task = job.record.tasks[slot];
+		const previous = job.returned.get(slot);
+		const refuse = (message: string): SingleResult => ({
+			agent: task.agent, agentSource: "unknown", task: text, exitCode: 1, finalText: "", stderr: message, errorMessage: message, stopReason: "error",
+			usage: previous ? { ...previous.usage } : emptyUsage(),
+		});
+		let release: (() => void) | undefined;
+		let session: { invocation: ChildInvocation; sessionFile: string } | undefined;
+		if (resume) {
+			if (task.invocation?.runner !== "pi" || !task.sessionFile || !fs.existsSync(task.sessionFile))
+				return refuse(`no child session to resume for ${task.handle ?? task.agent}`);
+			const lock = acquireSessionLock(task.sessionFile, job.record.jobId);
+			if (!lock.ok) return refuse(`session ${task.sessionFile} is locked by ${lock.owner ? `job ${lock.owner.jobId}` : "another job"}`);
+			release = lock.release;
+			session = { invocation: task.invocation, sessionFile: task.sessionFile };
+		}
+		try {
+			return await this.runTask(job, spec, { slot, task, taskText: text, signal: job.controller.signal, makeDetails, resume: session, carryUsage: previous?.usage });
+		} finally {
+			release?.();
+		}
+	}
+
 	private async run(job: ActiveJob, spec: LaunchSpec): Promise<void> {
 		const signal = job.controller.signal;
 		const makeDetails =
@@ -1071,12 +1112,34 @@ export class SubagentJobManager {
 				results,
 			});
 		let output = "";
+		let swarmTail = "";
 		let error: string | undefined;
 
 		try {
 			spec = { ...spec, tasks: job.record.tasks };
 			isolateWriters(job.record, spec.agents, () => writeRecord(this.deps.baseDir, job.record));
-			if (spec.mode === "chain") {
+			if (spec.mode === "swarm" && job.record.swarm) {
+				const [writer, reviewer] = spec.tasks;
+				// The reviewer reads the writer's checkout: its worktree when isolated.
+				reviewer.cwd = writer.cwd ?? spec.cwd;
+				this.persist(job.record);
+				const loop = await runSwarmLoop({
+					swarm: job.record.swarm,
+					writerTask: writer.task,
+					reviewerTask: reviewer.task,
+					cwd: path.resolve(spec.cwd, writer.cwd ?? "."),
+					isolated: Boolean(writer.worktree),
+					signal,
+					run: (slot, text, resume) => this.runSwarmTurn(job, spec, slot, text, resume, makeDetails("swarm")),
+					failed: isFailedResult,
+					gate: () => gateSummary({ ...job.record, tasks: [writer] }, spec.agents) || undefined,
+					persist: () => this.persist(job.record),
+					summaryCap: NOTIFY_SUMMARY_CAP,
+				});
+				output = `${loop.head}\nhandles: writer ${writer.handle ?? "-"}, reviewer ${reviewer.handle ?? "-"} (continue either with subagent action continue)`;
+				swarmTail = loop.tail;
+				error = loop.error;
+			} else if (spec.mode === "chain") {
 				let previousOutput = "";
 				for (let i = 0; i < spec.tasks.length; i++) {
 					// An aborted job never starts another chain step.
@@ -1161,6 +1224,10 @@ export class SubagentJobManager {
 			}
 		} catch (e) {
 			error = e instanceof Error ? e.message : String(e);
+			if (job.record.swarm && !job.record.swarm.outcome) {
+				job.record.swarm.outcome = "failed";
+				output = `swarm loop · outcome: failed · rounds: ${job.record.swarm.rounds.length}/${job.record.swarm.maxRounds} · cost: $${job.record.swarm.spentUsd.toFixed(2)}`;
+			}
 		} finally {
 			if (job.timer) clearTimeout(job.timer);
 			// Aquecimento pendente (esperando slot/memória ou em voo) morre com o job, e o
@@ -1174,11 +1241,13 @@ export class SubagentJobManager {
 
 		const { usage, sessionFiles } = this.settleTasks(job, error);
 		const isolated = worktreeSummary(this.worktreeView(job.record));
-		if (isolated) output = `${isolated}\n\n${output}`;
+		// A swarm result opens with its own compact block; worktree and gate follow it.
+		if (isolated) output = job.record.swarm ? `${output}\n\n${isolated}` : `${isolated}\n\n${output}`;
 		const recovery = recoveryNotes(job.record);
 		if (recovery) output = `${output}\n\n${recovery}`;
 		const gates = gateSummary(job.record, spec.agents);
 		if (gates) output = `${output}\n\n${gates}`;
+		if (swarmTail) output = `${output}\n\n${swarmTail}`;
 		const outputBytes = Buffer.byteLength(output, "utf-8");
 		if (outputBytes > MAX_STORED_RESULT_BYTES) {
 			// Never silently shrink a result: report the overflow instead.
