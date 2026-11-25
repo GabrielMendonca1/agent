@@ -21,6 +21,8 @@ Ordem de execução proposta: **0 → 1 → 2 → 3 → 4**. A suíte de evals e
 
 ## 0. Evals fim a fim (`scripts/bench/`), versão mínima primeiro
 
+**Status:** implementado (pontos 1 a 5): `AGENT_BIN`, custo dos filhos pelos registros de job, conjunto `orchestration` com 3 trials e mediana, proveniência no relatório, README e check `bench-dry`. Falta o ponto 6, a linha de base paga (comando e custo estimado em `scripts/bench/README.md`). Ela exige um Agent instalado com `a037391`.
+
 **Hoje**
 - `scripts/bench/` já existe e funciona, mas não tem README e ninguém o referencia.
   - `tasks.mjs`: 6 tarefas de código.

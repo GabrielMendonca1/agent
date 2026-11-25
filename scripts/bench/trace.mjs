@@ -10,10 +10,13 @@ export function redact(value) {
     .replace(/\/Users\/[^/\s"\\]+/g, '~');
 }
 export function newStats() {
-  return { costUsd: 0, requests: 0, tokens: { input: 0, cacheRead: 0, cacheWrite: 0, output: 0 }, tools: {}, codemodeCalls: 0,
-    nestedCalls: null, nestedTools: {}, nestedEstimate: 0, toolsAdded: [], toolErrors: [], finalText: '', malformedLines: 0, fatal: null };
+  // costUsd = parentCostUsd + children.costUsd; tokens and requests are the parent's only.
+  return { sessionId: null, costUsd: 0, parentCostUsd: 0, children: null, requests: 0, tokens: { input: 0, cacheRead: 0, cacheWrite: 0, output: 0 }, tools: {},
+    codemodeCalls: 0, subagentCalls: 0, skimCalls: 0, delegation: null, nestedCalls: null, nestedTools: {}, nestedEstimate: 0, toolsAdded: [], toolErrors: [], finalText: '', malformedLines: 0, fatal: null };
 }
 export function consume(s, e) {
+  // The session header is the first line of --mode json when the run has a session.
+  if (e.type === 'session' && typeof e.id === 'string' && !s.sessionId) s.sessionId = e.id;
   const added = e.toolsAdded ?? e.message?.toolsAdded;
   if (Array.isArray(added)) s.toolsAdded = [...new Set([...s.toolsAdded, ...added.map(t => typeof t === 'string' ? t : t.name)])];
   // Child execution ends have a parent id; count them once, not again in details.calls or toolResult.nestedCalls.
@@ -27,7 +30,7 @@ export function consume(s, e) {
       s.requests++;
       const cost = m.usage.cost?.total;
       if (typeof cost !== 'number' || !Number.isFinite(cost) || cost < 0) s.fatal = 'usage cost unavailable; budget cannot be measured';
-      else s.costUsd += cost;
+      else { s.parentCostUsd += cost; s.costUsd = s.parentCostUsd + (s.children?.costUsd ?? 0); }
       for (const key of Object.keys(s.tokens)) s.tokens[key] += Number(m.usage[key] ?? m.usage[key.replace(/[A-Z]/g, c => '_' + c.toLowerCase())] ?? 0);
     }
     const content = Array.isArray(m.content) ? m.content : [];
@@ -35,6 +38,8 @@ export function consume(s, e) {
     if (text) s.finalText = redact(text).slice(-1200);
     for (const call of content.filter(b => b.type === 'toolCall')) {
       s.tools[call.name] = (s.tools[call.name] || 0) + 1;
+      if (call.name === 'subagent') s.subagentCalls++;
+      if (call.name === 'skim') s.skimCalls++;
       if (call.name === 'codemode') {
         s.codemodeCalls++;
         s.nestedEstimate += (JSON.stringify(call.arguments || {}).match(/tools\./g) || []).length;
