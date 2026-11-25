@@ -25,8 +25,7 @@ import { readHostFreePercent, waitForHostMemory } from "./host-memory.ts";
 import { isProcessAlive, listDescendants, signalProcesses } from "./process-tree.ts";
 import type { AgentConfig, AgentScope } from "./agents.ts";
 import { type ChildInvocation, fileSha } from "./handles.ts";
-import { type ChildSkills, resolveChildSkills, skillArgs } from "./skills.ts";
-import { carriedSkillsError } from "./worktrees.ts";
+import { type ChildSkills, carriedSkillsError, resolveChildSkills, skillArgs } from "./skills.ts";
 
 /** Preview cap. Never applied to what is stored: full outputs are kept in the job record. */
 export const PREVIEW_OUTPUT_CAP = 50 * 1024;

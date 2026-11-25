@@ -15,10 +15,10 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { type ModelRegistry, type ModelRuntime, resolveCliModel } from "@earendil-works/pi-coding-agent";
-import { carriedSkillsError, commitWip, gateSummary, gcWorktrees, isolateWriters, manageWorktrees, plannedIsolation, worktreeSkillError, worktreeSummary } from "./worktrees.ts";
+import { commitWip, gateSummary, gcWorktrees, isolateWriters, manageWorktrees, plannedIsolation, worktreeSkillError, worktreeSummary } from "./worktrees.ts";
 import { getRoleModelChoices, isGoogleApiModel, resolveGeminiPreference, resolveModelRef, resolveRoleModel } from "../lib/tiers.ts";
 import type { AgentConfig, AgentScope } from "./agents.ts";
-import type { ChildSkills } from "./skills.ts";
+import { type ChildSkills, carriedSkillsError } from "./skills.ts";
 import {
 	type DurableRunState,
 	MAX_RESUMES,

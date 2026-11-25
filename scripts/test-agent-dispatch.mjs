@@ -422,9 +422,10 @@ try {
 
       // Continue: the carried paths are rechecked; a deleted skill refuses without spawning.
       const invocation = { ...allow.invocation, cwd: worktree, sourceCwd: src, skills: mapped };
-      assert.equal(wt.carriedSkillsError(mapped, worktree), undefined);
+      const { carriedSkillsError } = await jiti.import(join(repo, 'agent/extensions/brain-live/subagent/skills.ts'));
+      assert.equal(carriedSkillsError(mapped, worktree), undefined);
       rmSync(join(worktree, '.pi/skills/committed'), { recursive: true });
-      assert.match(wt.carriedSkillsError(mapped, worktree), /skill "committed" .* is missing in the worktree/);
+      assert.match(carriedSkillsError(mapped, worktree), /skill "committed" .* is missing in the worktree/);
       captured = undefined;
       const resumed = await run({ ...agent, name: 'allow' }, { resume: { invocation, sessionFile: allow.sessionFile } });
       assert.equal(resumed.exitCode, 1);

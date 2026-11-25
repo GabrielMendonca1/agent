@@ -6,7 +6,7 @@ import { getAgentDir } from "@earendil-works/pi-coding-agent";
 import { findManifest, gate, lastRun, lastRunLine } from "../checks/runner.ts";
 import type { AgentConfig } from "./agents.ts";
 import type { JobRecord, JobTaskSpec } from "./jobs.ts";
-import type { ChildSkills } from "./skills.ts";
+import { type ChildSkills, plainFileError, posix, projectLocal, rootForms, skillLabel } from "./skills.ts";
 
 function git(cwd: string, args: string[]): string {
 	const r = spawnSync("git", ["-C", cwd, ...args], { encoding: "utf8", maxBuffer: 16 * 1024 * 1024 });
@@ -51,60 +51,6 @@ export function plannedIsolation(record: Pick<JobRecord, "mode" | "tasks" | "cwd
 	return groups;
 }
 
-const skillLabel = (file: string) => path.basename(file) === "SKILL.md" ? path.basename(path.dirname(file)) : path.basename(file, ".md");
-
-/**
- * Lexical forms of the repository root: git's toplevel, its realpath and the same root reached
- * through `cwd` (e.g. /var vs /private/var on macOS). Catalog paths are compared lexically.
- */
-function rootForms(root: string, cwd?: string): string[] {
-	const forms = new Set([path.resolve(root)]);
-	try {
-		const real = realpathSync(root);
-		forms.add(real);
-		if (cwd) {
-			const rel = path.relative(real, realpathSync(cwd));
-			if (!rel.startsWith("..") && !path.isAbsolute(rel)) {
-				const candidate = path.resolve(cwd, ...(rel ? rel.split(path.sep).map(() => "..") : []));
-				if (realpathSync(candidate) === real) forms.add(candidate);
-			}
-		}
-	} catch { /* missing paths: only the given form */ }
-	return [...forms];
-}
-
-/** Project-local when the path, as written (no dereferencing), lies under the repository root. */
-function projectLocal(file: string, roots: string[]): { root: string; rel: string } | undefined {
-	const resolved = path.resolve(file);
-	for (const root of roots) if (resolved.startsWith(root + path.sep)) return { root, rel: path.relative(root, resolved) };
-	return undefined;
-}
-
-/** First path component from `root` to `rel` that is a symlink or missing; undefined when all are real. */
-function badComponent(root: string, rel: string): { at: string; kind: "symlink" | "missing" } | undefined {
-	let current = root;
-	for (const part of rel.split(path.sep)) {
-		current = path.join(current, part);
-		let stat: fs.Stats;
-		try { stat = fs.lstatSync(current); } catch { return { at: current, kind: "missing" }; }
-		if (stat.isSymbolicLink()) return { at: current, kind: "symlink" };
-	}
-	return undefined;
-}
-
-const posix = (rel: string) => rel.split(path.sep).join("/");
-
-/** Regular file reached only through real directories, whose realpath stays inside `root`. */
-function plainFileError(root: string, rel: string, label: string, where: string): string | undefined {
-	const bad = badComponent(root, rel);
-	if (bad?.kind === "symlink") return `skill "${label}" (${posix(rel)}) goes through a symlink (${bad.at}) in ${where}; isolated writers only load regular committed skill files.`;
-	if (bad) return `skill "${label}" (${posix(rel)}) is missing in ${where}.`;
-	const file = path.join(root, rel);
-	if (!fs.lstatSync(file).isFile()) return `skill "${label}" (${posix(rel)}) is not a regular file in ${where}.`;
-	if (!realpathSync(file).startsWith(realpathSync(root) + path.sep)) return `skill "${label}" (${posix(rel)}) resolves outside ${where}.`;
-	return undefined;
-}
-
 /**
  * Launch check for a writer that will run in a worktree. A project-local skill (lexically under
  * the repository) must be a regular file reached without symlinks, committed at HEAD with mode
@@ -139,24 +85,6 @@ export function mapSkillsToWorktree(skills: ChildSkills, root: string, worktree:
 		return path.join(worktree, local.rel);
 	});
 	return { ...skills, paths };
-}
-
-/**
- * Continue of an isolated writer: every carried project skill (under the worktree of `cwd`) must
- * still be a regular file reached without symlinks inside it. Returns the error, if any.
- */
-export function carriedSkillsError(skills: ChildSkills | undefined, cwd: string): string | undefined {
-	if (!skills?.paths.length) return undefined;
-	const top = spawnSync("git", ["-C", cwd, "rev-parse", "--show-toplevel"], { encoding: "utf8" });
-	if (top.status !== 0 || !top.stdout.trim()) return undefined;
-	const roots = rootForms(top.stdout.trim(), cwd);
-	for (const file of skills.paths) {
-		const local = projectLocal(file, roots);
-		if (!local) continue;
-		const error = plainFileError(local.root, local.rel, skillLabel(file), "the worktree");
-		if (error) return error;
-	}
-	return undefined;
 }
 
 export function isolateWriters(record: JobRecord, agents: AgentConfig[], persist: () => void): void {
