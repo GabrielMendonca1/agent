@@ -180,7 +180,7 @@ export function looksSecret(...values: string[]): boolean {
   return values.some((value) => typeof value === "string" && SECRET_PATTERNS.some((pattern) => pattern.test(value)));
 }
 
-export const SECRET_MSG = "parece conter um segredo; Megamind nunca carrega token, senha ou chave";
+export const SECRET_MSG = "looks like a secret; Megamind never carries tokens, passwords or keys";
 
 export type InboxDeps = {
   /** Lê a caixa desta sessão (v6 `read`, v5 `inbox`). */

@@ -229,6 +229,26 @@ try {
   const reason = blocked.find(r => r?.block)?.reason;
   assert.ok(reason, 'ask_user bloqueado com goal em execução');
   check('ask_user goal block reason', reason);
+  // Resultados e erros de runtime de peers e megamind (amostra representativa).
+  const peerRow = { id: 'abcdef123456', short: 'abcdef', project: 'demo', branch: 'main', status: 'idle', note: '', at: Date.now(), cwd: '/tmp/demo', v: 2 };
+  check('peers list (empty)', mesh.formatPeers([], Date.now()));
+  check('peers list', mesh.formatPeers([peerRow, { ...peerRow, short: 'self01', self: true, v: 1 }], Date.now(), { queued: 1, delivered: 2 }));
+  check('peers context', mesh.formatContext(peerRow, { busy: true, returned_messages: 1, total_messages: 3, char_limit: 100, truncated: true, messages: [{ role: 'user', text: 'x' }] }).replace(/\nuser: x$/, ''));
+  for (const to of ['', 'zzzzzz']) check(`peers resolveTarget ${to || 'empty'}`, mesh.resolveTarget(to, [peerRow]).error);
+  for (const body of ['', 'x'.repeat(1 << 20), 'token sk-ant-api03-' + 'a'.repeat(40)]) check('peers checkBody', mesh.checkBody(body).error);
+  const megamindTools = await jiti.import(join(repo, 'extensions/megamind/tools.ts'));
+  const { CoreError } = await jiti.import(join(repo, 'extensions/megamind/core.ts'));
+  check('megamind conflict', megamindTools.formatCoreError(new CoreError('conflict', 'conflict', [{ session_id: 'abc', owner: '@ana', status: 'idle' }])));
+  try { megamindTools.sessionOwner([], 'nobody'); } catch (error) { check('megamind sessionOwner', error.message); }
+  // Com presença falsa, a validação dos argumentos responde antes de qualquer rede.
+  const present = new Map();
+  megamindTools.registerMegamindTools(fakePi(present, {}, new Map(), []), { presence: () => ({ session_id: 'abcdef123456' }), core: async () => { throw new Error('offline'); }, now: Date.now });
+  check('megamind no presence', (await tools.get('megamind_send').execute('t', { to: '@ana', body: 'x' }, undefined, undefined, { cwd: sandbox })).content[0].text);
+  for (const [name, params] of [['megamind_send', {}], ['megamind_send', { to: '@ana' }], ['megamind_ask', { to: '@ana' }], ['megamind_reply', {}], ['megamind_reply', { id: 'r1', status: 'bogus' }], ['megamind_fetch', {}]]) {
+    const out = await (present.get(name) ?? tools.get(name)).execute('t', params, undefined, undefined, { cwd: sandbox });
+    check(`${name} ${JSON.stringify(params)}`, out?.content?.map(part => part.text ?? '').join('\n'));
+  }
+
   // Erros de skills do launch (nome desconhecido, caminho, agy, papel com nome inválido).
   const childSkills = await jiti.import(join(repo, 'agent/extensions/brain-live/subagent/skills.ts'));
   childSkills.runnerSkillHooks.catalog = async () => [{ name: 'debug', filePath: '/skills/debug/SKILL.md' }];
