@@ -18,18 +18,4 @@
     (subpath (string-append (param "CWD") "/.git"))
     (subpath (string-append (param "CWD") "/.pi"))
     (subpath (param "PROJECT_PI")))
-; O bash não precisa ler nem alterar chaves ou credenciais do perfil.
-(deny file-read*
-    (subpath (param "SSH"))
-    (subpath (param "AWS"))
-    (subpath (param "GNUPG"))
-    (literal (param "AGENT_AUTH"))
-    (literal (param "PI_AUTH"))
-    (literal (param "PROFILE_AUTH")))
-(deny file-write*
-    (subpath (param "SSH"))
-    (subpath (param "AWS"))
-    (subpath (param "GNUPG"))
-    (literal (param "AGENT_AUTH"))
-    (literal (param "PI_AUTH"))
-    (literal (param "PROFILE_AUTH")))
+; bash-sandbox.ts anexa aqui o deny de leitura e escrita das credenciais.

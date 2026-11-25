@@ -1,35 +1,58 @@
 import { spawn } from "node:child_process";
-import { existsSync, mkdirSync, realpathSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, realpathSync } from "node:fs";
 import { homedir } from "node:os";
-import { dirname, join, resolve } from "node:path";
+import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createBashTool, getAgentDir, type ExtensionAPI } from "@earendil-works/pi-coding-agent";
 
-const canonical = (path: string) => existsSync(path) ? realpathSync(path) : resolve(path);
+// Resolve o ancestral existente mais profundo: um arquivo ainda ausente sob um link simbólico cai no destino real.
+function canonical(path: string): string {
+	const absolute = resolve(path);
+	if (existsSync(absolute)) return realpathSync(absolute);
+	const parent = dirname(absolute);
+	return parent === absolute ? absolute : join(canonical(parent), basename(absolute));
+}
 
-// Caminhos canônicos: o sandbox precisa cobrir também destinos de links simbólicos.
+// Credenciais que o bash do filho não lê nem altera: chaves do usuário e tokens de cada raiz de perfil.
 function secretPaths(home: string) {
+	const roots = [...new Set([join(home, ".agent"), join(home, ".pi", "agent"), getAgentDir()].map((root) => resolve(root)))];
 	return {
-		dirs: { SSH: canonical(join(home, ".ssh")), AWS: canonical(join(home, ".aws")), GNUPG: canonical(join(home, ".gnupg")) },
-		files: {
-			AGENT_AUTH: canonical(join(home, ".agent", "auth.json")),
-			PI_AUTH: canonical(join(home, ".pi", "agent", "auth.json")),
-			PROFILE_AUTH: canonical(join(getAgentDir(), "auth.json")),
-		},
+		dirs: [
+			...[".ssh", ".aws", ".gnupg", ".config/gcloud", ".kube"].map((path) => join(home, path)),
+			...roots.flatMap((root) => ["accounts.rotations", "secrets"].map((path) => join(root, path))),
+		],
+		files: [
+			...[".netrc", ".git-credentials"].map((path) => join(home, path)),
+			...roots.flatMap((root) => ["auth.json", "accounts.json", "accounts-mirror.json", "models.json", "superagent/api-token"].map((path) => join(root, path))),
+		],
 	};
+}
+
+// Seatbelt compara o caminho resolvido; o literal original fica junto caso um link mude depois do cálculo.
+const withCanonical = (paths: string[]) => [...new Set(paths.flatMap((path) => [resolve(path), canonical(path)]))];
+const sbplString = (value: string) => `"${value.replace(/[\\"]/g, (char) => `\\${char}`)}"`;
+
+function seatbeltSecrets(home: string): string {
+	const { dirs, files } = secretPaths(home);
+	const filters = [
+		...withCanonical(dirs).map((path) => `    (subpath ${sbplString(path)})`),
+		...withCanonical(files).map((path) => `    (literal ${sbplString(path)})`),
+	].join("\n");
+	return `\n; Gerado por bash-sandbox.ts: chaves e tokens que o bash não lê nem altera.\n(deny file-read* file-write*\n${filters})\n`;
 }
 
 const within = (path: string, root: string) => path === root || path.startsWith(`${root}/`);
 
 function sandboxArgs(mode: "seatbelt" | "bwrap", cwd: string, home: string, profile: string): string[] {
 	const projectPi = canonical(join(cwd, ".pi"));
-	const { dirs, files } = secretPaths(home);
 	if (mode === "seatbelt") {
 		// Espelha as raízes graváveis do perfil; fora delas o CWD já é só leitura e o guarda vira o próprio cache liberado.
 		const roots = ["/private/tmp", "/private/var/folders", "/dev", ...["Library/Caches", ".npm/_cacache", ".npm/_logs", ".cache"].map((path) => join(home, path))];
 		const guard = roots.some((root) => within(cwd, root)) ? cwd : join(cwd, "node_modules", ".cache");
-		const params = { CWD: cwd, CWD_GUARD: guard, HOME: home, PROJECT_PI: projectPi, ...dirs, ...files };
-		return ["/usr/bin/sandbox-exec", "-f", profile, ...Object.entries(params).flatMap(([key, value]) => ["-D", `${key}=${value}`])];
+		const params = { CWD: cwd, CWD_GUARD: guard, HOME: home, PROJECT_PI: projectPi };
+		// A lista de segredos não cabe em parâmetros fixos: o perfil vai inline com as regras anexadas no fim.
+		const policy = readFileSync(profile, "utf8") + seatbeltSecrets(home);
+		return ["/usr/bin/sandbox-exec", "-p", policy, ...Object.entries(params).flatMap(([key, value]) => ["-D", `${key}=${value}`])];
 	}
 	const mounts = ["bwrap", "--ro-bind", "/", "/", "--dev", "/dev"];
 	const writable = ["/tmp", canonical(join(home, ".cache"))].filter((path) => !within(path, projectPi));
@@ -41,8 +64,10 @@ function sandboxArgs(mode: "seatbelt" | "bwrap", cwd: string, home: string, prof
 	// Mesma exceção do Seatbelt: cache de ferramentas em node_modules continua gravável.
 	const toolCache = canonical(join(cwd, "node_modules", ".cache"));
 	if (existsSync(toolCache) && within(toolCache, cwd) && !within(toolCache, projectPi)) mounts.push("--bind", toolCache, toolCache);
-	for (const path of new Set(Object.values(dirs))) if (existsSync(path)) mounts.push("--tmpfs", path);
-	for (const path of new Set(Object.values(files))) if (existsSync(path)) mounts.push("--ro-bind", "/dev/null", path);
+	// Montagens caem no destino real; basta o caminho canônico de cada segredo existente.
+	const { dirs, files } = secretPaths(home);
+	for (const path of new Set(dirs.map(canonical))) if (existsSync(path)) mounts.push("--tmpfs", path);
+	for (const path of new Set(files.map(canonical))) if (existsSync(path)) mounts.push("--ro-bind", "/dev/null", path);
 	return mounts;
 }
 
