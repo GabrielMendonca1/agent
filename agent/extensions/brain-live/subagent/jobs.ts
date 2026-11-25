@@ -18,6 +18,7 @@ import { type ModelRegistry, type ModelRuntime, resolveCliModel } from "@earendi
 import { commitWip, gateSummary, gcWorktrees, isolateWriters, manageWorktrees, worktreeSummary } from "./worktrees.ts";
 import { getRoleModelChoices, isGoogleApiModel, resolveGeminiPreference, resolveModelRef, resolveRoleModel } from "../lib/tiers.ts";
 import type { AgentConfig, AgentScope } from "./agents.ts";
+import type { ChildSkills } from "./skills.ts";
 import {
 	type DurableRunState,
 	MAX_RESUMES,
@@ -62,7 +63,9 @@ export const MAX_CONCURRENCY = GLOBAL_CHILD_LIMIT;
 
 /** Prefixo de cache de um filho: papel + modelo + thinking + cwd (system e tools derivam disso). */
 export function prefixKey(task: JobTaskSpec, defaultCwd: string): string {
-	return JSON.stringify([task.agent, task.model ?? null, task.thinking ?? null, task.sourceCwd ?? task.cwd ?? defaultCwd, task.skills ?? []]);
+	// Effective skill set: the launch snapshot for a continue, else the set resolved at launch.
+	const skills = task.invocation ? task.invocation.skills ?? null : task.resolvedSkills !== undefined ? task.resolvedSkills : task.skills ?? null;
+	return JSON.stringify([task.agent, task.model ?? null, task.thinking ?? null, task.sourceCwd ?? task.cwd ?? defaultCwd, skills]);
 }
 
 /**
@@ -131,6 +134,11 @@ export interface JobTaskSpec {
 	model?: string;
 	/** Extra skill names requested at launch, on top of the role allowlist. */
 	skills?: string[];
+	/**
+	 * Skill set resolved once at launch in the caller's checkout (absolute SKILL.md paths);
+	 * null = full catalog. Isolated writers reuse it instead of resolving in their fresh worktree.
+	 */
+	resolvedSkills?: ChildSkills | null;
 	/** Internal per-brief decision; role defaults never overwrite a sibling task's choice. */
 	slot?: "apoio" | "principal";
 	/** Populated internally from the authorized model-role pair; never caller-controlled. */
@@ -690,6 +698,7 @@ export class SubagentJobManager {
 				model: t.model,
 				thinking: t.thinking,
 				...(t.skills?.length ? { skills: [...t.skills] } : {}),
+				...(t.resolvedSkills !== undefined ? { resolvedSkills: t.resolvedSkills } : {}),
 			})),
 			cwd: spec.cwd,
 			agentScope: spec.agentScope,
@@ -810,6 +819,7 @@ export class SubagentJobManager {
 			sourceCwd: task.sourceCwd,
 			roleModel: task.model && task.thinking ? { model: task.model, thinking: task.thinking } : undefined,
 			skills: task.skills,
+			resolvedSkills: task.resolvedSkills,
 			signal: warm.controller.signal,
 			acquireSlot: (s?: AbortSignal) => this.slots.acquire(s),
 		}).then((code) => {
@@ -850,6 +860,7 @@ export class SubagentJobManager {
 			resume,
 			roleModel: task.model && task.thinking ? { model: task.model, thinking: task.thinking } : undefined,
 			skills: task.skills,
+			resolvedSkills: task.resolvedSkills,
 			step: opts.step,
 			signal,
 			makeDetails,

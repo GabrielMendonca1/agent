@@ -532,8 +532,10 @@ export interface RunAgentOptions {
 	sourceCwd?: string;
 	/** Already-authorized central role choice. Takes precedence over legacy frontmatter/defaults. */
 	roleModel?: { model: string; thinking: string };
-	/** Extra skill names from the caller, on top of the role allowlist (resolved at launch). */
+	/** Extra skill names from the caller, on top of the role allowlist. */
 	skills?: string[];
+	/** Skill set already resolved at launch (null = full catalog); skips resolving in `cwd`. */
+	resolvedSkills?: ChildSkills | null;
 	step?: number;
 	signal?: AbortSignal;
 	onUpdate?: OnUpdateCallback;
@@ -1101,10 +1103,12 @@ export async function runSingleAgent(opts: RunAgentOptions): Promise<SingleResul
 	const resume = opts.prefetch ? undefined : opts.resume;
 	let invocation = resume?.invocation;
 	if (!invocation) {
-		// No allowlist and no extra names: stay synchronous up to onStart (the full catalog needs no lookup).
-		const skills = agent.skills !== undefined || opts.skills?.length
-			? await resolveChildSkills(agent, opts.skills, opts.cwd ?? opts.defaultCwd)
-			: { ok: true as const, skills: undefined };
+		// Resolved at launch (the job path): reuse it, even in an isolated worktree that lacks
+		// uncommitted project skills. No allowlist and no extra names: stay synchronous up to onStart.
+		const skills = opts.resolvedSkills !== undefined ? { ok: true as const, skills: opts.resolvedSkills ?? undefined }
+			: agent.skills !== undefined || opts.skills?.length
+				? await resolveChildSkills(agent, opts.skills, opts.cwd ?? opts.defaultCwd)
+				: { ok: true as const, skills: undefined };
 		if (!skills.ok) {
 			return { agent: agentName, agentSource: agent.source, task, exitCode: 1, finalText: "", stderr: skills.error, errorMessage: skills.error, stopReason: "error", usage: emptyUsage(), step };
 		}

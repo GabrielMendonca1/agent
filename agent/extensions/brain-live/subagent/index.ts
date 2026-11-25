@@ -1030,11 +1030,14 @@ export default function (pi: ExtensionAPI) {
 				name: item.name,
 			}));
 
-			// Unknown skill names or paths fail before anything spawns; the runner resolves the same set.
+			// Unknown skill names or paths fail before anything spawns. The set is resolved once, here.
 			for (const [i, item] of items.entries()) {
 				const role = agents.find((a) => a.name === item.agent)!;
 				const resolved = await resolveChildSkills(role, item.skills, path.resolve(ctx.cwd, item.cwd ?? params.cwd ?? "."));
 				if (!resolved.ok) return fail(`Task ${i}: ${resolved.error} Nothing was launched.`);
+				// Absolute paths from the caller's checkout travel with the task: an isolated worktree
+				// created later must not resolve again (uncommitted project skills are not in it).
+				if (role.runner !== "agy") tasks[i].resolvedSkills = resolved.skills ?? null;
 			}
 
 			// Snapshot role slots from the project recipe before anything launches.

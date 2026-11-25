@@ -346,6 +346,25 @@ try {
     assert.deepEqual(skillArgv(captured.args), skillArgv(launchArgs), 'prefetch skill argv matches the child');
     assert.equal(captured.opts.env.AGENT_CHILD_SKILLS, 'alpha,beta');
 
+    // Set resolved at launch (isolated worker): reused as is, never resolved again in the worktree.
+    const skillHooks = (await jiti.import(join(repo, 'agent/extensions/brain-live/subagent/skills.ts'))).runnerSkillHooks;
+    const catalogBefore = skillHooks.catalog;
+    skillHooks.catalog = async () => { throw new Error('must not resolve again'); };
+    try {
+      const carried = { only: true, paths: ['/source/.pi/skills/local/SKILL.md'], advertised: ['local'] };
+      const worktreeRun = await run({ ...agent, name: 'allow', skills: ['alpha'] }, { cwd: join(root, 'fresh-worktree'), resolvedSkills: carried });
+      assert.deepEqual(skillArgv(captured.args), ['--no-skills', '--skill', '/source/.pi/skills/local/SKILL.md']);
+      assert.deepEqual(worktreeRun.invocation.skills, carried, 'snapshot keeps the launch paths');
+      await run({ ...agent, name: 'allow', skills: ['alpha'] }, { resolvedSkills: null });
+      assert.deepEqual(skillArgv(captured.args), [], 'null = full catalog');
+    } finally { skillHooks.catalog = catalogBefore; }
+    // Warm key: a continue uses its snapshot's skills; a launch uses the resolved set.
+    const set = (name) => ({ only: true, paths: [`/s/${name}`], advertised: [name] });
+    const base = { agent: 'worker', task: 't', cwd: root };
+    assert.notEqual(jobs.prefixKey({ ...base, resolvedSkills: set('a') }, root), jobs.prefixKey({ ...base, resolvedSkills: set('b') }, root));
+    assert.equal(jobs.prefixKey({ ...base, skills: ['x'], invocation: { skills: set('a') } }, root), jobs.prefixKey({ ...base, resolvedSkills: set('a') }, root));
+    assert.notEqual(jobs.prefixKey({ ...base, invocation: { skills: set('a') } }, root), jobs.prefixKey({ ...base, invocation: {} }, root));
+
     // Role parsing: absent = full catalog, [] = none; a user override without the field inherits the bundled role.
     const agentsMod = await jiti.import(join(repo, 'agent/extensions/brain-live/subagent/agents.ts'));
     const bundled = agentsMod.discoverAgents(root, 'user').agents;
