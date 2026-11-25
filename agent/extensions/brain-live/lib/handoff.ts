@@ -19,6 +19,7 @@ const HOUR = 3600_000;
 export interface HandoffMeta { session?: string; created_at?: string; branch?: string; head?: string }
 export interface GitState {
   branch: string;
+  /** Empty on an unborn branch (repository without commits). */
   head: string;
   /** The commit exists in this repository. */
   exists(sha: string): boolean;
@@ -61,14 +62,16 @@ function git(cwd: string, args: string[]) {
   return spawnSync('git', args, { cwd, encoding: 'utf8', env: { ...process.env, GIT_OPTIONAL_LOCKS: '0' }, timeout: 5000 });
 }
 
-/** Branch/HEAD of `cwd`; undefined outside a git work tree or before the first commit. */
+/** Branch/HEAD of `cwd`; undefined only outside a git work tree. An unborn branch has head ''. */
 export function gitState(cwd: string): GitState | undefined {
+  const inside = git(cwd, ['rev-parse', '--is-inside-work-tree']);
+  if (inside.status !== 0 || inside.stdout.trim() !== 'true') return undefined;
   const head = git(cwd, ['rev-parse', '--verify', '-q', 'HEAD']);
-  if (head.status !== 0 || !head.stdout.trim()) return undefined;
-  const branch = git(cwd, ['rev-parse', '--abbrev-ref', 'HEAD']);
+  // symbolic-ref names the branch even before its first commit; detached HEAD reads as 'HEAD'.
+  const branch = git(cwd, ['symbolic-ref', '--short', '-q', 'HEAD']);
   return {
-    branch: branch.status === 0 ? branch.stdout.trim() : 'HEAD',
-    head: head.stdout.trim(),
+    branch: branch.status === 0 && branch.stdout.trim() ? branch.stdout.trim() : 'HEAD',
+    head: head.status === 0 ? head.stdout.trim() : '',
     exists: sha => git(cwd, ['cat-file', '-e', `${sha}^{commit}`]).status === 0,
     isAncestor: sha => git(cwd, ['merge-base', '--is-ancestor', sha, 'HEAD']).status === 0,
   };
@@ -83,8 +86,10 @@ export function handoffDecision({ meta, mtime, now, maxAgeMs, git: repo, newSess
   if (!newSession) return no('not-new');
   if (ageMs >= maxAgeMs) return no('old');
   if (!repo) return { inject: true, ageMs };
-  if (!meta.branch || !meta.head) return no('unstamped');
+  if (!meta.branch) return no('unstamped');
   if (meta.branch !== repo.branch) return no('other-branch');
+  // Stamped on an unborn branch: any HEAD of the same branch comes after it.
+  if (!meta.head) return { inject: true, ageMs };
   if (meta.head === repo.head) return { inject: true, ageMs };
   if (!repo.exists(meta.head)) return no('missing-head');
   return repo.isAncestor(meta.head) ? { inject: true, ageMs } : no('diverged');

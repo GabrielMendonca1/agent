@@ -24,6 +24,13 @@ export function nextHint(tokens: number | null | undefined): boolean {
   return typeof tokens === 'number' && tokens > 60_000;
 }
 
+/** Session opened by /next: its `agent-next` entry asks for the handoff without gates. */
+export function openedByNext(ctx: Pick<ExtensionContext, 'sessionManager'>): boolean {
+  try {
+    return ctx.sessionManager.getBranch().some((entry: any) => entry?.type === 'custom' && entry.customType === 'agent-next' && entry.data?.handoff === true);
+  } catch { return false; }
+}
+
 /** A session that already has an assistant reply is resumed, not new: its handoff is offered, not injected. */
 export function sessionHasHistory(ctx: Pick<ExtensionContext, 'sessionManager'>): boolean {
   try {
@@ -51,24 +58,38 @@ export default function (pi: ExtensionAPI) {
   // /next is isolated from policy/notes injection: switching the host
   // unloads this extension, so nothing is sent after newSession.
   let firstHandoffRun = true;
+  // /handoff asks for delivery with the next user run; the file is consumed only then.
+  let handoffRequested = false;
   let nextRunning = false;
   let handoffFinished: (() => void) | undefined;
   pi.on('agent_end', async () => { handoffFinished?.(); });
   // Handoff: first user message of a session. Fresh, same branch and HEAD at or after its commit
   // → injected once; otherwise one visible line points to /handoff (never a silent drop).
+  // A session opened by /next and a /handoff request skip the gates. The file is renamed only
+  // here, when the message goes out with this run.
   pi.on('before_agent_start', async (event, ctx) => {
     if (event.messageType !== undefined && event.messageType !== 'user') return;
-    if (!firstHandoffRun) return;
+    const requested = handoffRequested;
+    const first = firstHandoffRun;
+    handoffRequested = false;
     firstHandoffRun = false;
+    if (!requested && !first) return;
     try {
       const pending = readHandoff(ctx.cwd, { newSession: !sessionHasHistory(ctx) });
-      if (!pending) return;
-      if (!pending.decision.inject) {
+      if (!pending) {
+        if (requested) ctx.ui.notify('The requested handoff is gone from .agent/handoff.md; nothing was loaded.', 'warning');
+        return;
+      }
+      const fromNext = first && openedByNext(ctx);
+      if (!requested && !fromNext && !pending.decision.inject) {
         ctx.ui.notify(handoffNotice(pending.decision, pending.meta), 'info');
         return;
       }
+      // /next wrote it for this session: no stale note. /handoff keeps the note when gates failed.
+      const decision = fromNext ? { inject: true as const, ageMs: pending.decision.ageMs } : pending.decision;
+      const content = handoffMessage(pending.text, decision, pending.git);
       consumeHandoff(ctx.cwd);
-      return { message: { customType: 'agent-handoff', content: handoffMessage(pending.text, pending.decision, pending.git), display: false } };
+      return { message: { customType: 'agent-handoff', content, display: false } };
     } catch (error) {
       ctx.ui.notify(`Handoff not loaded: ${error instanceof Error ? error.message : String(error)}; use /handoff to try again.`, 'warning');
     }
@@ -84,11 +105,10 @@ export default function (pi: ExtensionAPI) {
       try {
         const pending = readHandoff(ctx.cwd, { newSession: !sessionHasHistory(ctx) });
         if (!pending) return ctx.ui.notify('No pending handoff in .agent/handoff.md.', 'info');
-        pi.sendMessage({ customType: 'agent-handoff', content: handoffMessage(pending.text, pending.decision, pending.git), display: false }, { deliverAs: 'nextTurn' });
-        consumeHandoff(ctx.cwd);
-        firstHandoffRun = false;
-        ctx.ui.notify(pending.decision.inject ? 'Handoff loaded; it goes with the next message.'
-          : 'Handoff loaded with a note to the model that it may be outdated; it goes with the next message.', 'info');
+        // Delivered and consumed by before_agent_start with the next message; quitting first keeps the file.
+        handoffRequested = true;
+        ctx.ui.notify(pending.decision.inject ? 'Handoff queued; it goes with the next message.'
+          : 'Handoff queued with a note to the model that it may be outdated; it goes with the next message.', 'info');
       } catch (error) {
         ctx.ui.notify(`Could not load the handoff: ${error instanceof Error ? error.message : String(error)}`, 'error');
       }
@@ -120,7 +140,8 @@ export default function (pi: ExtensionAPI) {
         const parentSession = ctx.sessionManager.getSessionFile();
         await ctx.newSession({
           parentSession,
-          setup: async manager => { manager.appendCustomEntry('agent-next', { parentSession }); },
+          // `handoff: true`: the first message of the new session injects it past the age/branch gates.
+          setup: async manager => { manager.appendCustomEntry('agent-next', { parentSession, handoff: true }); },
         });
       } catch (error) {
         ctx.ui.notify(error instanceof Error ? error.message : String(error), 'error');
@@ -183,6 +204,7 @@ export default function (pi: ExtensionAPI) {
     // Usage is native session data, never profile accounting.
     state = { ...state, team: [], cacheHit: undefined, sessionUsd: 0, nextHint: false };
     firstHandoffRun = true;
+    handoffRequested = false;
     compacting = false;
     projectNotes = notesSection(readNotesMetadata(ctx.cwd));
     applyTools();

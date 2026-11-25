@@ -209,16 +209,32 @@ await test('handoff: repo git real — carimbo pelo hook de write, mesma branch 
     assert.equal(await first(other.handlers, ctx2), undefined);
     assert.deepEqual(ctx2.notes, [{ text: 'A handoff from 3 h ago on branch feature is pending; use /handoff to load it.', level: 'info' }]);
     assert.ok(existsSync(file), 'nada é descartado');
-    const sentMessages = other.messages;
+    // /handoff only queues: quitting before the next message keeps the file.
     await other.commands.handoff.handler('', ctx2);
-    assert.equal(sentMessages.length, 1);
-    assert.deepEqual(sentMessages[0][1], { deliverAs: 'nextTurn' });
-    assert.equal(sentMessages[0][0].customType, 'agent-handoff');
-    assert.match(sentMessages[0][0].content, /It may be outdated: it was written on branch feature; the current branch is main\./);
-    assert.ok(!existsSync(file), '/handoff consome');
-    assert.match(ctx2.notes.at(-1).text, /^Handoff loaded with a note/);
+    assert.match(ctx2.notes.at(-1).text, /^Handoff queued with a note/);
+    assert.ok(existsSync(file), '/handoff does not consume before delivery');
+    assert.deepEqual(other.messages, [], 'nothing sent ahead of the run');
+    const quitter = register(projectPrompt);
+    assert.equal(await first(quitter.handlers, { ...fakeCtx(), cwd: repoDir }), undefined, 'a new process after quitting only shows the notice');
+    assert.ok(existsSync(file));
+    // Next user message in the same session: delivered with the stale note, then consumed.
+    const loaded = await first(other.handlers, ctx2);
+    assert.match(loaded.content, /It may be outdated: it was written on branch feature; the current branch is main\./);
+    assert.ok(!existsSync(file), 'consumed on delivery');
+    assert.equal(await first(other.handlers, ctx2), undefined, 'once');
     await other.commands.handoff.handler('', ctx2);
     assert.equal(ctx2.notes.at(-1).text, 'No pending handoff in .agent/handoff.md.');
+
+    // Session opened by /next: injected past the gates (old, other branch), without a stale note.
+    writeFileSync(file, handoff.stampHandoffText('CORPO NEXT', { session: 's', created_at: new Date(Date.now() - 72 * HOUR).toISOString(), branch: 'feature', head: 'e'.repeat(40) }));
+    const fromNext = register(projectPrompt);
+    const ctxNext = { ...fakeCtx(), cwd: repoDir };
+    ctxNext.sessionManager = { getBranch: () => [{ type: 'custom', customType: 'agent-next', data: { parentSession: '/p.jsonl', handoff: true } }] };
+    const forced = await first(fromNext.handlers, ctxNext);
+    assert.match(forced.content, /<handoff>\nCORPO NEXT\n<\/handoff>$/);
+    assert.doesNotMatch(forced.content, /may be outdated/);
+    assert.deepEqual(ctxNext.notes, []);
+    assert.ok(!existsSync(file));
 
     // Commit sumido (rebase/amend): aviso visível, nunca falha.
     writeFileSync(file, handoff.stampHandoffText('CORPO 3', { session: 's', created_at: new Date().toISOString(), branch: 'main', head: 'f'.repeat(40) }));
@@ -235,6 +251,31 @@ await test('handoff: repo git real — carimbo pelo hook de write, mesma branch 
     assert.equal(await first(resumed.handlers, ctx4), undefined);
     assert.match(ctx4.notes[0].text, /use \/handoff to load it/);
     assert.ok(existsSync(file));
+  } finally {
+    rmSync(repoDir, { recursive: true, force: true });
+  }
+});
+
+await test('handoff: unborn branch counts as git (branch compared, never age only)', async () => {
+  const repoDir = mkdtempSync(join(tmpdir(), 'agent-handoff-unborn-'));
+  try {
+    const git = (...args) => { const r = spawnSync('git', args, { cwd: repoDir, encoding: 'utf8' }); assert.equal(r.status, 0, r.stderr); return r.stdout.trim(); };
+    git('init', '-q', '-b', 'main');
+    const state = handoff.gitState(repoDir);
+    assert.deepEqual([state.branch, state.head], ['main', ''], 'unborn: branch known, no HEAD');
+    const file = join(repoDir, '.agent/handoff.md');
+    mkdirSync(dirname(file), { recursive: true });
+    writeFileSync(file, 'CORPO');
+    assert.ok(handoff.stampHandoff(repoDir, 's'));
+    const meta = handoff.parseHandoff(readFileSync(file, 'utf8')).meta;
+    assert.deepEqual([meta.branch, meta.head], ['main', undefined]);
+    assert.equal(handoff.readHandoff(repoDir).decision.inject, true, 'same unborn branch');
+    git('-c', 'user.email=t@t', '-c', 'user.name=t', 'commit', '-q', '--allow-empty', '-m', 'first');
+    assert.equal(handoff.readHandoff(repoDir).decision.inject, true, 'first commit on the same branch comes after it');
+    git('checkout', '-q', '--orphan', 'other');
+    assert.equal(handoff.readHandoff(repoDir).decision.reason, 'other-branch', 'unborn other branch is compared, not age only');
+    writeFileSync(file, handoff.stampHandoffText('CORPO', { created_at: new Date().toISOString(), branch: 'other', head: 'a'.repeat(40) }));
+    assert.equal(handoff.readHandoff(repoDir).decision.reason, 'missing-head', 'head recorded, branch unborn now');
   } finally {
     rmSync(repoDir, { recursive: true, force: true });
   }
@@ -283,7 +324,7 @@ await test('/next: espera handoff antes de trocar; preserva pai e não envia ap�
     assert.equal(typeof options.setup, 'function');
     await options.setup({ appendCustomEntry: (type, data) => {
       assert.equal(type, 'agent-next');
-      assert.deepEqual(data, { parentSession: '/parent.jsonl' });
+      assert.deepEqual(data, { parentSession: '/parent.jsonl', handoff: true });
     } });
     order.push('new');
     return { cancelled: false };

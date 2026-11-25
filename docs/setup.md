@@ -236,16 +236,16 @@ Disco: `<perfil>/checkpoints/<sessionId>/index.jsonl` (registro append-only) e `
 
 ## Handoff entre sessões (/next e /handoff)
 
-- `/next [foco]` roda a skill `handoff`, espera o `.agent/handoff.md` mudar e abre uma sessão nova. `--keep` compacta a sessão atual em vez de trocar. Se o arquivo não mudou, a sessão fica como está e aparece um erro.
+- `/next [foco]` roda a skill `handoff`, espera o `.agent/handoff.md` mudar e abre uma sessão nova. `--keep` compacta a sessão atual em vez de trocar. Se o arquivo não mudou, a sessão fica como está e aparece um erro. A sessão nova recebe o handoff na primeira mensagem sem os filtros de idade e branch (a entrada `agent-next` leva `handoff: true`).
 - A skill escreve só o corpo. O Agent carimba o frontmatter (`session`, `created_at`, `branch`, `head`) quando `write` ou `edit` gravam `.agent/handoff.md`. O `/next` carimba de novo antes de trocar, o que cobre um handoff gravado via `bash`. O carimbo substitui qualquer frontmatter anterior.
 - Na primeira mensagem do usuário numa sessão nova, o handoff entra no contexto do modelo (invisível na TUI) e vira `.agent/handoff.consumed.md` quando estas condições valem juntas:
   - a sessão é nova: ainda não tem resposta do assistente;
   - a branch atual é a do carimbo;
   - o `HEAD` é o commit do carimbo ou descende dele (`git merge-base --is-ancestor`);
   - a idade é menor que `AGENT_HANDOFF_MAX_AGE`. O padrão é 24 h. Aceita número com unidade `s`, `m`, `h` ou `d`; número puro conta como horas.
-- Fora de um repositório git, só a idade conta. A idade vem de `created_at`; sem carimbo, do mtime do arquivo.
+- Fora de um repositório git, só a idade conta. Um repositório sem commits (branch ainda sem nascer) continua sendo git: a branch é comparada, e um carimbo sem `head` vale para qualquer `HEAD` da mesma branch. A idade vem de `created_at`; sem carimbo, do mtime do arquivo.
 - Caso contrário, nada é descartado. A TUI mostra uma linha, por exemplo `A handoff from 3 h ago on branch X is pending; use /handoff to load it.`. A linha diz também se o commit do carimbo sumiu (rebase/amend), se o `HEAD` não descende dele ou se o arquivo não tem branch/commit.
-- `/handoff` carrega o handoff pendente na próxima mensagem, mesmo antigo ou de outra branch. Nesse caso, o modelo recebe junto uma nota de que ele pode estar desatualizado e por quê.
+- `/handoff` carrega o handoff pendente na próxima mensagem, mesmo antigo ou de outra branch. Nesse caso, o modelo recebe junto uma nota de que ele pode estar desatualizado e por quê. O `/handoff` só agenda: o arquivo vira `.agent/handoff.consumed.md` quando a mensagem sai de fato. Fechar a sessão antes disso mantém o `.agent/handoff.md`.
 
 ## Atualizar o Pi
 
