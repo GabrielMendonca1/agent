@@ -133,6 +133,16 @@
 				"packages/coding-agent/test/mcp-extension.test.ts",
 				"packages/coding-agent/test/suite/agent-session-mcp.test.ts"
 			]
+		},
+		{
+			"name": "chat-model-visibility",
+			"path": "overlay/chat-model-visibility.patch",
+			"description": "Oculta provedores Google e variantes Gemini no seletor /model e na busca exata do chat, sem alterar catálogo ou credenciais.",
+			"sha256": "08b2d1d862ca755763726e249f794542865716094e01a1379b64d260dc050ca9",
+			"tests": [
+				"packages/coding-agent/test/model-selector.test.ts",
+				"packages/coding-agent/test/suite/regressions/7443-model-command-cached-match.test.ts"
+			]
 		}
 	],
 	"modelData": [

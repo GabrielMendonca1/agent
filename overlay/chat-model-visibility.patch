@@ -1,0 +1,125 @@
+diff --git a/packages/coding-agent/src/modes/interactive/components/model-selector.ts b/packages/coding-agent/src/modes/interactive/components/model-selector.ts
+index 181d9b4..b63993a 100644
+--- a/packages/coding-agent/src/modes/interactive/components/model-selector.ts
++++ b/packages/coding-agent/src/modes/interactive/components/model-selector.ts
+@@ -12,7 +12,7 @@ import {
+ } from "@earendil-works/pi-tui";
+ import type { ModelRuntime } from "../../../core/model-runtime.ts";
+ import { refreshModelCatalogs } from "../model-catalog-refresh.ts";
+-import { getDistinctModelName, getModelSelectorSearchText } from "../model-search.ts";
++import { getDistinctModelName, getModelSelectorSearchText, isChatModelVisible } from "../model-search.ts";
+ import { theme } from "../theme/theme.ts";
+ import { DynamicBorder } from "./dynamic-border.ts";
+ import { keyDisplayText, keyHint } from "./keybinding-hints.ts";
+@@ -163,21 +163,26 @@ export class ModelSelectorComponent extends Container implements Focusable {
+ 	}
+ 
+ 	private loadModelsFromSnapshot(): void {
+-		const models = this.modelRuntime.getAvailableSnapshot().map((model: Model<any>) => ({
+-			provider: model.provider,
+-			id: model.id,
+-			model,
+-		}));
++		const models = this.modelRuntime
++			.getAvailableSnapshot()
++			.filter(isChatModelVisible)
++			.map((model) => ({
++				provider: model.provider,
++				id: model.id,
++				model,
++			}));
+ 		this.allModels = this.sortModels(models);
+ 		this.scopedModels = this.scopedModels.map((scoped) => {
+ 			const refreshed = this.modelRuntime.getModel(scoped.model.provider, scoped.model.id);
+ 			return refreshed ? { ...scoped, model: refreshed } : scoped;
+ 		});
+-		this.scopedModelItems = this.scopedModels.map((scoped) => ({
+-			provider: scoped.model.provider,
+-			id: scoped.model.id,
+-			model: scoped.model,
+-		}));
++		this.scopedModelItems = this.scopedModels
++			.filter(({ model }) => isChatModelVisible(model))
++			.map((scoped) => ({
++				provider: scoped.model.provider,
++				id: scoped.model.id,
++				model: scoped.model,
++			}));
+ 		this.activeModels = this.scope === "scoped" ? this.scopedModelItems : this.allModels;
+ 		this.filteredModels = this.activeModels;
+ 		const currentIndex = this.filteredModels.findIndex((item) => modelsAreEqual(this.currentModel, item.model));
+@@ -374,7 +379,7 @@ export class ModelSelectorComponent extends Container implements Focusable {
+ 		const kb = getKeybindings();
+ 		const pageIndex = getSelectPageIndex(kb, keyData, this.selectedIndex, this.filteredModels.length, MAX_VISIBLE);
+ 		if (kb.matches(keyData, "tui.input.tab")) {
+-			if (this.scopedModelItems.length > 0) {
++			if (this.scopedModels.length > 0) {
+ 				const nextScope: ModelScope = this.scope === "all" ? "scoped" : "all";
+ 				this.setScope(nextScope);
+ 				if (this.scopeHintText) {
+diff --git a/packages/coding-agent/src/modes/interactive/interactive-mode.ts b/packages/coding-agent/src/modes/interactive/interactive-mode.ts
+index bc51137..dd248eb 100644
+--- a/packages/coding-agent/src/modes/interactive/interactive-mode.ts
++++ b/packages/coding-agent/src/modes/interactive/interactive-mode.ts
+@@ -206,7 +206,7 @@ import { UserMessageComponent } from "./components/user-message.ts";
+ import { UserMessageSelectorComponent } from "./components/user-message-selector.ts";
+ import { editInExternalEditor } from "./external-editor.ts";
+ import { refreshModelCatalogs } from "./model-catalog-refresh.ts";
+-import { getModelSearchText } from "./model-search.ts";
++import { getModelSearchText, isChatModelVisible } from "./model-search.ts";
+ import { type BlockedStatus, ProgramStatusReporter } from "./program-status-reporter.ts";
+ import { FEEDBACK_ENTRY, RunFeedback } from "./run-feedback.ts";
+ import { shareSession } from "./session-share.ts";
+@@ -804,10 +804,11 @@ export class InteractiveMode {
+ 						? this.session.scopedModels.map((s) => s.model)
+ 						: this.session.modelRuntime.getAvailableSnapshot();
+ 
+-				if (models.length === 0) return null;
++				const visibleModels = models.filter(isChatModelVisible);
++				if (visibleModels.length === 0) return null;
+ 
+ 				// Create items with provider/id format
+-				const items = models.map((m) => ({
++				const items = visibleModels.map((m) => ({
+ 					id: m.id,
+ 					provider: m.provider,
+ 					name: m.name,
+@@ -5569,8 +5570,8 @@ export class InteractiveMode {
+ 		const cachedModels =
+ 			this.session.scopedModels.length > 0
+ 				? this.session.scopedModels.map((scoped) => scoped.model)
+-				: [...this.session.modelRuntime.getAvailableSnapshot()];
+-		const cachedMatch = findExactModelReferenceMatch(searchTerm, cachedModels);
++				: this.session.modelRuntime.getAvailableSnapshot();
++		const cachedMatch = findExactModelReferenceMatch(searchTerm, cachedModels.filter(isChatModelVisible));
+ 		if (cachedMatch || this.session.scopedModels.length > 0) return cachedMatch;
+ 
+ 		this.showStatus("Refreshing model catalogs…");
+@@ -5596,7 +5597,10 @@ export class InteractiveMode {
+ 		} finally {
+ 			clearTimeout(timeout);
+ 		}
+-		return findExactModelReferenceMatch(searchTerm, [...this.session.modelRuntime.getAvailableSnapshot()]);
++		return findExactModelReferenceMatch(
++			searchTerm,
++			this.session.modelRuntime.getAvailableSnapshot().filter(isChatModelVisible),
++		);
+ 	}
+ 
+ 	/** Update the footer's available provider count from the current snapshot without refreshing catalogs. */
+diff --git a/packages/coding-agent/src/modes/interactive/model-search.ts b/packages/coding-agent/src/modes/interactive/model-search.ts
+index fc18316..62c3af6 100644
+--- a/packages/coding-agent/src/modes/interactive/model-search.ts
++++ b/packages/coding-agent/src/modes/interactive/model-search.ts
+@@ -4,6 +4,11 @@ export interface ModelSearchItem {
+ 	name?: string;
+ }
+ 
++/** Agent's chat picker policy; leave the catalog and credentials available to other consumers. */
++export function isChatModelVisible({ provider, id, name }: ModelSearchItem): boolean {
++	return !/^google(?:-|$)/i.test(provider) && !/gemini/i.test(id) && !/gemini/i.test(name ?? "");
++}
++
+ export function getModelSearchText(item: ModelSearchItem): string {
+ 	const { id, provider } = item;
+ 	const name = item.name ? ` ${item.name}` : "";
