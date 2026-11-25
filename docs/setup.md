@@ -244,7 +244,7 @@ Disco: `<perfil>/checkpoints/<sessionId>/index.jsonl` (registro append-only) e `
   - o `HEAD` é o commit do carimbo ou descende dele (`git merge-base --is-ancestor`);
   - a idade é menor que `AGENT_HANDOFF_MAX_AGE`. O padrão é 24 h. Aceita número com unidade `s`, `m`, `h` ou `d`; número puro conta como horas.
 - Fora de um repositório git, só a idade conta. A idade vem de `created_at`; sem carimbo, do mtime do arquivo.
-- Caso contrário, nada é descartado. A TUI mostra uma linha, por exemplo `Há um handoff de 3 h atrás na branch X; use /handoff para carregar.`. A linha diz também se o commit do carimbo sumiu (rebase/amend), se o `HEAD` não descende dele ou se o arquivo não tem branch/commit.
+- Caso contrário, nada é descartado. A TUI mostra uma linha, por exemplo `A handoff from 3 h ago on branch X is pending; use /handoff to load it.`. A linha diz também se o commit do carimbo sumiu (rebase/amend), se o `HEAD` não descende dele ou se o arquivo não tem branch/commit.
 - `/handoff` carrega o handoff pendente na próxima mensagem, mesmo antigo ou de outra branch. Nesse caso, o modelo recebe junto uma nota de que ele pode estar desatualizado e por quê.
 
 ## Atualizar o Pi

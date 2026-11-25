@@ -118,10 +118,10 @@ await test('handoff: decisão por sessão nova, idade, branch e HEAD; sem git s�
   assert.equal(reason({ meta: {}, mtime: 12 * HOUR, git: undefined }), 'inject', 'sem git vale só a idade (mtime)');
   assert.equal(reason({ meta: {}, mtime: 0, now: 25 * HOUR, git: undefined }), 'old');
   const notice = (over) => handoff.handoffNotice(handoff.handoffDecision({ ...base, ...over }), over.meta ?? meta);
-  assert.equal(notice({ meta: { ...meta, branch: 'feature' } }), 'Há um handoff de 3 h atrás na branch feature; use /handoff para carregar.');
-  assert.equal(notice({ meta: { ...meta, head: 'c'.repeat(40) } }), 'Há um handoff de 3 h atrás na branch main, mas o commit ccccccc dele não existe mais (rebase ou amend?); use /handoff para carregar.');
-  assert.match(notice({ meta: { ...meta, head: 'd'.repeat(40) } }), /feito sobre ddddddd, que não está no histórico do HEAD atual; use \/handoff/);
-  assert.match(notice({ now: 60 * HOUR }), /^Há um handoff de 2 dias atrás na branch main; use \/handoff para carregar\.$/);
+  assert.equal(notice({ meta: { ...meta, branch: 'feature' } }), 'A handoff from 3 h ago on branch feature is pending; use /handoff to load it.');
+  assert.equal(notice({ meta: { ...meta, head: 'c'.repeat(40) } }), 'A handoff from 3 h ago on branch main is pending, but its commit ccccccc no longer exists (rebase or amend?); use /handoff to load it.');
+  assert.match(notice({ meta: { ...meta, head: 'd'.repeat(40) } }), /written on ddddddd, which is not in the current HEAD history; use \/handoff/);
+  assert.match(notice({ now: 60 * HOUR }), /^A handoff from 2 days ago on branch main is pending; use \/handoff to load it\.$/);
 });
 
 
@@ -207,7 +207,7 @@ await test('handoff: repo git real — carimbo pelo hook de write, mesma branch 
     const other = register(projectPrompt);
     const ctx2 = { ...fakeCtx(), cwd: repoDir };
     assert.equal(await first(other.handlers, ctx2), undefined);
-    assert.deepEqual(ctx2.notes, [{ text: 'Há um handoff de 3 h atrás na branch feature; use /handoff para carregar.', level: 'info' }]);
+    assert.deepEqual(ctx2.notes, [{ text: 'A handoff from 3 h ago on branch feature is pending; use /handoff to load it.', level: 'info' }]);
     assert.ok(existsSync(file), 'nada é descartado');
     const sentMessages = other.messages;
     await other.commands.handoff.handler('', ctx2);
@@ -216,16 +216,16 @@ await test('handoff: repo git real — carimbo pelo hook de write, mesma branch 
     assert.equal(sentMessages[0][0].customType, 'agent-handoff');
     assert.match(sentMessages[0][0].content, /It may be outdated: it was written on branch feature; the current branch is main\./);
     assert.ok(!existsSync(file), '/handoff consome');
-    assert.match(ctx2.notes.at(-1).text, /^Handoff carregado, com aviso/);
+    assert.match(ctx2.notes.at(-1).text, /^Handoff loaded with a note/);
     await other.commands.handoff.handler('', ctx2);
-    assert.equal(ctx2.notes.at(-1).text, 'Nenhum handoff pendente em .agent/handoff.md.');
+    assert.equal(ctx2.notes.at(-1).text, 'No pending handoff in .agent/handoff.md.');
 
     // Commit sumido (rebase/amend): aviso visível, nunca falha.
     writeFileSync(file, handoff.stampHandoffText('CORPO 3', { session: 's', created_at: new Date().toISOString(), branch: 'main', head: 'f'.repeat(40) }));
     const gone = register(projectPrompt);
     const ctx3 = { ...fakeCtx(), cwd: repoDir };
     assert.equal(await first(gone.handlers, ctx3), undefined);
-    assert.match(ctx3.notes[0].text, /^Há um handoff de menos de 1 min atrás na branch main, mas o commit fffffff dele não existe mais \(rebase ou amend\?\); use \/handoff para carregar\.$/);
+    assert.match(ctx3.notes[0].text, /^A handoff from less than 1 min ago on branch main is pending, but its commit fffffff no longer exists \(rebase or amend\?\); use \/handoff to load it\.$/);
 
     // Sessão retomada (já tem resposta do assistente): oferece, não injeta.
     writeFileSync(file, handoff.stampHandoffText('CORPO 4', { session: 's', created_at: new Date().toISOString(), branch: 'main', head: git('rev-parse', 'HEAD') }));
@@ -233,7 +233,7 @@ await test('handoff: repo git real — carimbo pelo hook de write, mesma branch 
     const ctx4 = { ...fakeCtx(), cwd: repoDir };
     ctx4.sessionManager = { getBranch: () => [{ type: 'message', message: { role: 'assistant' } }] };
     assert.equal(await first(resumed.handlers, ctx4), undefined);
-    assert.match(ctx4.notes[0].text, /use \/handoff para carregar/);
+    assert.match(ctx4.notes[0].text, /use \/handoff to load it/);
     assert.ok(existsSync(file));
   } finally {
     rmSync(repoDir, { recursive: true, force: true });

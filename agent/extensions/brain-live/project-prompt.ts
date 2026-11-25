@@ -70,7 +70,7 @@ export default function (pi: ExtensionAPI) {
       consumeHandoff(ctx.cwd);
       return { message: { customType: 'agent-handoff', content: handoffMessage(pending.text, pending.decision, pending.git), display: false } };
     } catch (error) {
-      ctx.ui.notify(`Handoff não carregado: ${error instanceof Error ? error.message : String(error)}; use /handoff para tentar de novo.`, 'warning');
+      ctx.ui.notify(`Handoff not loaded: ${error instanceof Error ? error.message : String(error)}; use /handoff to try again.`, 'warning');
     }
   });
   // The skill writes only the body; the stamp (session, time, branch, HEAD) comes from here.
@@ -79,18 +79,18 @@ export default function (pi: ExtensionAPI) {
     try { stampHandoff(ctx.cwd, ctx.sessionManager?.getSessionId?.()); } catch { /* the /next stamp still covers it */ }
   });
   pi.registerCommand('handoff', {
-    description: 'Carrega o .agent/handoff.md pendente (antigo ou de outra branch) na próxima mensagem',
+    description: 'Load the pending .agent/handoff.md (old or from another branch) with the next message',
     handler: async (_args, ctx) => {
       try {
         const pending = readHandoff(ctx.cwd, { newSession: !sessionHasHistory(ctx) });
-        if (!pending) return ctx.ui.notify('Nenhum handoff pendente em .agent/handoff.md.', 'info');
+        if (!pending) return ctx.ui.notify('No pending handoff in .agent/handoff.md.', 'info');
         pi.sendMessage({ customType: 'agent-handoff', content: handoffMessage(pending.text, pending.decision, pending.git), display: false }, { deliverAs: 'nextTurn' });
         consumeHandoff(ctx.cwd);
         firstHandoffRun = false;
-        ctx.ui.notify(pending.decision.inject ? 'Handoff carregado; vai junto com a próxima mensagem.'
-          : 'Handoff carregado, com aviso ao modelo de que pode estar desatualizado; vai junto com a próxima mensagem.', 'info');
+        ctx.ui.notify(pending.decision.inject ? 'Handoff loaded; it goes with the next message.'
+          : 'Handoff loaded with a note to the model that it may be outdated; it goes with the next message.', 'info');
       } catch (error) {
-        ctx.ui.notify(`Não foi possível carregar o handoff: ${error instanceof Error ? error.message : String(error)}`, 'error');
+        ctx.ui.notify(`Could not load the handoff: ${error instanceof Error ? error.message : String(error)}`, 'error');
       }
     },
   });
@@ -112,7 +112,7 @@ export default function (pi: ExtensionAPI) {
         await ctx.waitForIdle();
         const mtime = existsSync(file) ? statSync(file).mtimeMs : undefined;
         if (mtime === undefined || (previous && previous.mtime === mtime && previous.content === readFileSync(file, 'utf8'))) {
-          throw new Error('Handoff não foi atualizado; sessão mantida.');
+          throw new Error('Handoff was not updated; session kept.');
         }
         // Covers a handoff written through bash: the new session sees this branch and HEAD.
         stampHandoff(ctx.cwd, ctx.sessionManager?.getSessionId?.());
@@ -278,22 +278,22 @@ export default function (pi: ExtensionAPI) {
 
   // Independente dos comandos de modo: /notes só pede manutenção do mapa ao agente.
   pi.registerCommand('notes', {
-    description: 'Agent: acrescentar ao mapa os documentos ainda sem nota',
+    description: 'Agent: add the documents without a note to the map',
     handler: async (_args, ctx) => {
       let files: string[];
       try { files = unmappedDocs(ctx.cwd); } catch (error) {
-        ctx.ui.notify(`Não foi possível listar notas: ${error instanceof Error ? error.message : String(error)}`, 'error');
+        ctx.ui.notify(`Could not list notes: ${error instanceof Error ? error.message : String(error)}`, 'error');
         return;
       }
-      if (!files.length) { ctx.ui.notify('Nenhum documento sem linha em .agent/notes.md.', 'info'); return; }
-      // Prompt em inglês só para o modelo; o TUI mostra o aviso em português.
+      if (!files.length) { ctx.ui.notify('Every document already has a line in .agent/notes.md.', 'info'); return; }
+      // The prompt goes to the model; the TUI shows a short notice.
       pi.sendMessage({ customType: 'agent-notes', display: false, content: [
         'Update .agent/notes.md in this project (create the map if it does not exist).',
         'Read the documents below and add one line per file in the format path — subject; keep existing lines and do not duplicate paths.',
         'Documents without a line in the map:',
         ...files.map(file => `- ${file}`),
       ].join('\n') }, { triggerTurn: true, deliverAs: 'followUp' });
-      ctx.ui.notify(`Pedido enviado ao agente: mapear ${files.length} documento(s) em .agent/notes.md.`, 'info');
+      ctx.ui.notify(`Sent to the agent: map ${files.length} document(s) in .agent/notes.md.`, 'info');
     },
   });
   installProjectContext(pi);

@@ -335,7 +335,7 @@ try {
     assert.match(requests[0].text, /path — subject/);
     assert.equal(requests[0].message.display, false, 'prompt em inglês oculto no TUI');
     assert.deepEqual(requests[0].options, { triggerTurn: true, deliverAs: 'followUp' });
-    assert.deepEqual(notices.slice(noticesBefore), [{ text: 'Pedido enviado ao agente: mapear 1 documento(s) em .agent/notes.md.', level: 'info' }]);
+    assert.deepEqual(notices.slice(noticesBefore), [{ text: 'Sent to the agent: map 1 document(s) in .agent/notes.md.', level: 'info' }]);
     rmSync(map);
     await extension.commands.get('notes').handler('', ctx);
     assert.match(requests[1].text, /docs\/known.md/);

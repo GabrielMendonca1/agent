@@ -24,10 +24,10 @@ export function installProjectContext(pi: ExtensionAPI) {
     }
   });
   pi.registerCommand('rules', {
-    description: 'Agent: /rules init separa regras e cabeçalho do AGENTS.md',
+    description: 'Agent: /rules init splits AGENTS.md into rules and header',
     handler: async (args, ctx) => {
       if (args.trim() !== 'init') return ctx.ui.notify('Use /rules init.', 'info');
-      // Prompt em inglês só para o modelo; o TUI mostra o aviso em português.
+      // The prompt goes to the model; the TUI shows a short notice.
       pi.sendMessage({ customType: 'agent-rules-init', display: false, content: [
         'Migrate this project context to the Agent sources.',
         'Read AGENTS.md and .agent/workflow.md if they exist. Keep every rule in .agent/rules.md; split a short header into .agent/header.md.',
@@ -37,7 +37,7 @@ export function installProjectContext(pi: ExtensionAPI) {
         'Put that marker on the first line of AGENTS.md, then header + rules and relative pointers to .agent/notes.md, STATUS.md, HISTORY.md and docs when they exist.',
         'The Agent rebuilds the file on disk when the sources change; this session context stays fixed until the next session.',
       ].join('\n') }, { triggerTurn: true, deliverAs: 'followUp' });
-      ctx.ui.notify('Pedido enviado ao agente: migrar AGENTS.md para .agent/rules.md e .agent/header.md.', 'info');
+      ctx.ui.notify('Sent to the agent: migrate AGENTS.md to .agent/rules.md and .agent/header.md.', 'info');
     },
   });
   pi.registerCommand('remember', {

@@ -5,7 +5,7 @@
  * Injected on the first user message of a new session when it is not consumed, on the same
  * branch, HEAD equals or descends from `head`, and younger than AGENT_HANDOFF_MAX_AGE (24 h).
  * Without git only the age counts. Anything else yields one visible notice; nothing is dropped
- * silently. The model-facing wrapper is English; notices are Portuguese.
+ * silently. The wrapper and the notices are English.
  */
 import { spawnSync } from 'node:child_process';
 import { existsSync, readFileSync, renameSync, statSync, writeFileSync } from 'node:fs';
@@ -90,24 +90,24 @@ export function handoffDecision({ meta, mtime, now, maxAgeMs, git: repo, newSess
   return repo.isAncestor(meta.head) ? { inject: true, ageMs } : no('diverged');
 }
 
-/** "3 h", "12 min", "2 dias" */
+/** "3 h", "12 min", "2 days" */
 export function ageLabel(ms: number): string {
-  if (ms < 60_000) return 'menos de 1 min';
+  if (ms < 60_000) return 'less than 1 min';
   if (ms < HOUR) return `${Math.floor(ms / 60_000)} min`;
   if (ms < 48 * HOUR) return `${Math.floor(ms / HOUR)} h`;
-  return `${Math.floor(ms / (24 * HOUR))} dias`;
+  return `${Math.floor(ms / (24 * HOUR))} days`;
 }
 
 const short = (sha?: string) => (sha ?? '').slice(0, 7);
 
-/** One Portuguese line for the TUI. */
+/** One line for the TUI. */
 export function handoffNotice(decision: Extract<HandoffDecision, { inject: false }>, meta: HandoffMeta): string {
-  const base = `Há um handoff de ${ageLabel(decision.ageMs)} atrás${meta.branch ? ` na branch ${meta.branch}` : ''}`;
-  const tail = '; use /handoff para carregar.';
+  const base = `A handoff from ${ageLabel(decision.ageMs)} ago${meta.branch ? ` on branch ${meta.branch}` : ''} is pending`;
+  const tail = '; use /handoff to load it.';
   switch (decision.reason) {
-    case 'unstamped': return `Há um handoff de ${ageLabel(decision.ageMs)} atrás sem branch nem commit registrados${tail}`;
-    case 'missing-head': return `${base}, mas o commit ${short(meta.head)} dele não existe mais (rebase ou amend?)${tail}`;
-    case 'diverged': return `${base}, feito sobre ${short(meta.head)}, que não está no histórico do HEAD atual${tail}`;
+    case 'unstamped': return `A handoff from ${ageLabel(decision.ageMs)} ago with no recorded branch or commit is pending${tail}`;
+    case 'missing-head': return `${base}, but its commit ${short(meta.head)} no longer exists (rebase or amend?)${tail}`;
+    case 'diverged': return `${base}, written on ${short(meta.head)}, which is not in the current HEAD history${tail}`;
     default: return base + tail;
   }
 }

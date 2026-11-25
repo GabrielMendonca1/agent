@@ -72,7 +72,7 @@ try {
   assert.match(commands.sent.content, /Replace the manual AGENTS.md explicitly/);
   assert.equal(commands.sent.display, false, 'prompt em inglês oculto no TUI');
   assert.deepEqual(commands.sentOptions, { triggerTurn: true, deliverAs: 'followUp' });
-  assert.deepEqual(notices.at(-1), ['Pedido enviado ao agente: migrar AGENTS.md para .agent/rules.md e .agent/header.md.', 'info']);
+  assert.deepEqual(notices.at(-1), ['Sent to the agent: migrate AGENTS.md to .agent/rules.md and .agent/header.md.', 'info']);
 
   fake = await startFakeAnthropic([
     { tool: { name: 'edit', input: { path: '.agent/rules.md', oldText: 'RULE_SENTINEL', newText: 'EDITED_RULE' } } },
