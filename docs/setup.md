@@ -236,7 +236,7 @@ Disco: `<perfil>/checkpoints/<sessionId>/index.jsonl` (registro append-only) e `
 
 ## Handoff entre sessões (/next e /handoff)
 
-- `/next [foco]` roda a skill `handoff`, espera o `.agent/handoff.md` mudar e abre uma sessão nova. `--keep` compacta a sessão atual em vez de trocar. Se o arquivo não mudou, a sessão fica como está e aparece um erro. A sessão nova recebe o handoff na primeira mensagem sem os filtros de idade e branch (a entrada `agent-next` leva `handoff: true`).
+- `/next [foco]` roda a skill `handoff`, espera o `.agent/handoff.md` mudar e abre uma sessão nova. `--keep` compacta a sessão atual em vez de trocar. Se o arquivo não mudou, a sessão fica como está e aparece um erro. A sessão nova recebe o handoff na primeira mensagem sem os filtros de idade e branch. A entrada `agent-next` guarda o sha256 do arquivo que o `/next` carimbou, e só esse arquivo passa sem filtro: reabrir a sessão depois, com outro handoff, volta aos filtros normais.
 - A skill escreve só o corpo. O Agent carimba o frontmatter (`session`, `created_at`, `branch`, `head`) quando `write` ou `edit` gravam `.agent/handoff.md`. O `/next` carimba de novo antes de trocar, o que cobre um handoff gravado via `bash`. O carimbo substitui qualquer frontmatter anterior.
 - Na primeira mensagem do usuário numa sessão nova, o handoff entra no contexto do modelo (invisível na TUI) e vira `.agent/handoff.consumed.md` quando estas condições valem juntas:
   - a sessão é nova: ainda não tem resposta do assistente;

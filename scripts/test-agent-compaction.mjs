@@ -226,15 +226,31 @@ await test('handoff: repo git real — carimbo pelo hook de write, mesma branch 
     assert.equal(ctx2.notes.at(-1).text, 'No pending handoff in .agent/handoff.md.');
 
     // Session opened by /next: injected past the gates (old, other branch), without a stale note.
-    writeFileSync(file, handoff.stampHandoffText('CORPO NEXT', { session: 's', created_at: new Date(Date.now() - 72 * HOUR).toISOString(), branch: 'feature', head: 'e'.repeat(40) }));
+    const nextText = handoff.stampHandoffText('CORPO NEXT', { session: 's', created_at: new Date(Date.now() - 72 * HOUR).toISOString(), branch: 'feature', head: 'e'.repeat(40) });
+    writeFileSync(file, nextText);
+    const nextEntries = [{ type: 'custom', customType: 'agent-next', data: { parentSession: '/p.jsonl', handoff: { sha256: handoff.handoffFingerprint(nextText) } } }];
     const fromNext = register(projectPrompt);
     const ctxNext = { ...fakeCtx(), cwd: repoDir };
-    ctxNext.sessionManager = { getBranch: () => [{ type: 'custom', customType: 'agent-next', data: { parentSession: '/p.jsonl', handoff: true } }] };
+    ctxNext.sessionManager = { getBranch: () => nextEntries };
     const forced = await first(fromNext.handlers, ctxNext);
     assert.match(forced.content, /<handoff>\nCORPO NEXT\n<\/handoff>$/);
     assert.doesNotMatch(forced.content, /may be outdated/);
     assert.deepEqual(ctxNext.notes, []);
     assert.ok(!existsSync(file));
+    // Reopening that session later with an unrelated stale handoff: normal gates, nothing consumed.
+    writeFileSync(file, handoff.stampHandoffText('OUTRO', { session: 's2', created_at: new Date(Date.now() - 72 * HOUR).toISOString(), branch: 'feature', head: 'e'.repeat(40) }));
+    const reopened = register(projectPrompt);
+    const ctxReopen = { ...fakeCtx(), cwd: repoDir };
+    ctxReopen.sessionManager = { getBranch: () => nextEntries };
+    assert.equal(await first(reopened.handlers, ctxReopen), undefined, 'marker bound to the /next file only');
+    assert.match(ctxReopen.notes[0].text, /use \/handoff to load it/);
+    assert.ok(existsSync(file), 'unrelated handoff kept');
+    // Legacy boolean marker never forces.
+    const legacy = register(projectPrompt);
+    const ctxLegacy = { ...fakeCtx(), cwd: repoDir };
+    ctxLegacy.sessionManager = { getBranch: () => [{ type: 'custom', customType: 'agent-next', data: { handoff: true } }] };
+    assert.equal(await first(legacy.handlers, ctxLegacy), undefined);
+    assert.ok(existsSync(file));
 
     // Commit sumido (rebase/amend): aviso visível, nunca falha.
     writeFileSync(file, handoff.stampHandoffText('CORPO 3', { session: 's', created_at: new Date().toISOString(), branch: 'main', head: 'f'.repeat(40) }));
@@ -324,7 +340,7 @@ await test('/next: espera handoff antes de trocar; preserva pai e não envia ap�
     assert.equal(typeof options.setup, 'function');
     await options.setup({ appendCustomEntry: (type, data) => {
       assert.equal(type, 'agent-next');
-      assert.deepEqual(data, { parentSession: '/parent.jsonl', handoff: true });
+      assert.deepEqual(data, { parentSession: '/parent.jsonl', handoff: { sha256: handoff.handoffFingerprint(readFileSync(join(vaultRoot, '.agent/handoff.md'), 'utf8')) } }, 'marker = fingerprint of the stamped file');
     } });
     order.push('new');
     return { cancelled: false };

@@ -9,7 +9,7 @@ import { existsSync, readFileSync, statSync } from 'node:fs';
 import { allowAutoCompaction } from '../../core/cache-policy.mjs';
 import { installProjectContext } from './lib/project-context.ts';
 import { clearBeforeAutoCompaction } from './compaction/tool-clear.ts';
-import { consumeHandoff, handoffMessage, handoffNotice, handoffPath, isHandoffPath, readHandoff, stampHandoff } from './lib/handoff.ts';
+import { consumeHandoff, handoffFingerprint, handoffMessage, handoffNotice, handoffPath, isHandoffPath, readHandoff, stampHandoff } from './lib/handoff.ts';
 
 const COMPACT_AT_1M = 450_000;
 const TEAM_TOOL = 'subagent';
@@ -24,10 +24,16 @@ export function nextHint(tokens: number | null | undefined): boolean {
   return typeof tokens === 'number' && tokens > 60_000;
 }
 
-/** Session opened by /next: its `agent-next` entry asks for the handoff without gates. */
-export function openedByNext(ctx: Pick<ExtensionContext, 'sessionManager'>): boolean {
+/**
+ * Session opened by /next for this exact handoff: its `agent-next` entry carries the fingerprint
+ * of the file /next stamped. Any other file (a later handoff, after the first was delivered and
+ * renamed) goes through the normal gates, so reopening the session never forces again.
+ */
+export function openedByNext(ctx: Pick<ExtensionContext, 'sessionManager'>, text: string): boolean {
   try {
-    return ctx.sessionManager.getBranch().some((entry: any) => entry?.type === 'custom' && entry.customType === 'agent-next' && entry.data?.handoff === true);
+    const fingerprint = handoffFingerprint(text);
+    return ctx.sessionManager.getBranch().some((entry: any) => entry?.type === 'custom' && entry.customType === 'agent-next'
+      && entry.data?.handoff?.sha256 === fingerprint);
   } catch { return false; }
 }
 
@@ -80,7 +86,7 @@ export default function (pi: ExtensionAPI) {
         if (requested) ctx.ui.notify('The requested handoff is gone from .agent/handoff.md; nothing was loaded.', 'warning');
         return;
       }
-      const fromNext = first && openedByNext(ctx);
+      const fromNext = first && openedByNext(ctx, pending.text);
       if (!requested && !fromNext && !pending.decision.inject) {
         ctx.ui.notify(handoffNotice(pending.decision, pending.meta), 'info');
         return;
@@ -135,13 +141,13 @@ export default function (pi: ExtensionAPI) {
           throw new Error('Handoff was not updated; session kept.');
         }
         // Covers a handoff written through bash: the new session sees this branch and HEAD.
-        stampHandoff(ctx.cwd, ctx.sessionManager?.getSessionId?.());
+        const sha256 = stampHandoff(ctx.cwd, ctx.sessionManager?.getSessionId?.());
         if (keep) { ctx.compact(); return; }
         const parentSession = ctx.sessionManager.getSessionFile();
         await ctx.newSession({
           parentSession,
-          // `handoff: true`: the first message of the new session injects it past the age/branch gates.
-          setup: async manager => { manager.appendCustomEntry('agent-next', { parentSession, handoff: true }); },
+          // The first message of the new session injects this exact file past the age/branch gates.
+          setup: async manager => { manager.appendCustomEntry('agent-next', { parentSession, ...(sha256 ? { handoff: { sha256 } } : {}) }); },
         });
       } catch (error) {
         ctx.ui.notify(error instanceof Error ? error.message : String(error), 'error');

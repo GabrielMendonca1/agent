@@ -8,6 +8,7 @@
  * silently. The wrapper and the notices are English.
  */
 import { spawnSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import { existsSync, readFileSync, renameSync, statSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { isAbsolute, join, resolve } from 'node:path';
@@ -161,15 +162,23 @@ export function isHandoffPath(input: unknown, cwd: string): boolean {
   return (isAbsolute(p) ? resolve(p) : resolve(cwd, p)) === resolve(handoffPath(cwd));
 }
 
-/** Stamps `.agent/handoff.md` in place with the session and the current branch/HEAD. */
-export function stampHandoff(cwd: string, session: string | undefined, now = Date.now()): boolean {
+/** Identity of one exact handoff file (stamp included): /next binds its force marker to it. */
+export function handoffFingerprint(text: string): string {
+  return createHash('sha256').update(text).digest('hex');
+}
+
+/**
+ * Stamps `.agent/handoff.md` in place with the session and the current branch/HEAD.
+ * Returns the fingerprint of the stamped file, or undefined when there is no file.
+ */
+export function stampHandoff(cwd: string, session: string | undefined, now = Date.now()): string | undefined {
   const file = handoffPath(cwd);
-  if (!existsSync(file)) return false;
+  if (!existsSync(file)) return undefined;
   const repo = gitState(cwd);
   const text = readFileSync(file, 'utf8');
   const stamped = stampHandoffText(text, { session, created_at: new Date(now).toISOString(), branch: repo?.branch, head: repo?.head });
   if (stamped !== text) writeFileSync(file, stamped);
-  return true;
+  return handoffFingerprint(stamped);
 }
 
 export interface PendingHandoff { text: string; meta: HandoffMeta; decision: HandoffDecision; git?: GitState }
