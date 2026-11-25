@@ -67,11 +67,32 @@ export default function (pi) {
       } else if (child && n === 0 && process.env.FG_SANDBOX_COMMAND) {
         content = [{ type: 'toolCall', id: 'call-sandbox', name: 'bash', arguments: { command: process.env.FG_SANDBOX_COMMAND } }];
         stopReason = 'toolUse';
+      } else if (child && process.env.FG_STALL) {
+        // Timeout: suja o worktree, registra se o aviso suave chegou e trava num loop que escreve.
+        const { appendFileSync } = await import('node:fs');
+        const text = m => Array.isArray(m.content) ? m.content.map(p => p.text || '').join('') : String(m.content);
+        appendFileSync(process.env.FG_STALL, JSON.stringify({ n, t: Date.now(), cwd: process.cwd(), model: model.id,
+          users: context.messages.filter(m => m.role === 'user').map(text) }) + '\\n');
+        if (n === 0) content = [{ type: 'toolCall', id: 'stall-0', name: 'bash', arguments: { command: 'printf dirty > dirty.txt; sleep 1' } }];
+        else if (n === 1) content = [{ type: 'toolCall', id: 'stall-1', name: 'bash', arguments: { command: 'echo $$ >> ' + process.env.FG_STALL + '.pids; while true; do date >> ticks.txt; sleep 0.05; done' } }];
+        if (content) stopReason = 'toolUse';
+        else content = [{ type: 'text', text: 'RETOMADO-' + n }];
+      } else if (child && process.env.FG_QUOTA_MODEL === model.id) {
+        // Erro do provedor (HTTP 429), não texto do modelo; registra o turno como o log do continue.
+        const { appendFileSync } = await import('node:fs');
+        const text = m => Array.isArray(m.content) ? m.content.map(p => p.text || '').join('') : String(m.content);
+        if (process.env.FG_CHILD_LOG) appendFileSync(process.env.FG_CHILD_LOG, JSON.stringify({ model: model.id, quota: true, messages: context.messages.filter(m => m.role !== 'system').map(m => [m.role, text(m)]) }) + '\\n');
+        const error = { role: 'assistant', content: [], api: model.api, provider: model.provider, model: model.id, timestamp: Date.now(), stopReason: 'error',
+          errorMessage: '429 {"type":"error","error":{"type":"rate_limit_error","message":"This request would exceed the rate limit for your organization"}}',
+          usage: { input: 1, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 1, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } } };
+        s.push({ type: 'start', partial: { ...error, stopReason: 'stop', errorMessage: undefined } });
+        s.push({ type: 'error', reason: 'error', error }); s.end();
+        return;
       } else if (child && process.env.FG_CHILD_LOG) {
         // continue: registra o que cada turno do filho recebeu (histórico, system, cwd).
         const { appendFileSync } = await import('node:fs');
         const text = m => Array.isArray(m.content) ? m.content.map(p => p.text || '').join('') : String(m.content);
-        appendFileSync(process.env.FG_CHILD_LOG, JSON.stringify({ cwd: process.cwd(), system: JSON.stringify(context.messages.filter(m => m.role === 'system')),
+        appendFileSync(process.env.FG_CHILD_LOG, JSON.stringify({ cwd: process.cwd(), model: model.id, system: JSON.stringify(context.messages.filter(m => m.role === 'system')),
           messages: context.messages.filter(m => m.role !== 'system').map(m => [m.role, text(m)]) }) + '\\n');
         content = [{ type: 'text', text: 'FILHO-TURNO-' + n }];
       } else if (child && process.env.FG_WRITE) {
@@ -591,6 +612,8 @@ try {
     await anth.close();
   }
 
+  // Jobs below use a 30 min ceiling: with timeouts under ~200 s the soft deadline is the start
+  // itself and every child would get the soft-timeout steer, which the timeout block covers.
   // Exercise the actual spawn queue: two live children, remaining tasks queued,
   // cancellation owned by the launching session, and no spawn under pressure.
   delete process.env.FG_SANDBOX_COMMAND;
@@ -604,7 +627,7 @@ try {
   const spec = { sessionId: 'owner', sessionGeneration: 0, mode: 'parallel',
     tasks: Array.from({ length: 4 }, (_, i) => ({ agent: 'readonly-' + i, task: 'tarefa-' + i })),
     agents: Array.from({ length: 4 }, (_, i) => ({ ...role, name: 'readonly-' + i, tools: ['read'] })), agentScope: 'user', projectAgentsDir: null,
-    dispatchDefaults: { model: 'fg-fake/fake', resources: { slots: {} } }, cwd: sandboxCwd, timeoutSeconds: 60 };
+    dispatchDefaults: { model: 'fg-fake/fake', resources: { slots: {} } }, cwd: sandboxCwd, timeoutSeconds: 1800 };
   assert.equal(budget.launch({ ...spec, tasks: Array.from({ length: MAX_PARALLEL_TASKS + 1 }, () => spec.tasks[0]) }).ok, false);
   const launched = budget.launch(spec);
   assert.ok(launched.ok, launched.error);
@@ -720,7 +743,7 @@ try {
     const contJobs = join(root, 'continue-jobs');
     const mgr = new BudgetManager({ baseDir: contJobs, onComplete: record => done.push(record) });
     const base = { sessionId: 'cont', sessionGeneration: 0, agents: [writer], agentScope: 'user', projectAgentsDir: null,
-      dispatchDefaults: { model: 'fg-fake/fake', resources: { slots: {} } }, timeoutSeconds: 60 };
+      dispatchDefaults: { model: 'fg-fake/fake', resources: { slots: {} } }, timeoutSeconds: 1800 };
     const launched = mgr.launch({ ...base, mode: 'parallel', cwd: contRepo,
       tasks: [{ agent: 'cwriter', task: 'tarefa-a', name: 'alpha' }, { agent: 'cwriter', task: 'tarefa-b' }] });
     assert.ok(launched.ok, launched.error);
@@ -788,6 +811,175 @@ try {
     console.log('ok continue (manager): worktree reused, snapshot over changed role, lock live/stale, discard closes, removed worktree, agy and unknown refused');
   }
 
+  // Cota: 429 do provedor vira failure "quota"; papel só leitura troca sozinho uma vez no mesmo
+  // JSONL; escritor nunca troca sozinho, e só aceita `model` (da allowlist) depois da cota.
+  {
+    const { QUOTA_FALLBACK_MESSAGE } = await jiti.import(join(repo, 'agent/extensions/brain-live/subagent/jobs.ts'));
+    const quotaLog = join(root, 'quota-turns.log');
+    Object.assign(process.env, { FG_QUOTA_MODEL: 'fake', FG_CHILD_LOG: quotaLog });
+    const done = [];
+    const mgr = new BudgetManager({ baseDir: join(root, 'quota-jobs'), onComplete: record => done.push(record) });
+    const qreader = { name: 'qreader', description: 'fixture', source: 'user', tools: ['read'], systemPrompt: 'fixture-reader' };
+    const qwriter = { name: 'qwriter', description: 'fixture', source: 'user', tools: ['read', 'edit', 'bash'], systemPrompt: 'fixture-writer' };
+    const writerCwd = realpathSync(mkdtempSync(join(root, 'quota-writer-')));
+    // Piloto: principal fg-fake/fake, apoio fg-fake/cheap; papel sem lista própria usa esse par.
+    const base = { sessionId: 'quota', sessionGeneration: 0, agents: [qreader, qwriter], agentScope: 'user', projectAgentsDir: null,
+      dispatchDefaults: { model: 'fg-fake/fake', resources: { supportModel: 'fg-fake/cheap', slots: {} } }, timeoutSeconds: 1800 };
+    assert.ok(mgr.launch({ ...base, mode: 'single', cwd: sandboxCwd, tasks: [{ agent: 'qreader', task: 'ler', name: 'reader' }] }).ok);
+    assert.ok(mgr.launch({ ...base, mode: 'single', cwd: writerCwd, tasks: [{ agent: 'qwriter', task: 'escrever', name: 'writer' }] }).ok);
+    await waitUntil(() => done.length === 2);
+    const reader = done.find(r => r.agents[0] === 'qreader');
+    const writer = done.find(r => r.agents[0] === 'qwriter');
+    const turns = () => readFileSync(quotaLog, 'utf8').trim().split('\n').map(JSON.parse);
+
+    // Só leitura: 429 no principal, uma nova rodada no apoio sobre a mesma sessão, registrada.
+    assert.equal(reader.status, 'completed', reader.error + reader.result);
+    const rt = reader.tasks[0];
+    assert.equal(rt.failure, undefined);
+    assert.deepEqual([rt.modelSwitch.from, rt.modelSwitch.to, rt.modelSwitch.reason, rt.modelSwitch.auto], ['fg-fake/fake', 'fg-fake/cheap', 'quota', true]);
+    assert.equal(rt.model, 'fg-fake/cheap');
+    assert.match(reader.result, /task 1 \(qreader, handle reader\): quota\/rate limit on fg-fake\/fake; retried once on fg-fake\/cheap over the same session \(read-only fallback\)\./);
+    const readerJsonl = readFileSync(rt.sessionFile, 'utf8').trim().split('\n').map(JSON.parse);
+    assert.equal(readerJsonl.filter(e => e.type === 'session').length, 1, 'one JSONL, one header');
+    const readerMsgs = readerJsonl.filter(e => e.type === 'message').map(e => e.message);
+    assert.ok(readerMsgs.some(m => m.role === 'assistant' && m.model === 'fake' && m.stopReason === 'error' && /rate_limit_error/.test(m.errorMessage)), 'the 429 turn is in the same JSONL');
+    assert.ok(readerMsgs.some(m => m.role === 'assistant' && m.model === 'cheap' && m.stopReason === 'stop'), 'the fallback turn is in the same JSONL');
+    const fallbackTurn = turns().find(t => t.model === 'cheap' && t.messages.some(([, text]) => text === QUOTA_FALLBACK_MESSAGE));
+    assert.ok(fallbackTurn, 'fallback turn carries the follow-up message');
+    assert.match(fallbackTurn.messages[0][1], /^Task: ler/, 'fallback turn sees the original task (same session)');
+    const readerHandle = mgr.handles('quota').find(h => h.handle === 'reader');
+    assert.deepEqual([readerHandle.lifecycle, readerHandle.failure, readerHandle.invocation.model], ['waiting', undefined, 'fg-fake/cheap']);
+
+    // Escritor: falha por cota, sem troca automática; handle waiting com failure quota.
+    assert.equal(writer.status, 'failed');
+    const wt = writer.tasks[0];
+    assert.deepEqual([wt.failure, wt.modelSwitch, wt.model], ['quota', undefined, 'fg-fake/fake']);
+    assert.match(writer.result + writer.error, /failed on provider quota\/rate limit\/capacity \(model fg-fake\/fake\)\. The handle waits: continue it with "model" set to another model allowed for this role\./);
+    assert.equal(turns().filter(t => t.quota && t.messages[0][1].startsWith('Task: escrever')).length, 1, 'writer never retried alone');
+    const writerHandle = () => mgr.handles('quota').find(h => h.handle === 'writer');
+    assert.deepEqual([writerHandle().lifecycle, writerHandle().failure], ['waiting', 'quota']);
+
+    // Recusas: modelo fora da allowlist; `model` em handle cuja última rodada não falhou por cota.
+    const cont = (handle, jobId, model, message = 'SEGUE') => mgr.continueTask({ ...base, jobId, handle, message, model });
+    assert.match(cont('writer', 'q-1', 'fg-fake/other').error, /^Handle writer: model fg-fake\/other refused\. /);
+    assert.match(cont('reader', 'q-2', 'fg-fake/fake').error, /^Handle reader: "model" is accepted only after a quota\/rate-limit failure, and its last run did not fail on quota\./);
+    assert.equal(done.length, 2, 'refusals never start a job');
+
+    // continue com outro modelo permitido: mesmo JSONL, histórico preservado, troca registrada.
+    const switched = cont('writer', 'q-3', 'fg-fake/cheap');
+    assert.ok(switched.ok, switched.error);
+    assert.equal(switched.entry.invocation.model, 'fg-fake/cheap');
+    await waitUntil(() => done.length === 3);
+    const resumed = done[2];
+    assert.equal(resumed.status, 'completed', resumed.error);
+    assert.equal(resumed.tasks[0].sessionFile, wt.sessionFile, 'same child JSONL');
+    assert.deepEqual([resumed.tasks[0].modelSwitch.from, resumed.tasks[0].modelSwitch.to, resumed.tasks[0].modelSwitch.auto], ['fg-fake/fake', 'fg-fake/cheap', false]);
+    assert.match(resumed.result, /continued on fg-fake\/cheap after a quota failure on fg-fake\/fake/);
+    const last = turns().at(-1);
+    assert.equal(last.model, 'cheap');
+    assert.match(last.messages[0][1], /^Task: escrever/, 'history of the first turn');
+    assert.deepEqual(last.messages.at(-1), ['user', 'SEGUE']);
+    const writerJsonl = readFileSync(wt.sessionFile, 'utf8').trim().split('\n').map(JSON.parse);
+    assert.equal(writerJsonl.filter(e => e.type === 'session').length, 1);
+    assert.deepEqual([writerHandle().lifecycle, writerHandle().failure, writerHandle().invocation.model], ['waiting', undefined, 'fg-fake/cheap']);
+    // Depois de um turno sem cota, `model` volta a ser recusado.
+    assert.match(cont('writer', 'q-4', 'fg-fake/fake').error, /accepted only after a quota\/rate-limit failure/);
+    await mgr.shutdown();
+    for (const key of ['FG_QUOTA_MODEL', 'FG_CHILD_LOG']) delete process.env[key];
+    console.log('ok quota: 429 -> failure quota, read-only falls back once on the same JSONL, writer waits; continue model only after quota and inside the allowlist');
+  }
+
+  // Timeout duro: aviso suave antes do teto (extensão no filho, sem stdin), árvore do filho morta
+  // ANTES do commit WIP no worktree do job; escritor no lugar não ganha commit; continue retoma.
+  {
+    const { SOFT_TIMEOUT_MESSAGE } = await jiti.import(join(repo, 'agent/extensions/brain-live/subagent/child-soft-deadline.ts'));
+    const stallLog = join(root, 'stall.log');
+    process.env.FG_STALL = stallLog;
+    const repoFor = (name) => {
+      const dir = realpathSync(mkdtempSync(join(root, name)));
+      const g = (...args) => assert.equal(spawnSync('git', ['-C', dir, '-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.invalid', ...args]).status, 0, args.join(' '));
+      g('init', '-q', '-b', 'main');
+      writeFileSync(join(dir, 'base'), 'base\n');
+      g('add', '.');
+      g('commit', '-qm', 'base');
+      return dir;
+    };
+    const gitOut = (dir, ...args) => spawnSync('git', ['-C', dir, ...args], { encoding: 'utf8' }).stdout.trim();
+    const isolatedRepo = repoFor('stall-repo-');
+    const inPlaceRepo = repoFor('stall-inplace-');
+    const inPlaceHead = gitOut(inPlaceRepo, 'rev-parse', 'HEAD');
+    const done = [];
+    const mgr = new BudgetManager({ baseDir: join(root, 'stall-jobs'), onComplete: record => done.push(record) });
+    const swriter = { name: 'swriter', description: 'fixture', source: 'user', tools: ['read', 'edit', 'bash'], systemPrompt: 'fixture-writer' };
+    const TIMEOUT = 10;
+    // Two roles: one shared prefix would stagger the second child behind the stalled leader's first token.
+    const base = { sessionId: 'stall', sessionGeneration: 0, agents: [swriter, { ...swriter, name: 'swriter2' }], agentScope: 'user', projectAgentsDir: null,
+      dispatchDefaults: { model: 'fg-fake/fake', resources: { slots: {} } }, timeoutSeconds: TIMEOUT };
+    const started = Date.now();
+    const isolated = mgr.launch({ ...base, mode: 'parallel', cwd: isolatedRepo,
+      tasks: [{ agent: 'swriter', task: 'tarefa-a', name: 'stall-a' }, { agent: 'swriter2', task: 'tarefa-b', name: 'stall-b' }] });
+    assert.ok(isolated.ok, isolated.error);
+    assert.ok(mgr.launch({ ...base, mode: 'single', cwd: inPlaceRepo, tasks: [{ agent: 'swriter', task: 'tarefa-c', name: 'stall-c' }] }).ok);
+    const deadline = Date.now() + 60000;
+    while (done.length < 2) {
+      assert.ok(Date.now() < deadline, 'timeout jobs settled');
+      await new Promise(r => setTimeout(r, 50));
+    }
+    const job = done.find(r => r.jobId === isolated.record.jobId);
+    const inPlace = done.find(r => r.jobId !== isolated.record.jobId);
+    assert.equal(job.status, 'timeout', 'JobStatus unchanged: a hard timeout stays timeout');
+    assert.equal(inPlace.status, 'timeout');
+
+    // Aviso suave: chegou ao filho como mensagem de usuário, antes do teto duro.
+    const stalls = readFileSync(stallLog, 'utf8').trim().split('\n').map(JSON.parse);
+    const warned = stalls.filter(t => t.users.includes(SOFT_TIMEOUT_MESSAGE));
+    assert.ok(warned.length >= 3, `soft warning reached every child: ${JSON.stringify(stalls.map(t => [t.n, t.users.length]))}`);
+    for (const t of warned) assert.ok(t.t < started + TIMEOUT * 1000, 'soft warning before the hard deadline');
+    assert.ok(stalls.every(t => t.users.filter(u => u === SOFT_TIMEOUT_MESSAGE).length <= 1), 'soft warning once per child');
+
+    // Árvore morta antes do commit: o loop que escrevia ticks.txt não vive mais, o WIP contém
+    // tudo o que ele escreveu, e o worktree continua limpo depois.
+    const pids = readFileSync(stallLog + '.pids', 'utf8').trim().split('\n').map(Number);
+    assert.equal(pids.length, 3, 'three stalled loops');
+    for (const pid of pids) assert.throws(() => process.kill(pid, 0), /ESRCH/, `loop ${pid} is gone`);
+    for (const [i, task] of job.tasks.entries()) {
+      assert.match(task.wipCommit ?? '', /^[0-9a-f]{40}$/, `task ${i + 1} WIP sha recorded: ${task.wipError ?? ''}`);
+      assert.equal(gitOut(task.worktree, 'rev-parse', 'HEAD'), task.wipCommit);
+      assert.equal(gitOut(task.worktree, 'log', '-1', '--format=%s'), `WIP(agent): timeout ${job.jobId}`);
+      assert.deepEqual(gitOut(task.worktree, 'show', '--name-only', '--format=', 'HEAD').split('\n').sort(), ['dirty.txt', 'ticks.txt']);
+      assert.equal(gitOut(task.worktree, 'status', '--porcelain'), '', 'clean right after the WIP commit');
+      assert.match(job.result, new RegExp(`task ${i + 1} \\(${task.agent}, handle stall-${'ab'[i]}\\): hard timeout; work in progress committed as ${task.wipCommit} \\(WIP\\(agent\\): timeout ${job.jobId}\\)\\. Continue the handle to resume\\.`));
+    }
+    await new Promise(r => setTimeout(r, 500));
+    for (const task of job.tasks) assert.equal(gitOut(task.worktree, 'status', '--porcelain'), '', 'nothing wrote after the commit');
+    assert.equal(gitOut(isolatedRepo, 'status', '--porcelain'), '', "user's checkout untouched");
+    // Escritor único sem worktree: nenhum commit (o /rewind cobre); o arquivo sujo fica.
+    assert.equal(inPlace.tasks[0].wipCommit, undefined);
+    assert.equal(gitOut(inPlaceRepo, 'rev-parse', 'HEAD'), inPlaceHead);
+    assert.match(gitOut(inPlaceRepo, 'status', '--porcelain'), /dirty\.txt/);
+    const handles = Object.fromEntries(mgr.handles('stall').map(h => [h.handle, h]));
+    assert.deepEqual([handles['stall-a'].lifecycle, handles['stall-a'].wipCommit], ['waiting', job.tasks[0].wipCommit]);
+    assert.equal(handles['stall-c'].lifecycle, 'waiting');
+
+    // continue retoma no mesmo worktree, sobre o WIP, com o histórico (aviso incluso). Teto de
+    // 30 min: o prazo suave fica 27 min à frente, então nenhum aviso novo neste turno.
+    const resumed = mgr.continueTask({ ...base, jobId: 'stall-cont', handle: 'stall-a', message: 'retome', timeoutSeconds: 1800 });
+    assert.ok(resumed.ok, resumed.error);
+    while (done.length < 3) {
+      assert.ok(Date.now() < deadline + 30000, 'continue settled');
+      await new Promise(r => setTimeout(r, 50));
+    }
+    assert.equal(done[2].status, 'completed', done[2].error);
+    assert.match(done[2].result, /RETOMADO-/);
+    const resumeTurn = readFileSync(stallLog, 'utf8').trim().split('\n').map(JSON.parse).at(-1);
+    assert.equal(realpathSync(resumeTurn.cwd), realpathSync(job.tasks[0].worktree));
+    assert.ok(resumeTurn.users.includes(SOFT_TIMEOUT_MESSAGE) && resumeTurn.users.at(-1) === 'retome', 'same session history');
+    assert.equal(mgr.handles('stall').find(h => h.handle === 'stall-a').lifecycle, 'waiting');
+    await mgr.shutdown();
+    delete process.env.FG_STALL;
+    console.log(`ok timeout: soft warning before the deadline, child tree gone before WIP commit ${job.tasks[0].wipCommit.slice(0, 12)}, in-place writer without commit, handle waiting, continue resumes`);
+  }
+
   // Trilha de auditoria com filhos reais roteirizados pelo provider Anthropic falso:
   // chain [ok, exceção, nunca rodou] e um single que falha depois de agir.
   const fake = await startFakeAnthropic([
@@ -816,7 +1008,7 @@ try {
     let finished;
     const audits = new BudgetManager({ baseDir: join(root, 'audit-jobs'), onComplete: record => { finished = record; } });
     const auditSpec = { sessionId: 'audit', sessionGeneration: 0, agents: [auditor], agentScope: 'user', projectAgentsDir: null,
-      dispatchDefaults: { model: 'fg-fake/fake', thinkingLevel: 'low', resources: { slots: {} } }, cwd: sandboxCwd, timeoutSeconds: 60 };
+      dispatchDefaults: { model: 'fg-fake/fake', thinkingLevel: 'low', resources: { slots: {} } }, cwd: sandboxCwd, timeoutSeconds: 1800 };
     const chain = audits.launch({ ...auditSpec, mode: 'chain', tasks: [1, 2, 3].map(i => ({ agent: 'auditor', task: 'etapa-' + i })) });
     assert.ok(chain.ok, chain.error);
     const jobId = chain.record.jobId;
