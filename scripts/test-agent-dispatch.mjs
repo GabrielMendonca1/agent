@@ -351,8 +351,8 @@ try {
     const bundled = agentsMod.discoverAgents(root, 'user').agents;
     const skillsOf = (list, name) => list.find((a) => a.name === name)?.skills;
     assert.deepEqual(skillsOf(bundled, 'worker'), ['debug', 'tdd']);
-    for (const name of ['scout', 'reviewer', 'visual']) assert.deepEqual(skillsOf(bundled, name), [], `${name}: skills []`);
-    for (const name of ['planner', 'gemini']) assert.equal(skillsOf(bundled, name), undefined, `${name}: full catalog`);
+    for (const name of ['scout', 'reviewer', 'visual', 'planner']) assert.deepEqual(skillsOf(bundled, name), [], `${name}: skills []`);
+    assert.equal(skillsOf(bundled, 'gemini'), undefined, 'gemini (agy): no field');
     const userRoles = join(process.env.PI_CODING_AGENT_DIR, 'agents');
     mkdirSync(userRoles, { recursive: true });
     writeFileSync(join(userRoles, 'worker.md'), '---\nname: worker\ndescription: personal\ntools: read\n---\nx');
