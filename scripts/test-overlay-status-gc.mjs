@@ -7,11 +7,11 @@
  */
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { overlayGc, planOverlayGc } from "./agent-update.mjs";
+import { collectOrphanReleases, overlayGc, planOverlayGc } from "./agent-update.mjs";
 import { maybeStaleNotice, staleAhead, STALE_CACHE_FILE } from "./lib/overlay-stale.mjs";
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -321,6 +321,83 @@ teste("gc preserva releases em argumentos e ambiente de processos vivos, inclusi
 	} finally {
 		child.kill();
 	}
+});
+
+teste("coleta do update preserva release usada por processo vivo (argv via symlink, arquivo aberto) e desliga symlinks", () => {
+	if (process.platform === "win32") return; // Windows: sem inspeção, symlinks ficam e diretórios seguem a regra antiga.
+	const { store, cur } = novoStore();
+	const rels = join(store, "releases");
+	rmSync(join(rels, "orf-velho2"), { recursive: true });
+	dir(join(rels, "orf-args"), 1);
+	dir(join(rels, "orf-cwd"), 2);
+	link("orf-args", join(rels, "orf-alias")); // relativo, como o link criado à mão no incidente
+	link(join(rels, "orf-novo"), join(rels, "solto"));
+	link(cur, join(rels, "para-cur"));
+	const temLsof = spawnSync("lsof", ["-v"]).error === undefined;
+	const esperaPronto = (ready) => {
+		const deadline = Date.now() + 5000;
+		while (!existsSync(ready) && Date.now() < deadline) Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 20);
+		assert.ok(existsSync(ready), "processo de fixture não iniciou");
+	};
+	const vivo = (ready, args, opts = {}) => spawn(process.execPath, ["-e", `require('node:fs').writeFileSync(${JSON.stringify(ready)}, 'ready'); setInterval(() => {}, 1000)`, ...args], { stdio: "ignore", env: { ...process.env, NODE_OPTIONS: "" }, ...opts });
+	const coleta = () => {
+		const linhas = [];
+		const log = console.log;
+		console.log = (...a) => linhas.push(a.join(" "));
+		try {
+			collectOrphanReleases(store, cur, [], 1);
+		} finally {
+			console.log = log;
+		}
+		return linhas.join("\n");
+	};
+	const porArgv = vivo(join(raiz, "ready-argv"), [join(rels, "orf-alias", "lib", "model-runtime.js")]);
+	const porCwd = temLsof ? vivo(join(raiz, "ready-cwd"), [], { cwd: join(rels, "orf-cwd") }) : undefined;
+	try {
+		esperaPronto(join(raiz, "ready-argv"));
+		if (porCwd) esperaPronto(join(raiz, "ready-cwd"));
+		const out = coleta();
+		assert.ok(existe(store, "releases", "orf-args", "f.txt"), "release em uso via symlink foi apagada");
+		assert.ok(lstatSync(join(rels, "orf-alias")).isSymbolicLink(), "symlink em uso foi removido");
+		assert.match(out, new RegExp(`Keeping release orf-args: in use by process ${porArgv.pid}`));
+		assert.match(out, new RegExp(`Keeping release orf-alias: in use by process ${porArgv.pid}`));
+		if (porCwd) {
+			assert.ok(existe(store, "releases", "orf-cwd", "f.txt"), "release com arquivo aberto foi apagada");
+			assert.match(out, new RegExp(`Keeping release orf-cwd: in use by process ${porCwd.pid}`));
+		}
+		assert.ok(!existe(store, "releases", "orf-velho"), "órfã sem uso além da retenção deveria sair");
+		assert.ok(!existsSync(join(rels, "solto")) && !lstatSync(join(rels, "solto"), { throwIfNoEntry: false }), "symlink sem uso deveria ser desligado");
+		assert.ok(existe(store, "releases", "orf-novo", "f.txt"), "desligar o symlink não pode apagar o alvo");
+		assert.ok(lstatSync(join(rels, "para-cur")).isSymbolicLink() && existsSync(join(cur, "f.txt")), "symlink para current fica");
+	} finally {
+		porArgv.kill();
+		porCwd?.kill();
+	}
+	const deadline = Date.now() + 5000;
+	while ([porArgv, porCwd].some((child) => child && child.exitCode === null && child.signalCode === null) && Date.now() < deadline) {
+		if (spawnSync("ps", ["-p", String(porArgv.pid)]).status !== 0 && (!porCwd || spawnSync("ps", ["-p", String(porCwd.pid)]).status !== 0)) break;
+		Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 20);
+	}
+	coleta();
+	for (const nome of ["orf-args", "orf-cwd", "orf-alias"]) assert.ok(!lstatSync(join(rels, nome), { throwIfNoEntry: false }), `${nome} deveria sair depois que o processo terminou`);
+	assert.ok(existe(store, "releases", "orf-novo", "f.txt"), "retenção 1 guarda a órfã mais nova");
+	assert.ok(existe(store, "releases", "cur", "f.txt") && existe(store, "releases", "prev", "f.txt"));
+	assert.ok(existe(store, "releases", "preparada"));
+});
+
+teste("gc só desliga symlink órfão em releases/, inclusive apontando para fora do store", () => {
+	const { store } = novoStore();
+	const fora = dir(join(raiz, "fora-do-store"));
+	link(fora, join(store, "releases", "externo"));
+	link(join(store, "releases", "orf-novo"), join(store, "releases", "alias-novo"));
+	const plan = planOverlayGc(store, 1, { getProcesses: () => [] });
+	assert.equal(plan.find((item) => item.path === join(store, "releases", "externo"))?.note, "orphan release link");
+	assert.notEqual(planOverlayGc(store, 1, { getProcesses: () => undefined }).find((item) => item.path === join(store, "releases", "externo"))?.action, "delete", "sem inspeção de processos o symlink fica");
+	overlayGc({ store, keep: 1, getProcesses: () => [] });
+	assert.ok(!lstatSync(join(store, "releases", "externo"), { throwIfNoEntry: false }));
+	assert.ok(!lstatSync(join(store, "releases", "alias-novo"), { throwIfNoEntry: false }));
+	assert.ok(existsSync(join(fora, "f.txt")), "gc seguiu o symlink para fora do store");
+	assert.ok(existe(store, "releases", "orf-novo", "f.txt"));
 });
 
 teste("gc conserva releases e reporta em uso se a inspeção de processos falhar", () => {
