@@ -11,7 +11,7 @@ Ordem de execução proposta: **0 → 1 → 2 → 3 → 4**. A suíte de evals e
 | (a) | O reviewer não executa checks. Recebe `checks list` e `checks last`. |
 | (b) | No worker, o gate usa `tags: "fast"` por default; `only`/`tags` explícitos continuam aceitos. |
 | (c) | A ação se chama `continue`. |
-| (d) | O `continue` não troca o modelo. Para outro modelo, faz-se um novo `launch`. |
+| (d) | Revisada em 2026-11-25: o `continue` normal fica no mesmo modelo (preserva o cache). Exceção: falha de cota, rate limit ou capacidade permite trocar o modelo explicitamente, no mesmo JSONL e no mesmo worktree. Papéis somente leitura podem cair sozinhos no próximo modelo da lista do papel. |
 | (e) | O que o modelo lê fica em inglês; o que o usuário lê fica em português; a policy ganha "Reply to the user in their language." |
 | (f) | `plan` (só `steps`) e `todo` viram duas tools. `todo` é registrada dentro de `plan.ts` com `exposure: "deferred"`, sem mexer na lista de arquivos de `docs/consumer-contract.md:85-97`. |
 | (g) | O handoff vale por até 24 h. |
@@ -219,6 +219,24 @@ Ordem de execução proposta: **0 → 1 → 2 → 3 → 4**. A suíte de evals e
 
 ---
 
+## 5. Camada Swarm opcional (só desenho; implementar depois do item 2)
+
+**Princípio:** o `launch` simples continua sendo o caminho para tarefas pequenas. O Swarm é opt-in (`swarm: { … }` no launch) e só existe quando 2+ agentes colaboram na mesma meta. Ficam como estão: worktree isolado por writer, `integrate`/`discard` explícitos e sandbox somente leitura.
+
+**Primitivos**
+- **Board compartilhado append-only.** `<job>/board.jsonl`, só quando o swarm tem 2+ membros. Cada linha: `{ts, handle, kind: note|claim|done|question|decision, text, refs}`. Os filhos ganham uma tool `board` (`post`, `read since`). O pai lê o board no resultado do job. Sem edição nem remoção. Teto de tamanho por linha e total.
+- **Loop reviewer ↔ worker.** `swarm.loop: { writer, reviewer, maxRounds: 3, maxUsd }`. O runner alterna sozinho: o reviewer devolve `approve` ou uma lista de achados, e o worker recebe os achados via `continue`. Para em `approve`, no teto de rodadas ou no teto de custo, e devolve o histórico de rodadas. Não há chat peer-to-peer livre: só esse par e com teto duro.
+- **Fork de sessão.** `launch` com `fork: { from: handle }` cria um filho a partir do JSONL de outro (o Pi tem `--fork`). Herda o prefixo e o cache de prompt. Usar só quando o contexto herdado vale mais que um brief novo (ex.: dois writers depois de um recon longo).
+- **Watchdog de stall.** Por task: tempo sem novo evento no JSONL, chamadas repetidas (o loop-guard já detecta ciclos) e custo sem progresso (sem commit nem arquivo alterado). Primeiro avisa o filho; na segunda vez, marca `stalled`, faz o commit WIP e libera a vaga.
+
+**Fora do escopo:** agentes conversando livremente entre si, eleição de líder, memória global entre jobs.
+
+**Verificação:** tarefas de swarm no bench (`orchestration`) comparando launch simples, loop e fork em custo e taxa de acerto.
+
+**Tamanho:** médio a grande, em partes (board → loop → watchdog → fork). **Risco:** médio.
+
+---
+
 ## Resumo
 
 | # | Movimento | Tamanho | Risco | Depende de |
@@ -228,5 +246,7 @@ Ordem de execução proposta: **0 → 1 → 2 → 3 → 4**. A suíte de evals e
 | 2 | `subagent continue` + hierarquia | médio | médio | 0, 1 |
 | 3 | `plan`/`todo` + inglês para o modelo | pequeno–médio | baixo | 0 |
 | 4 | Handoff por branch/HEAD + `skills:` por papel | pequeno | baixo | — |
+| H | Hotfix: sessão viva presa ao próprio build (Pi + extensões) | pequeno–médio | médio | — |
+| 5 | Swarm opcional: board, loop reviewer↔worker, fork, watchdog | médio–grande | médio | 2 |
 
 Todos os itens seguem a regra do repo: nenhum teste permanente fora do gate. As guardas novas entram como `scripts/test-*.mjs` em `.pi/checks.json`.
