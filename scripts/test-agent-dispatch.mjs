@@ -379,6 +379,21 @@ try {
       assert.equal(err(draft), refusal('draft'));
       assert.equal(err(join(src, '.pi/skills/linked/SKILL.md')), refusal('linked'), 'classified lexically, even through a symlink leaving the repo');
       assert.equal(wt.worktreeSkillError(join(realpathSync(src), '.pi/skills/committed/SKILL.md'), src, src), refusal('committed'), 'realpath form of the root');
+      // Resolved targets count too: a personal skill (dir or file) symlinked into the repository is a project skill.
+      const personalDir = join(process.env.PI_CODING_AGENT_DIR, 'skills');
+      mkdirSync(join(personalDir, 'pointer'), { recursive: true });
+      symlinkSync(join(src, '.pi/skills/committed'), join(personalDir, 'intorepo'));
+      symlinkSync(committed, join(personalDir, 'pointer/SKILL.md'));
+      assert.equal(err(join(personalDir, 'intorepo/SKILL.md')), refusal('intorepo'), 'personal dir symlinked into the repo');
+      assert.equal(err(join(personalDir, 'pointer/SKILL.md')), refusal('pointer'), 'personal SKILL.md symlinked into the repo');
+      // cwd alias to a subdirectory: walking up from the alias leaves the repo, the skill is still refused.
+      mkdirSync(join(src, 'sub/.pi/skills/aliased'), { recursive: true });
+      writeFileSync(join(src, 'sub/.pi/skills/aliased/SKILL.md'), '---\nname: aliased\ndescription: x\n---\n');
+      const alias = join(root, 'alias-cwd');
+      symlinkSync(join(src, 'sub'), alias);
+      const gitTop = spawnSync('git', ['-C', alias, 'rev-parse', '--show-toplevel'], { encoding: 'utf8' }).stdout.trim();
+      assert.equal(wt.worktreeSkillError(join(alias, '.pi/skills/aliased/SKILL.md'), gitTop, alias), refusal('aliased'), 'cwd alias to a subdirectory');
+      rmSync(join(personalDir, 'intorepo')); rmSync(join(personalDir, 'pointer'), { recursive: true });
 
       const writer = { name: 'writer', description: 'w', tools: ['read', 'edit'], model: 'anthropic/claude-sonnet-4-5', systemPrompt: 'x', source: 'user', filePath: '' };
       const set = (...paths) => ({ only: true, paths, advertised: paths.map(() => 'x') });

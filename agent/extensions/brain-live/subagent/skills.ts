@@ -103,33 +103,42 @@ export function skillArgs(skills: ChildSkills | undefined): string[] {
 	return [...(skills.only ? ["--no-skills"] : []), ...skills.paths.flatMap((file) => ["--skill", file])];
 }
 
-// ---- Project skills vs isolated writers (lexical, no dereferencing; see worktrees.ts) ----
+// ---- Project skills vs isolated writers (see worktrees.ts) ----
 
 export const skillLabel = (file: string) => path.basename(file) === "SKILL.md" ? path.basename(path.dirname(file)) : path.basename(file, ".md");
 
+const realOr = (file: string): string | undefined => { try { return realpathSync(file); } catch { return undefined; } };
+
 /**
- * Lexical forms of the repository root: git's toplevel, its realpath and the same root reached
- * through `cwd` (e.g. /var vs /private/var on macOS). Catalog paths are compared lexically.
+ * Forms of the repository: the git toplevel and its realpath, the same root reached through
+ * `cwd` (e.g. /var vs /private/var on macOS), and `cwd` itself, lexical and real (a cwd alias to
+ * a subdirectory is inside the repository even when walking up from it leaves the repo).
  */
 export function rootForms(root: string, cwd?: string): string[] {
 	const forms = new Set([path.resolve(root)]);
-	try {
-		const real = realpathSync(root);
-		forms.add(real);
-		if (cwd) {
-			const rel = path.relative(real, realpathSync(cwd));
+	const real = realOr(root);
+	if (real) forms.add(real);
+	if (cwd) {
+		forms.add(path.resolve(cwd));
+		const realCwd = realOr(cwd);
+		if (realCwd) forms.add(realCwd);
+		if (real && realCwd) {
+			const rel = path.relative(real, realCwd);
 			if (!rel.startsWith("..") && !path.isAbsolute(rel)) {
 				const candidate = path.resolve(cwd, ...(rel ? rel.split(path.sep).map(() => "..") : []));
-				if (realpathSync(candidate) === real) forms.add(candidate);
+				if (realOr(candidate) === real) forms.add(candidate);
 			}
 		}
-	} catch { /* missing paths: only the given form */ }
+	}
 	return [...forms];
 }
 
-/** Project-local when the path, as written (no dereferencing), lies under the repository root. */
-export function projectLocal(file: string, roots: string[]): { root: string; rel: string } | undefined {
-	const resolved = path.resolve(file);
-	for (const root of roots) if (resolved.startsWith(root + path.sep)) return { root, rel: path.relative(root, resolved) };
-	return undefined;
+/**
+ * A project skill: the catalog path as written, the file's realpath, or the realpath of its
+ * directory lies under any form of the repository. Symlinks either way (a repo path pointing
+ * out, or a personal path pointing in) count as project skills.
+ */
+export function isProjectSkill(file: string, roots: string[]): boolean {
+	const candidates = [path.resolve(file), realOr(file), realOr(path.dirname(file))].filter((p): p is string => Boolean(p));
+	return candidates.some((candidate) => roots.some((root) => candidate === root || candidate.startsWith(root + path.sep)));
 }

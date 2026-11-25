@@ -6,7 +6,7 @@ import { getAgentDir } from "@earendil-works/pi-coding-agent";
 import { findManifest, gate, lastRun, lastRunLine } from "../checks/runner.ts";
 import type { AgentConfig } from "./agents.ts";
 import type { JobRecord, JobTaskSpec } from "./jobs.ts";
-import { projectLocal, rootForms, skillLabel } from "./skills.ts";
+import { isProjectSkill, rootForms, skillLabel } from "./skills.ts";
 
 function git(cwd: string, args: string[]): string {
 	const r = spawnSync("git", ["-C", cwd, ...args], { encoding: "utf8", maxBuffer: 16 * 1024 * 1024 });
@@ -52,12 +52,12 @@ export function plannedIsolation(record: Pick<JobRecord, "mode" | "tasks" | "cwd
 }
 
 /**
- * Launch check for a writer that will run in a worktree: project-local skills (the catalog path,
- * as written, lies under the repository) are refused outright. Personal, company and bundled
- * skills keep their absolute path.
+ * Launch check for a writer that will run in a worktree: project skills (isProjectSkill: lexical
+ * path or resolved target inside the repository) are refused outright. Personal, company and
+ * bundled skills keep their absolute path.
  */
 export function worktreeSkillError(file: string, root: string, cwd?: string): string | undefined {
-	if (!projectLocal(file, rootForms(root, cwd))) return undefined;
+	if (!isProjectSkill(file, rootForms(root, cwd))) return undefined;
 	return `skill "${skillLabel(file)}" is a project skill; isolated writers only get personal, company and bundled skills. Run the task in place to use it.`;
 }
 
