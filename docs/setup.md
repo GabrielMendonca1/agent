@@ -477,6 +477,33 @@ O resultado e o uso disponível ficam no registro do job; não há sessão JSONL
 - `list` apaga o registro de jobs terminados há mais de 30 dias, junto com worktrees limpos e já integrados. Worktree sujo ou não integrado preserva o registro. Os JSONL dos filhos ficam.
 - O prefetch (`AGENT_CACHE_PREFETCH_NEXT=1`) roda com `--no-session`; seu custo não entra em usage.
 
+## Swarm: loop escritor ↔ revisor (`/swarm`)
+
+Opt-in por sessão. Desligado, não custa nada: a tool `swarm` é `deferred`, fora do schema e do system prompt iniciais.
+
+### Ligar e desligar
+
+- `/swarm` alterna; `/swarm on`, `/swarm off` e `/swarm status` são explícitos. Toda sessão começa desligada; o estado é a última entrada `agent-swarm` do branch atual, então sobrevive a resume e segue o `/tree`.
+- Ligar grava `agent-swarm {enabled:true}`, mostra `swarm` no rodapé e anexa uma mensagem oculta (`agent-swarm-mode`) com o playbook em inglês: achar a tool `swarm` pelo `tool_search`, escolher entre loop, board (ainda indisponível) e subagent simples, registrar a escolha numa linha, nunca integrar sem revisar o resultado final, sem chat livre e sem chamar `swarm` depois que o usuário desligar.
+- Desligar grava `enabled:false` e limpa o rodapé. Jobs de swarm em andamento terminam; chamadas novas falham com `Swarm is off in this session. Ask the user to enable it with /swarm.`
+- O `/swarm` nunca muda o system prompt nem chama `setActiveTools`: o cache de prompt da sessão continua. A tool entra pelo `tool_search`, na camada de tools carregadas que só acrescenta.
+- Headless (`agent -p`): `AGENT_SWARM=1` liga a sessão que ainda não tem entrada `agent-swarm`.
+
+### Loop
+
+`swarm({ mode: "loop", writer: { brief, agent?, task?, cwd?, model?, skills?, name? }, reviewer?: { agent?, brief?, task?, model?, skills?, name? }, isolate?, maxRounds?, maxUsd?, cwd?, agentScope?, timeoutSeconds? })` devolve um `jobId` na hora, como o `launch`.
+
+- Padrões: escritor `worker`, revisor `reviewer`, `isolate` ligado dentro de um repositório git, `maxRounds` 3 (1..5), `maxUsd` 5 (0.1..50). Sem `reviewer.brief`, objective/context/scope/done_when vêm do brief do escritor.
+- Recusas antes de qualquer job ou worktree: swarm desligado; escritor sem `edit`/`write` ou no runner agy; revisor com `edit`/`write` ou no agy; brief incompleto pelo `brief_required` de cada papel; modelo fora da lista do papel; skill desconhecida; skill de projeto num escritor isolado; nome de handle repetido; `isolate` fora de um repositório.
+- Rodada 1: o escritor roda (num worktree próprio quando isolado, o mesmo mecanismo de `integrate`/`discard`). Se ele não mudou nada (HEAD + `git status --porcelain` + hash do diff iguais), o loop para em `stalled` sem chamar o revisor. O revisor roda no mesmo checkout, recebe o intervalo `base..HEAD`, a linha do gate, o resumo do escritor e o contrato: achados com `path:line` e uma última linha isolada `VERDICT: APPROVE` ou `VERDICT: REQUEST_CHANGES`.
+- Veredito fail-closed: só a última linha `VERDICT:` vale. `APPROVE` termina em `approved`; sem a linha, `ambiguous`; erro do revisor, `failed` (ou `quota`). Silêncio nunca aprova.
+- Rodadas 2+: antes de cada uma, os tetos (`max_rounds`, `max_usd`). O escritor retoma o próprio JSONL (lock de sessão, como o `continue`) e recebe só os achados, a rodada e o orçamento restante; se não mudar nada, `stalled`. O revisor retoma o próprio JSONL e recebe só o delta (`anterior..novo`, gate, nota curta do escritor) e o contrato. Os dois mantêm o cache de prompt quente.
+- Erro, cota ou timeout do escritor terminam em `failed`/`quota`; no timeout o worktree ganha o commit WIP de sempre.
+- O job é um job comum do `subagent` (modo `swarm`, tarefa 1 escritor, tarefa 2 revisor, `JobRecord.swarm` com rodadas e desfecho): `status`, `result`, `trace`, `list`, `cancel`, `integrate`, `discard` e `continue` funcionam igual. Só `approved` termina `completed`; os outros desfechos terminam `failed`, com o motivo no resultado. No fim, os dois handles ficam `waiting`.
+- O resultado abre com `swarm loop · outcome: X · rounds: N/M · cost: $X.XX`, uma tabela por rodada (sha do escritor, gate, veredito, custo), os handles, o resumo do worktree e do gate, e a última resposta do revisor (até 4 KiB).
+- Revise o diff final antes do `integrate`. O merge continua explícito.
+- Board (2+ agentes acoplados em paralelo) ainda não existe; o schema só aceita `mode: "loop"`.
+
 ## Dependências pessoais / degradação
 
 O código de `agent/` não depende de caminhos literais `/Users/biel` (só um exemplo em `agent/extensions/agent/web/README.md`). `lib/paths.ts` conserva a descoberta opcional de `/mnt/garime` e `~/Sistema` (ou `PI_SYSTEM_DIR`); sem o mount usa o HOME local.

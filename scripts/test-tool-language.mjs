@@ -158,6 +158,19 @@ try {
   assert.equal(tools.get('todo').exposure, 'deferred', 'todo é deferred');
   console.log('ok plan só steps; todo deferred');
 
+  // Swarm (item 5): tool deferred (schema já checado acima) e os textos que o modelo lê.
+  assert.equal(tools.get('swarm')?.exposure, 'deferred', 'swarm é deferred');
+  const swarm = await jiti.import(join(repo, 'agent/extensions/brain-live/subagent/swarm.ts'));
+  // O texto oculto vem do próprio comando /swarm on.
+  const sentBefore = sent.length;
+  await commands.get('swarm').handler('on', { hasUI: false, ui: { notify() {}, setStatus() {} } });
+  const hidden = sent.splice(sentBefore);
+  assert.deepEqual(hidden, [swarm.SWARM_ON_TEXT], '/swarm on envia só o playbook');
+  check('swarm /swarm on message', hidden[0]);
+  check('swarm off error', swarm.SWARM_OFF_ERROR);
+  check('swarm verdict contract', swarm.VERDICT_CONTRACT);
+  console.log('ok swarm deferred e textos do /swarm em inglês');
+
   // Política, notas e categorias, direto dos módulos.
   const policy = await jiti.import(join(repo, 'agent/core/policy.mjs'));
   for (const [name, text] of Object.entries(policy.policySections())) check(`policy ${name}`, text);

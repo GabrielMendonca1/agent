@@ -241,6 +241,8 @@ Os blocos de mensagem, pedido e resposta de `peers` e `megamind` também estão 
 
 ## 5. Camada Swarm opcional (só desenho; implementar depois do item 2)
 
+**Estado:** parte 1 implementada — gate `/swarm` por sessão, tool `swarm` deferred e o loop escritor ↔ revisor com retomada das duas sessões (docs/setup.md, seção Swarm; check `subagent-swarm`). Board, fork e watchdog seguem pendentes.
+
 **Princípio:** o `launch` simples continua sendo o caminho para tarefas pequenas. O Swarm é opt-in (`swarm: { … }` no launch) e só existe quando 2+ agentes colaboram na mesma meta. Ficam como estão: worktree isolado por writer, `integrate`/`discard` explícitos e sandbox somente leitura.
 
 **Primitivos**

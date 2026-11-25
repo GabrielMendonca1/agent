@@ -138,6 +138,11 @@
       "tags": ["integration", "slow"]
     },
     {
+      "name": "subagent-swarm",
+      "cmd": "node scripts/test-subagent-swarm.mjs",
+      "tags": ["integration", "agent"]
+    },
+    {
       "name": "cache-e2e",
       "cmd": "node scripts/test-cache-e2e.mjs",
       "tags": [
