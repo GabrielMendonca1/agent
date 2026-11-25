@@ -330,7 +330,7 @@ try {
     await extension.commands.get('notes').handler('', ctx);
     assert.match(requests[0].text, /docs\/missing.md/);
     assert.doesNotMatch(requests[0].text, /docs\/known.md/);
-    assert.match(requests[0].text, /caminho — assunto/);
+    assert.match(requests[0].text, /path — subject/);
     assert.deepEqual(requests[0].options, { deliverAs: 'followUp' });
     rmSync(map);
     await extension.commands.get('notes').handler('', ctx);

@@ -69,7 +69,7 @@ try {
   assert.match(notices.at(-1)[0], /Sem UI/);
   assert.equal(existsSync(join(empty, '.agent/rules.md')), false);
   await commands.rules.handler('init', { cwd: project, ui });
-  assert.match(commands.sent, /Substitua explicitamente/);
+  assert.match(commands.sent, /Replace the manual AGENTS.md explicitly/);
 
   fake = await startFakeAnthropic([
     { tool: { name: 'edit', input: { path: '.agent/rules.md', oldText: 'RULE_SENTINEL', newText: 'EDITED_RULE' } } },
