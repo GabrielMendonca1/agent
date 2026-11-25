@@ -1985,7 +1985,7 @@ function collectOrphanReleases(store, activeRelease, keepExtra = [], retention =
  * live tree. A bundle that carries its own git history is a checkout rather than a generated
  * bundle, so it is kept and only stripped of its executable bit.
  */
-function collectOverlayBundles(store, keep) {
+function collectOverlayBundles(store, keep, { getProcesses = liveProcesses } = {}) {
 	const bundlesDir = join(store, "overlay-bundles");
 	const kept = new Set(keep.filter(Boolean).map(resolvedPath));
 	let entries = [];
@@ -1994,10 +1994,21 @@ function collectOverlayBundles(store, keep) {
 	} catch {
 		return;
 	}
+	// A launcher (`agent-launch.mjs`) stays alive as the parent of every session it opened.
+	let processes;
+	const holder = (bundle) => {
+		processes ??= getProcesses() ?? [];
+		return processes.find((proc) => [bundle, resolvedPath(bundle)].some((path) => processUsesPath(proc, path)));
+	};
 	for (const entry of entries) {
 		if (!entry.isDirectory()) continue;
 		const bundle = join(bundlesDir, entry.name);
 		if (kept.has(resolvedPath(bundle))) continue;
+		const proc = holder(bundle);
+		if (proc) {
+			console.log(`Keeping overlay bundle ${entry.name}: in use by process ${proc.pid}`);
+			continue;
+		}
 		if (existsSync(join(bundle, ".git"))) {
 			for (const script of existsSync(join(bundle, "scripts")) ? readdirSync(join(bundle, "scripts")) : []) {
 				chmodSync(join(bundle, "scripts", script), 0o644);
@@ -3119,7 +3130,7 @@ function discardOwnStaging(installDir) {
 	}
 }
 
-export { overlayStatus, overlayGc, planOverlayGc, parseArgs, digestTree, writePrepared, collectOrphanReleases, allocateReleaseDir, discardOwnStaging, agentStatusReport, installOverlayBundle, requireVerified, verifyRelease, assertContainedTree };
+export { overlayStatus, overlayGc, planOverlayGc, parseArgs, digestTree, writePrepared, collectOrphanReleases, collectOverlayBundles, allocateReleaseDir, discardOwnStaging, agentStatusReport, installOverlayBundle, requireVerified, verifyRelease, assertContainedTree };
 
 if (process.argv[1] && resolvedPath(resolve(process.argv[1])) === resolvedPath(fileURLToPath(import.meta.url))) {
 	try {
