@@ -87,8 +87,9 @@ function responsive(build: (width: number) => string) {
 	return { render: (width: number) => build(width).split("\n"), invalidate() {} };
 }
 
-const GOAL_RUNNING = "Goal em execução: decida e registre no audit; se for linha vermelha, adie e registre também no state.md.";
-const GOAL_UNREADABLE = "Não foi possível verificar o estado do goal. Confira state.md; decida e registre no audit ou adie se for linha vermelha.";
+// Block reasons go to the model: English.
+const GOAL_RUNNING = "A goal is running: decide and record it in the audit; if it is a red line, defer it and record that in state.md too.";
+const GOAL_UNREADABLE = "Could not check the goal state. Check state.md; decide and record it in the audit, or defer it if it is a red line.";
 
 /**
  * Estado persistido, reavaliado em cada chamada, inclusive após retomada.

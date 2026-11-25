@@ -287,22 +287,27 @@ export function parseInboxMessage(content: string): ParsedMessage | undefined {
 	// Aviso local (sobreposição de arquivos): bloco sem cabeçalho nem fechamento.
 	if (!header) return { kind: "AVISO", id: "", who: "", meta: "", body: body.trim() || text.trim(), footer };
 
-	const ask = /^(?<kind>PEDIDO)\s+(?<id>\S+)\s*(?<tail>.*)$/su.exec(header);
+	// Headers are English since item 3 (REQUEST/from/is now/reply from); older transcripts carry the
+	// Portuguese ones (PEDIDO/de/agora está/resposta de). Both parse to the same Portuguese UI kinds.
+	const ask = /^(?<kind>PEDIDO|REQUEST)\s+(?<id>\S+)\s*(?<tail>.*)$/su.exec(header);
 	if (ask?.groups) {
 		const tail = ask.groups.tail ?? "";
 		// `who` pode ter "@" dentro (label@máquina, (@handle)): o que o separa do
 		// instante é " @ ", não o caractere solto.
-		const who = /\b(?:resposta de|de|por)\s+(?<who>.+?)(?:\s@\s|\s—\s|$)/u.exec(tail)?.groups?.who ?? "";
-		const kind = ask.groups.kind === "PEDIDO" && /resposta de/u.test(tail) ? "RESPOSTA" : ask.groups.kind;
-		const status = /agora está\s+(?<status>[^\s—]+)/u.exec(tail)?.groups?.status
-			?? /^\((?<title>[^)]*)\)\s+foi\s+(?<decided>[^\s—]+)/u.exec(tail)?.groups?.decided;
+		const who = /\b(?:resposta de|reply from|de|from|por|by)\s+(?<who>.+?)(?:\s@\s|\s—\s|$)/u.exec(tail)?.groups?.who ?? "";
+		const kind = /resposta de|reply from/u.test(tail) ? "RESPOSTA" : "PEDIDO";
+		const status = /(?:agora está|is now)\s+(?<status>[^\s—]+)/u.exec(tail)?.groups?.status
+			?? /^\((?<title>[^)]*)\)\s+(?:foi|was)\s+(?<decided>[^\s—]+)/u.exec(tail)?.groups?.decided;
 		const title = /^\((?<title>[^)]*)\)/u.exec(tail)?.groups?.title;
 		return { kind, id: ask.groups.id ?? "", who: who.trim(), meta: metaOf([title, status, at(tail)]), body, footer };
 	}
-	const message = /^de\s+(?<who>.+?)\s@\s(?<meta>.*)$/su.exec(header);
+	const message = /^(?:de|from)\s+(?<who>.+?)\s@\s(?<meta>.*)$/su.exec(header);
 	if (message?.groups) {
 		return { kind: "MENSAGEM", id: "", who: (message.groups.who ?? "").trim(), meta: metaOf([at(header)]), body, footer };
 	}
+	// Plain message: `de|from <who> · <minute>`, where <who> itself may contain " · ".
+	const plain = /^(?:de|from)\s+(?<who>.+)\s·\s(?<minute>[^·]+)$/su.exec(header);
+	if (plain?.groups) return { kind: "MENSAGEM", id: "", who: plain.groups.who.trim(), meta: plain.groups.minute.trim(), body, footer };
 	return { kind: "MENSAGEM", id: "", who: "", meta: header, body, footer };
 }
 

@@ -181,6 +181,42 @@ try {
   for (const name of ['NUDGE', 'CYCLE_NUDGE', 'STOP', 'CYCLE_STOP']) check(`loop guard ${name}`, guard[name]);
   console.log('ok seções injetadas, slot de peers e loop guard');
 
+  // Wrappers fixos em runtime: dados de fixture em inglês ASCII, para o check medir só o texto do Agent.
+  // Fora: corpo do usuário/par, ids e marcadores de protocolo ([peers …], [arca-megamind …], megamind:).
+  const mesh = await jiti.import(join(repo, 'agent/extensions/agent/peers/mesh.ts'));
+  const sender = { short: 'abc123', project: 'demo', branch: 'main' };
+  for (const [name, built] of Object.entries({
+    message: mesh.messageBlock({ id: 'p-00000001', from: sender, body: 'hello', at: Date.now(), reply_to: 'p-00000000' }),
+    ask: mesh.askBlock({ id: 'p-00000002', from: sender, title: '', body: 'context', at: Date.now() }),
+    reply: mesh.replyBlock({ id: 'p-00000002', from: sender, status: 'done', result: '', at: Date.now() }),
+  })) {
+    check(`peers ${name} block`, built.text);
+    check(`peers ${name} guidance`, built.guidance);
+  }
+  const messaging = await jiti.import(join(repo, 'extensions/megamind/messaging.ts'));
+  const remote = { handle: 'ana', session_id: 'abcdef123456', project_id: 'proj', label: 'pi demo', kind: 'agent' };
+  const at = '2026-01-01T10:00:00Z';
+  for (const item of [
+    { id: 'r1', kind: 'ask', from: remote, created_at: at, body: 'context', ask: { title: '', status: 'open' } },
+    { id: 'r1', kind: 'reply', from: remote, created_at: at, body: 'ok', ask: { title: 'fix', status: 'done' } },
+    { id: 'r1', kind: 'reply', from: { handle: '' }, created_at: at, body: 'ok', ask: { title: 'fix', status: '' } },
+    { id: 'm1', kind: 'message', from: remote, created_at: at, body: 'hi', attachments: [{ name: 'a.txt', size: 2048 }] },
+  ]) check(`megamind ${item.kind} block`, messaging.formatInboxItem(item, undefined, 'demo'));
+  const devices = await jiti.import(join(repo, 'extensions/megamind/devices.ts'));
+  const hints = ['peers', 'local', 'remote'].map(place => devices.coordinateHint('abcdef123456', place, 'codex'));
+  hints.forEach((hint, i) => check(`megamind coordinate hint ${i}`, hint));
+  check('megamind overlap notice', messaging.overlapNotice({ who: 'pi demo', owner: 'Ana', branch: 'main', paths: 'a.ts', sameBranch: true, hint: hints[2] }));
+  const soft = await jiti.import(join(repo, 'agent/extensions/brain-live/subagent/child-soft-deadline.ts'));
+  check('subagent soft timeout', soft.SOFT_TIMEOUT_MESSAGE);
+  // ask_user bloqueado por goal em execução: o reason vai para o modelo.
+  mkdirSync(join(sandbox, '.pi/goals/g1'), { recursive: true });
+  writeFileSync(join(sandbox, '.pi/goals/g1/state.md'), '# goal g1 — running\n');
+  const blocked = await Promise.all((handlers.tool_call ?? []).map(h => Promise.resolve(h({ toolName: 'ask_user', toolCallId: 't', input: {} }, { cwd: sandbox, ui: { notify() {} } })).catch(() => undefined)));
+  const reason = blocked.find(r => r?.block)?.reason;
+  assert.ok(reason, 'ask_user bloqueado com goal em execução');
+  check('ask_user goal block reason', reason);
+  console.log('ok wrappers de runtime: peers, megamind, soft timeout e bloqueio do ask_user');
+
   // Papéis: o description: entra na descrição da tool subagent.
   for (const file of readdirSync(join(repo, 'agent/agents')).filter(f => f.endsWith('.md'))) {
     const head = /^---\r?\n([\s\S]*?)\r?\n---/.exec(readFileSync(join(repo, 'agent/agents', file), 'utf8'))?.[1] ?? '';

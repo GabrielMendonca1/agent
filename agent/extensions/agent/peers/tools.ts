@@ -195,7 +195,7 @@ export function registerPeerTools(pi: ExtensionAPI, mesh: Mesh): void {
     name: "peers_reply",
     label: "Peers Reply",
     description:
-      "Answer a request received through peers (block [peers PEDIDO <id> …]): accept, decline, or report done/failed with a summary of what was done",
+      "Answer a request received through peers (block [peers REQUEST <id> …]): accept, decline, or report done/failed with a summary of what was done",
     parameters: Type.Object({
       id: Type.String({ description: "id of the received request (p-xxxxxxxx)" }),
       status: Type.String({ description: REPLY_STATUS.join(" | ") }),
