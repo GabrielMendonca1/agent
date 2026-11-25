@@ -97,7 +97,8 @@ Ordem de execução proposta: **0 → 1 → 2 → 3 → 4**. A suíte de evals e
 - O registro do job guarda `sessionFile`, `cwd`, `worktree`, `model` e `thinking` por task (`jobs.ts:106-130`).
 - Não existe ação `continue` nem `reply`: o enum é `launch|status|result|trace|list|cancel|integrate|discard` (`index.ts:230`).
 - `resumes`/`MAX_RESUMES` (`jobs.ts:236`) é **recuperação de crash**, não continuação. Usar outro nome para não colidir.
-- O Pi abre uma sessão existente por caminho (`dist/main.js:238-241,333+`). Falta confirmar empiricamente que `-p` sobre uma sessão não vazia acrescenta o turno e preserva o histórico: é o passo 0 da implementação, com `fake-anthropic`.
+- O Pi abre uma sessão existente por caminho (`dist/main.js:238-241,333+`).
+- **Confirmado em 2026-11-25 (passo 0):** `-p` sobre uma sessão não vazia preserva o histórico e acrescenta o turno. Prova com provedor falso: `runSingleAgent` real lançou o filho; o mesmo argv, com o mesmo `--session` e só a mensagem trocada, rodou de novo. O provedor recebeu `[system, user "Task: …", assistant, user novo]`, e as mensagens da 1ª chamada são prefixo exato da 2ª. A mensagem `system` (preâmbulo do papel e `toolsAdded`) é a mesma entrada do JSONL. O arquivo foi de 6 para 8 linhas (user + assistant novos), com um único header.
 
 **Proposta**
 - Ação nova: `subagent({ action: "continue", jobId, taskIndex?, message })`.
