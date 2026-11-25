@@ -4,7 +4,7 @@ import './lib/hermetic-test-env.mjs';
 // concorrência e receita restrita aos filhos. Sem rede.
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
+import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { homedir, tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { createRequire } from 'node:module';
@@ -67,6 +67,13 @@ export default function (pi) {
       } else if (child && n === 0 && process.env.FG_SANDBOX_COMMAND) {
         content = [{ type: 'toolCall', id: 'call-sandbox', name: 'bash', arguments: { command: process.env.FG_SANDBOX_COMMAND } }];
         stopReason = 'toolUse';
+      } else if (child && process.env.FG_CHILD_LOG) {
+        // continue: registra o que cada turno do filho recebeu (histórico, system, cwd).
+        const { appendFileSync } = await import('node:fs');
+        const text = m => Array.isArray(m.content) ? m.content.map(p => p.text || '').join('') : String(m.content);
+        appendFileSync(process.env.FG_CHILD_LOG, JSON.stringify({ cwd: process.cwd(), system: JSON.stringify(context.messages.filter(m => m.role === 'system')),
+          messages: context.messages.filter(m => m.role !== 'system').map(m => [m.role, text(m)]) }) + '\\n');
+        content = [{ type: 'text', text: 'FILHO-TURNO-' + n }];
       } else if (child && process.env.FG_WRITE) {
         const tag = /tarefa-(\\w+)/.exec(userText)?.[1] ?? 'single';
         if (n === 0) {
@@ -128,6 +135,16 @@ export default function (pi) {
         const text = launch?.content?.map(p => p.text || '').join(' ') || '';
         const jobId = /Launched subagent job ([^ ]+)/.exec(text)?.[1];
         content = [{ type: 'toolCall', id: 'integrate', name: 'subagent', arguments: { action: 'integrate', jobId } }];
+        stopReason = 'toolUse';
+      } else if (!child && n === 2 && process.env.FG_CONTINUE) {
+        // Depois do resultado do launch: continue pelo handle, e duas tentativas concorrentes recusadas.
+        const launch = context.messages.find(m => m.role === 'toolResult' && m.toolName === 'subagent');
+        const handle = /Handles: ([^ .,]+)/.exec(launch?.content?.map(p => p.text || '').join(' ') || '')?.[1];
+        content = [
+          { type: 'toolCall', id: 'cont-1', name: 'subagent', arguments: { action: 'continue', handle, message: 'SEGUNDO-TURNO' } },
+          { type: 'toolCall', id: 'cont-2', name: 'subagent', arguments: { action: 'continue', handle, message: 'CONCORRENTE' } },
+          { type: 'toolCall', id: 'cont-3', name: 'subagent', arguments: { action: 'continue', jobId: launchedJob(), message: 'POR-JOBID' } },
+        ];
         stopReason = 'toolUse';
       } else if (!child && n === 0) {
         content = [{ type: 'toolCall', id: 'call-1', name: 'subagent', arguments: { agent: process.env.FG_AGENT || 'worker', brief: { objective: 'o', context: 'c', scope: 's', done_when: 'd', stop_if: 'x' }, task: 'fixture' } }];
@@ -234,6 +251,52 @@ const bgRecord = JSON.parse(readFileSync(join(agent, 'subagent-jobs', bgRecordPa
 assert.equal(bgRecord.status, 'completed');
 assert.equal(bgRecord.notified, true);
 console.log('ok -p: espera o job, entrega o resultado e o pai reage antes de sair');
+
+// continue: o 2º turno do filho roda sobre o mesmo JSONL, com o mesmo system/tools, e vê o 1º turno.
+// Job de continue termina com status normal; o handle volta a waiting. Concorrência é recusada.
+{
+  const childLog = join(root, 'continue-turns.log'); rmSync(childLog, { force: true });
+  const events = runPi({ FG_CONTINUE: '1', FG_CHILD_LOG: childLog });
+  const results = events.filter(e => e.type === 'tool_execution_end' && e.toolName === 'subagent').map(e => e.result);
+  const launchText = results[0].content[0].text;
+  const handle = /Handles: ([^ .,]+)\./.exec(launchText)?.[1];
+  assert.equal(handle, 'worker-1', launchText);
+  const [cont, concurrent, byJob] = results.slice(1);
+  assert.ok(!cont.isError, JSON.stringify(cont));
+  assert.match(cont.content[0].text, /^Continued handle worker-1 \(worker\) as job \S+, status running\. Same session \S+\.jsonl/);
+  for (const refused of [concurrent, byJob]) {
+    assert.equal(refused.isError, true);
+    assert.match(refused.content[0].text, /^Handle worker-1 is still running in job \S+\. Wait for its result, then continue\.$/);
+  }
+  const turns = readFileSync(childLog, 'utf8').trim().split('\n').map(JSON.parse);
+  assert.equal(turns.length, 2, 'launch + um continue');
+  assert.match(turns[0].messages[0][1], /^Task: ## Objective/);
+  assert.deepEqual(turns[1].messages[0], turns[0].messages[0], 'o 2º turno começa pelo histórico do 1º');
+  assert.deepEqual(turns[1].messages.slice(1), [['assistant', 'FILHO-TURNO-0'], ['user', 'SEGUNDO-TURNO']], 'só a mensagem nova, sem Task:/contexto repetidos');
+  assert.equal(turns[1].system, turns[0].system, 'mesmo system (preâmbulo e tools)');
+  assert.equal(turns[1].cwd, turns[0].cwd, 'mesmo cwd');
+  const jobsDir = join(agent, 'subagent-jobs');
+  const readJob = id => JSON.parse(readFileSync(join(jobsDir, readdirSync(jobsDir, { recursive: true }).find(p => p.endsWith(id + '.json'))), 'utf8'));
+  const launchJob = readJob(results[0].details.job.jobId);
+  const contJob = readJob(cont.details.job.jobId);
+  assert.equal(launchJob.status, 'completed');
+  assert.equal(contJob.status, 'completed', contJob.error);
+  assert.deepEqual(contJob.continuesFrom, { jobId: launchJob.jobId, taskIndex: 1, handle: 'worker-1' });
+  assert.equal(contJob.tasks[0].sessionFile, launchJob.tasks[0].sessionFile, 'mesmo --session');
+  assert.match(contJob.result, /FILHO-TURNO-1/);
+  const inv = launchJob.tasks[0].invocation;
+  assert.deepEqual([inv.runner, inv.model, inv.tools, inv.writes], ['pi', 'fg-fake/fake', ['read', 'edit', 'bash'], true]);
+  assert.ok(inv.systemPrompt.includes('fixture') && inv.extensions.includes(provider) && inv.roleSha && inv.cwd);
+  assert.deepEqual(contJob.tasks[0].invocation, inv, 'continue reusa o snapshot do launch');
+  const session = readFileSync(launchJob.tasks[0].sessionFile, 'utf8').trim().split('\n').map(JSON.parse);
+  assert.equal(session.filter(e => e.type === 'session').length, 1);
+  assert.deepEqual(session.filter(e => e.message?.role === 'user').map(e => e.message.content.map(p => p.text).join('').slice(0, 13)), ['Task: ## Obje', 'SEGUNDO-TURNO']);
+  const registry = JSON.parse(readFileSync(join(jobsDir, launchJob.sessionId, 'handles/registry.json'), 'utf8'));
+  assert.deepEqual([registry.handles['worker-1'].lifecycle, registry.handles['worker-1'].lastJobId, registry.handles['worker-1'].continues], ['waiting', contJob.jobId, 1]);
+  const messages = events.filter(e => e.type === 'message_end').map(e => e.message);
+  assert.ok(messages.some(m => m.role === 'custom' && m.customType === 'subagent-result' && m.details?.jobId === contJob.jobId && m.details.status === 'completed'), '-p espera e entrega o job de continue');
+  console.log('ok continue: mesmo JSONL/system/cwd, histórico preservado, job com status normal, handle waiting, concorrência recusada');
+}
 // Receita usada pelos slots de modelo, não pelo prompt do principal.
 mkdirSync(join(root, '.agent'), { recursive: true });
 writeFileSync(join(root, '.agent/workflow.md'), ['# Receita', '', 'versão: v1', '', '## Etapas (complex)',
@@ -635,6 +698,94 @@ try {
       for (const k of ['FG_LOG', 'FG_DELAY_a', 'FG_DELAY_c']) delete process.env[k];
     }
     console.log('ok paralelo com exceção: irmãos terminam, job cancelável até o fim, estado/usage por tarefa gravados ao terminar');
+  }
+
+  // continue pelo manager: worktree do launch, snapshot contra papel alterado, lock no JSONL,
+  // discard fecha o handle, worktree removido, agy e handle desconhecido recusados.
+  {
+    for (const key of ['FG_CHECKS_ARGS', 'FG_CHILD_CTX', 'FG_LOG', 'FG_DELAY']) delete process.env[key];
+    const { updateRegistry, sessionLockPath } = await jiti.import(join(repo, 'agent/extensions/brain-live/subagent/handles.ts'));
+    const contRepo = realpathSync(mkdtempSync(join(root, 'continue-repo-')));
+    const contGit = (...args) => assert.equal(spawnSync('git', ['-C', contRepo, '-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.invalid', ...args]).status, 0, args.join(' '));
+    contGit('init', '-q', '-b', 'main');
+    writeFileSync(join(contRepo, 'base'), 'base\n');
+    contGit('add', '.');
+    contGit('commit', '-qm', 'base');
+    const roleFile = join(root, 'cwriter.md');
+    writeFileSync(roleFile, '---\nname: cwriter\n---\nfixture-writer');
+    const writer = { name: 'cwriter', description: 'fixture', source: 'user', tools: ['read', 'edit', 'bash'], systemPrompt: 'fixture-writer', filePath: roleFile };
+    const childLog = join(root, 'continue-manager.log');
+    process.env.FG_CHILD_LOG = childLog;
+    const done = [];
+    const contJobs = join(root, 'continue-jobs');
+    const mgr = new BudgetManager({ baseDir: contJobs, onComplete: record => done.push(record) });
+    const base = { sessionId: 'cont', sessionGeneration: 0, agents: [writer], agentScope: 'user', projectAgentsDir: null,
+      dispatchDefaults: { model: 'fg-fake/fake', resources: { slots: {} } }, timeoutSeconds: 60 };
+    const launched = mgr.launch({ ...base, mode: 'parallel', cwd: contRepo,
+      tasks: [{ agent: 'cwriter', task: 'tarefa-a', name: 'alpha' }, { agent: 'cwriter', task: 'tarefa-b' }] });
+    assert.ok(launched.ok, launched.error);
+    assert.deepEqual(launched.record.tasks.map(t => t.handle), ['alpha', 'cwriter-1']);
+    const dup = mgr.launch({ ...base, mode: 'single', cwd: contRepo, tasks: [{ agent: 'cwriter', task: 'x', name: 'alpha' }] });
+    assert.equal(dup.ok, false);
+    assert.match(dup.error, /Handle name\(s\) already used in this session: alpha/);
+    await waitUntil(() => done.length === 1);
+    assert.equal(done[0].status, 'completed', JSON.stringify(done[0].tasks.map(t => t.error)) + done[0].result);
+    const [alpha, second] = done[0].tasks;
+    assert.ok(alpha.worktree && second.worktree && alpha.invocation.cwd === alpha.cwd && alpha.invocation.sourceCwd);
+    assert.deepEqual(mgr.handles('cont').map(h => [h.handle, h.lifecycle, h.worktree]), [['alpha', 'waiting', alpha.worktree], ['cwriter-1', 'waiting', second.worktree]]);
+
+    writeFileSync(roleFile, '---\nname: cwriter\n---\nchanged-prompt');
+    const cont = (handle, jobId, message = 'SEGUNDO tarefa-a') => mgr.continueTask({ ...base, jobId, handle, message });
+    const first = cont('alpha', 'cont-1');
+    assert.ok(first.ok, first.error);
+    assert.match(first.warnings.join(' '), /Role file of cwriter changed since launch; continuing with the launch snapshot/);
+    assert.ok(existsSync(sessionLockPath(alpha.sessionFile)), 'lock next to the JSONL while the continue runs');
+    assert.match(cont('alpha', 'cont-x').error, /^Handle alpha is still running in job cont-1\./);
+    await assert.rejects(mgr.manage('cont', launched.record.jobId, 'discard', 1, true), /still running a continue job/);
+    await waitUntil(() => done.length === 2);
+    const contRecord = done[1];
+    assert.equal(contRecord.status, 'completed', contRecord.error);
+    assert.deepEqual(contRecord.continuesFrom, { jobId: launched.record.jobId, taskIndex: 1, handle: 'alpha' });
+    assert.equal(contRecord.tasks[0].sessionFile, alpha.sessionFile);
+    assert.match(contRecord.result, /### isolated task 1\nworktree: /, 'continue result shows the launch worktree');
+    assert.ok(!existsSync(sessionLockPath(alpha.sessionFile)), 'lock released at the end');
+    const turns = readFileSync(childLog, 'utf8').trim().split('\n').map(JSON.parse);
+    const last = turns.at(-1);
+    assert.equal(realpathSync(last.cwd), realpathSync(alpha.worktree), 'continue runs in the same worktree');
+    assert.deepEqual(last.messages.slice(-2), [['assistant', 'FILHO-TURNO-0'], ['user', 'SEGUNDO tarefa-a']]);
+    assert.match(last.system, /fixture-writer/, 'system prompt from the snapshot, not the changed role file');
+    assert.doesNotMatch(last.system, /changed-prompt/);
+    assert.equal(mgr.handles('cont')[0].lifecycle, 'waiting');
+
+    // Lock: a live owner refuses; a dead owner is taken over.
+    writeFileSync(sessionLockPath(alpha.sessionFile), JSON.stringify({ pid: process.pid, jobId: 'other', at: Date.now() }));
+    assert.match(cont('alpha', 'cont-2').error, /^Another continue is already writing to \S+ \(job other, pid \d+\)\. Wait for it to finish\.$/);
+    writeFileSync(sessionLockPath(alpha.sessionFile), JSON.stringify({ pid: 2 ** 22 + 12345, jobId: 'dead', at: Date.now() }));
+    const takeover = cont('alpha', 'cont-3', 'TERCEIRO tarefa-a');
+    assert.ok(takeover.ok, takeover.error);
+    await waitUntil(() => done.length === 3);
+    assert.equal(done[2].status, 'completed', done[2].error);
+
+    // discard through the continue job acts on the launch task and closes the handle.
+    const discarded = await mgr.manage('cont', 'cont-3', 'discard', undefined, true);
+    assert.match(discarded, /Task 1: discard complete/);
+    assert.ok(!existsSync(alpha.worktree));
+    assert.match(cont('alpha', 'cont-4').error, /^Handle alpha is closed \(discarded\)\. Launch a new task instead\.$/);
+    // Worktree removed outside the tool: refused and closed.
+    rmSync(second.worktree, { recursive: true, force: true });
+    assert.match(cont('cwriter-1', 'cont-5').error, /^Handle cwriter-1: worktree \S+ was removed\. Launch a new task instead\.$/);
+    assert.equal(mgr.handles('cont')[1].lifecycle, 'closed');
+    // agy keeps no Pi session; unknown handles are named.
+    updateRegistry(contJobs, 'cont', registry => {
+      registry.handles['gemini-1'] = { handle: 'gemini-1', agent: 'gemini', jobId: 'g', taskIndex: 1, lastJobId: 'g', lifecycle: 'closed', continues: 0, createdAt: 1, updatedAt: 1,
+        invocation: { version: 1, runner: 'agy', agent: 'gemini', agentSource: 'user', extensions: [], systemPrompt: '', cwd: contRepo, writes: false } };
+    });
+    assert.match(cont('gemini-1', 'cont-6').error, /^Handle gemini-1 ran on the agy runner \(gemini\), which keeps no Pi session to resume\. Use action "launch" with a fresh brief\.$/);
+    assert.match(cont('nope', 'cont-7').error, /^Unknown handle nope in this session\./);
+    assert.equal(done.length, 3, 'refusals never start a job');
+    await mgr.shutdown();
+    delete process.env.FG_CHILD_LOG;
+    console.log('ok continue (manager): worktree reused, snapshot over changed role, lock live/stale, discard closes, removed worktree, agy and unknown refused');
   }
 
   // Trilha de auditoria com filhos reais roteirizados pelo provider Anthropic falso:

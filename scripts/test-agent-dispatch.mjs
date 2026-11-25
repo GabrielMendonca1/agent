@@ -118,6 +118,44 @@ try {
     checks++; console.log('ok papel com model/thinking no .md manda no filho (piloto)');
   }
 
+  // continue: o snapshot do launch refaz o mesmo argv sobre o mesmo --session; só a mensagem muda,
+  // crua (sem Task:/contexto), e um papel alterado depois do launch não muda nada.
+  {
+    const roleFile = join(root, 'resume-role.md');
+    writeFileSync(roleFile, 'v1');
+    const role = { name: 'scout', description: 'fixture', systemPrompt: 'RESUME-SYSTEM', tools: ['read', 'grep'], source: 'user', filePath: roleFile };
+    const prompts = [];
+    const spawnBefore = runner.runnerHooks.spawn;
+    runner.runnerHooks.spawn = (command, args, opts) => {
+      prompts.push(readFileSync(args[args.indexOf('--system-prompt') + 1], 'utf8'));
+      return spawnBefore(command, args, opts);
+    };
+    const details = (results) => ({ mode: 'single', agentScope: 'user', projectAgentsDir: null, results });
+    try {
+      const first = await runner.runSingleAgent({ defaultCwd: root, dispatchDefaults: defaults, agents: [role], agentName: 'scout', task: 'primeira', roleModel: { model: 'test/economico', thinking: 'low' }, makeDetails: details });
+      const launchArgs = captured.args;
+      const inv = first.invocation;
+      assert.deepEqual([inv.runner, inv.model, inv.thinking, inv.tools, inv.systemPrompt, inv.cwd, inv.writes], ['pi', 'test/economico', 'low', ['read', 'grep'], 'RESUME-SYSTEM', root, false]);
+      assert.equal(inv.sandbox, process.platform === 'darwin' ? 'seatbelt' : inv.sandbox);
+      assert.match(inv.roleSha, /^[0-9a-f]{64}$/);
+      writeFileSync(roleFile, 'v2');
+      const changed = { ...role, systemPrompt: 'CHANGED', tools: ['read'] };
+      const second = await runner.runSingleAgent({ defaultCwd: '/elsewhere', dispatchDefaults: { model: 'test/principal' }, agents: [changed], agentName: 'scout', task: 'SEGUNDA', makeDetails: details, resume: { invocation: inv, sessionFile: first.sessionFile } });
+      assert.equal(second.sessionFile, first.sessionFile);
+      const strip = (args) => args.slice(0, -1).map((arg, i) => args[i - 1] === '--system-prompt' ? '<prompt>' : arg);
+      assert.deepEqual(strip(captured.args), strip(launchArgs), 'same argv as the launch, same --session');
+      assert.equal(captured.args[captured.args.indexOf('--session') + 1], first.sessionFile);
+      assert.equal(captured.args.at(-1), 'SEGUNDA', 'continue sends only the raw message');
+      assert.match(launchArgs.at(-1), /^Task: primeira/);
+      assert.deepEqual(prompts, ['RESUME-SYSTEM', 'RESUME-SYSTEM'], 'system prompt text from the snapshot');
+      assert.equal(captured.opts.cwd, root, 'cwd from the snapshot');
+      await assert.rejects(runner.runSingleAgent({ defaultCwd: root, dispatchDefaults: defaults, agents: [role], agentName: 'scout', task: 'x', makeDetails: details, resume: { invocation: { ...inv, runner: 'agy' }, sessionFile: first.sessionFile } }), /no Pi session to continue/);
+    } finally {
+      runner.runnerHooks.spawn = spawnBefore;
+    }
+    checks++; console.log('ok continue: snapshot refaz o argv do launch com o mesmo --session e só a mensagem nova');
+  }
+
   // Regras aprendidas do projeto: vão só na mensagem do filho e só as do cwd EFETIVO dele.
   const project = (name, rules) => {
     const dir = join(root, name);
