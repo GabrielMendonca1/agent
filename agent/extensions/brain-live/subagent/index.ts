@@ -247,7 +247,7 @@ const SubagentParams = Type.Object({
 	agent: Type.Optional(Type.String({ description: "Role name (single mode)" })),
 	task: Type.Optional(Type.String({ description: "Extra notes (single mode)" })),
 	brief: Type.Optional(BriefSchema),
-	model: Type.Optional(Type.String({ description: "Allowed provider/model override (single mode)" })),
+	model: Type.Optional(Type.String({ description: "Allowed provider/model override (single mode; continue only after a quota failure)" })),
 	tasks: Type.Optional(Type.Array(TaskItem, { description: "Parallel tasks" })),
 	chain: Type.Optional(Type.Array(TaskItem, { description: "Sequential tasks" })),
 	agentScope: Type.Optional(AgentScopeSchema),
@@ -671,7 +671,7 @@ export default function (pi: ExtensionAPI) {
 	});
 
 	const handleLine = (h: HandleEntry) =>
-		`${h.handle} · ${h.agent} · ${h.lifecycle}${h.closedReason ? ` (${h.closedReason})` : ""} · job ${h.lastJobId}${h.continues ? ` · ${h.continues} continue${h.continues > 1 ? "s" : ""}` : ""}${h.worktree ? ` · worktree ${h.worktree}` : ""}`;
+		`${h.handle} · ${h.agent} · ${h.lifecycle}${h.closedReason ? ` (${h.closedReason})` : ""}${h.failure ? ` · last failure ${h.failure}` : ""}${h.wipCommit ? ` · WIP ${h.wipCommit.slice(0, 12)}` : ""} · job ${h.lastJobId}${h.continues ? ` · ${h.continues} continue${h.continues > 1 ? "s" : ""}` : ""}${h.worktree ? ` · worktree ${h.worktree}` : ""}`;
 
 	/** Handle lifecycle of each task of a job (registry state, not job status). */
 	const jobHandleLines = (record: JobRecord): string[] => {
@@ -718,7 +718,8 @@ export default function (pi: ExtensionAPI) {
 		const timeout = validateTimeoutSeconds(params.timeoutSeconds);
 		if (!timeout.ok) return fail(timeout.error);
 		const discovery = discoverAgents(ctx.cwd, agentScope);
-		const blocked = mgr.continueBlocker(sessionId, handle, discovery.agents);
+		const model = params.model?.trim() || undefined;
+		const blocked = mgr.continueBlocker(sessionId, handle, discovery.agents, model);
 		if (!blocked.ok) return fail(blocked.error);
 
 		const dispatchDefaults: DispatchDefaults = {
@@ -726,6 +727,14 @@ export default function (pi: ExtensionAPI) {
 			model: ctx.model ? `${ctx.model.provider}/${ctx.model.id}` : undefined,
 			thinkingLevel: ctx.thinkingLevel,
 		};
+		// A quota model switch resolves like a launch: role allowlist or principal/apoio.
+		if (model) {
+			try {
+				dispatchDefaults.resources = { supportModel: getAgentPreferences().supportModel ?? undefined, slots: {} };
+			} catch (error) {
+				return fail(`Agent preferences unavailable: ${error instanceof Error ? error.message : String(error)}`);
+			}
+		}
 		// Writer in place: a fresh checkpoint for this turn, so /rewind covers the second turn too.
 		if (process.env.AGENT_CHECKPOINTS !== "0") {
 			const user = lastUser(ctx);
@@ -750,6 +759,7 @@ export default function (pi: ExtensionAPI) {
 			anchorEntryId,
 			handle,
 			message,
+			model,
 			agents: discovery.agents,
 			agentScope,
 			projectAgentsDir: discovery.projectAgentsDir,
@@ -765,7 +775,7 @@ export default function (pi: ExtensionAPI) {
 				type: "text" as const,
 				text: [
 					`Continued handle ${entry.handle} (${entry.agent}) as job ${outcome.record.jobId}, status running.`,
-					`Same session ${entry.sessionFile}${entry.worktree ? `, worktree ${entry.worktree}` : ""}; model ${entry.invocation?.model ?? "default"}${entry.invocation?.thinking ? ` (thinking ${entry.invocation.thinking})` : ""}.`,
+					`Same session ${entry.sessionFile}${entry.worktree ? `, worktree ${entry.worktree}` : ""}; model ${entry.invocation?.model ?? "default"}${entry.invocation?.thinking ? ` (thinking ${entry.invocation.thinking})` : ""}${model ? " (switched after a quota failure; the prompt cache starts cold)" : ""}.`,
 					...outcome.warnings.map((warning) => `Warning: ${warning}`),
 					`Timeout ${timeout.value}s. Result file: ${outcome.resultPath}.`,
 					"The result will be delivered to you as a message. Do not poll in a loop.",
@@ -784,7 +794,7 @@ export default function (pi: ExtensionAPI) {
 			"ASYNC: the call returns a jobId immediately. Continue other work; don't poll in a loop. A subagent-result message arrives later.",
 			"Actions: list jobs and handles, check status (includes child JSONL paths), read result or trace steps and decisions, cancel, integrate or discard. Parallel writers in one repo use isolated worktrees; review commits before integrating. No automatic merges.",
 			"Each launched task gets a handle (role-n, or name). A finished task waits with its session and worktree: continue (handle + message) resumes it in a new async job with the same model, tools and context. integrate/discard close the handle.",
-			"Use only allowed model overrides. Omit model to use the role's configured model/thinking, or choose its principal/apoio slot via /models. Quota/rate failures aren't retried; review partial work before explicitly redispatching to an allowed alternative.",
+			"Use only allowed model overrides. Omit model to use the role's configured model/thinking, or choose its principal/apoio slot via /models. After a quota/rate failure the handle waits; continue it with model set to another allowed model (only then). Read-only roles retry once on the next allowed model by themselves.",
 			SUBAGENT_CAPABILITY_RULE,
 			`Default scope: user (${path.join(getAgentDir(), "agents")}). Set agentScope to both or project for ${CONFIG_DIR_NAME}/agents.`,
 			`Roles (brief = required fields): ${describeUserAgents()}.`,
@@ -796,7 +806,7 @@ export default function (pi: ExtensionAPI) {
 			"Ask subagents to return paths, line numbers and short excerpts (`brief.return_format`); do not reread files a subagent already summarized unless you must verify one specific point.",
 			"Always delegate through the `brief` object instead of a prose task, and put what you already know (paths, findings, decisions) in `brief.context`; each role has required fields and the call fails before spawning if they are missing.",
 			"Subagent dispatch is asynchronous: after launching, report the jobId and continue with independent work. Never loop on `status` waiting for a job — the result is delivered to you automatically.",
-			"If a subagent reports quota/rate failure, do not assume its mutating task is safe to replay; explicitly choose another model listed for that role and redispatch only after accounting for partial work.",
+			"If a subagent reports quota/rate failure, continue its handle with model set to another model listed for that role: same session and worktree, partial work kept. Do not relaunch a mutating task from scratch.",
 			"Use the `plan` tool to publish the step list before multi-step work and keep it updated as steps complete.",
 			"Pick the lightest tool: one question about a large source (file, output, page) without needing its exact text → `skim`; several deterministic calls, filtering or chaining results without judgment → `codemode`; multi-step judgment across files, isolated writing or review → subagent `launch`; a fix or follow-up question for a child that already has the context → subagent `continue` with its handle (cheaper than relaunching).",
 		],

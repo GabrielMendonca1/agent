@@ -22,7 +22,7 @@ import { NO_DELEGATE_ENV, subagentEnv, userCommandEnv } from "../../../core/chil
 import { hasRules, selectProjectContext } from "../../../core/project-context.mjs";
 import { projectRules } from "../../../core/workflow.mjs";
 import { readHostFreePercent, waitForHostMemory } from "./host-memory.ts";
-import { listDescendants, signalProcesses } from "./process-tree.ts";
+import { isProcessAlive, listDescendants, signalProcesses } from "./process-tree.ts";
 import type { AgentConfig, AgentScope } from "./agents.ts";
 import { type ChildInvocation, fileSha } from "./handles.ts";
 
@@ -84,6 +84,30 @@ export interface SingleResult {
 	step?: number;
 	/** Launch snapshot that rebuilds this child's argv on `continue`. */
 	invocation?: ChildInvocation;
+	/** Error reported by the provider or the agy CLI (never model prose); input of `failure`. */
+	providerError?: string;
+	/** Failure class of this run: "quota" = quota, rate limit or capacity. */
+	failure?: FailureClass;
+}
+
+export type FailureClass = "quota";
+
+/**
+ * Provider/runner errors that mean "try later or on another model": HTTP 429/529,
+ * rate limits, quota and usage limits (e.g. "Codex error: The usage limit has been
+ * reached"), overloaded/capacity, Gemini RESOURCE_EXHAUSTED.
+ */
+const QUOTA_ERROR = /\b(?:429|529)\b|rate[ _-]?limit|too many requests|quota|usage limit|overloaded|capacity|RESOURCE_EXHAUSTED/i;
+
+/** Classify a provider/runner error text. Model prose never reaches this. */
+export function classifyProviderError(text: string | undefined): FailureClass | undefined {
+	return text && QUOTA_ERROR.test(text) ? "quota" : undefined;
+}
+
+/** A failed, non-aborted run whose provider error is a quota/rate/capacity error. */
+export function failureOf(result: SingleResult): FailureClass | undefined {
+	if (!isFailedResult(result) || result.stopReason === "aborted") return undefined;
+	return classifyProviderError(result.providerError);
 }
 
 export interface JobSummary {
@@ -257,6 +281,8 @@ const CHECKS_EXTENSION_PATH = path.join(path.dirname(fileURLToPath(import.meta.u
 const CHILD_OUTPUT_CAP_PATH = path.join(path.dirname(fileURLToPath(import.meta.url)), "child-output-cap.ts");
 /** Child-only: Anthropic system cache breakpoint before the trailing <cwd> section. */
 const CHILD_CACHE_PREFIX_PATH = path.join(path.dirname(fileURLToPath(import.meta.url)), "child-cache-prefix.ts");
+/** Child-only: one steer message at AGENT_CHILD_SOFT_DEADLINE_MS (soft timeout). */
+const CHILD_SOFT_DEADLINE_PATH = path.join(path.dirname(fileURLToPath(import.meta.url)), "child-soft-deadline.ts");
 
 /**
  * AGENTS.md/CLAUDE.md the child's Pi would load for `cwd` (same discovery: global agent dir
@@ -477,7 +503,21 @@ export const runnerHooks = {
 	hostFreePercent: readHostFreePercent,
 	listDescendants,
 	signalProcesses,
+	isProcessAlive,
+	/** Bound for the wait on a killed child's process tree. */
+	treeExitWaitMs: 5000,
 };
+
+/** Poll until every pid is gone (or `boundMs` passes). Returns the pids still alive. */
+async function waitForExit(pids: number[], boundMs: number): Promise<number[]> {
+	const deadline = Date.now() + boundMs;
+	let alive = pids.filter((pid) => runnerHooks.isProcessAlive(pid));
+	while (alive.length > 0 && Date.now() < deadline) {
+		await new Promise((resolve) => setTimeout(resolve, 50));
+		alive = alive.filter((pid) => runnerHooks.isProcessAlive(pid));
+	}
+	return alive;
+}
 
 export interface RunAgentOptions {
 	defaultCwd: string;
@@ -507,6 +547,8 @@ export interface RunAgentOptions {
 	onStart?: (result: SingleResult) => void;
 	/** `continue`: rebuild the argv from the launch snapshot over the same session; `task` is the raw message. */
 	resume?: { invocation: ChildInvocation; sessionFile: string };
+	/** Absolute epoch ms for the soft-timeout steer (AGENT_CHILD_SOFT_DEADLINE_MS). */
+	softDeadlineMs?: number;
 }
 
 interface ChildRunOptions {
@@ -556,6 +598,8 @@ function settleAgyResult(result: SingleResult, stdout: string, exitCode: number)
 		return;
 	}
 	const error = typeof envelope?.error === "string" ? envelope.error : envelope?.error?.message;
+	// The CLI's error or diagnostics classify the failure; the model's `response` never does.
+	result.providerError = [typeof error === "string" ? error : "", diagnostics].filter(Boolean).join("\n") || undefined;
 	const message = (typeof error === "string" && error.trim()) || result.stderr.trim() ||
 		(exitCode !== 0 && (response || (!envelope && stdout.trim().slice(0, 500)))) ||
 		(typeof envelope?.status === "string" && envelope.status !== "SUCCESS" ? `agy returned ${envelope.status}` :
@@ -602,6 +646,8 @@ async function runChild(opts: ChildRunOptions): Promise<void> {
 		let outputOverflow: string | undefined;
 		let authRequired = false;
 		let agyOutput = "";
+		/** Descendants SIGKILLed after an abort: waited on before the run returns. */
+		const killedTree = new Set<number>();
 
 		const invocation = agy ? { command: "agy", args: opts.args } : runnerHooks.getPiInvocation(opts.args);
 		if (opts.writerCheckpoint) {
@@ -682,6 +728,8 @@ async function runChild(opts: ChildRunOptions): Promise<void> {
 						if (!result.model && msg.model) result.model = msg.model;
 						if (msg.stopReason) result.stopReason = msg.stopReason;
 						if (msg.errorMessage) result.errorMessage = msg.errorMessage;
+						// The provider's error for this turn, kept apart from the runner's own messages.
+						result.providerError = msg.stopReason === "error" ? msg.errorMessage : undefined;
 					} else if (msg.role === "toolResult" && (msg as any).usage) {
 						// Tool-side inference on another model (skim, web_fetch prompt): cost only;
 						// tokens stay the child model's so context and cache-hit figures keep meaning.
@@ -702,7 +750,10 @@ async function runChild(opts: ChildRunOptions): Promise<void> {
 			};
 			const killDescendants = () => {
 				if (descendants.size === 0) return;
+				// Processes forked since the snapshot by a still-living descendant (a shell loop).
+				for (const pid of [...descendants]) for (const child of runnerHooks.listDescendants(pid)) descendants.add(child);
 				runnerHooks.signalProcesses(descendants, "SIGKILL");
+				for (const pid of descendants) killedTree.add(pid);
 				descendants.clear();
 			};
 
@@ -835,6 +886,9 @@ async function runChild(opts: ChildRunOptions): Promise<void> {
 		});
 
 		result.exitCode = exitCode;
+		// A killed child returns only after its whole tree is gone: the caller may touch
+		// the worktree next (timeout WIP commit), and nothing may still be writing there.
+		if (killedTree.size > 0) await waitForExit([...killedTree], runnerHooks.treeExitWaitMs);
 		if (spawnError) {
 			result.errorMessage ||= spawnError;
 			result.stopReason = "error";
@@ -860,6 +914,7 @@ async function runChild(opts: ChildRunOptions): Promise<void> {
 			settleAgyResult(result, agyOutput, exitCode);
 			opts.emitUpdate();
 		}
+		result.failure = failureOf(result);
 
 	} finally {
 		try {
@@ -963,6 +1018,7 @@ function launchInvocation(agent: AgentConfig, opts: RunAgentOptions): ChildInvoc
 	if (fs.existsSync(CACHE_KEEPER_PATH)) extensions.push(CACHE_KEEPER_PATH);
 	if (fs.existsSync(CHILD_OUTPUT_CAP_PATH)) extensions.push(CHILD_OUTPUT_CAP_PATH);
 	if (fs.existsSync(CHILD_CACHE_PREFIX_PATH)) extensions.push(CHILD_CACHE_PREFIX_PATH);
+	if (fs.existsSync(CHILD_SOFT_DEADLINE_PATH)) extensions.push(CHILD_SOFT_DEADLINE_PATH);
 	// Explicit child extensions can provide an offline
 	// provider in checks. Never inherit the parent's whole profile.
 	for (const ext of (process.env.AGENT_SUBAGENT_CHILD_EXTENSIONS ?? "").split(":").filter(Boolean)) extensions.push(ext);
@@ -1043,7 +1099,8 @@ export async function runSingleAgent(opts: RunAgentOptions): Promise<SingleResul
 	const sandbox = invocation.sandbox;
 	// AGENT_CHECKS_READONLY marca o papel sem edit/write mesmo sem sandbox disponível:
 	// ali checks só lê (list/last); executar o manifesto escaparia do sandbox.
-	const extraEnv: Record<string, string> = { AGENT_BASH_SANDBOX: "", AGENT_SANDBOX_CWD: "", AGENT_CHECKS_READONLY: sandbox ? "1" : "" };
+	const extraEnv: Record<string, string> = { AGENT_BASH_SANDBOX: "", AGENT_SANDBOX_CWD: "", AGENT_CHECKS_READONLY: sandbox ? "1" : "",
+		AGENT_CHILD_SOFT_DEADLINE_MS: !opts.prefetch && opts.softDeadlineMs ? String(Math.floor(opts.softDeadlineMs)) : "" };
 	if (sandbox && sandbox !== "none") {
 		extraEnv.AGENT_BASH_SANDBOX = sandbox;
 		extraEnv.AGENT_SANDBOX_CWD = cwd;

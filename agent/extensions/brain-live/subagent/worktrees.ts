@@ -70,6 +70,23 @@ export function isolateWriters(record: JobRecord, agents: AgentConfig[], persist
 	}
 }
 
+/**
+ * Hard timeout: commit whatever the killed child left in its job worktree, without
+ * hooks, so `continue` resumes from it. Only for the job's own worktree (the caller
+ * checks); manifest `link` symlinks are never committed. Returns the sha, or
+ * undefined when there was nothing to commit.
+ */
+export function commitWip(worktree: string, jobId: string): string | undefined {
+	if (!git(worktree, ["status", "--porcelain"])) return undefined;
+	const links = (findManifest(worktree)?.link ?? []).map((entry) => `:(exclude)${entry}`);
+	git(worktree, ["add", "-A", "--", ".", ...links]);
+	if (spawnSync("git", ["-C", worktree, "diff", "--cached", "--quiet"]).status === 0) return undefined;
+	const named = spawnSync("git", ["-C", worktree, "config", "user.email"], { encoding: "utf8" }).stdout?.trim();
+	const identity = named ? [] : ["-c", "user.name=Agent", "-c", "user.email=agent@localhost"];
+	git(worktree, [...identity, "commit", "--no-verify", "-q", "-m", `WIP(agent): timeout ${jobId}`]);
+	return git(worktree, ["rev-parse", "HEAD"]);
+}
+
 export function worktreeSummary(record: JobRecord): string {
 	return record.tasks.flatMap((t, i) => {
 		if (!t.worktree) return [];

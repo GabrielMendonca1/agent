@@ -14,7 +14,7 @@
 
 import * as fs from "node:fs";
 import * as path from "node:path";
-import { gateSummary, gcWorktrees, isolateWriters, manageWorktrees, worktreeSummary } from "./worktrees.ts";
+import { commitWip, gateSummary, gcWorktrees, isolateWriters, manageWorktrees, worktreeSummary } from "./worktrees.ts";
 import { getRoleModelChoices, resolveGeminiPreference, type ResolvedRoleModel, resolveRoleModel } from "../lib/tiers.ts";
 import type { AgentConfig, AgentScope } from "./agents.ts";
 import {
@@ -40,12 +40,14 @@ import {
 	ChildSlots,
 	type DispatchDefaults,
 	emptyUsage,
+	type FailureClass,
 	GLOBAL_CHILD_LIMIT,
 	getResultOutput,
 	isFailedResult,
 	mapWithConcurrencyLimit,
 	prefetchAgent,
 	PREFETCH_EXIT,
+	prettyModelLabel,
 	runSingleAgent,
 	type SingleResult,
 	type SubagentDetails,
@@ -143,7 +145,44 @@ export interface JobTaskSpec {
 	handle?: string;
 	/** Launch snapshot of the child invocation (see handles.ts). */
 	invocation?: ChildInvocation;
+	/** Failure class of the task's last run: "quota" = provider quota, rate limit or capacity. */
+	failure?: FailureClass;
+	/** Model switch after a quota failure: automatic (read-only fallback) or asked by `continue`. */
+	modelSwitch?: { from?: string; to: string; reason: "quota"; auto: boolean; at: number };
+	/** Hard timeout: sha of `WIP(agent): timeout <jobId>` in the job worktree. */
+	wipCommit?: string;
+	wipError?: string;
 }
+
+/** Soft timeout margin: 10% of the job timeout, at least 3 minutes. */
+export const SOFT_TIMEOUT_MIN_MARGIN_MS = 3 * 60 * 1000;
+
+/** Quota failures, model switches and timeout WIP commits, one line per event. */
+export function recoveryNotes(record: JobRecord): string {
+	return record.tasks.flatMap((task, i) => {
+		const label = `task ${i + 1} (${task.agent}${task.handle ? `, handle ${task.handle}` : ""})`;
+		const lines: string[] = [];
+		const moved = task.modelSwitch;
+		if (moved?.auto) lines.push(`${label}: quota/rate limit on ${moved.from ?? "the default model"}; retried once on ${moved.to} over the same session (read-only fallback).`);
+		else if (moved && record.continuesFrom) lines.push(`${label}: continued on ${moved.to} after a quota failure on ${moved.from ?? "the default model"}.`);
+		if (task.failure === "quota")
+			lines.push(`${label}: failed on provider quota/rate limit/capacity (model ${task.model ?? "default"}).${task.handle ? ` The handle waits: continue it with "model" set to another model allowed for this role.` : ""}`);
+		if (task.wipCommit) lines.push(`${label}: hard timeout; work in progress committed as ${task.wipCommit} (WIP(agent): timeout ${record.jobId}).${task.handle ? " Continue the handle to resume." : ""}`);
+		if (task.wipError) lines.push(`${label}: hard timeout; WIP commit failed: ${task.wipError}`);
+		return lines;
+	}).join("\n");
+}
+
+/** Absolute epoch ms of the soft-timeout steer: start + timeout - margin, never before start. */
+export function softDeadlineMs(startMs: number, timeoutSeconds: number): number {
+	const timeoutMs = timeoutSeconds * 1000;
+	const margin = Math.max(timeoutMs * 0.1, SOFT_TIMEOUT_MIN_MARGIN_MS);
+	return Math.max(startMs, startMs + timeoutMs - margin);
+}
+
+/** Read-only automatic fallback: the child's follow-up turn on the next model. */
+export const QUOTA_FALLBACK_MESSAGE =
+	"The previous attempt stopped on a provider quota/rate limit before finishing; you now run on another model. Continue the task from where it stopped.";
 
 /**
  * `not_run`: the job ended before this task started (chain stop, abort).
@@ -220,6 +259,34 @@ export function resolveJobTaskModels(tasks: JobTaskSpec[], defaults?: DispatchDe
 	}
 }
 
+/**
+ * Next model of a role after `current`, for the read-only quota fallback: the role's
+ * own list (`roleModels`), or the pilot's principal/apoio pair for a role without its
+ * own config. Each candidate passes the launch resolution; wraps around once.
+ */
+export function nextRoleModel(agent: string, current: string | undefined, defaults: DispatchDefaults | undefined, roleFiles: readonly RoleFileConfig[]): { model: string; thinking?: string } | undefined {
+	let list: string[];
+	try {
+		const own = getRoleModelChoices(agent);
+		if (own?.length) list = own.map((choice) => choice.model);
+		else {
+			const file = roleFiles.find((role) => role.name === agent);
+			if (!defaults?.resources || !defaults.model || file?.runner === "agy" || file?.model || file?.thinking) return undefined;
+			list = [defaults.model, defaults.resources.supportModel || defaults.model];
+		}
+	} catch {
+		return undefined;
+	}
+	const unique = [...new Set(list)];
+	const at = current ? unique.indexOf(current) : -1;
+	const candidates = at >= 0 ? [...unique.slice(at + 1), ...unique.slice(0, at)] : unique.filter((model) => model !== current);
+	for (const model of candidates) {
+		const resolved = resolveJobTaskModels([{ agent, task: "", model }], defaults, roleFiles);
+		if (resolved.ok && resolved.tasks[0].model) return { model: resolved.tasks[0].model, thinking: resolved.tasks[0].thinking };
+	}
+	return undefined;
+}
+
 export interface JobRecord {
 	/** Version 2 persists complete task templates; legacy records truncated them. */
 	version?: 2;
@@ -261,6 +328,8 @@ export interface ContinueSpec {
 	anchorEntryId?: string | null;
 	handle: string;
 	message: string;
+	/** Only after a quota failure: another model allowed for the role (launch resolution). */
+	model?: string;
 	agents: AgentConfig[];
 	agentScope: AgentScope;
 	projectAgentsDir: string | null;
@@ -445,6 +514,8 @@ interface ActiveJob {
 	thrown: Map<number, string>;
 	/** `continue`: lock next to the child JSONL, released when the job settles. */
 	releaseLock?: () => void;
+	/** AGENT_CHILD_SOFT_DEADLINE_MS for this job's children. */
+	softDeadlineMs?: number;
 }
 
 export type LaunchOutcome = { ok: true; record: JobRecord; resultPath: string } | { ok: false; error: string };
@@ -601,6 +672,7 @@ export class SubagentJobManager {
 			thrown: new Map(),
 		};
 		if (spec.timeoutSeconds > 0) {
+			job.softDeadlineMs = softDeadlineMs(Date.now(), spec.timeoutSeconds);
 			job.timer = setTimeout(() => {
 				job.timedOut = true;
 				controller.abort();
@@ -719,11 +791,15 @@ export class SubagentJobManager {
 			acquireSlot: (s?: AbortSignal) => this.slots.acquire(s),
 			onFirstToken,
 			onStart: (result: SingleResult) => this.taskStarted(job, slot, result),
+			softDeadlineMs: job.softDeadlineMs,
 		};
 		const taskText = !resume && task.worktree ? `You are in an isolated worktree ${task.worktree} on branch ${task.branch}; commit your work there; do not touch ${task.sourceCwd}.\n${opts.taskText}` : opts.taskText;
 		let result: SingleResult;
 		try {
 			result = await runSingleAgent({ ...common, task: taskText, parentSession: spec.dispatchDefaults.parentSession });
+			result = await this.quotaFallback(job, spec, task, result, common);
+			// The child and its process tree are gone here (runChild waits): safe to commit.
+			if (job.timedOut && result.stopReason === "aborted") this.commitTimeoutWip(job, task);
 		} catch (e) {
 			job.thrown.set(slot, e instanceof Error ? e.message : String(e));
 			this.settleTask(job, slot);
@@ -734,6 +810,51 @@ export class SubagentJobManager {
 		this.settleTask(job, slot);
 		this.persist(job.record);
 		return result;
+	}
+
+	/**
+	 * Read-only roles only: after a quota/rate/capacity failure, one more run on the
+	 * next model of the role over the same child session. Writers never switch alone.
+	 */
+	private async quotaFallback(job: ActiveJob, spec: LaunchSpec, task: JobTaskSpec, first: SingleResult, common: Omit<Parameters<typeof runSingleAgent>[0], "task">): Promise<SingleResult> {
+		const invocation = first.invocation;
+		if (first.failure !== "quota" || job.controller.signal.aborted || invocation?.runner !== "pi" || invocation.writes) return first;
+		if (task.modelSwitch?.auto || !first.sessionFile || !fs.existsSync(first.sessionFile)) return first;
+		const next = nextRoleModel(task.agent, invocation.model, spec.dispatchDefaults, spec.agents);
+		if (!next) return first;
+		const switched: ChildInvocation = { ...invocation, model: next.model, thinking: next.thinking ?? invocation.thinking, modelLabel: prettyModelLabel(next.model, undefined) };
+		task.modelSwitch = { from: invocation.model, to: next.model, reason: "quota", auto: true, at: this.now() };
+		task.invocation = switched;
+		task.model = switched.model;
+		task.thinking = switched.thinking;
+		this.persist(job.record);
+		if (task.handle) this.touchHandle(job.record, task.handle, (entry) => { entry.invocation = switched; });
+		const second = await runSingleAgent({ ...common, resume: { invocation: switched, sessionFile: first.sessionFile }, task: QUOTA_FALLBACK_MESSAGE });
+		for (const key of ["input", "output", "cacheRead", "cacheWrite", "cost", "turns"] as const) second.usage[key] += first.usage[key];
+		return second;
+	}
+
+	/** The job's own worktree for this task; never the user's checkout. */
+	private jobWorktree(record: JobRecord, task: JobTaskSpec): string | undefined {
+		let worktree = task.worktree && !task.worktreeRemoved ? task.worktree : undefined;
+		if (!worktree && record.continuesFrom) worktree = readRegistry(this.deps.baseDir, record.sessionId).handles[record.continuesFrom.handle]?.worktree;
+		const source = task.sourceCwd ?? task.invocation?.sourceCwd;
+		if (!worktree || !source || !fs.existsSync(worktree)) return undefined;
+		if (path.resolve(worktree) === path.resolve(source)) return undefined;
+		return worktree;
+	}
+
+	/** Hard timeout, after the child tree exited: `WIP(agent): timeout <jobId>` in the job worktree. */
+	private commitTimeoutWip(job: ActiveJob, task: JobTaskSpec): void {
+		const worktree = this.jobWorktree(job.record, task);
+		if (!worktree) return;
+		try {
+			const sha = commitWip(worktree, job.record.jobId);
+			if (sha) task.wipCommit = sha;
+		} catch (error) {
+			task.wipError = error instanceof Error ? error.message : String(error);
+		}
+		this.persist(job.record);
 	}
 
 	/** Parallel tasks never reject: an exception is recorded on its task and siblings keep running. */
@@ -789,6 +910,9 @@ export class SubagentJobManager {
 			this.touchHandle(record, task.handle, (entry) => {
 				const resumable = task.invocation?.runner === "pi" && task.sessionFile && fs.existsSync(task.sessionFile);
 				if (entry.lifecycle === "closed") return;
+				// Last run's provider failure: `continue` accepts `model` only after "quota".
+				entry.failure = task.failure;
+				entry.wipCommit = task.wipCommit;
 				if (resumable) {
 					entry.lifecycle = "waiting";
 					entry.closedReason = undefined;
@@ -814,6 +938,8 @@ export class SubagentJobManager {
 			return;
 		}
 		task.usage = { ...result.usage };
+		if (returned?.failure) task.failure = returned.failure;
+		else delete task.failure;
 		task.sessionFile ??= result.sessionFile;
 		task.model ??= result.model;
 		task.thinking ??= result.thinking;
@@ -961,6 +1087,8 @@ export class SubagentJobManager {
 		const { usage, sessionFiles } = this.settleTasks(job, error);
 		const isolated = worktreeSummary(this.worktreeView(job.record));
 		if (isolated) output = `${isolated}\n\n${output}`;
+		const recovery = recoveryNotes(job.record);
+		if (recovery) output = `${output}\n\n${recovery}`;
 		const gates = gateSummary(job.record, spec.agents);
 		if (gates) output = `${output}\n\n${gates}`;
 		const outputBytes = Buffer.byteLength(output, "utf-8");
@@ -1039,7 +1167,7 @@ export class SubagentJobManager {
 	 * Refusals for `continue`, checked before anything is anchored or locked:
 	 * unknown handle, agy runner, still running, closed, worktree gone, no session.
 	 */
-	continueBlocker(sessionId: string, handle: string, agents: AgentConfig[]): { ok: true; entry: HandleEntry & { sessionFile: string }; invocation: ChildInvocation } | { ok: false; error: string } {
+	continueBlocker(sessionId: string, handle: string, agents: AgentConfig[], model?: string): { ok: true; entry: HandleEntry & { sessionFile: string }; invocation: ChildInvocation } | { ok: false; error: string } {
 		if (!isSafeId(sessionId)) return { ok: false, error: "Unsafe session id; refusing to continue." };
 		const registry = readRegistry(this.deps.baseDir, sessionId);
 		const entry = registry.handles[handle];
@@ -1061,6 +1189,9 @@ export class SubagentJobManager {
 		}
 		if (!invocation || !entry.sessionFile || !fs.existsSync(entry.sessionFile))
 			return { ok: false, error: `Handle ${entry.handle} has no child session to resume${entry.sessionFile ? ` (${entry.sessionFile} is missing)` : ""}. Launch a new task instead.` };
+		// Decision (d): a model switch keeps context but loses the cache; only quota justifies it.
+		if (model !== undefined && entry.failure !== "quota")
+			return { ok: false, error: `Handle ${entry.handle}: "model" is accepted only after a quota/rate-limit failure, and its last run ${entry.failure ? `failed with "${entry.failure}"` : "did not fail on quota"}. Continue without "model" to keep ${invocation.model ?? "the same model"}.` };
 		return { ok: true, entry: entry as HandleEntry & { sessionFile: string }, invocation };
 	}
 
@@ -1074,9 +1205,20 @@ export class SubagentJobManager {
 		if (this.active.size >= MAX_ACTIVE_JOBS)
 			return { ok: false, error: `Too many subagent jobs running (${this.active.size}/${MAX_ACTIVE_JOBS}). Wait or cancel one (action: "list" / "cancel").` };
 		if (!isSafeId(spec.jobId)) return { ok: false, error: "Unsafe job id; refusing to continue." };
-		const checked = this.continueBlocker(spec.sessionId, spec.handle, spec.agents);
+		const checked = this.continueBlocker(spec.sessionId, spec.handle, spec.agents, spec.model);
 		if (!checked.ok) return checked;
-		const { entry, invocation } = checked;
+		const { entry } = checked;
+		let invocation = checked.invocation;
+		let modelSwitch: JobTaskSpec["modelSwitch"];
+		if (spec.model !== undefined) {
+			// Same resolution as launch: the role's allowlist (or the pilot's principal/apoio pair).
+			const resolved = resolveJobTaskModels([{ agent: entry.agent, task: spec.message, model: spec.model }], spec.dispatchDefaults, spec.agents);
+			if (!resolved.ok) return { ok: false, error: `Handle ${entry.handle}: model ${spec.model} refused. ${resolved.error}` };
+			const chosen = resolved.tasks[0];
+			if (!chosen.model) return { ok: false, error: `Handle ${entry.handle}: model ${spec.model} refused; the role has no model allowlist.` };
+			invocation = { ...invocation, model: chosen.model, thinking: chosen.thinking ?? invocation.thinking, modelLabel: prettyModelLabel(chosen.model, undefined) };
+			modelSwitch = { from: checked.invocation.model, to: chosen.model, reason: "quota", auto: false, at: this.now() };
+		}
 		const lock = acquireSessionLock(entry.sessionFile, spec.jobId);
 		if (!lock.ok)
 			return { ok: false, error: `Another continue is already writing to ${entry.sessionFile}${lock.owner ? ` (job ${lock.owner.jobId}, pid ${lock.owner.pid})` : ""}. Wait for it to finish.` };
@@ -1105,6 +1247,7 @@ export class SubagentJobManager {
 				handle: entry.handle,
 				invocation,
 				sessionFile: entry.sessionFile,
+				...(modelSwitch ? { modelSwitch } : {}),
 			}],
 			cwd: invocation.cwd,
 			agentScope: spec.agentScope,
@@ -1125,6 +1268,8 @@ export class SubagentJobManager {
 				live.lifecycle = "running";
 				live.lastJobId = record.jobId;
 				live.continues++;
+				// Later continues keep the switched model: the session now runs on it.
+				if (modelSwitch) live.invocation = invocation;
 				live.updatedAt = now;
 			});
 		} catch (error) {

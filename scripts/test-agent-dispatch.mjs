@@ -77,6 +77,39 @@ try {
     assert.equal(broken.ok, false, 'config existente inválida não pode ignorar silenciosamente a allowlist');
     writeFileSync(modelsFile, validConfig);
     checks++; console.log('ok complex preserva config de papel (roleModels e frontmatter); configuração inválida bloqueia; slot só preenche o que falta');
+
+    // Fallback de cota: próximo modelo da lista do papel (com o thinking do par), com volta;
+    // sem lista própria, o par principal/apoio do piloto; papel com modelo no .md não troca.
+    assert.deepEqual(jobs.nextRoleModel('reviewer', 'test/antigo-reviewer', defaults, roleFiles), { model: 'test/segunda-opcao', thinking: 'low' });
+    assert.deepEqual(jobs.nextRoleModel('reviewer', 'test/segunda-opcao', defaults, roleFiles), { model: 'test/antigo-reviewer', thinking: 'xhigh' });
+    assert.deepEqual(jobs.nextRoleModel('worker', 'test/principal', defaults, roleFiles), { model: 'test/economico', thinking: 'low' });
+    assert.equal(jobs.nextRoleModel('planner', undefined, defaults, roleFiles), undefined);
+    assert.equal(jobs.nextRoleModel('worker', 'test/principal', { model: 'test/principal' }, roleFiles), undefined, 'sem piloto nem lista: nada a trocar');
+    assert.equal(jobs.nextRoleModel('worker', 'test/principal', { ...defaults, resources: {} }, roleFiles), undefined, 'apoio = principal: nada a trocar');
+    checks++; console.log('ok fallback de cota: próximo modelo da lista do papel ou do par do piloto, nunca fora da allowlist');
+  }
+
+  // Classificação de cota: só o erro do provedor/runner, nunca o texto do modelo.
+  {
+    for (const text of [
+      '429 {"type":"error","error":{"type":"rate_limit_error","message":"rate limited"}}',
+      'Codex error: The usage limit has been reached',
+      '529 {"type":"error","error":{"type":"overloaded_error","message":"Overloaded"}}',
+      '{"error":{"code":429,"status":"RESOURCE_EXHAUSTED"}}',
+      'You exceeded your current quota, please check your plan',
+      'Model is at capacity, try again later',
+    ]) assert.equal(runner.classifyProviderError(text), 'quota', text);
+    for (const text of [undefined, '', 'Connection error.', '400 invalid_request_error: prompt is too long', 'listening on port 4290']) assert.equal(runner.classifyProviderError(text), undefined, String(text));
+    const base = { exitCode: 1, stopReason: 'error', providerError: '429 rate_limit_error', finalText: '', stderr: '', usage: {} };
+    assert.equal(runner.failureOf(base), 'quota');
+    assert.equal(runner.failureOf({ ...base, stopReason: 'aborted' }), undefined, 'cancel/timeout never reads as quota');
+    assert.equal(runner.failureOf({ ...base, providerError: undefined, errorMessage: 'quota', finalText: 'the rate limit is 429' }), undefined, 'model prose and runner messages are not classified');
+    assert.equal(runner.failureOf({ ...base, exitCode: 0, stopReason: 'stop' }), undefined);
+    // Soft deadline: start + timeout - max(10%, 3 min), never before start.
+    assert.equal(jobs.softDeadlineMs(1000, 3600), 1000 + 3600_000 - 360_000);
+    assert.equal(jobs.softDeadlineMs(1000, 1200), 1000 + 1200_000 - 180_000);
+    assert.equal(jobs.softDeadlineMs(1000, 60), 1000);
+    checks++; console.log('ok cota classificada pelo erro do provedor (429/529/usage limit/RESOURCE_EXHAUSTED/capacity); soft deadline com margem 10%/3 min');
   }
 
   let captured;
@@ -243,7 +276,7 @@ try {
   const sandbox = runner.sandboxForTools(agent.tools);
   // Children run with the 5 min cache unless explicitly overridden; an inherited `none` stays.
   const childRetention = process.env.AGENT_CHILD_CACHE_RETENTION || (process.env.PI_CACHE_RETENTION === 'none' ? 'none' : 'short');
-  assert.deepEqual(captured.opts.env, { ...process.env, AGENT_CHILD: '1', AGENT_NO_DELEGATE: '1', PI_CACHE_RETENTION: childRetention, AGENT_BASH_SANDBOX: sandbox === 'none' ? '' : sandbox, AGENT_SANDBOX_CWD: sandbox === 'none' ? '' : root, AGENT_CHECKS_READONLY: '1' });
+  assert.deepEqual(captured.opts.env, { ...process.env, AGENT_CHILD: '1', AGENT_NO_DELEGATE: '1', PI_CACHE_RETENTION: childRetention, AGENT_BASH_SANDBOX: sandbox === 'none' ? '' : sandbox, AGENT_SANDBOX_CWD: sandbox === 'none' ? '' : root, AGENT_CHECKS_READONLY: '1', AGENT_CHILD_SOFT_DEADLINE_MS: '' });
   assert.ok(!captured.args.includes('--no-skills'));
   const checksExt = (args) => args.filter((arg) => arg.endsWith('/brain-live/checks/index.ts'));
   assert.deepEqual(checksExt(captured.args), [], 'no checks extension unless the role lists checks');

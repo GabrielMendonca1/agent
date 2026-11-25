@@ -28,7 +28,7 @@ export interface ChildInvocation {
 	/** Role file and its sha256 at launch; `continue` warns when the file changed. */
 	roleFile?: string;
 	roleSha?: string;
-	/** Effective selection used at launch. Part 2 may override `model` after a quota failure. */
+	/** Effective selection. A quota failure may switch `model`/`thinking` (fallback or `continue`). */
 	model?: string;
 	modelLabel?: string;
 	thinking?: string;
@@ -66,8 +66,10 @@ export interface HandleEntry {
 	invocation?: ChildInvocation;
 	/** Number of `continue` jobs started on this handle. */
 	continues: number;
-	/** Reserved for part 2: provider failure class of the last turn (e.g. "quota"). */
+	/** Provider failure class of the last run ("quota"); `continue` accepts `model` only then. */
 	failure?: string;
+	/** Hard timeout of the last run: WIP commit left in the worktree. */
+	wipCommit?: string;
 	createdAt: number;
 	updatedAt: number;
 }
