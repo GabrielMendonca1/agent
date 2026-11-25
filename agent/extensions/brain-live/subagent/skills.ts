@@ -7,9 +7,6 @@
  * from AGENT_CHILD_SKILLS), so the runner passes the advertised names too: debug/tdd carry
  * `disable-model-invocation` and would otherwise stay hidden.
  */
-import { spawnSync } from "node:child_process";
-import * as fs from "node:fs";
-import * as path from "node:path";
 import { DefaultResourceLoader, getAgentDir } from "@earendil-works/pi-coding-agent";
 import { companySkillDirs } from "../../../core/companies.mjs";
 import { AGENT_SKILLS_DIR } from "../../../core/skill-categories.mjs";
@@ -96,34 +93,6 @@ export async function resolveChildSkills(
 		return { ok: true, skills: { only: true, paths: names.map((name) => byName.get(name)!), advertised: names } };
 	}
 	return { ok: true, skills: { only: false, paths: extras.map((name) => byName.get(name)!), advertised: [...new Set([...automaticSkillNames(), ...extras])] } };
-}
-
-const real = (file: string) => { try { return fs.realpathSync(file); } catch { return path.resolve(file); } };
-
-/**
- * Skill paths for a writer moved into an isolated worktree. A project-local skill (inside the
- * source repository) points to the same relative path in the worktree when it exists there; one
- * that exists only in the source checkout (uncommitted) is copied, with its directory, into
- * `snapshotDir` and read from there. Paths outside the repository (global, company, bundled)
- * stay. Idempotent: already mapped paths are outside the source repository.
- */
-export function mapSkillsToWorktree(skills: ChildSkills, sourceCwd: string, worktree: string, snapshotDir: string): ChildSkills {
-	const top = spawnSync("git", ["-C", sourceCwd, "rev-parse", "--show-toplevel"], { encoding: "utf8" });
-	if (top.status !== 0 || !top.stdout.trim()) return skills;
-	const root = real(top.stdout.trim());
-	const paths = skills.paths.map((file, i) => {
-		const resolved = real(file);
-		if (!resolved.startsWith(root + path.sep)) return file;
-		const relative = path.relative(root, resolved);
-		const inWorktree = path.join(worktree, relative);
-		if (fs.existsSync(inWorktree)) return inWorktree;
-		const target = path.join(snapshotDir, `${i}-${path.basename(path.dirname(resolved))}`);
-		fs.rmSync(target, { recursive: true, force: true });
-		fs.mkdirSync(path.dirname(target), { recursive: true });
-		fs.cpSync(path.dirname(resolved), target, { recursive: true, dereference: true });
-		return path.join(target, path.basename(resolved));
-	});
-	return { ...skills, paths };
 }
 
 /** argv for the snapshot; nothing for the full catalog. */

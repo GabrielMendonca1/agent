@@ -358,40 +358,6 @@ try {
       await run({ ...agent, name: 'allow', skills: ['alpha'] }, { resolvedSkills: null });
       assert.deepEqual(skillArgv(captured.args), [], 'null = full catalog');
     } finally { skillHooks.catalog = catalogBefore; }
-    // Isolated writer: committed project skill → same path in the worktree; source-only skill →
-    // snapshot copy; skills outside the repository keep their paths.
-    {
-      const skillsMod = await jiti.import(join(repo, 'agent/extensions/brain-live/subagent/skills.ts'));
-      const src = join(root, 'skill-src');
-      const sh = (cwd, ...args) => { const r = spawnSync('git', args, { cwd, encoding: 'utf8' }); assert.equal(r.status, 0, r.stderr); };
-      mkdirSync(join(src, '.pi/skills/committed'), { recursive: true });
-      writeFileSync(join(src, '.pi/skills/committed/SKILL.md'), '---\nname: committed\ndescription: c\n---\nC\n');
-      sh(root, 'init', '-q', src);
-      sh(src, 'add', '.');
-      sh(src, '-c', 'user.email=t@t', '-c', 'user.name=t', 'commit', '-q', '-m', 'skills');
-      const worktree = join(root, 'skill-wt');
-      sh(src, 'worktree', 'add', '-q', worktree);
-      mkdirSync(join(src, '.pi/skills/draft/refs'), { recursive: true });
-      writeFileSync(join(src, '.pi/skills/draft/SKILL.md'), '---\nname: draft\ndescription: d\n---\nD\n');
-      writeFileSync(join(src, '.pi/skills/draft/refs/extra.md'), 'support');
-      const snapshots = join(root, 'jobs/s/job-1.skills/1');
-      const global = join(process.env.PI_CODING_AGENT_DIR, 'skills/alpha/SKILL.md');
-      const launched = { only: true, paths: [join(src, '.pi/skills/committed/SKILL.md'), join(src, '.pi/skills/draft/SKILL.md'), global], advertised: ['committed', 'draft', 'alpha'] };
-      const mapped = skillsMod.mapSkillsToWorktree(launched, src, worktree, snapshots);
-      assert.equal(mapped.paths[0], join(worktree, '.pi/skills/committed/SKILL.md'), 'committed skill read from the worktree');
-      assert.ok(mapped.paths[1].startsWith(snapshots + '/'), 'source-only skill read from the snapshot');
-      assert.equal(readFileSync(mapped.paths[1], 'utf8'), readFileSync(join(src, '.pi/skills/draft/SKILL.md'), 'utf8'));
-      assert.ok(existsSync(join(dirname(mapped.paths[1]), 'refs/extra.md')), 'supporting files copied');
-      assert.equal(mapped.paths[2], global, 'skills outside the repository keep their path');
-      assert.deepEqual(mapped.advertised, launched.advertised);
-      assert.ok(mapped.paths.every((file) => existsSync(file)));
-      assert.deepEqual(skillsMod.mapSkillsToWorktree(mapped, src, worktree, snapshots), mapped, 'idempotent');
-      // The child (and a continue from its snapshot) gets the mapped argv.
-      const mappedRun = await run({ ...agent, name: 'allow', skills: [] }, { cwd: worktree, resolvedSkills: mapped });
-      assert.deepEqual(skillArgv(captured.args), ['--no-skills', ...mapped.paths.flatMap((file) => ['--skill', file])]);
-      await run({ ...agent, name: 'allow' }, { resume: { invocation: mappedRun.invocation, sessionFile: mappedRun.sessionFile } });
-      assert.deepEqual(skillArgv(captured.args), ['--no-skills', ...mapped.paths.flatMap((file) => ['--skill', file])], 'continue reuses the mapped set');
-    }
     // Warm key: a continue uses its snapshot's skills; a launch uses the resolved set.
     const set = (name) => ({ only: true, paths: [`/s/${name}`], advertised: [name] });
     const base = { agent: 'worker', task: 't', cwd: root };
