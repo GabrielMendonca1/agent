@@ -151,6 +151,40 @@ try {
 	ok(`política de autoridade e diretriz de orquestrador, sem modos nem inferência extra; schema subagent ${subagentBytes} B`);
 	assert.ok(enabled.bytes < fullRun.bytes, `headless (${enabled.bytes}) não é menor que o completo (${fullRun.bytes})`);
 	ok(`prompt: completo ${fullRun.bytes} B, headless ${enabled.bytes} B; schemas: completo ${fullRun.toolBytes} B, headless ${enabled.toolBytes} B`);
+	// todo deferred de verdade: o modelo acha pelo tool_search com uma consulta em linguagem natural,
+	// a tool entra declarada na requisição seguinte e a chamada executa.
+	{
+		const search = await startFakeAnthropic([
+			{ tool: { name: 'tool_search', input: { query: 'persistent project tasks claim' } } },
+			{ tool: { name: 'todo', input: { action: 'list' } } },
+			{ text: 'done' },
+		]);
+		try {
+			const agent = agentDirFor('search');
+			writeFileSync(join(agent.agentDir, 'models.json'), JSON.stringify({ providers: { anthropic: { baseUrl: search.baseUrl, apiKey: 'agent-headless-test-not-a-key' } } }));
+			const h = join(home, 'search');
+			const result = await spawnAsync(pi, ['-p', '--mode', 'json', '--no-session', '--model', 'anthropic/claude-sonnet-4-5', 'list the project tasks'], {
+				cwd: root,
+				env: {
+					PATH: process.env.PATH, HOME: h, USERPROFILE: h, TMPDIR: root, XDG_CONFIG_HOME: join(h, '.config'),
+					PI_CODING_AGENT_DIR: agent.agentDir, PI_ACCOUNTS_MIRROR: '0', ORCA_BACKGROUND_LAUNCH: '1',
+					AGENT_RUNTIME_ENABLED: '1', AGENT_PI_ROOT: piRoot, AGENT_CHILD: '0', NODE_OPTIONS: `--import=${preload}`,
+				},
+			});
+			assert.equal(result.status, 0, result.output.slice(-1500));
+			const sent = search.messages();
+			assert.equal(sent.length, 3, `requisições: ${sent.length}\n${result.output.slice(-1500)}`);
+			const names = (payload) => (payload.tools ?? []).map((t) => t.name);
+			assert.ok(!names(sent[0]).includes('todo'), 'todo fora da primeira requisição');
+			const results = (payload) => JSON.stringify(payload.messages.at(-1).content);
+			assert.match(results(sent[1]), /todo/, 'tool_search devolve todo');
+			assert.ok(names(sent[1]).includes('todo'), `todo declarada depois do tool_search: ${names(sent[1])}`);
+			assert.doesNotMatch(results(sent[2]), /Tool todo not found|is_error":true/, `todo executou: ${results(sent[2])}`);
+			ok('todo deferred: tool_search acha com consulta natural, declara e executa no runtime real');
+		} finally {
+			await search.close();
+		}
+	}
 	console.log(`${checks} checks passed`);
 } finally {
 	await fake.close();
