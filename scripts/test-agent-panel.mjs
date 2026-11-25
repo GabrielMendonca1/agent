@@ -323,15 +323,19 @@ try {
     }
     delete process.env.AGENT_JUICE_PI_ENTRY;
     const requests = [];
-    runtime.sendUserMessage = (text, options) => requests.push({ text, options });
+    runtime.sendUserMessage = () => assert.fail('/notes não aparece como fala do usuário');
+    runtime.sendMessage = (message, options) => requests.push({ text: message.content, message, options });
     mkdirSync(join(dir, 'docs'), { recursive: true });
     writeFileSync(join(dir, 'docs/known.md'), 'known');
     writeFileSync(join(dir, 'docs/missing.md'), 'missing');
+    const noticesBefore = notices.length;
     await extension.commands.get('notes').handler('', ctx);
     assert.match(requests[0].text, /docs\/missing.md/);
     assert.doesNotMatch(requests[0].text, /docs\/known.md/);
     assert.match(requests[0].text, /path — subject/);
-    assert.deepEqual(requests[0].options, { deliverAs: 'followUp' });
+    assert.equal(requests[0].message.display, false, 'prompt em inglês oculto no TUI');
+    assert.deepEqual(requests[0].options, { triggerTurn: true, deliverAs: 'followUp' });
+    assert.deepEqual(notices.slice(noticesBefore), [{ text: 'Pedido enviado ao agente: mapear 1 documento(s) em .agent/notes.md.', level: 'info' }]);
     rmSync(map);
     await extension.commands.get('notes').handler('', ctx);
     assert.match(requests[1].text, /docs\/known.md/);

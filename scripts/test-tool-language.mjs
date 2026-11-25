@@ -87,7 +87,7 @@ function fakePi(tools, handlers, commands, sent) {
   const base = {
     registerTool: (tool) => { tools.set(tool.name, tool); },
     registerCommand: (name, command) => { commands.set(name, command); },
-    sendUserMessage: (text) => { sent.push(text); },
+    sendMessage: (message) => { sent.push(message.content); },
     on: (name, handler) => { (handlers[name] ??= []).push(handler); },
     events: { on: noop, emit: noop, off: noop },
     getAllTools: () => [...tools.values()].map(t => ({ name: t.name, exposure: t.exposure ?? 'direct' })),
