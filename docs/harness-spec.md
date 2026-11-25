@@ -91,6 +91,8 @@ Ordem de execução proposta: **0 → 1 → 2 → 3 → 4**. A suíte de evals e
 
 ## 2. Subagentes continuáveis + hierarquia codemode / skim / subagent
 
+**Status:** parte 1 implementada: snapshot da invocação por tarefa, handles com estado `running|waiting|closed` num registro por sessão (sem novo status de job), ação `continue`, recusas, `integrate`/`discard` fechando o handle e a hierarquia nas `promptGuidelines`. Detalhes em `docs/setup.md` ("Continuar um filho"). Falta a parte 2: `model` no `continue` após falha de cota (`failure: "quota"`), troca automática em papel somente leitura, soft-timeout e commit WIP.
+
 **Hoje**
 - O filho já roda `--mode json -p … --session <arquivo>` sobre um JSONL criado pelo runner (`runner.ts:975-983`).
 - O JSONL nunca é apagado.
