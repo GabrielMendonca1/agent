@@ -60,6 +60,7 @@ export const MANAGED_ENV_KEYS = [
 	"AGENT_JUICE_PI_ROOT",
 	"AGENT_JUICE_PI_ENTRY",
 	"AGENT_ARTIFACT",
+	"AGENT_ARTIFACT_ROOT",
 	"NODE_OPTIONS",
 ];
 const CONFIG_KEYS = new Set(["version", "enabled", "artifactId", "piRoot", "juiceHome", "resourceReceipt"]);
@@ -588,7 +589,7 @@ export function buildAgentLaunch({ store, env = process.env, args = [] } = {}) {
 		}
 		// Nenhuma AGENT_JUICE_* herdada sobrevive ao caminho legado: um `pi` sem gate não pode
 		// aparentar estar contabilizando.
-		for (const key of Object.keys(cleaned)) if (key.startsWith("AGENT_JUICE_") || ["AGENT_SKILLS_BEFORE", "AGENT_ARTIFACT", "AGENT_RUNTIME_ENABLED", "AGENT_PI_ROOT", "AGENT_CHILD"].includes(key)) delete cleaned[key];
+		for (const key of Object.keys(cleaned)) if (key.startsWith("AGENT_JUICE_") || ["AGENT_SKILLS_BEFORE", "AGENT_ARTIFACT", "AGENT_ARTIFACT_ROOT", "AGENT_RUNTIME_ENABLED", "AGENT_PI_ROOT", "AGENT_CHILD"].includes(key)) delete cleaned[key];
 		cleaned.NODE_OPTIONS = mergeNodeOptionsLegacy(cleaned.NODE_OPTIONS, warnings);
 		if (cleaned.NODE_OPTIONS === "") delete cleaned.NODE_OPTIONS;
 		const pi = legacyPiCommand(root);
@@ -634,6 +635,9 @@ export function buildAgentLaunch({ store, env = process.env, args = [] } = {}) {
 		else nextEnv.PI_DURABLE_HOST = "0";
 	}
 	nextEnv.AGENT_ARTIFACT = artifact.artifactId;
+	// Physical path of the pair this process started with: children inherit it and GC sees it in
+	// `ps eww` even when the preload URL is percent-encoded.
+	nextEnv.AGENT_ARTIFACT_ROOT = artifact.artifactRoot;
 	// Cache Anthropic de 1 h: com o cache-keeper (ping a 90% do TTL) custa ~45% menos que 5 min
 	// nas pausas reais do Gabriel. Valor já definido pelo usuário (inclusive `none`) prevalece.
 	if (!nextEnv.PI_CACHE_RETENTION) nextEnv.PI_CACHE_RETENTION = "long";
