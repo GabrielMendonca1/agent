@@ -915,6 +915,22 @@ export function rollbackAgentResources({ receiptPath }) {
 		assert.equal(realpathSync(join(f.store, "current")), f.release);
 		launch(join(f.pkg, "dist/bundle/cli.js"), true);
 	});
+	await atest("a release overlay added later is strict on build/reuse and only a warning on rollback", async () => {
+		const f = make();
+		const manifestFile = join(fixture, "overlay", "manifest.json");
+		const saved = readFileSync(manifestFile);
+		try {
+			json(manifestFile, { ...manifest, releaseOverlays: [{ name: "late", workspace: "packages/late", package: "fixture-late", markerFile: "index.js", requiredMarker: "LATE", olderReleases: "warn" }] });
+			const later = await import(`${pathToFileURL(script).href}?late-overlay`);
+			const rollback = later.verifyRelease(f.release);
+			assert.deepEqual(rollback.problems, []);
+			assert.ok(rollback.warnings.some((warning) => /release overlay "late"/.test(warning)), rollback.warnings.join("\n"));
+			const reuse = later.verifyRelease(f.release, { ...f.metadata, digestUnder: () => f.metadata.treeDigest });
+			assert.ok(reuse.problems.some((problem) => /release overlay "late"/.test(problem)), reuse.problems.join("\n"));
+		} finally {
+			writeFileSync(manifestFile, saved);
+		}
+	});
 	assert.equal(existsSync(forbidden), false);
 	console.log(`prepare-promote: ${checks} tests OK (fixtures only; no real build or external E2E)`);
 } finally {

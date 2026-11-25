@@ -144,7 +144,9 @@ O updater publica diretamente apenas `packages/coding-agent` com `npm pack --wor
 
 `manifest.json:releaseOverlays` fecha essa lacuna: o updater empacota o workspace extra da fonte patched, substitui todas as cópias instaladas e exige `requiredMarker` em `markerFile`. Ausência do pacote ou marker aborta antes da ativação. O marker também é conferido dentro do bundle efetivamente carregado pelo CLI. Não instale simultaneamente a extensão upstream do Pi Black, pois isso transformaria cada request duas vezes.
 
-Desde o respiro R3 há **dois** release overlays: `packages/ai` (Pi Black) e `packages/tui` (o `código` inline colorido por tipo vive no renderer de markdown do pi-tui). O CLI carrega o bundle, que já traz o patch; o overlay de `packages/tui` existe para que a cópia instalada do pacote — usada pelo caminho não-bundled e por quem importa o pi-tui da release (prévias, ferramentas) — não fique uma versão atrás do que o bundle desenha.
+Há **três** release overlays: `packages/ai` (Pi Black), `packages/tui` (o `código` inline colorido por tipo vive no renderer de markdown do pi-tui) e `packages/codemode` (abaixo). O `bin/pi` da release carrega o bundle, que já traz o patch; o overlay de `packages/tui` existe para que a cópia instalada do pacote — usada pelo caminho não-bundled e por quem importa o pi-tui da release (prévias, ferramentas) — não fique uma versão atrás do que o bundle desenha.
+
+O terceiro é `packages/codemode`. O launcher do Agent roda o CLI clássico (`dist/cli.js`), não o bundle. Nesse caminho, `dist/extensions/codemode/execute.js` (com o patch `codemode-background`) importa `@earendil-works/pi-codemode` de `node_modules`, e sem o overlay essa cópia vinha do npm público, sem `outputSoFar` e sem os campos `background`/`wait_ms` em `@options`. Todo script codemode que passava da espera padrão de 5 minutos falhava com `sandbox?.outputSoFar is not a function`, em qualquer release. O marker é `outputSoFar` em `dist/runtime/execution.js`. A entrada declara `olderReleases: "warn"`: build e reuso de release exigem o marker; rollback e enable para uma release anterior a ele só avisam.
 
 ## Model data snapshot
 

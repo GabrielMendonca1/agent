@@ -1,6 +1,8 @@
 // Compatibility preload path. No accounting or provider result interception.
+import { existsSync } from 'node:fs';
 import { isAbsolute, join } from 'node:path';
 import { pathToFileURL } from 'node:url';
+import { artifactPin, installSettingsPin } from './artifact-pin.mjs';
 import { runtimeEnabled } from './client.mjs';
 import { CALL_KIND } from './cache-policy.mjs';
 import { installSkillPolicy, restoreSkillPolicyEnvironment } from './skill-policy.mjs';
@@ -45,6 +47,13 @@ if (runtimeEnabled()) {
   installSkillPolicy(formatSkillsForPrompt);
   if (typeof ModelRuntime !== 'function') throw new Error('Agent: ModelRuntime export missing');
   installAgentRuntime(ModelRuntime);
+  // Later settings reads (/new, /resume, /reload, children) stay on this artifact after a deploy.
+  const pin = artifactPin(import.meta.url);
+  if (pin) {
+    process.env.AGENT_ARTIFACT_ROOT = pin.artifactRoot;
+    const settingsModule = join(root, 'dist/core/settings-manager.js');
+    if (existsSync(settingsModule)) installSettingsPin((await import(pathToFileURL(settingsModule).href)).SettingsManager, pin);
+  }
 } else {
   restoreSkillPolicyEnvironment(process.env);
 }

@@ -156,6 +156,14 @@
 			"package": "@earendil-works/pi-tui",
 			"markerFile": "dist/components/markdown.js",
 			"requiredMarker": "CODESPAN_SYMBOL"
+		},
+		{
+			"name": "pi-codemode",
+			"workspace": "packages/codemode",
+			"package": "@earendil-works/pi-codemode",
+			"markerFile": "dist/runtime/execution.js",
+			"requiredMarker": "outputSoFar",
+			"olderReleases": "warn"
 		}
 	],
 	"platformSkippedTests": {

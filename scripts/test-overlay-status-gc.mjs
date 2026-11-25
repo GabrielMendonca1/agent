@@ -11,7 +11,7 @@ import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, realpathSy
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { collectOrphanReleases, overlayGc, planOverlayGc } from "./agent-update.mjs";
+import { collectOrphanReleases, collectOverlayBundles, overlayGc, planOverlayGc } from "./agent-update.mjs";
 import { maybeStaleNotice, staleAhead, STALE_CACHE_FILE } from "./lib/overlay-stale.mjs";
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -523,6 +523,34 @@ teste("layers.json com context-windows: aviso e ignora (não chega a erro de cam
 	assert.match(out.stderr, /Ignoring it/);
 	assert.doesNotMatch(out.stderr, /Camada desconhecida|não existe mais como opcional/);
 	assert.match(out.stderr, /Simulated overlay conflict/);
+});
+
+teste("sessão aberta antes do deploy: artefato Agent e overlay bundle dela ficam até ela sair", () => {
+	const { store } = novoStore();
+	const artefato = join(store, "runtime", "releases", "sobra-velha");
+	// Só o ambiente cita o artefato: o preload de um caminho com espaço vai como URL (%20).
+	const sessao = { pid: 4242, command: `node /x/dist/cli.js AGENT_ARTIFACT_ROOT=${artefato} NODE_OPTIONS=--import=file:///y%20z/agent/core/runtime.mjs`, files: [] };
+	const acao = (processos) => planOverlayGc(store, 0, { getProcesses: () => processos }).find((item) => item.path === artefato)?.action;
+	assert.equal(acao([sessao]), "report", "artefato de sessão viva seria apagado");
+	assert.equal(acao([]), "delete");
+	const bundles = join(store, "overlay-bundles");
+	const velho = dir(join(bundles, "velho"));
+	const ativo = dir(join(bundles, "ativo"));
+	const solto = dir(join(bundles, "solto"));
+	const launcher = { pid: 4343, command: `node ${join(velho, "scripts", "agent-launch.mjs")} --store ${store} --`, files: [] };
+	const log = console.log;
+	const linhas = [];
+	console.log = (...a) => linhas.push(a.join(" "));
+	try {
+		collectOverlayBundles(store, [ativo], { getProcesses: () => [launcher] });
+	} finally {
+		console.log = log;
+	}
+	assert.ok(existsSync(velho), "bundle do launcher vivo foi apagado");
+	assert.match(linhas.join("\n"), /Keeping overlay bundle velho: in use by process 4343/);
+	assert.ok(existsSync(ativo) && !existsSync(solto));
+	collectOverlayBundles(store, [ativo], { getProcesses: () => [] });
+	assert.ok(!existsSync(velho), "bundle sem processo deveria sair");
 });
 
 teste("orphanReleaseRetention do update caiu para 1", () => {

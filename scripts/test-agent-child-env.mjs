@@ -5,7 +5,7 @@ import { existsSync, mkdirSync, mkdtempSync, readdirSync, realpathSync, rmSync, 
 import { createRequire } from 'node:module';
 import { homedir, tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { userCommandEnv, subagentEnv } from '../agent/core/child-env.mjs';
 
 const repo = resolve(dirname(fileURLToPath(import.meta.url)), '..');
@@ -109,6 +109,21 @@ try {
   }
   assert.ok(process.env.NODE_OPTIONS.includes(fake) && process.env.PI_AUTOMATIC_SKILLS, 'pai intacto');
   console.log('ok bash e user_bash filtram o env; pai intacto');
+
+  // O Pi real ainda lê settings por SettingsManager.loadFromStorage: é ali que o preload fixa o artefato.
+  const { installSettingsPin } = await import('../agent/core/artifact-pin.mjs');
+  const { SettingsManager } = await import(pathToFileURL(join(piRoot, 'dist/core/settings-manager.js')).href);
+  const releases = join(root, 'store/runtime/releases');
+  const [idA, idB] = ['a', 'b'].map((c) => c.repeat(64));
+  mkdirSync(join(releases, idA, 'agent/extensions'), { recursive: true });
+  writeFileSync(join(releases, idA, 'agent/extensions/todos.ts'), '');
+  writeFileSync(join(root, 'agent/settings.json'), JSON.stringify({ extensions: [join(releases, idB, 'agent/extensions/todos.ts')], skills: [join(root, 'store/skills/demo')] }));
+  const pin = { artifactId: idA, artifactRoot: join(releases, idA), agentRoot: join(releases, idA, 'agent'), releasesDir: releases, store: join(root, 'store') };
+  assert.equal(installSettingsPin(SettingsManager, pin), true, 'SettingsManager.loadFromStorage sumiu do Pi');
+  const settings = SettingsManager.create(root, join(root, 'agent'));
+  assert.deepEqual(settings.getExtensionPaths(), [join(releases, idA, 'agent/extensions/todos.ts')]);
+  assert.deepEqual(settings.getSkillPaths(), [], 'skill ausente no artefato fixado sai');
+  console.log('ok settings do Pi real ficam no artefato fixado');
 } finally {
   for (const k of Object.keys(process.env)) if (!(k in saved)) delete process.env[k];
   Object.assign(process.env, saved);

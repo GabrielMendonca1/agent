@@ -198,6 +198,14 @@ O runtime novo não executa aprendizado/mineração automáticos nem chama model
 
 Instalações por artefato atualizam com `agent update`, não com commits do checkout. `agent overlay-update` continua sendo o caminho de desenvolvimento que reconstrói a release.
 
+### Deploy com sessões abertas
+
+`agent update`, `agent overlay-update` e `node scripts/agent-update.mjs` podem rodar com sessões abertas. Uma sessão aberta continua no build com que começou até ser reiniciada: a release Pi e o artefato Agent (`<store>/runtime/releases/<id>`) ficam fixos no processo.
+
+- O launcher passa caminhos físicos: `AGENT_PI_ROOT` (release Pi), `NODE_OPTIONS --import=<artefato>/agent/core/runtime.mjs` e `AGENT_ARTIFACT_ROOT` (artefato). Os filhos (subagentes) herdam os três e rodam o mesmo `dist/cli.js` do pai.
+- O deploy reescreve `extensions`/`skills` do `settings.json` e o link `<store>/skills`. O Pi relê esse arquivo em `/new`, `/resume`, fork, `/reload` e em cada filho. O preload (`agent/core/artifact-pin.mjs`) reescreve, nessa leitura, toda entrada que aponta para outro artefato ou para `<store>/skills` para o artefato do processo. Uma entrada que só existe no build novo é ignorada. Se a sessão antiga gravar `extensions`/`skills` (por exemplo `pi install`), grava os caminhos do artefato dela; o próximo `agent update` reaplica o registro.
+- A limpeza não apaga o que um processo vivo usa. `agent overlay-gc` e o GC do update consultam `ps eww` (argumentos e ambiente) e `lsof`. Release Pi, artefato Agent e overlay bundle citados ou abertos por um processo vivo ficam ("in use by running process N") e saem num GC depois que o processo termina. Sem inspeção de processos (Windows), artefatos e symlinks de release ficam.
+
 ## Checkpoints de arquivo e /rewind
 
 Antes de cada `edit`/`write` do agente na sessão principal (também os chamados de dentro do `codemode`), a extensão `brain-live/checkpoints.ts` guarda o conteúdo anterior do arquivo, ou o marcador "não existia", associado à mensagem do usuário que abriu o turno. Só a primeira mudança de cada arquivo por turno é guardada. Depois de cada edição registra o hash que o agente deixou.

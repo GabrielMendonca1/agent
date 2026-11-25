@@ -587,7 +587,7 @@ test("o ambiente real do usuário passa intacto: HOME, agent dir, modelos, think
 	}
 	// Nada de transplante do piloto nem de preferência imposta.
 	const added = Object.keys(spec.env).filter((key) => !(key in personal));
-	assert.deepEqual(added.sort(), ["AGENT_ARTIFACT", "AGENT_PI_ROOT", "AGENT_RUNTIME_ENABLED", "NODE_OPTIONS", "PI_CACHE_RETENTION", "PI_DURABLE_HOST", "PI_SKIP_VERSION_CHECK"]);
+	assert.deepEqual(added.sort(), ["AGENT_ARTIFACT", "AGENT_ARTIFACT_ROOT", "AGENT_PI_ROOT", "AGENT_RUNTIME_ENABLED", "NODE_OPTIONS", "PI_CACHE_RETENTION", "PI_DURABLE_HOST", "PI_SKIP_VERSION_CHECK"]);
 	// Aviso de versão do Pi upstream calado por padrão; valor do usuário (inclusive vazio) prevalece.
 	assert.equal(spec.env.PI_SKIP_VERSION_CHECK, "1");
 	assert.equal(buildAgentLaunch({ store, env: { ...personal, PI_SKIP_VERSION_CHECK: "" }, args: [] }).env.PI_SKIP_VERSION_CHECK, "");
@@ -799,6 +799,100 @@ test("CLI morre do mesmo sinal quando o Pi morre do sinal", async () => {
 	child.kill("SIGTERM");
 	const exit = await done;
 	assert.deepEqual(exit, { code: null, signal: "SIGTERM" }, `launcher saiu com ${JSON.stringify(exit)}`);
+});
+
+test("deploy com sessão aberta: a sessão e os filhos dela ficam no par A; GC guarda A até ela sair", async () => {
+	// Pi de fixture com a mesma superfície que o preload real usa (ModelRuntime, skills, SettingsManager).
+	const pin = join(root, "pin");
+	const pinPi = join(pin, "pi");
+	mkdirSync(join(pinPi, "dist", "core"), { recursive: true });
+	writeFileSync(join(pinPi, "dist", "core", "model-runtime.js"), "export class ModelRuntime { async prepareRequest() { return {}; } }\n");
+	writeFileSync(join(pinPi, "dist", "core", "skills.js"), "export const formatSkillsForPrompt = () => '';\n");
+	writeFileSync(join(pinPi, "dist", "core", "settings-manager.js"), `import { readFileSync } from "node:fs";
+import { join } from "node:path";
+export class SettingsManager {
+  static loadFromStorage(dir) { return JSON.parse(readFileSync(join(dir, "settings.json"), "utf8")); }
+  static create(dir) { const m = new SettingsManager(); m.settings = SettingsManager.loadFromStorage(dir); return m; }
+}
+`);
+	// Uma "sessão": lê settings ao abrir e de novo depois (como /new, /resume, /reload) e cria um filho.
+	writeFileSync(join(pinPi, "dist", "cli.js"), `import { existsSync, writeFileSync } from "node:fs";
+import { spawnSync } from "node:child_process";
+import { SettingsManager } from "./core/settings-manager.js";
+const read = () => { const s = SettingsManager.create(process.env.PI_CODING_AGENT_DIR).settings; return { extensions: s.extensions, skills: s.skills, preload: process.env.NODE_OPTIONS, piRoot: process.env.AGENT_PI_ROOT, artifactRoot: process.env.AGENT_ARTIFACT_ROOT }; };
+if (process.env.PIN_CHILD) { process.stdout.write(JSON.stringify(read())); process.exit(0); }
+const start = read();
+writeFileSync(process.env.PIN_READY, "1");
+while (!existsSync(process.env.PIN_GO)) await new Promise((r) => setTimeout(r, 25));
+const later = read();
+const child = JSON.parse(spawnSync(process.execPath, [process.argv[1]], { env: { ...process.env, PIN_CHILD: "1" }, encoding: "utf8" }).stdout);
+writeFileSync(process.env.PIN_OUT, JSON.stringify({ start, later, child }));
+while (!existsSync(process.env.PIN_EXIT)) await new Promise((r) => setTimeout(r, 25));
+`);
+	// Dois artefatos com o agent/core real; B tem uma extensão que A não tem.
+	const makeSource = (name, extra) => {
+		const src = join(pin, name);
+		for (const file of readdirSync(join(repo, "agent", "core"))) {
+			mkdirSync(join(src, "agent", "core"), { recursive: true });
+			writeFileSync(join(src, "agent", "core", file), readFileSync(join(repo, "agent", "core", file)));
+		}
+		mkdirSync(join(src, "agent", "extensions"), { recursive: true });
+		mkdirSync(join(src, "agent", "skills", "standard", "demo"), { recursive: true });
+		writeFileSync(join(src, "agent", "skills", "standard", "demo", "SKILL.md"), `# ${name}\n`);
+		writeFileSync(join(src, "agent", "extensions", "todos.ts"), `export default () => {}; // ${name}\n`);
+		if (extra) writeFileSync(join(src, "agent", "extensions", "only-b.ts"), "export default () => {};\n");
+		return src;
+	};
+	const pinStore = join(pin, "store");
+	const agentDir = join(pin, "home", ".agent");
+	mkdirSync(agentDir, { recursive: true });
+	const a = prepareAgentArtifact({ sourceRoot: makeSource("a", false), store: pinStore, piRoot: pinPi, ...quiet });
+	const b = prepareAgentArtifact({ sourceRoot: makeSource("b", true), store: pinStore, piRoot: pinPi, ...quiet });
+	const deploy = (artifact) => {
+		writeAgentConfig({ store: pinStore, config: { version: CONFIG_VERSION, enabled: true, artifactId: artifact.artifactId, piRoot: pinPi } });
+		writeFileSync(join(agentDir, "settings.json"), JSON.stringify({
+			extensions: [join(artifact.agentRoot, "extensions", "todos.ts"), join(artifact.agentRoot, "extensions", "only-b.ts"), `-${join(artifact.agentRoot, "extensions", "x.ts")}`, "/elsewhere/personal.ts"],
+			skills: [join(pinStore, "skills"), join(artifact.agentRoot, "skills")],
+		}));
+	};
+	deploy(a);
+	const file = (name) => join(pin, name);
+	const spec = buildAgentLaunch({ store: pinStore, env: { PATH: process.env.PATH, HOME: join(pin, "home"), PI_CODING_AGENT_DIR: agentDir }, args: [] });
+	assert.equal(spec.env.AGENT_ARTIFACT_ROOT, a.artifactRoot);
+	const session = spawn(spec.command, spec.args, { stdio: "inherit", env: { ...spec.env, PIN_READY: file("ready"), PIN_GO: file("go"), PIN_OUT: file("out"), PIN_EXIT: file("exit") } });
+	const exited = new Promise((resolveExit) => session.on("exit", resolveExit));
+	const waitFor = async (path) => {
+		const deadline = Date.now() + 15000;
+		while (!existsSync(path) && Date.now() < deadline) await new Promise((r) => setTimeout(r, 25));
+		assert.ok(existsSync(path), `${path} não apareceu`);
+	};
+	try {
+		await waitFor(file("ready"));
+		deploy(b);
+		assert.equal(realpathSync(join(pinStore, "skills")), join(b.agentRoot, "skills", "standard"));
+		writeFileSync(file("go"), "1");
+		await waitFor(file("out"));
+		const out = JSON.parse(readFileSync(file("out"), "utf8"));
+		const pinned = {
+			extensions: [join(a.agentRoot, "extensions", "todos.ts"), `-${join(a.agentRoot, "extensions", "x.ts")}`, "/elsewhere/personal.ts"],
+			skills: [join(a.agentRoot, "skills", "standard"), join(a.agentRoot, "skills")],
+			preload: spec.env.NODE_OPTIONS,
+			piRoot: spec.env.AGENT_PI_ROOT,
+			artifactRoot: a.artifactRoot,
+		};
+		assert.deepEqual(out.later, pinned, "a sessão aberta leu o settings do deploy B");
+		assert.deepEqual(out.child, pinned, "o filho da sessão aberta leu o settings do deploy B");
+		assert.ok(out.child.preload.includes(a.artifactRoot));
+		// GC real (ps eww + lsof): A fica enquanto a sessão vive e sai depois.
+		const { planOverlayGc } = await import(pathToFileURL(join(repo, "scripts", "agent-update.mjs")).href);
+		const artifactAction = () => planOverlayGc(pinStore, 0, { sizeReports: false }).find((item) => item.kind === "agent artifact" && item.path === a.artifactRoot)?.action;
+		assert.equal(artifactAction(), "report", "GC apagaria o artefato de uma sessão viva");
+		writeFileSync(file("exit"), "1");
+		await exited;
+		assert.equal(artifactAction(), "delete", "artefato sem processo vivo deveria ser coletável");
+	} finally {
+		if (session.exitCode === null) session.kill("SIGKILL");
+	}
 });
 
 function hashOf(path) {
