@@ -1174,7 +1174,7 @@ export class Mesh {
   async reply(id: string, status: string, result: unknown): Promise<{ ok: boolean; text: string; id?: string; status?: string }> {
     const wanted = (id ?? "").trim();
     const state = clean(status, 20).toLowerCase() as ReplyStatus;
-    if (!wanted) return { ok: false, text: "peers_reply: `id` é obrigatório (vem no bloco [peers REQUEST <id> …])" };
+    if (!wanted) return { ok: false, text: "peers_reply: `id` is required (it is in the [peers REQUEST <id> …] block)" };
     if (!REPLY_STATUS.includes(state)) return { ok: false, text: `peers_reply: \`status\` deve ser ${REPLY_STATUS.join(" | ")}` };
     const open = this.openAsks.get(wanted);
     if (!open) {

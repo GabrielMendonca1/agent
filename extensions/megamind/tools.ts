@@ -403,7 +403,7 @@ export function registerMegamindTools(pi: ExtensionAPI, deps: ToolDeps): void {
         .map((value) => value?.trim() ?? "")
         .filter((value, index, all) => value && all.indexOf(value) === index);
       if (!message_id) return toolError("megamind_fetch: `message_id` é obrigatório");
-      if (names.length === 0) return toolError("megamind_fetch: diga `name` ou `names` (estão na linha attachments: da mensagem)");
+      if (names.length === 0) return toolError("megamind_fetch: pass `name` or `names` (they are on the message's attachments: line)");
       const cwd = ctx?.cwd ?? process.cwd();
       const rawDir = text(args.dir)?.trim();
       const dir = rawDir ? resolve(cwd, rawDir) : inboxDir(cwd, message_id);

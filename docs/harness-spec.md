@@ -149,7 +149,7 @@ Ordem de execução proposta: **0 → 1 → 2 → 3 → 4**. A suíte de evals e
 
 ## 3. Ontologia das tools + idioma do prompt
 
-**Status:** implementado na branch `harness/item3`. `plan` aceita só `steps`; `todo` é registrada em `plan.ts` com `exposure: "deferred"` e fica fora do schema declarado. O texto lido pelo modelo está em inglês: descriptions e parâmetros de `ask_user`, `peers_*`, `web_*` e `megamind_*`, a política (com "Reply to the user in their language."), `agent_notes`, as categorias de skills, o slot de peers, os avisos do loop guard, os prompts de `/notes` e `/rules init` e o `description:` dos papéis. O check `tool-language` guarda tudo isso. Bytes medidos por commit com `scripts/test-agent-headless.mjs` (mesmo Pi do store, mesmo provedor falso, `claude-sonnet-4-5`):
+**Status:** implementado no `main` (merge `5066629`). `plan` aceita só `steps`; `todo` é registrada em `plan.ts` com `exposure: "deferred"` e fica fora do schema declarado. O texto lido pelo modelo está em inglês: descriptions e parâmetros de `ask_user`, `peers_*`, `web_*` e `megamind_*`, a política (com "Reply to the user in their language."), `agent_notes`, as categorias de skills, o slot de peers, os avisos do loop guard, os prompts de `/notes` e `/rules init` e o `description:` dos papéis. O check `tool-language` guarda tudo isso. Bytes medidos por commit com `scripts/test-agent-headless.mjs` (mesmo Pi do store, mesmo provedor falso, `claude-sonnet-4-5`):
 
 | | base `209a8bc` | item 3 |
 |---|---|---|
