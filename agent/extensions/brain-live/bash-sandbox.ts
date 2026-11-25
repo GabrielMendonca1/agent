@@ -25,7 +25,10 @@ function sandboxArgs(mode: "seatbelt" | "bwrap", cwd: string, home: string, prof
 	const projectPi = canonical(join(cwd, ".pi"));
 	const { dirs, files } = secretPaths(home);
 	if (mode === "seatbelt") {
-		const params = { CWD: cwd, HOME: home, PROJECT_PI: projectPi, ...dirs, ...files };
+		// Espelha as raízes graváveis do perfil; fora delas o CWD já é só leitura e o guarda vira o próprio cache liberado.
+		const roots = ["/private/tmp", "/private/var/folders", "/dev", ...["Library/Caches", ".npm/_cacache", ".npm/_logs", ".cache"].map((path) => join(home, path))];
+		const guard = roots.some((root) => within(cwd, root)) ? cwd : join(cwd, "node_modules", ".cache");
+		const params = { CWD: cwd, CWD_GUARD: guard, HOME: home, PROJECT_PI: projectPi, ...dirs, ...files };
 		return ["/usr/bin/sandbox-exec", "-f", profile, ...Object.entries(params).flatMap(([key, value]) => ["-D", `${key}=${value}`])];
 	}
 	const mounts = ["bwrap", "--ro-bind", "/", "/", "--dev", "/dev"];
@@ -35,6 +38,9 @@ function sandboxArgs(mode: "seatbelt" | "bwrap", cwd: string, home: string, prof
 	for (const path of new Set([cwd, projectPi])) {
 		if (existsSync(path) && writable.some((root) => within(path, root))) mounts.push("--ro-bind", path, path);
 	}
+	// Mesma exceção do Seatbelt: cache de ferramentas em node_modules continua gravável.
+	const toolCache = canonical(join(cwd, "node_modules", ".cache"));
+	if (existsSync(toolCache) && within(toolCache, cwd) && !within(toolCache, projectPi)) mounts.push("--bind", toolCache, toolCache);
 	for (const path of new Set(Object.values(dirs))) if (existsSync(path)) mounts.push("--tmpfs", path);
 	for (const path of new Set(Object.values(files))) if (existsSync(path)) mounts.push("--ro-bind", "/dev/null", path);
 	return mounts;
