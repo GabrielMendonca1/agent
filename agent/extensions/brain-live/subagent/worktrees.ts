@@ -54,37 +54,109 @@ export function plannedIsolation(record: Pick<JobRecord, "mode" | "tasks" | "cwd
 const skillLabel = (file: string) => path.basename(file) === "SKILL.md" ? path.basename(path.dirname(file)) : path.basename(file, ".md");
 
 /**
- * Launch check for a writer that will run in a worktree. A skill inside the repository must be a
- * regular file committed at HEAD and must not sit under a manifest `link` (those resolve back to
- * the source checkout). Skills outside the repository keep their absolute path.
+ * Lexical forms of the repository root: git's toplevel, its realpath and the same root reached
+ * through `cwd` (e.g. /var vs /private/var on macOS). Catalog paths are compared lexically.
  */
-export function worktreeSkillError(file: string, root: string): string | undefined {
-	const rootReal = realpathSync(root);
-	let real: string;
-	try { real = realpathSync(file); } catch { return `skill "${skillLabel(file)}" (${file}) does not exist.`; }
-	if (!real.startsWith(rootReal + path.sep)) return undefined;
-	const rel = path.relative(rootReal, real).split(path.sep).join("/");
-	const notCommitted = `skill "${skillLabel(real)}" (${rel}) is not committed in this worktree; commit it or run the task in place.`;
-	const links = (findManifest(rootReal)?.link ?? []).map((entry) => path.posix.normalize(entry).replace(/\/+$/, ""));
-	if (links.some((entry) => rel === entry || rel.startsWith(entry + "/"))) return notCommitted;
-	const tree = spawnSync("git", ["-C", rootReal, "ls-tree", "HEAD", "--", rel], { encoding: "utf8" });
-	return tree.status === 0 && /^100(644|755) blob /.test(tree.stdout) ? undefined : notCommitted;
+function rootForms(root: string, cwd?: string): string[] {
+	const forms = new Set([path.resolve(root)]);
+	try {
+		const real = realpathSync(root);
+		forms.add(real);
+		if (cwd) {
+			const rel = path.relative(real, realpathSync(cwd));
+			if (!rel.startsWith("..") && !path.isAbsolute(rel)) {
+				const candidate = path.resolve(cwd, ...(rel ? rel.split(path.sep).map(() => "..") : []));
+				if (realpathSync(candidate) === real) forms.add(candidate);
+			}
+		}
+	} catch { /* missing paths: only the given form */ }
+	return [...forms];
 }
 
-/** Same skills read from the worktree; a mapped file whose realpath leaves the worktree is refused. */
-export function mapSkillsToWorktree(skills: ChildSkills, root: string, worktree: string): ChildSkills {
-	const rootReal = realpathSync(root);
-	const worktreeReal = realpathSync(worktree);
+/** Project-local when the path, as written (no dereferencing), lies under the repository root. */
+function projectLocal(file: string, roots: string[]): { root: string; rel: string } | undefined {
+	const resolved = path.resolve(file);
+	for (const root of roots) if (resolved.startsWith(root + path.sep)) return { root, rel: path.relative(root, resolved) };
+	return undefined;
+}
+
+/** First path component from `root` to `rel` that is a symlink or missing; undefined when all are real. */
+function badComponent(root: string, rel: string): { at: string; kind: "symlink" | "missing" } | undefined {
+	let current = root;
+	for (const part of rel.split(path.sep)) {
+		current = path.join(current, part);
+		let stat: fs.Stats;
+		try { stat = fs.lstatSync(current); } catch { return { at: current, kind: "missing" }; }
+		if (stat.isSymbolicLink()) return { at: current, kind: "symlink" };
+	}
+	return undefined;
+}
+
+const posix = (rel: string) => rel.split(path.sep).join("/");
+
+/** Regular file reached only through real directories, whose realpath stays inside `root`. */
+function plainFileError(root: string, rel: string, label: string, where: string): string | undefined {
+	const bad = badComponent(root, rel);
+	if (bad?.kind === "symlink") return `skill "${label}" (${posix(rel)}) goes through a symlink (${bad.at}) in ${where}; isolated writers only load regular committed skill files.`;
+	if (bad) return `skill "${label}" (${posix(rel)}) is missing in ${where}.`;
+	const file = path.join(root, rel);
+	if (!fs.lstatSync(file).isFile()) return `skill "${label}" (${posix(rel)}) is not a regular file in ${where}.`;
+	if (!realpathSync(file).startsWith(realpathSync(root) + path.sep)) return `skill "${label}" (${posix(rel)}) resolves outside ${where}.`;
+	return undefined;
+}
+
+/**
+ * Launch check for a writer that will run in a worktree. A project-local skill (lexically under
+ * the repository) must be a regular file reached without symlinks, committed at HEAD with mode
+ * 100644, and its directory (or the flat .md file) must have no uncommitted changes, so the child
+ * reads exactly what was validated. Other skills (personal, company, bundled) keep their path.
+ */
+export function worktreeSkillError(file: string, root: string, cwd?: string): string | undefined {
+	const local = projectLocal(file, rootForms(root, cwd));
+	if (!local) return undefined;
+	const label = skillLabel(file);
+	const rel = posix(local.rel);
+	const plain = plainFileError(local.root, local.rel, label, "the source checkout");
+	if (plain) return plain;
+	const notCommitted = `skill "${label}" (${rel}) is not committed in this worktree; commit it or run the task in place.`;
+	const tree = spawnSync("git", ["-C", local.root, "ls-tree", "HEAD", "--", rel], { encoding: "utf8" });
+	if (tree.status !== 0 || !tree.stdout.trim()) return notCommitted;
+	if (!tree.stdout.startsWith("100644 blob ")) return `skill "${label}" (${rel}) is committed with git mode ${tree.stdout.split(" ")[0]}, not as a regular file (100644); commit a regular file or run the task in place.`;
+	const scope = path.posix.basename(rel) === "SKILL.md" ? path.posix.dirname(rel) : rel;
+	const status = spawnSync("git", ["-C", local.root, "status", "--porcelain", "--untracked-files=all", "--", scope], { encoding: "utf8" });
+	if (status.status !== 0 || status.stdout.trim()) return `skill "${label}" has uncommitted changes; commit them or run the task in place.`;
+	return undefined;
+}
+
+/** Same project skills, lexically at the same relative path in the worktree, rechecked there. */
+export function mapSkillsToWorktree(skills: ChildSkills, root: string, worktree: string, cwd?: string): ChildSkills {
+	const roots = rootForms(root, cwd);
 	const paths = skills.paths.map((file) => {
-		const real = realpathSync(file);
-		if (!real.startsWith(rootReal + path.sep)) return file;
-		const mapped = path.join(worktree, path.relative(rootReal, real));
-		let mappedReal = "";
-		try { mappedReal = realpathSync(mapped); } catch { /* missing: refused below */ }
-		if (!mappedReal.startsWith(worktreeReal + path.sep)) throw new Error(`skill "${skillLabel(real)}" is not committed in this worktree; commit it or run the task in place.`);
-		return mapped;
+		const local = projectLocal(file, roots);
+		if (!local) return file;
+		const error = plainFileError(worktree, local.rel, skillLabel(file), "the worktree");
+		if (error) throw new Error(error);
+		return path.join(worktree, local.rel);
 	});
 	return { ...skills, paths };
+}
+
+/**
+ * Continue of an isolated writer: every carried project skill (under the worktree of `cwd`) must
+ * still be a regular file reached without symlinks inside it. Returns the error, if any.
+ */
+export function carriedSkillsError(skills: ChildSkills | undefined, cwd: string): string | undefined {
+	if (!skills?.paths.length) return undefined;
+	const top = spawnSync("git", ["-C", cwd, "rev-parse", "--show-toplevel"], { encoding: "utf8" });
+	if (top.status !== 0 || !top.stdout.trim()) return undefined;
+	const roots = rootForms(top.stdout.trim(), cwd);
+	for (const file of skills.paths) {
+		const local = projectLocal(file, roots);
+		if (!local) continue;
+		const error = plainFileError(local.root, local.rel, skillLabel(file), "the worktree");
+		if (error) return error;
+	}
+	return undefined;
 }
 
 export function isolateWriters(record: JobRecord, agents: AgentConfig[], persist: () => void): void {
@@ -111,7 +183,7 @@ export function isolateWriters(record: JobRecord, agents: AgentConfig[], persist
 			}
 			// Checked at launch (worktreeSkillError); this refuses anything that still leaves the worktree.
 			if (task.resolvedSkills) {
-				task.resolvedSkills = mapSkillsToWorktree(task.resolvedSkills, root, worktree);
+				task.resolvedSkills = mapSkillsToWorktree(task.resolvedSkills, root, worktree, cwd);
 				persist();
 			}
 		}

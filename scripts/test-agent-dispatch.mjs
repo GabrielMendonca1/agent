@@ -358,14 +358,20 @@ try {
       await run({ ...agent, name: 'allow', skills: ['alpha'] }, { resolvedSkills: null });
       assert.deepEqual(skillArgv(captured.args), [], 'null = full catalog');
     } finally { skillHooks.catalog = catalogBefore; }
-    // Isolated writers: a project skill must be committed (it maps into the worktree); an
-    // uncommitted one or one under a manifest link fails at launch, before any record or worktree.
+    // Isolated writers: project skills (lexically under the repo) must be regular files, committed as
+    // 100644, reached without symlinks and clean; otherwise the launch fails before any record or worktree.
     {
       const wt = await jiti.import(join(repo, 'agent/extensions/brain-live/subagent/worktrees.ts'));
       const src = join(root, 'skill-src');
       const sh = (cwd, ...args) => { const r = spawnSync('git', args, { cwd, encoding: 'utf8' }); assert.equal(r.status, 0, r.stderr); };
-      const skill = (name) => { mkdirSync(join(src, '.pi/skills', name), { recursive: true }); writeFileSync(join(src, '.pi/skills', name, 'SKILL.md'), `---\nname: ${name}\ndescription: x\n---\nbody\n`); return join(src, '.pi/skills', name, 'SKILL.md'); };
+      const skillsRoot = join(src, '.pi/skills');
+      const skill = (dir, name = dir) => { mkdirSync(join(skillsRoot, dir), { recursive: true }); writeFileSync(join(skillsRoot, dir, 'SKILL.md'), `---\nname: ${name}\ndescription: x\n---\nbody\n`); return join(skillsRoot, dir, 'SKILL.md'); };
       const committed = skill('committed');
+      const dirty = skill('dirty');
+      skill('target');
+      mkdirSync(join(skillsRoot, 'linkedfile'), { recursive: true });
+      symlinkSync('../target/SKILL.md', join(skillsRoot, 'linkedfile/SKILL.md'));
+      symlinkSync('target', join(skillsRoot, 'symdir'));
       writeFileSync(join(src, '.pi/checks.json'), JSON.stringify({ checks: [{ name: 'x', cmd: 'true' }], link: ['.pi/skills/shared'] }));
       writeFileSync(join(src, '.gitignore'), '.pi/skills/shared/\n');
       sh(root, 'init', '-q', src);
@@ -373,11 +379,19 @@ try {
       sh(src, '-c', 'user.email=t@t', '-c', 'user.name=t', 'commit', '-q', '-m', 'skills');
       const draft = skill('draft');
       const shared = skill('shared');
+      writeFileSync(dirty, '---\nname: dirty\ndescription: changed after the commit\n---\nbody\n');
       const global = join(process.env.PI_CODING_AGENT_DIR, 'skills/alpha/SKILL.md');
-      assert.equal(wt.worktreeSkillError(committed, src), undefined);
-      assert.equal(wt.worktreeSkillError(global, src), undefined, 'skills outside the repository keep their path');
-      assert.equal(wt.worktreeSkillError(draft, src), 'skill "draft" (.pi/skills/draft/SKILL.md) is not committed in this worktree; commit it or run the task in place.');
-      assert.match(wt.worktreeSkillError(shared, src), /skill "shared" .* is not committed in this worktree/, 'manifest link resolves back to the source');
+      const err = (file) => wt.worktreeSkillError(file, src, src);
+      assert.equal(err(committed), undefined);
+      assert.equal(err(global), undefined, 'skills outside the repository keep their path');
+      assert.equal(err(draft), 'skill "draft" (.pi/skills/draft/SKILL.md) is not committed in this worktree; commit it or run the task in place.');
+      assert.match(err(shared), /skill "shared" .* is not committed in this worktree/, 'ignored dir behind a manifest link');
+      assert.equal(err(dirty), 'skill "dirty" has uncommitted changes; commit them or run the task in place.', 'dirty frontmatter');
+      assert.match(err(join(skillsRoot, 'linkedfile/SKILL.md')), /skill "linkedfile" .* goes through a symlink/, 'SKILL.md committed as a 120000 symlink');
+      assert.match(err(join(skillsRoot, 'symdir/SKILL.md')), /skill "symdir" .* goes through a symlink/, 'symlinked directory component');
+      writeFileSync(join(skillsRoot, 'committed/notes.md'), 'untracked');
+      assert.match(err(committed), /has uncommitted changes/, 'untracked file in the skill dir');
+      rmSync(join(skillsRoot, 'committed/notes.md'));
 
       const writer = { name: 'writer', description: 'w', tools: ['read', 'edit'], model: 'anthropic/claude-sonnet-4-5', systemPrompt: 'x', source: 'user', filePath: '' };
       const set = (...paths) => ({ only: true, paths, advertised: paths.map(() => 'x') });
@@ -388,23 +402,34 @@ try {
       const baseDir = join(root, 'skill-jobs');
       const worktreesDir = join(process.env.PI_CODING_AGENT_DIR, 'agent/worktrees');
       const manager = new jobs.SubagentJobManager({ baseDir });
-      for (const [paths, label] of [[[draft], 'draft'], [[shared], 'shared']]) {
+      for (const [paths, pattern] of [[[draft], /skill "draft" .* is not committed in this worktree; commit it or run the task in place\.$/], [[dirty], /skill "dirty" has uncommitted changes; commit them or run the task in place\.$/], [[join(skillsRoot, 'symdir/SKILL.md')], /goes through a symlink/]]) {
         const outcome = manager.launch(spec(paths));
-        assert.equal(outcome.ok, false, label);
-        assert.match(outcome.error, new RegExp(`^Task 2 \\(writer\\): skill "${label}" .* is not committed in this worktree; commit it or run the task in place\\.$`));
+        assert.equal(outcome.ok, false);
+        assert.match(outcome.error, /^Task 2 \(writer\): /);
+        assert.match(outcome.error, pattern);
       }
       assert.ok(!existsSync(join(baseDir, 'skills')) || readdirSync(join(baseDir, 'skills')).length === 0, 'no job record');
       assert.ok(!existsSync(worktreesDir) || readdirSync(worktreesDir).length === 0, 'no worktree left behind');
 
-      // After worktree add: a committed skill maps inside the worktree; a link back to the source is refused.
+      // After worktree add: lexical mapping into the worktree, rechecked there.
       const worktree = join(root, 'skill-wt');
       sh(src, 'worktree', 'add', '-q', worktree);
-      const mapped = wt.mapSkillsToWorktree(set(committed, global), src, worktree);
+      const mapped = wt.mapSkillsToWorktree(set(committed, global), src, worktree, src);
       assert.deepEqual(mapped.paths, [join(worktree, '.pi/skills/committed/SKILL.md'), global]);
-      assert.ok(existsSync(mapped.paths[0]));
-      symlinkSync(join(src, '.pi/skills/shared'), join(worktree, '.pi/skills/shared'));
-      assert.throws(() => wt.mapSkillsToWorktree(set(shared), src, worktree), /skill "shared" is not committed in this worktree/);
-      assert.throws(() => wt.mapSkillsToWorktree(set(draft), src, worktree), /skill "draft" is not committed in this worktree/);
+      symlinkSync(join(skillsRoot, 'shared'), join(worktree, '.pi/skills/shared'));
+      assert.throws(() => wt.mapSkillsToWorktree(set(shared), src, worktree, src), /skill "shared" .* goes through a symlink/);
+      assert.throws(() => wt.mapSkillsToWorktree(set(draft), src, worktree, src), /skill "draft" .* is missing in the worktree/);
+
+      // Continue: the carried paths are rechecked; a deleted skill refuses without spawning.
+      const invocation = { ...allow.invocation, cwd: worktree, sourceCwd: src, skills: mapped };
+      assert.equal(wt.carriedSkillsError(mapped, worktree), undefined);
+      rmSync(join(worktree, '.pi/skills/committed'), { recursive: true });
+      assert.match(wt.carriedSkillsError(mapped, worktree), /skill "committed" .* is missing in the worktree/);
+      captured = undefined;
+      const resumed = await run({ ...agent, name: 'allow' }, { resume: { invocation, sessionFile: allow.sessionFile } });
+      assert.equal(resumed.exitCode, 1);
+      assert.match(resumed.errorMessage, /skill "committed" .* is missing in the worktree\. The continue would load a different skill set; launch a new task instead\./);
+      assert.equal(captured, undefined, 'no spawn');
     }
 
     // Warm key: a continue uses its snapshot's skills; a launch uses the resolved set.

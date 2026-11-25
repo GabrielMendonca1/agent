@@ -15,7 +15,7 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { type ModelRegistry, type ModelRuntime, resolveCliModel } from "@earendil-works/pi-coding-agent";
-import { commitWip, gateSummary, gcWorktrees, isolateWriters, manageWorktrees, plannedIsolation, worktreeSkillError, worktreeSummary } from "./worktrees.ts";
+import { carriedSkillsError, commitWip, gateSummary, gcWorktrees, isolateWriters, manageWorktrees, plannedIsolation, worktreeSkillError, worktreeSummary } from "./worktrees.ts";
 import { getRoleModelChoices, isGoogleApiModel, resolveGeminiPreference, resolveModelRef, resolveRoleModel } from "../lib/tiers.ts";
 import type { AgentConfig, AgentScope } from "./agents.ts";
 import type { ChildSkills } from "./skills.ts";
@@ -686,7 +686,7 @@ export class SubagentJobManager {
 		for (const [root, group] of plannedIsolation(spec, spec.agents)) {
 			for (const { task, index } of group) {
 				for (const file of task.resolvedSkills?.paths ?? []) {
-					const error = worktreeSkillError(file, root);
+					const error = worktreeSkillError(file, root, path.resolve(task.cwd ?? spec.cwd));
 					if (error) return { ok: false, error: `Task ${index + 1} (${task.agent}): ${error}` };
 				}
 			}
@@ -1277,6 +1277,9 @@ export class SubagentJobManager {
 		}
 		if (!invocation || !entry.sessionFile || !fs.existsSync(entry.sessionFile))
 			return { ok: false, error: `Handle ${entry.handle} has no child session to resume${entry.sessionFile ? ` (${entry.sessionFile} is missing)` : ""}. Launch a new task instead.` };
+		// An isolated writer resumes with the same project skills: they must still be plain files in its worktree.
+		const skillError = invocation.sourceCwd !== undefined ? carriedSkillsError(invocation.skills, invocation.cwd) : undefined;
+		if (skillError) return { ok: false, error: `Handle ${entry.handle}: ${skillError} The continue would load a different skill set; launch a new task instead.` };
 		// Decision (d): a model switch keeps context but loses the cache; only quota justifies it.
 		if (model !== undefined && entry.failure !== "quota")
 			return { ok: false, error: `Handle ${entry.handle}: "model" is accepted only after a quota/rate-limit failure, and its last run ${entry.failure ? `failed with "${entry.failure}"` : "did not fail on quota"}. Continue without "model" to keep ${invocation.model ?? "the same model"}.` };

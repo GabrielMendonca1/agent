@@ -26,6 +26,7 @@ import { isProcessAlive, listDescendants, signalProcesses } from "./process-tree
 import type { AgentConfig, AgentScope } from "./agents.ts";
 import { type ChildInvocation, fileSha } from "./handles.ts";
 import { type ChildSkills, resolveChildSkills, skillArgs } from "./skills.ts";
+import { carriedSkillsError } from "./worktrees.ts";
 
 /** Preview cap. Never applied to what is stored: full outputs are kept in the job record. */
 export const PREVIEW_OUTPUT_CAP = 50 * 1024;
@@ -1102,6 +1103,12 @@ export async function runSingleAgent(opts: RunAgentOptions): Promise<SingleResul
 	// `continue` reusa o snapshot do launch: mesmo argv, mesmo --session, só a mensagem muda.
 	const resume = opts.prefetch ? undefined : opts.resume;
 	let invocation = resume?.invocation;
+	// A resumed isolated writer reloads its project skills from the worktree: refuse without spawning if they changed shape.
+	const carriedError = resume && invocation?.sourceCwd !== undefined ? carriedSkillsError(invocation.skills, invocation.cwd) : undefined;
+	if (carriedError) {
+		const error = `${carriedError} The continue would load a different skill set; launch a new task instead.`;
+		return { agent: agentName, agentSource: agent.source, task, exitCode: 1, finalText: "", stderr: error, errorMessage: error, stopReason: "error", usage: emptyUsage(), step };
+	}
 	if (!invocation) {
 		// Resolved at launch (the job path): reuse it, even in an isolated worktree that lacks
 		// uncommitted project skills. No allowlist and no extra names: stay synchronous up to onStart.
