@@ -1,3 +1,4 @@
+import { realpathSync } from "node:fs";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { spawnSync } from "node:child_process";
@@ -54,7 +55,7 @@ export function isolateWriters(record: JobRecord, agents: AgentConfig[], persist
 			const branch = `agent/${name}`;
 			fs.mkdirSync(path.dirname(worktree), { recursive: true });
 			git(root, ["worktree", "add", "-b", branch, worktree, baseSha]);
-			Object.assign(task, { worktree, branch, sourceCwd: cwd, sourceBranch, baseSha, cwd: path.join(worktree, path.relative(root, cwd)) });
+			Object.assign(task, { worktree, branch, sourceCwd: cwd, sourceBranch, baseSha, cwd: path.join(worktree, path.relative(root, realpathSync(cwd))) });
 			// Persiste antes dos links: falhas posteriores não perdem a referência durável.
 			persist();
 			for (const entry of findManifest(root)?.link ?? []) {
@@ -68,6 +69,26 @@ export function isolateWriters(record: JobRecord, agents: AgentConfig[], persist
 			}
 		}
 	}
+}
+
+/**
+ * Hard timeout: commit whatever the killed child left in its job worktree, without
+ * hooks, so `continue` resumes from it. Only for the job's own worktree (the caller
+ * checks); manifest `link` symlinks are never committed. Returns the sha, or
+ * undefined when there was nothing to commit.
+ */
+export function commitWip(worktree: string, jobId: string): string | undefined {
+	if (!git(worktree, ["status", "--porcelain"])) return undefined;
+	const links = (findManifest(worktree)?.link ?? []).map((entry) => `:(exclude)${entry}`);
+	git(worktree, ["add", "-A", "--", ".", ...links]);
+	if (spawnSync("git", ["-C", worktree, "diff", "--cached", "--quiet"]).status === 0) return undefined;
+	const config = (key: string) => spawnSync("git", ["-C", worktree, "config", key], { encoding: "utf8" }).stdout?.trim();
+	const identity = [
+		...(config("user.name") ? [] : ["-c", "user.name=Agent"]),
+		...(config("user.email") ? [] : ["-c", "user.email=agent@localhost"]),
+	];
+	git(worktree, [...identity, "commit", "--no-verify", "-q", "-m", `WIP(agent): timeout ${jobId}`]);
+	return git(worktree, ["rev-parse", "HEAD"]);
 }
 
 export function worktreeSummary(record: JobRecord): string {

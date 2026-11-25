@@ -24,7 +24,7 @@ import {
 	getMarkdownTheme,
 } from "@earendil-works/pi-coding-agent";
 import { type Component, Container, Markdown, Spacer, Text, truncateToWidth } from "@earendil-works/pi-tui";
-import { Type } from "typebox";
+import { type Static, Type } from "typebox";
 import { lastUser } from "../lib/checkpoint-store.ts";
 import { formatRoleModelChoices, getRoleModelChoices, resolveGeminiPreference } from "../lib/tiers.ts";
 import { getAgentPreferences, isChild } from "../../../core/client.mjs";
@@ -52,6 +52,7 @@ import {
 	validateTimeoutSeconds,
 } from "./jobs.ts";
 import { taskStatusLines, traceJob } from "./trace.ts";
+import { findHandle, type HandleEntry, readRegistry, takenHandles, validHandleName } from "./handles.ts";
 import { type DispatchDefaults, type JobSummary, mapWithConcurrencyLimit, runnerHooks, sandboxForTools, type SubagentDetails, type UsageStats } from "./runner.ts";
 
 const STATUS_KEY = "subagents";
@@ -183,6 +184,7 @@ const TaskItem = Type.Object({
 	brief: Type.Optional(briefSchema(false)),
 	cwd: Type.Optional(Type.String()),
 	model: Type.Optional(Type.String()),
+	name: Type.Optional(Type.String()),
 });
 
 interface BriefItem {
@@ -191,6 +193,7 @@ interface BriefItem {
 	brief?: Brief;
 	cwd?: string;
 	model?: string;
+	name?: string;
 }
 
 const briefValue = (item: Brief | undefined, field: BriefField): string => (item?.[field] ?? "").trim();
@@ -227,21 +230,24 @@ const AgentScopeSchema = StringEnum(["user", "project", "both"] as const, {
 	default: "user",
 });
 
-const ActionSchema = StringEnum(["launch", "status", "result", "trace", "list", "cancel", "integrate", "discard"] as const, {
+const ActionSchema = StringEnum(["launch", "continue", "status", "result", "trace", "list", "cancel", "integrate", "discard"] as const, {
 	default: "launch",
 });
 
 const SubagentParams = Type.Object({
 	action: Type.Optional(ActionSchema),
-	taskIndex: Type.Optional(Type.Integer({ minimum: 1, description: "1-based task for trace/integrate/discard; omit for all" })),
+	taskIndex: Type.Optional(Type.Integer({ minimum: 1, description: "1-based task for trace/integrate/discard/continue; omit for all" })),
+	handle: Type.Optional(Type.String({ description: "Task handle for continue (from launch/list)" })),
+	message: Type.Optional(Type.String({ description: "Follow-up message for continue" })),
+	name: Type.Optional(Type.String({ description: "Handle name for the launched task (single mode; items take name too)" })),
 	force: Type.Optional(Type.Boolean({ description: "Permit discard of uncommitted work" })),
-	jobId: Type.Optional(Type.String({ description: 'Required except for launch/list' })),
+	jobId: Type.Optional(Type.String({ description: 'Required except for launch/list/continue by handle' })),
 	offset: Type.Optional(Type.Number({ description: 'Result/trace byte offset (default 0)' })),
 	limit: Type.Optional(Type.Number({ description: `Result/trace bytes (default/cap ${RESULT_READ_CAP})` })),
 	agent: Type.Optional(Type.String({ description: "Role name (single mode)" })),
 	task: Type.Optional(Type.String({ description: "Extra notes (single mode)" })),
 	brief: Type.Optional(BriefSchema),
-	model: Type.Optional(Type.String({ description: "Allowed provider/model override (single mode)" })),
+	model: Type.Optional(Type.String({ description: "Allowed provider/model override (single mode; continue only after a quota failure)" })),
 	tasks: Type.Optional(Type.Array(TaskItem, { description: "Parallel tasks" })),
 	chain: Type.Optional(Type.Array(TaskItem, { description: "Sequential tasks" })),
 	agentScope: Type.Optional(AgentScopeSchema),
@@ -664,6 +670,121 @@ export default function (pi: ExtensionAPI) {
 		]);
 	});
 
+	const handleLine = (h: HandleEntry) =>
+		`${h.handle} · ${h.agent} · ${h.lifecycle}${h.closedReason ? ` (${h.closedReason})` : ""}${h.failure ? ` · last failure ${h.failure}` : ""}${h.wipCommit ? ` · WIP ${h.wipCommit.slice(0, 12)}` : ""} · job ${h.lastJobId}${h.continues ? ` · ${h.continues} continue${h.continues > 1 ? "s" : ""}` : ""}${h.worktree ? ` · worktree ${h.worktree}` : ""}`;
+
+	/** Handle lifecycle of each task of a job (registry state, not job status). */
+	const jobHandleLines = (record: JobRecord): string[] => {
+		const registry = readRegistry(baseDir, record.sessionId);
+		return record.tasks.flatMap((task, i) => {
+			const entry = task.handle ? registry.handles[task.handle] : findHandle(registry, record.jobId, i + 1);
+			return entry ? [`handle ${entry.handle} (task ${i + 1}): ${entry.lifecycle}${entry.closedReason ? ` (${entry.closedReason})` : ""}`] : [];
+		});
+	};
+
+	/**
+	 * `continue`: wake a waiting task with a follow-up message. Same guards as launch
+	 * (children never delegate); the new job is anchored like a launch.
+	 */
+	const continueHandle = (
+		params: Static<typeof SubagentParams>,
+		ctx: ExtensionContext,
+		mgr: SubagentJobManager,
+		sessionId: string,
+		agentScope: AgentScope,
+		controlDetails: (job?: JobSummary, jobs?: JobSummary[]) => SubagentDetails,
+		fail: (text: string) => { content: { type: "text"; text: string }[]; details: SubagentDetails; isError: true },
+		signal: AbortSignal | undefined,
+	) => {
+		if (isChild()) return fail("This process is a subagent (AGENT_CHILD=1); subagents cannot launch subagents.");
+		if (process.env[NO_DELEGATE_ENV] === "1")
+			return fail(`This process descends from a subagent (${NO_DELEGATE_ENV}=1); it cannot launch subagents. If this is a human session opened from inside a subagent, unset ${NO_DELEGATE_ENV} and restart it.`);
+		if (signal?.aborted) return fail("Continue aborted before launch.");
+		if (!isSafeId(sessionId)) return fail("Unsafe session id; refusing to continue.");
+		const message = (params.message ?? "").trim();
+		if (!message) return fail('action "continue" requires message (the follow-up for the child).');
+		let handle = params.handle?.trim();
+		if (!handle) {
+			if (!params.jobId) return fail('action "continue" requires handle, or jobId (+ taskIndex for multi-task jobs).');
+			if (!isSafeId(params.jobId)) return fail(`Invalid jobId ${params.jobId}.`);
+			const record = mgr.get(sessionId, params.jobId);
+			if (!record) return fail(`Unknown job ${params.jobId} in this session.`);
+			const taskIndex = params.taskIndex ?? (record.tasks.length === 1 ? 1 : undefined);
+			if (taskIndex === undefined || taskIndex < 1 || taskIndex > record.tasks.length)
+				return fail(`Job ${record.jobId} has ${record.tasks.length} tasks; pass taskIndex (1-${record.tasks.length}) or handle.`);
+			handle = record.tasks[taskIndex - 1].handle ?? findHandle(readRegistry(baseDir, sessionId), record.jobId, taskIndex)?.handle;
+			if (!handle) return fail(`Job ${record.jobId} task ${taskIndex} has no handle (launched before continue existed). Launch a new task instead.`);
+		}
+		const timeout = validateTimeoutSeconds(params.timeoutSeconds);
+		if (!timeout.ok) return fail(timeout.error);
+		const discovery = discoverAgents(ctx.cwd, agentScope);
+		const model = params.model?.trim() || undefined;
+		const blocked = mgr.continueBlocker(sessionId, handle, discovery.agents, model);
+		if (!blocked.ok) return fail(blocked.error);
+
+		const dispatchDefaults: DispatchDefaults = {
+			parentSession: ctx.sessionManager.getSessionFile(),
+			model: ctx.model ? `${ctx.model.provider}/${ctx.model.id}` : undefined,
+			thinkingLevel: ctx.thinkingLevel,
+		};
+		// Same resolution as launch (role allowlist or principal/apoio): a quota model
+		// switch and the read-only automatic fallback both need it.
+		try {
+			dispatchDefaults.resources = { supportModel: getAgentPreferences().supportModel ?? undefined, slots: {} };
+		} catch (error) {
+			return fail(`Agent preferences unavailable: ${error instanceof Error ? error.message : String(error)}`);
+		}
+		// Writer in place: a fresh checkpoint for this turn, so /rewind covers the second turn too.
+		if (process.env.AGENT_CHECKPOINTS !== "0") {
+			const user = lastUser(ctx);
+			if (user) dispatchDefaults.writerCheckpoint = {
+				root: path.join(getAgentDir(), "checkpoints"), sessionId, turn: user.id, prompt: user.prompt,
+			};
+		}
+		const jobId = mgr.reserveJobId();
+		let anchorEntryId: string | null | undefined;
+		try {
+			const before = ctx.sessionManager.getLeafId();
+			pi.appendEntry(ANCHOR_ENTRY_TYPE, { jobId, mode: "single", agents: [blocked.entry.agent], continues: handle, createdAt: Date.now() });
+			const after = ctx.sessionManager.getLeafId();
+			anchorEntryId = after !== before ? after : before;
+		} catch (e) {
+			return fail(`Could not anchor the subagent job in the session: ${e instanceof Error ? e.message : String(e)}`);
+		}
+		const outcome = mgr.continueTask({
+			jobId,
+			sessionId,
+			sessionGeneration,
+			anchorEntryId,
+			handle,
+			message,
+			model,
+			agents: discovery.agents,
+			agentScope,
+			projectAgentsDir: discovery.projectAgentsDir,
+			dispatchDefaults,
+			modelRegistry: ctx.modelRegistry,
+			timeoutSeconds: timeout.value,
+		});
+		if (!outcome.ok) return fail(outcome.error);
+		if (outcome.record.status === "running") lifecycleStarted(outcome.record.jobId);
+		emitTeam(outcome.record);
+		const { entry } = outcome;
+		return {
+			content: [{
+				type: "text" as const,
+				text: [
+					`Continued handle ${entry.handle} (${entry.agent}) as job ${outcome.record.jobId}, status running.`,
+					`Same session ${entry.sessionFile}${entry.worktree ? `, worktree ${entry.worktree}` : ""}; model ${entry.invocation?.model ?? "default"}${entry.invocation?.thinking ? ` (thinking ${entry.invocation.thinking})` : ""}${model ? " (switched after a quota failure; the prompt cache starts cold)" : ""}.`,
+					...outcome.warnings.map((warning) => `Warning: ${warning}`),
+					`Timeout ${timeout.value}s. Result file: ${outcome.resultPath}.`,
+					"The result will be delivered to you as a message. Do not poll in a loop.",
+				].join(" "),
+			}],
+			details: controlDetails(toSummary(outcome.record, outcome.resultPath)),
+		};
+	};
+
 	pi.registerTool({
 		name: "subagent",
 		label: "Subagent",
@@ -671,8 +792,9 @@ export default function (pi: ExtensionAPI) {
 			"Delegate to a separate process that cannot see this conversation. Provide a structured brief with known facts, absolute paths and decisions in context; task adds optional notes. Missing role-required brief fields are listed before anything spawns.",
 			"Launch (default) in one mode: single (agent + brief), parallel (tasks), or sequential (chain; {previous} inserts prior output). Independent tasks go in one call as tasks. Items use the same brief, task, cwd and model fields as single mode.",
 			"ASYNC: the call returns a jobId immediately. Continue other work; don't poll in a loop. A subagent-result message arrives later.",
-			"Actions: list jobs, check status (includes child JSONL paths), read result or trace steps and decisions, cancel, integrate or discard. Parallel writers in one repo use isolated worktrees; review commits before integrating. No automatic merges.",
-			"Use only allowed model overrides. Omit model to use the role's configured model/thinking, or choose its principal/apoio slot via /models. Quota/rate failures aren't retried; review partial work before explicitly redispatching to an allowed alternative.",
+			"Actions: list jobs and handles, check status (includes child JSONL paths), read result or trace steps and decisions, cancel, integrate or discard. Parallel writers in one repo use isolated worktrees; review commits before integrating. No automatic merges.",
+			"Each launched task gets a handle (role-n, or name). A finished task waits with its session and worktree: continue (handle + message) resumes it in a new async job with the same model, tools and context. integrate/discard close the handle.",
+			"Use only allowed model overrides. Omit model to use the role's configured model/thinking, or choose its principal/apoio slot via /models. After a quota/rate failure the handle waits; continue it with model set to another allowed model (only then). Read-only roles retry once on the next allowed model by themselves.",
 			SUBAGENT_CAPABILITY_RULE,
 			`Default scope: user (${path.join(getAgentDir(), "agents")}). Set agentScope to both or project for ${CONFIG_DIR_NAME}/agents.`,
 			`Roles (brief = required fields): ${describeUserAgents()}.`,
@@ -684,8 +806,9 @@ export default function (pi: ExtensionAPI) {
 			"Ask subagents to return paths, line numbers and short excerpts (`brief.return_format`); do not reread files a subagent already summarized unless you must verify one specific point.",
 			"Always delegate through the `brief` object instead of a prose task, and put what you already know (paths, findings, decisions) in `brief.context`; each role has required fields and the call fails before spawning if they are missing.",
 			"Subagent dispatch is asynchronous: after launching, report the jobId and continue with independent work. Never loop on `status` waiting for a job — the result is delivered to you automatically.",
-			"If a subagent reports quota/rate failure, do not assume its mutating task is safe to replay; explicitly choose another model listed for that role and redispatch only after accounting for partial work.",
+			"If a subagent reports quota/rate failure, continue its handle with model set to another model listed for that role: same session and worktree, partial work kept. Do not relaunch a mutating task from scratch.",
 			"Use the `plan` tool to publish the step list before multi-step work and keep it updated as steps complete.",
+			"Pick the lightest tool: one question about a large source (file, output, page) without needing its exact text → `skim`; several deterministic calls, filtering or chaining results without judgment → `codemode`; multi-step judgment across files, isolated writing or review → subagent `launch`; a fix or follow-up question for a child that already has the context → subagent `continue` with its handle (cheaper than relaunching). For a new or unrelated task, launch a fresh subagent instead of continuing an old handle: its history is reread with a cold cache.",
 		],
 		parameters: SubagentParams,
 
@@ -708,14 +831,18 @@ export default function (pi: ExtensionAPI) {
 				isError: true,
 			});
 
+			if (action === "continue") return continueHandle(params, ctx, mgr, sessionId, agentScope, controlDetails, fail, signal);
+
 			if (action !== "launch") {
 				if (action === "list") {
 					const records = mgr.list(sessionId);
 					if (records.length === 0)
 						return { content: [{ type: "text", text: "No subagent jobs in this session." }], details: controlDetails(undefined, []) };
 					const lines = records.map(
-						(r) => `${r.jobId} · ${statusLabel(r)} · ${r.mode} · ${r.agents.join(", ")}${r.finishedAt ? "" : " (running)"}`,
+						(r) => `${r.jobId} · ${statusLabel(r)} · ${r.mode} · ${r.agents.join(", ")}${r.finishedAt ? "" : " (running)"}${r.continuesFrom ? ` · continues ${r.continuesFrom.handle}` : ""}`,
 					);
+					const handles = mgr.handles(sessionId);
+					if (handles.length > 0) lines.push("", "Handles:", ...handles.map(handleLine));
 					return {
 						content: [{ type: "text", text: lines.join("\n") }],
 						details: controlDetails(
@@ -756,6 +883,7 @@ export default function (pi: ExtensionAPI) {
 								text: [
 									`job ${record.jobId}: ${statusLabel(record)} (${record.mode}, ${record.agents.join(", ")}, ${age}s). Result file: ${resultPath}`,
 									...taskStatusLines(record),
+									...jobHandleLines(record),
 								].join("\n"),
 							},
 						],
@@ -834,7 +962,7 @@ export default function (pi: ExtensionAPI) {
 				? (params.chain as BriefItem[])
 				: hasTasks
 					? (params.tasks as BriefItem[])
-					: [{ agent: params.agent!, task: params.task, brief: singleBrief, cwd: params.cwd, model: params.model }];
+					: [{ agent: params.agent!, task: params.task, brief: singleBrief, cwd: params.cwd, model: params.model, name: params.name }];
 
 			if (mode === "chain" && items.length > MAX_CHAIN_STEPS)
 				return fail(`Too many chain steps (${items.length}). Max is ${MAX_CHAIN_STEPS}.`);
@@ -876,11 +1004,21 @@ export default function (pi: ExtensionAPI) {
 				);
 			}
 
+			const names = items.map((item) => item.name).filter((name): name is string => name !== undefined);
+			const badNames = names.filter((name) => !validHandleName(name));
+			if (badNames.length > 0)
+				return fail(`Invalid handle name(s): ${badNames.join(", ")}. Use 1-48 letters, digits, "-" or "_", starting with a letter or digit.`);
+			const repeated = names.filter((name, i) => names.indexOf(name) !== i);
+			const taken = takenHandles(baseDir, sessionId, names);
+			if (repeated.length > 0 || taken.length > 0)
+				return fail(`Handle name(s) already used in this session: ${[...new Set([...repeated, ...taken])].join(", ")}. Pick another name or omit it.`);
+
 			let tasks: JobTaskSpec[] = items.map((item) => ({
 				agent: item.agent,
 				task: composeTaskText(item, agents.find((a) => a.name === item.agent)),
 				cwd: item.cwd,
 				model: item.model,
+				name: item.name,
 			}));
 
 			// Snapshot role slots from the project recipe before anything launches.
@@ -981,6 +1119,7 @@ export default function (pi: ExtensionAPI) {
 						text: [
 							`Launched subagent job ${outcome.record.jobId} (${mode}: ${outcome.record.agents.join(", ")}), status running.`,
 							`Models: ${outcome.record.tasks.map((task) => `${task.agent}=${task.model ?? "legacy/default"}${task.thinking ? ` (thinking ${task.thinking})` : ""}`).join(", ")}.`,
+							`Handles: ${outcome.record.tasks.map((task) => task.handle).join(", ")}.`,
 							...outcome.record.tasks.flatMap((task) => {
 								const role = agents.find((agent) => agent.name === task.agent);
 								if (role?.runner === "agy") {
@@ -1004,7 +1143,8 @@ export default function (pi: ExtensionAPI) {
 			const action = args.action ?? "launch";
 			if (action !== "launch") {
 				const title = theme.fg("toolTitle", theme.bold("subagent ")) + theme.fg("accent", action);
-				return compactCard([`${title} ${theme.fg("dim", args.jobId ? `— job ${args.jobId}` : "")}`]);
+				const target = args.handle ? `— ${args.handle}` : args.jobId ? `— job ${args.jobId}` : "";
+				return compactCard([`${title} ${theme.fg("dim", target)}`]);
 			}
 			// The objective is the brief's headline: show it instead of the raw notes.
 			const line = (item: { task?: string; brief?: Brief } | undefined) =>

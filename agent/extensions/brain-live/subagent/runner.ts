@@ -22,8 +22,9 @@ import { NO_DELEGATE_ENV, subagentEnv, userCommandEnv } from "../../../core/chil
 import { hasRules, selectProjectContext } from "../../../core/project-context.mjs";
 import { projectRules } from "../../../core/workflow.mjs";
 import { readHostFreePercent, waitForHostMemory } from "./host-memory.ts";
-import { listDescendants, signalProcesses } from "./process-tree.ts";
+import { isProcessAlive, listDescendants, signalProcesses } from "./process-tree.ts";
 import type { AgentConfig, AgentScope } from "./agents.ts";
+import { type ChildInvocation, fileSha } from "./handles.ts";
 
 /** Preview cap. Never applied to what is stored: full outputs are kept in the job record. */
 export const PREVIEW_OUTPUT_CAP = 50 * 1024;
@@ -81,6 +82,32 @@ export interface SingleResult {
 	/** Caminho da sessão do filho, quando criada. */
 	sessionFile?: string;
 	step?: number;
+	/** Launch snapshot that rebuilds this child's argv on `continue`. */
+	invocation?: ChildInvocation;
+	/** Error reported by the provider or the agy CLI (never model prose); input of `failure`. */
+	providerError?: string;
+	/** Failure class of this run: "quota" = quota, rate limit or capacity. */
+	failure?: FailureClass;
+}
+
+export type FailureClass = "quota";
+
+/**
+ * Provider/runner errors that mean "try later or on another model": HTTP 429/529,
+ * rate limits, quota and usage limits (e.g. "Codex error: The usage limit has been
+ * reached"), overloaded/capacity, Gemini RESOURCE_EXHAUSTED.
+ */
+const QUOTA_ERROR = /\b(?:429|529)\b|rate[ _-]?limit|too many requests|quota|usage limit|overloaded|capacity|RESOURCE_EXHAUSTED/i;
+
+/** Classify a provider/runner error text. Model prose never reaches this. */
+export function classifyProviderError(text: string | undefined): FailureClass | undefined {
+	return text && QUOTA_ERROR.test(text) ? "quota" : undefined;
+}
+
+/** A failed, non-aborted run whose provider error is a quota/rate/capacity error. */
+export function failureOf(result: SingleResult): FailureClass | undefined {
+	if (!isFailedResult(result) || result.stopReason === "aborted") return undefined;
+	return classifyProviderError(result.providerError);
 }
 
 export interface JobSummary {
@@ -254,6 +281,8 @@ const CHECKS_EXTENSION_PATH = path.join(path.dirname(fileURLToPath(import.meta.u
 const CHILD_OUTPUT_CAP_PATH = path.join(path.dirname(fileURLToPath(import.meta.url)), "child-output-cap.ts");
 /** Child-only: Anthropic system cache breakpoint before the trailing <cwd> section. */
 const CHILD_CACHE_PREFIX_PATH = path.join(path.dirname(fileURLToPath(import.meta.url)), "child-cache-prefix.ts");
+/** Child-only: one steer message at AGENT_CHILD_SOFT_DEADLINE_MS (soft timeout). */
+const CHILD_SOFT_DEADLINE_PATH = path.join(path.dirname(fileURLToPath(import.meta.url)), "child-soft-deadline.ts");
 
 /**
  * AGENTS.md/CLAUDE.md the child's Pi would load for `cwd` (same discovery: global agent dir
@@ -474,7 +503,21 @@ export const runnerHooks = {
 	hostFreePercent: readHostFreePercent,
 	listDescendants,
 	signalProcesses,
+	isProcessAlive,
+	/** Bound for the wait on a killed child's process tree. */
+	treeExitWaitMs: 5000,
 };
+
+/** Poll until every pid is gone (or `boundMs` passes). Returns the pids still alive. */
+async function waitForExit(pids: number[], boundMs: number): Promise<number[]> {
+	const deadline = Date.now() + boundMs;
+	let alive = pids.filter((pid) => runnerHooks.isProcessAlive(pid));
+	while (alive.length > 0 && Date.now() < deadline) {
+		await new Promise((resolve) => setTimeout(resolve, 50));
+		alive = alive.filter((pid) => runnerHooks.isProcessAlive(pid));
+	}
+	return alive;
+}
 
 export interface RunAgentOptions {
 	defaultCwd: string;
@@ -502,6 +545,10 @@ export interface RunAgentOptions {
 	prefetch?: boolean;
 	/** Called once with the live result (session file, model, thinking) before the child is spawned. */
 	onStart?: (result: SingleResult) => void;
+	/** `continue`: rebuild the argv from the launch snapshot over the same session; `task` is the raw message. */
+	resume?: { invocation: ChildInvocation; sessionFile: string };
+	/** Absolute epoch ms for the soft-timeout steer (AGENT_CHILD_SOFT_DEADLINE_MS). */
+	softDeadlineMs?: number;
 }
 
 interface ChildRunOptions {
@@ -551,6 +598,8 @@ function settleAgyResult(result: SingleResult, stdout: string, exitCode: number)
 		return;
 	}
 	const error = typeof envelope?.error === "string" ? envelope.error : envelope?.error?.message;
+	// The CLI's error or diagnostics classify the failure; the model's `response` never does.
+	result.providerError = [typeof error === "string" ? error : "", diagnostics].filter(Boolean).join("\n") || undefined;
 	const message = (typeof error === "string" && error.trim()) || result.stderr.trim() ||
 		(exitCode !== 0 && (response || (!envelope && stdout.trim().slice(0, 500)))) ||
 		(typeof envelope?.status === "string" && envelope.status !== "SUCCESS" ? `agy returned ${envelope.status}` :
@@ -597,6 +646,8 @@ async function runChild(opts: ChildRunOptions): Promise<void> {
 		let outputOverflow: string | undefined;
 		let authRequired = false;
 		let agyOutput = "";
+		/** Descendants SIGKILLed after an abort: waited on before the run returns. */
+		const killedTree = new Set<number>();
 
 		const invocation = agy ? { command: "agy", args: opts.args } : runnerHooks.getPiInvocation(opts.args);
 		if (opts.writerCheckpoint) {
@@ -677,6 +728,8 @@ async function runChild(opts: ChildRunOptions): Promise<void> {
 						if (!result.model && msg.model) result.model = msg.model;
 						if (msg.stopReason) result.stopReason = msg.stopReason;
 						if (msg.errorMessage) result.errorMessage = msg.errorMessage;
+						// The provider's error for this turn, kept apart from the runner's own messages.
+						result.providerError = msg.stopReason === "error" ? msg.errorMessage : undefined;
 					} else if (msg.role === "toolResult" && (msg as any).usage) {
 						// Tool-side inference on another model (skim, web_fetch prompt): cost only;
 						// tokens stay the child model's so context and cache-hit figures keep meaning.
@@ -697,7 +750,10 @@ async function runChild(opts: ChildRunOptions): Promise<void> {
 			};
 			const killDescendants = () => {
 				if (descendants.size === 0) return;
+				// Processes forked since the snapshot by a still-living descendant (a shell loop).
+				for (const pid of [...descendants]) for (const child of runnerHooks.listDescendants(pid)) descendants.add(child);
 				runnerHooks.signalProcesses(descendants, "SIGKILL");
+				for (const pid of descendants) killedTree.add(pid);
 				descendants.clear();
 			};
 
@@ -830,6 +886,9 @@ async function runChild(opts: ChildRunOptions): Promise<void> {
 		});
 
 		result.exitCode = exitCode;
+		// A killed child returns only after its whole tree is gone: the caller may touch
+		// the worktree next (timeout WIP commit), and nothing may still be writing there.
+		if (killedTree.size > 0) await waitForExit([...killedTree], runnerHooks.treeExitWaitMs);
 		if (spawnError) {
 			result.errorMessage ||= spawnError;
 			result.stopReason = "error";
@@ -855,6 +914,7 @@ async function runChild(opts: ChildRunOptions): Promise<void> {
 			settleAgyResult(result, agyOutput, exitCode);
 			opts.emitUpdate();
 		}
+		result.failure = failureOf(result);
 
 	} finally {
 		try {
@@ -913,6 +973,11 @@ async function runAgyAgent(agent: AgentConfig, opts: RunAgentOptions): Promise<S
 		...(readOnly ? ["--mode", "plan"] : ["--mode", "auto", "--dangerously-skip-permissions"]), "--sandbox"];
 	if (model) args.push("--model", model);
 	if (effort) args.push("--effort", effort);
+	result.invocation = {
+		version: 1, runner: "agy", agent: agent.name, agentSource: agent.source, roleFile: agent.filePath || undefined,
+		roleSha: fileSha(agent.filePath), model, thinking: effort, tools: agent.tools, extensions: [],
+		systemPrompt: agent.systemPrompt, cwd, sourceCwd: opts.sourceCwd, writes: !readOnly,
+	};
 	try { opts.onStart?.(result); } catch { /* audit bookkeeping must not break the run */ }
 	const before = readOnly ? checkoutSnapshot(cwd) : undefined;
 	await runChild({
@@ -939,9 +1004,72 @@ function verifyCheckout(before: Map<string, string> | undefined, cwd: string, re
 	}
 }
 
+/**
+ * Launch snapshot of a Pi child: model, thinking, tools, sandbox, extensions, system
+ * prompt text and effective cwd. `continue` rebuilds the argv from it, so a role or
+ * environment change after the launch cannot alter the cached prefix.
+ */
+function launchInvocation(agent: AgentConfig, opts: RunAgentOptions): ChildInvocation {
+	const cwd = opts.cwd ?? opts.defaultCwd;
+	const sandbox = sandboxForTools(agent.tools);
+	const extensions: string[] = [];
+	if (sandbox && sandbox !== "none") extensions.push(path.join(path.dirname(CACHE_KEEPER_PATH), "bash-sandbox.ts"));
+	// Every child keeps cache keys, limits and the skill catalog, without warming timers.
+	if (fs.existsSync(CACHE_KEEPER_PATH)) extensions.push(CACHE_KEEPER_PATH);
+	if (fs.existsSync(CHILD_OUTPUT_CAP_PATH)) extensions.push(CHILD_OUTPUT_CAP_PATH);
+	if (fs.existsSync(CHILD_CACHE_PREFIX_PATH)) extensions.push(CHILD_CACHE_PREFIX_PATH);
+	if (fs.existsSync(CHILD_SOFT_DEADLINE_PATH)) extensions.push(CHILD_SOFT_DEADLINE_PATH);
+	// Explicit child extensions can provide an offline
+	// provider in checks. Never inherit the parent's whole profile.
+	for (const ext of (process.env.AGENT_SUBAGENT_CHILD_EXTENSIONS ?? "").split(":").filter(Boolean)) extensions.push(ext);
+	// Papel que declara web_search/web_fetch precisa da extensão que os registra;
+	// sem ela o --tools filtra para nada e o filho fica sem web.
+	if (agent.tools?.some((t) => WEB_TOOLS.has(t)) && fs.existsSync(WEB_EXTENSION_PATH)) extensions.push(WEB_EXTENSION_PATH);
+	if (agent.tools?.includes("skim") && fs.existsSync(SKIM_EXTENSION_PATH)) extensions.push(SKIM_EXTENSION_PATH);
+	if (agent.tools?.includes("checks") && fs.existsSync(CHECKS_EXTENSION_PATH)) extensions.push(CHECKS_EXTENSION_PATH);
+	const inheritsDispatchConfig = !agent.model;
+	// Central role config wins for native roles. Without it, preserve legacy
+	// project/user frontmatter (`model`, `tier:*`, `thinking`) and parent defaults.
+	const resolved = !opts.roleModel && agent.model ? resolveModelRef(agent.model) : undefined;
+	const model = opts.roleModel?.model ?? resolved?.model ?? opts.dispatchDefaults.model;
+	const thinking = (opts.roleModel?.thinking ?? agent.thinking ?? resolved?.thinking)
+		|| (inheritsDispatchConfig ? opts.dispatchDefaults.thinkingLevel : undefined) || undefined;
+	return {
+		version: 1,
+		runner: "pi",
+		agent: agent.name,
+		agentSource: agent.source,
+		roleFile: agent.filePath || undefined,
+		roleSha: fileSha(agent.filePath),
+		model,
+		modelLabel: prettyModelLabel(model, resolved?.tier),
+		thinking,
+		tools: agent.tools && agent.tools.length > 0 ? [...agent.tools] : undefined,
+		sandbox,
+		extensions,
+		systemPrompt: agent.systemPrompt,
+		cwd,
+		sourceCwd: opts.sourceCwd,
+		writes: agent.tools?.length ? agent.tools.some((tool) => tool === "edit" || tool === "write") : true,
+	};
+}
+
+/** Role as it was at launch: a continue never depends on the current role file. */
+function agentFromInvocation(invocation: ChildInvocation): AgentConfig {
+	return {
+		name: invocation.agent,
+		description: "",
+		tools: invocation.tools,
+		systemPrompt: invocation.systemPrompt,
+		source: invocation.agentSource,
+		filePath: invocation.roleFile ?? "",
+	};
+}
+
 export async function runSingleAgent(opts: RunAgentOptions): Promise<SingleResult> {
 	const { agents, agentName, task, step, signal, onUpdate, makeDetails } = opts;
-	const agent = agents.find((a) => a.name === agentName);
+	if (opts.resume && opts.resume.invocation.runner !== "pi") throw new Error(`Agent ${agentName} ran on agy; it has no Pi session to continue.`);
+	const agent = opts.resume ? agentFromInvocation(opts.resume.invocation) : agents.find((a) => a.name === agentName);
 
 	if (!agent) {
 		const available = agents.map((a) => `"${a.name}"`).join(", ") || "none";
@@ -963,23 +1091,29 @@ export async function runSingleAgent(opts: RunAgentOptions): Promise<SingleResul
 	// Garime: filho enxuto. Sem extensões (presence, relay, vault, kernel…) nem skills;
 	// AGENTS.md/CLAUDE.md continuam valendo, na mensagem da tarefa (contextFilesMessage),
 	// não no system. Só as tools do frontmatter.
+	// `continue` reusa o snapshot do launch: mesmo argv, mesmo --session, só a mensagem muda.
+	const resume = opts.prefetch ? undefined : opts.resume;
+	const invocation = resume?.invocation ?? launchInvocation(agent, opts);
 	const args: string[] = ["--mode", "json", "-p", "--no-extensions", "--no-context-files"];
-	const cwd = opts.cwd ?? opts.defaultCwd;
-	const sandbox = sandboxForTools(agent.tools);
+	const cwd = invocation.cwd;
+	const sandbox = invocation.sandbox;
 	// AGENT_CHECKS_READONLY marca o papel sem edit/write mesmo sem sandbox disponível:
 	// ali checks só lê (list/last); executar o manifesto escaparia do sandbox.
-	const extraEnv: Record<string, string> = { AGENT_BASH_SANDBOX: "", AGENT_SANDBOX_CWD: "", AGENT_CHECKS_READONLY: sandbox ? "1" : "" };
+	const extraEnv: Record<string, string> = { AGENT_BASH_SANDBOX: "", AGENT_SANDBOX_CWD: "", AGENT_CHECKS_READONLY: sandbox ? "1" : "",
+		AGENT_CHILD_SOFT_DEADLINE_MS: !opts.prefetch && opts.softDeadlineMs ? String(Math.floor(opts.softDeadlineMs)) : "" };
 	if (sandbox && sandbox !== "none") {
-		args.push("-e", path.join(path.dirname(CACHE_KEEPER_PATH), "bash-sandbox.ts"));
 		extraEnv.AGENT_BASH_SANDBOX = sandbox;
 		extraEnv.AGENT_SANDBOX_CWD = cwd;
 	}
 	if (opts.prefetch) Object.assign(extraEnv, { AGENT_CACHE_PREFETCH: "1", AGENT_CHILD: "1" });
 	let sessionFile: string | undefined;
 	if (opts.prefetch) args.push("--no-session");
-	else {
+	else if (resume) {
+		args.push("--session", resume.sessionFile);
+		sessionFile = resume.sessionFile;
+	} else {
 		// Seed the official JSONL header so the CLI opens a child of this parent.
-		const session = SessionManager.create(opts.cwd ?? opts.defaultCwd, undefined, { parentSession: opts.parentSession });
+		const session = SessionManager.create(cwd, undefined, { parentSession: opts.parentSession });
 		const file = session.getSessionFile()!;
 		fs.mkdirSync(path.dirname(file), { recursive: true });
 		fs.writeFileSync(file, JSON.stringify(session.getHeader()) + "\n", { mode: 0o600, flag: "wx" });
@@ -988,33 +1122,12 @@ export async function runSingleAgent(opts: RunAgentOptions): Promise<SingleResul
 	}
 	// Aquecimento: o cache-keeper troca o 1º request por max_tokens 1 sem thinking e sai.
 	// Não muda system/tools (só before_provider_request), então o prefixo é o do filho real.
-	// Every child keeps cache keys, limits and the skill catalog, without warming timers.
-	if (fs.existsSync(CACHE_KEEPER_PATH)) args.push("-e", CACHE_KEEPER_PATH);
-	if (fs.existsSync(CHILD_OUTPUT_CAP_PATH)) args.push("-e", CHILD_OUTPUT_CAP_PATH);
-	if (fs.existsSync(CHILD_CACHE_PREFIX_PATH)) args.push("-e", CHILD_CACHE_PREFIX_PATH);
-	// Explicit child extensions can provide an offline
-	// provider in checks. Never inherit the parent's whole profile.
-	for (const ext of (process.env.AGENT_SUBAGENT_CHILD_EXTENSIONS ?? "").split(":").filter(Boolean)) {
-		args.push("-e", ext);
-	}
-	// Papel que declara web_search/web_fetch precisa da extensão que os registra;
-	// sem ela o --tools filtra para nada e o filho fica sem web.
-	if (agent.tools?.some((t) => WEB_TOOLS.has(t)) && fs.existsSync(WEB_EXTENSION_PATH)) args.push("-e", WEB_EXTENSION_PATH);
-	if (agent.tools?.includes("skim") && fs.existsSync(SKIM_EXTENSION_PATH)) args.push("-e", SKIM_EXTENSION_PATH);
-	if (agent.tools?.includes("checks") && fs.existsSync(CHECKS_EXTENSION_PATH)) args.push("-e", CHECKS_EXTENSION_PATH);
-	const inheritsDispatchConfig = !agent.model;
-	// Central role config wins for native roles. Without it, preserve legacy
-	// project/user frontmatter (`model`, `tier:*`, `thinking`) and parent defaults.
-	const resolved = !opts.roleModel && agent.model ? resolveModelRef(agent.model) : undefined;
-	const model = opts.roleModel?.model ?? resolved?.model ?? opts.dispatchDefaults.model;
+	for (const ext of invocation.extensions) args.push("-e", ext);
+	const model = invocation.model;
 	if (model) args.push("--model", model);
-	const thinking = opts.roleModel?.thinking ?? agent.thinking ?? resolved?.thinking;
-	if (thinking) {
-		args.push("--thinking", thinking);
-	} else if (inheritsDispatchConfig && opts.dispatchDefaults.thinkingLevel) {
-		args.push("--thinking", opts.dispatchDefaults.thinkingLevel);
-	}
-	if (agent.tools && agent.tools.length > 0) args.push("--tools", agent.tools.join(","));
+	const thinking = invocation.thinking;
+	if (thinking) args.push("--thinking", thinking);
+	if (invocation.tools && invocation.tools.length > 0) args.push("--tools", invocation.tools.join(","));
 
 	let tmpPromptDir: string | null = null;
 	let tmpPromptPath: string | null = null;
@@ -1030,9 +1143,10 @@ export async function runSingleAgent(opts: RunAgentOptions): Promise<SingleResul
 		stderr: "",
 		usage: emptyUsage(),
 		model,
-		modelLabel: prettyModelLabel(model, resolved?.tier),
-		thinking: thinking ?? (inheritsDispatchConfig ? opts.dispatchDefaults.thinkingLevel : undefined),
+		modelLabel: invocation.modelLabel,
+		thinking,
 		step,
+		invocation,
 	};
 
 	const emitUpdate = () => {
@@ -1051,8 +1165,8 @@ export async function runSingleAgent(opts: RunAgentOptions): Promise<SingleResul
 	let tmpTaskPath: string | null = null;
 	try {
 		let promptPath: string | undefined;
-		if (agent.systemPrompt.trim()) {
-			const tmp = await writePromptToTempFile(agent.name, agent.systemPrompt);
+		if (invocation.systemPrompt.trim()) {
+			const tmp = await writePromptToTempFile(agent.name, invocation.systemPrompt);
 			tmpPromptDir = tmp.dir;
 			tmpPromptPath = tmp.filePath;
 			promptPath = tmp.filePath;
@@ -1063,23 +1177,26 @@ export async function runSingleAgent(opts: RunAgentOptions): Promise<SingleResul
 		// dele (projeto B nunca recebe as de A). Só na mensagem do filho — não entra
 		// no registro do job, no brief persistido, nem em nada que volte ao pai.
 		// Aquecimento (tarefa ".") fica de fora.
-		const instructions = opts.prefetch ? "" : contextFilesMessage(cwd);
-		const sourceCwd = opts.sourceCwd ?? cwd;
-		const guidance = opts.prefetch || (path.resolve(sourceCwd) === path.resolve(cwd) && hasRules(cwd)
+		// `continue`: project context and rules are already in the child's history; send only the message.
+		const prefetchOrResume = opts.prefetch || resume !== undefined;
+		const instructions = prefetchOrResume ? "" : contextFilesMessage(cwd);
+		const sourceCwd = invocation.sourceCwd ?? cwd;
+		const guidance = prefetchOrResume || (path.resolve(sourceCwd) === path.resolve(cwd) && hasRules(cwd)
 			&& instructions.includes(`path="${path.join(cwd, ".agent", "rules.md")}"`)) ? "" : projectRules(sourceCwd);
 		// argv is a hard OS limit (E2BIG): a big task goes to a file read by the
 		// child as `@path` (pi CLI file argument), never into the command line.
-		const sandboxNotice = sandbox === "none" ? "\n\nSandbox: none on this platform; writes are detected after the run and fail the task." : "";
-		const inlineTask = [`Task: ${task}`, instructions, guidance].filter(Boolean).join("\n\n") + sandboxNotice;
+		const sandboxNotice = !resume && sandbox === "none" ? "\n\nSandbox: none on this platform; writes are detected after the run and fail the task." : "";
+		const inlineTask = resume ? task : [`Task: ${task}`, instructions, guidance].filter(Boolean).join("\n\n") + sandboxNotice;
 		if (Buffer.byteLength(inlineTask, "utf-8") > ARG_INLINE_CAP) {
 			let messagePath: string;
 			const tmp = await writePromptToTempFile(`${agent.name}-task`, inlineTask, tmpPromptDir ?? undefined);
 			tmpPromptDir = tmp.dir;
 			tmpTaskPath = tmp.filePath;
 			messagePath = tmp.filePath;
-			args.push("--", `@${messagePath}`, "Execute the task described in the attached file.");
+			args.push("--", `@${messagePath}`, resume ? "Read the follow-up message in the attached file." : "Execute the task described in the attached file.");
 		} else {
-			args.push(inlineTask);
+			// `--` ends options: a follow-up may start with `-` (Markdown list).
+			args.push("--", inlineTask);
 		}
 
 		const before = sandbox ? checkoutSnapshot(cwd) : undefined;
