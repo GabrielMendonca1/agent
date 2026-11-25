@@ -265,6 +265,7 @@
       "cmd": "node scripts/test-install-artifact.mjs",
       "tags": ["integration", "agent"],
       "timeoutMs": 180000
-    }
+    },
+    { "name": "bench-dry", "cmd": "node scripts/bench/run.mjs --dry --tasks all", "tags": ["slow"] }
   ]
 }

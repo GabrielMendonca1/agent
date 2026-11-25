@@ -394,6 +394,7 @@ O resultado e o uso disponível ficam no registro do job; não há sessão JSONL
   - `trace`: resumo passo a passo do JSONL de um filho (`jobId`, `taskIndex` opcional, `offset`/`limit`). Mostra texto do assistant, tool calls com argumentos resumidos, `ok`|`erro` com bytes do resultado, modelo, turnos e usage. Thinking bruto não sai.
   - `list` e `cancel`.
 - Ao terminar, o pai recebe uma mensagem `subagent-result` com até 4 KB do resultado, o caminho do registro, modelos e uso; essa mensagem fica no JSONL do pai.
+- **`agent -p` (e `--mode json`) espera os jobs:** o processo não sai enquanto a sessão tiver job rodando. Quando o pai encerra o turno, a extensão espera um job terminar (cada job é limitado pelo próprio `timeoutSeconds`), entrega o `subagent-result` como follow-up e o pai roda mais um turno; repete até não restar job. SIGINT, SIGTERM ou SIGHUP interrompem a espera: o processo sai e os jobs são cancelados (SIGINT sai com código 130). TUI e `--mode rpc` não mudam: o resultado chega quando a sessão fica ociosa. Filhos não lançam jobs, então nunca esperam.
 - **Escritores em paralelo:** dois ou mais papéis com `edit`/`write` no mesmo repositório, num job `parallel`, rodam cada um num worktree próprio (`<perfil>/agent/worktrees/<jobId>-<n>`, branch `agent/<jobId>-<n>`). O resultado traz `git status` e `git log` desde o commit base. Nada é integrado sozinho: `integrate` (roda o portão de checks se houver manifesto e faz `merge --no-ff`) ou `discard` (`force:true` para descartar trabalho não commitado), com `taskIndex` opcional.
 
 ### Lacunas

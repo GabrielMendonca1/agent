@@ -4,6 +4,7 @@ import { join } from 'node:path';
 import { execFileSync } from 'node:child_process';
 import assert from 'node:assert/strict';
 import { topicIds, records, recordAnswer, longScript } from './tasks.mjs';
+import { reconAnswer } from './orchestration.mjs';
 const text = (d, f) => readFile(join(d, f), 'utf8');
 const json = async (d, f) => JSON.parse(await text(d, f));
 function probe(d, code) {
@@ -54,6 +55,45 @@ export async function check(task, dir, { wallSeconds = 0 } = {}) {
         assert.deepEqual(await json(dir, 'receipt.json'), { status: 'complete', batches: 8, checksum: 2997 });
         assert.equal(await text(dir, 'result.txt'), 'completed 8 batches; checksum 2997\n');
         assert.ok(wallSeconds >= 19.5, 'command must run for 20 seconds');
+        break;
+      case 'recon':
+        assert.deepEqual(await json(dir, 'answer.json'), reconAnswer);
+        break;
+      case 'parallel-writers':
+        probe(dir, `import {slugify, parseDuration} from './src/index.mjs';
+          const slug = [['Hello, World!','hello-world'],['  Crème Brûlée  ','creme-brulee'],['---','untitled'],['','untitled'],['ÀÉÎ õü 42','aei-ou-42'],
+            [42,'42'],['a'.repeat(47)+' b','a'.repeat(47)],['x'.repeat(60),'x'.repeat(48)],['Ünïcödé__and--dashes','unicode-and-dashes']];
+          for (const [i,o] of slug) assert.equal(slugify(i),o,String(i));
+          const ok = [['1h30m',5400],['45s',45],['2h5s',7205],['0s',0],['90m',5400],['1h1m1s',3661],['01m',60]];
+          for (const [i,o] of ok) assert.equal(parseDuration(i),o,i);
+          for (const bad of ['','1m1h','1h1h','1.5h','-1s','+1s',' 1h','1h ','1d','h','1 h','5'])
+            assert.throws(()=>parseDuration(bad),SyntaxError,JSON.stringify(bad));`);
+        break;
+      case 'implement-review':
+        probe(dir, `import {paginate} from './src/paginate.mjs'; import {firstPage} from './src/legacy-report.mjs';
+          const rows = Array.from({length:45},(_, i)=>i); const copy=[...rows];
+          assert.deepEqual(paginate(rows), {items:rows.slice(0,20),page:1,perPage:20,totalItems:45,totalPages:3});
+          assert.deepEqual(paginate(rows,{page:3,perPage:20}).items, rows.slice(40));
+          assert.deepEqual(paginate(rows,{page:9}).items, []); assert.equal(paginate(rows,{page:9}).page, 9);
+          assert.equal(paginate([]).totalPages, 1);
+          const big = paginate(Array.from({length:250},(_, i)=>i),{perPage:500}); assert.equal(big.perPage,100); assert.equal(big.items.length,100); assert.equal(big.totalPages,3);
+          for (const o of [{page:1.5},{perPage:'10'},{page:NaN},{size:2.5}]) assert.throws(()=>paginate(rows,o),TypeError);
+          for (const o of [{page:0},{perPage:0},{size:-1}]) assert.throws(()=>paginate(rows,o),RangeError);
+          const all = paginate(rows,{perPage:100}); assert.notEqual(all.items, rows); assert.deepEqual(rows, copy);
+          // Planted compatibility requirement: v1 callers pass size.
+          assert.deepEqual(paginate(rows,{page:2,size:10}).items, rows.slice(10,20));
+          assert.equal(paginate(rows,{size:10}).totalPages, 5);
+          assert.equal(paginate(rows,{size:1000}).perPage, 100);
+          assert.equal(paginate(rows,{size:5,perPage:7}).perPage, 7);
+          assert.deepEqual(firstPage(rows), rows.slice(0,10));`);
+        break;
+      case 'review-fix':
+        probe(dir, `import {parseCsv} from './src/csv.mjs';
+          const ok = [['',[]],['a',[['a']]],['a,b\\nc,d',[['a','b'],['c','d']]],['a,b\\r\\nc,d\\r\\n',[['a','b'],['c','d']]],
+            ['a,,b',[['a','','b']]],['""',[['']]],[',',[['','']]],['"x, y",z',[['x, y','z']]],['"he said ""hi"""',[['he said "hi"']]],
+            ['"line1\\nline2",b\\n',[['line1\\nline2','b']]],['"a\\r\\nb"',[['a\\r\\nb']]],['a\\n\\nb',[['a'],[''],['b']]],[' a , b ',[[' a ',' b ']]],['a\\n\\n',[['a'],['']]]];
+          for (const [i,o] of ok) assert.deepEqual(parseCsv(i),o,JSON.stringify(i));
+          for (const bad of ['"abc','a"b','"a"b','x,"y" ,z','"a""']) assert.throws(()=>parseCsv(bad),SyntaxError,JSON.stringify(bad));`);
         break;
       default: throw new Error('Unknown task');
     }

@@ -218,6 +218,19 @@ const bg = runPi({ AGENT_RUNTIME_ENABLED: '0' });
 const end3 = bg.find(e => e.type === 'tool_execution_end' && e.toolName === 'subagent');
 assert.match(end3.result.content[0].text, /Launched subagent job .* status running/, 'fora do piloto continua assíncrono');
 console.log('ok legado: subagent assíncrono (jobId + follow-up)');
+// `-p` espera o job: o pai encerra o turno logo após lançar, recebe o resultado e reage antes de sair.
+const bgJob = end3.result.details.job.jobId;
+const bgMessages = bg.filter(e => e.type === 'message_end').map(e => e.message);
+const bgResult = bgMessages.findIndex(m => m.role === 'custom' && m.customType === 'subagent-result' && m.details?.jobId === bgJob);
+assert.ok(bgResult > 0, `-p entregou o resultado do job: ${JSON.stringify(bgMessages.map(m => m.role))}`);
+assert.equal(bgMessages[bgResult].details.status, 'completed');
+assert.ok(bgMessages.slice(0, bgResult).some(m => m.role === 'assistant' && m.content.some(p => p.text === 'PAI-TERMINOU')), 'o pai encerrou o turno antes do resultado');
+assert.ok(bgMessages.slice(bgResult + 1).some(m => m.role === 'assistant'), 'o pai rodou outro turno com o resultado');
+const bgRecordPath = readdirSync(join(agent, 'subagent-jobs'), { recursive: true }).find(p => p.endsWith(bgJob + '.json'));
+const bgRecord = JSON.parse(readFileSync(join(agent, 'subagent-jobs', bgRecordPath), 'utf8'));
+assert.equal(bgRecord.status, 'completed');
+assert.equal(bgRecord.notified, true);
+console.log('ok -p: espera o job, entrega o resultado e o pai reage antes de sair');
 // Receita usada pelos slots de modelo, não pelo prompt do principal.
 mkdirSync(join(root, '.agent'), { recursive: true });
 writeFileSync(join(root, '.agent/workflow.md'), ['# Receita', '', 'versão: v1', '', '## Etapas (complex)',
