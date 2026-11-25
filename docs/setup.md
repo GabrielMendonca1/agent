@@ -179,7 +179,7 @@ Requer Git, npm e Node >=22.19. `node scripts/agent-update.mjs --prepare` constr
 
 - As skills de integração `peers`, `megamind`, `tasks` e as de `agent/skills/system/` são automáticas. `design/` e `plan/` ficam sob demanda e geram uma linha curta por categoria no system prompt. A curadoria usa o formatter compartilhado entre os hosts.
 - `/skill` ou `/skill:` abre o catálogo agrupado por categoria.
-- `/models` separa slots de execução e escolhas por papel e preserva as escolhas pessoais. O picker de um papel lista primeiro os pares autorizados e depois todo modelo disponível; escolher um novo o autoriza naquele papel com o thinking da preferência atual. `Esc Esc` abre só a lista de fork. Falha de quota/503 não troca modelo silenciosamente.
+- `/models` separa slots de execução e escolhas por papel e preserva as escolhas pessoais. O picker de um papel lista primeiro os pares autorizados e depois todo modelo disponível; escolher um novo o autoriza naquele papel com o thinking da preferência atual. `Esc Esc` abre só a lista de fork. Falha de quota/503 não troca modelo silenciosamente: só papel somente leitura tenta, uma vez e registrando, o próximo modelo da sua lista (ver "Falha por cota").
 - `read` é o nativo do Pi clássico: imagens, texto, offset/limit e cancelamento. O loadout controla quais papéis recebem `read`. Principal, scout e visual precisam de modelo capaz de receber imagens; anexos diretos continuam suportados.
 - `scout` não edita: tem `read, grep, find, ls, bash, skim, web_search, web_fetch`, com `bash` sob sandbox de escrita. Transcrição que exija `ffmpeg`, Whisper ou outro executável que grave arquivos deve ir para um papel com `edit`/`write` (worker). Não se promete leitura/transcrição nativa de qualquer formato binário.
 - JEV e cache observam compactação confirmada no branch para resetar sua época; pedido, cancelamento, queda de tokens ou erro não contam como compactação concluída. Nenhum evento sintético por correlação FIFO é usado.
@@ -427,7 +427,22 @@ O resultado e o uso disponível ficam no registro do job; não há sessão JSONL
 - `integrate`/`discard` com o `jobId` de um continue agem na tarefa do launch, dona do worktree. Os dois fecham o handle.
 - Recusas, com mensagem: handle desconhecido; papel no runner agy (sem JSONL do Pi: use `launch`); handle ainda `running`; outro `continue` gravando no mesmo JSONL (lock `<sessão>.jsonl.continue.lock` criado com O_EXCL; lock de processo morto é assumido); handle fechado ou worktree removido (lance uma tarefa nova).
 - Registro dos handles: `<perfil>/subagent-jobs/<sessionId>/handles/registry.json`, modo 0600, gravado com tmp+rename.
-- Ainda não existem: `model` no `continue` depois de falha de cota, troca automática de modelo em papéis somente leitura, soft-timeout e commit WIP (parte 2 do item 2 da spec).
+- Recusa de `model`: o `continue` só aceita `model` quando a última rodada do handle falhou por cota (abaixo), e só um modelo que o launch aceitaria para o papel: a lista do papel em `/models` (`roleModels`) ou, sem lista própria, o principal/apoio do piloto. Fora disso a chamada é recusada e nenhum job nasce.
+
+#### Falha por cota
+
+- O runner classifica a falha pelo erro do provedor ou do CLI agy, nunca pelo texto do modelo. Contam como cota: HTTP 429 e 529, `rate_limit`, `too many requests`, `quota`, `usage limit` (ex.: `Codex error: The usage limit has been reached`), `overloaded`, `capacity` e o `RESOURCE_EXHAUSTED` do Gemini. Cancelamento e timeout nunca contam.
+- A tarefa ganha `failure: "quota"` no registro do job, e o handle também. O status do job não muda (`failed`), e o handle fica `waiting`. O resultado diz qual tarefa falhou e em qual modelo.
+- Papel somente leitura (sem `edit`/`write`): o runner tenta sozinho **uma vez** o próximo modelo da lista do papel (com volta ao início), no mesmo JSONL, com a mensagem `The previous attempt stopped on a provider quota/rate limit…`. A troca fica em `modelSwitch` (`auto: true`) na tarefa, no snapshot do handle e numa linha do resultado. Sem outro modelo permitido, a tarefa só falha.
+- Escritor nunca troca sozinho. O pai decide: `subagent({ action: "continue", handle, message, model })` roda no mesmo JSONL e no mesmo worktree, com o contexto e o trabalho preservados e o cache de prompt frio. A troca fica em `modelSwitch` (`auto: false`), e os `continue` seguintes usam o modelo novo. Depois de uma rodada sem cota, `model` volta a ser recusado.
+
+#### Soft-timeout e commit WIP
+
+- Cada filho do Pi carrega `subagent/child-soft-deadline.ts`. O runner passa `AGENT_CHILD_SOFT_DEADLINE_MS`, um instante absoluto: início do job + timeout − margem. A margem é 10 % do timeout, com mínimo de 3 min, e o prazo nunca fica antes do início. Com timeout de até 200 s, então, o aviso sai já no primeiro turno.
+- Passado o prazo, a extensão manda uma vez `Time is almost up: commit what works and summarize what is left.` como steer (`sendUserMessage`, `deliverAs: "steer"`). O `pi -p` não tem stdin interativo; o loop do agente entrega a mensagem antes da próxima chamada ao modelo, depois das tools em curso. Não há patch no Pi.
+- No timeout duro, o runner mata a árvore do filho (SIGTERM, depois SIGKILL nos descendentes, incluindo processos que eles criaram depois da foto) e espera todos saírem, até 5 s. Só então, e só no worktree do job, roda `git status --porcelain`. Se houver mudanças, faz `git add -A` (sem os links do manifesto) e `git commit --no-verify -m "WIP(agent): timeout <jobId>"`.
+- O sha vai para `wipCommit` na tarefa e no handle, e numa linha do resultado. O job termina `timeout`, e o handle fica `waiting`: `continue` retoma sobre o commit WIP. Se o commit falhar, o motivo fica em `wipError`.
+- O checkout do usuário nunca recebe commit. Escritor único sem worktree não ganha commit WIP: o `/rewind` cobre.
 
 ### Lacunas
 
@@ -446,7 +461,7 @@ O código de `agent/` não depende de caminhos literais `/Users/biel` (só um ex
 | Extensão | Sem infraestrutura pessoal |
 |---|---|
 | vault-runtime | Somente com `AGENT_VAULT=1`. Sem opt-in mantém o prompt nativo e não depende de Vault. Nenhum dado pessoal é migrado. |
-| subagent | Papéis/modelos usam o perfil do Agent, não o Vault. Sem modelo de apoio configurado, papel sem config própria em `/models` e sem `model` no frontmatter herda o modelo principal. Allowlists e confirmações de agentes do projeto continuam aplicáveis; falhas de quota não trocam o modelo silenciosamente. Gate Megamind explicitamente configurado continua falhando fechado. |
+| subagent | Papéis/modelos usam o perfil do Agent, não o Vault. Sem modelo de apoio configurado, papel sem config própria em `/models` e sem `model` no frontmatter herda o modelo principal. Allowlists e confirmações de agentes do projeto continuam aplicáveis; falhas de quota não trocam o modelo silenciosamente (papel somente leitura tenta uma vez o próximo modelo permitido e registra a troca). Gate Megamind explicitamente configurado continua falhando fechado. |
 | models | `/model` mantém o seletor nativo. `/models` usa `agent-models.json` no perfil para escolhas por papel; `agent-preferences.json` guarda preferências de recursos, não contabilidade. Nenhuma configuração pessoal é distribuída. |
 | generate-image | Execução exige configuração do modelo de imagem no perfil e autenticação própria. Falta deles vira erro da tool, não erro de startup. |
 | compaction | Usa geração, prompt e validação nativos do Pi, sem impor Luna ou executar aprendizado auxiliar. O cache-keeper mantém suas proteções de compactação. |

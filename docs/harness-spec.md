@@ -91,7 +91,12 @@ Ordem de execução proposta: **0 → 1 → 2 → 3 → 4**. A suíte de evals e
 
 ## 2. Subagentes continuáveis + hierarquia codemode / skim / subagent
 
-**Status:** parte 1 implementada: snapshot da invocação por tarefa, handles com estado `running|waiting|closed` num registro por sessão (sem novo status de job), ação `continue`, recusas, `integrate`/`discard` fechando o handle e a hierarquia nas `promptGuidelines`. Detalhes em `docs/setup.md` ("Continuar um filho"). Falta a parte 2: `model` no `continue` após falha de cota (`failure: "quota"`), troca automática em papel somente leitura, soft-timeout e commit WIP.
+**Status:** implementado (partes 1 e 2).
+- Parte 1: snapshot da invocação por tarefa, handles com estado `running|waiting|closed` num registro por sessão (sem novo status de job), ação `continue`, recusas, `integrate`/`discard` fechando o handle e a hierarquia nas `promptGuidelines`.
+- Parte 2: falha classificada pelo erro do provedor (`failure: "quota"` na tarefa e no handle); `model` no `continue` só depois de cota e dentro da allowlist do papel; papel somente leitura troca sozinho uma vez no mesmo JSONL; soft-timeout por extensão no filho (steer, sem stdin); no timeout duro, árvore do filho morta antes do commit `WIP(agent): timeout <jobId>` no worktree do job.
+- Provas no `test-subagent-dispatch` com o provider falso: blocos "quota" e "timeout".
+- Detalhes em `docs/setup.md` ("Continuar um filho").
+- Pendente: a medição no bench ("correção depois da revisão").
 
 **Hoje**
 - O filho já roda `--mode json -p … --session <arquivo>` sobre um JSONL criado pelo runner (`runner.ts:975-983`).
