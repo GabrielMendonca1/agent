@@ -2,7 +2,7 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import { spawnSync } from "node:child_process";
 import { getAgentDir } from "@earendil-works/pi-coding-agent";
-import { findManifest, gate } from "../checks/runner.ts";
+import { findManifest, gate, lastRun, lastRunLine } from "../checks/runner.ts";
 import type { AgentConfig } from "./agents.ts";
 import type { JobRecord, JobTaskSpec } from "./jobs.ts";
 
@@ -77,6 +77,25 @@ export function worktreeSummary(record: JobRecord): string {
 			return [`### isolated task ${i + 1}\nworktree: ${t.worktree}\nbranch: ${t.branch}\nstatus --porcelain:\n${git(t.worktree, ["status", "--porcelain"]) || "(clean)"}\nlog ${t.baseSha}..HEAD:\n${git(t.worktree, ["log", "--oneline", `${t.baseSha}..HEAD`]) || "(no commits)"}`];
 		} catch (error) { return [`### isolated task ${i + 1}\nworktree: ${t.worktree}\nbranch: ${t.branch}\n${String(error)}`]; }
 	}).join("\n\n");
+}
+
+/**
+ * Uma linha por tarefa de papel escritor com `checks`: o último gate/run gravado no checkout
+ * da tarefa, revalidado contra HEAD + working tree (fresh/stale). Rodada anterior ao job não conta.
+ */
+export function gateSummary(record: JobRecord, agents: AgentConfig[]): string {
+	return record.tasks.flatMap((t, i) => {
+		const tools = agents.find((a) => a.name === t.agent)?.tools ?? [];
+		if (!tools.includes("checks") || !(tools.includes("edit") || tools.includes("write"))) return [];
+		const prefix = record.tasks.length > 1 ? `[task ${i + 1} ${t.agent}] ` : "";
+		try {
+			const manifest = findManifest(t.worktree ?? t.cwd ?? record.cwd);
+			if (!manifest) return [];
+			const state = lastRun(manifest.root);
+			if (state.status === "missing" || Date.parse(state.record.at) < record.createdAt) return [`${prefix}gate: not run in this job`];
+			return [prefix + lastRunLine(state)];
+		} catch (error) { return [`${prefix}gate: unavailable (${error instanceof Error ? error.message : String(error)})`]; }
+	}).join("\n");
 }
 
 function remove(t: JobTaskSpec, force: boolean, discard: boolean, persist: () => void): void {

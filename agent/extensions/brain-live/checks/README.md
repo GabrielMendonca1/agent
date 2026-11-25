@@ -45,14 +45,19 @@ do comando e timeout efetivo. Seleções parciais são mescladas; comandos alter
 Somente entradas ausentes ou inválidas rodam num worktree efêmero (nenhum worktree em cache hit).
 A cada escrita, arquivos com mais de 14 dias são removidos, em todos os projetos, sem bloquear o
 veredito em caso de erro. `PI_CHECKS_CACHE_DIR` sobrescreve o diretório de cache.
+Cache e última rodada são gravados em arquivo temporário no mesmo diretório e renomeados, então
+um leitor concorrente nunca vê JSON pela metade. `git worktree add`, `remove`/`prune` e a mescla
+do cache da baseline rodam sob um lock por repositório, `<git-common-dir>/pi-checks.lock` (criação
+exclusiva, com pid e horário). Dono morto no mesmo host, ou lock com mais de 10 min
+(`PI_CHECKS_LOCK_STALE_MS`), é tomado. Os checks em si continuam em paralelo entre worktrees.
 Como o gate consulta apenas falhas atuais, ele não enumera correções (`fixed`) da baseline.
 
 ## Superfícies
 
 | onde | como |
 |---|---|
-| agente | tool `checks {action:"gate"\|"run"\|"baseline"\|"list", tags?, only?, cwd?}` |
-| operador | `/checks [gate\|run\|list] [tags]` |
+| agente | tool `checks {action:"gate"\|"run"\|"baseline"\|"list"\|"last", tags?, only?, cwd?}` |
+| operador | `/checks [gate\|run\|list\|last] [tags]` |
 | shell, hook e portão de merge | `bin/pi-checks gate [--tags fast] [--cwd DIR] [--json]` |
 
 `bin/pi-checks` sai `0` quando nada novo quebrou, `1` quando há regressão e `2` em erro de
@@ -60,6 +65,23 @@ uso/config — é esse contrato que o `hooks.onStepEnd` do omni e o portão de m
 
 Sempre passe `cwd` do worktree ao verificar trabalho de um agente: o veredito é sobre aquele
 checkout, não sobre o seu.
+
+## Última rodada (`last`)
+
+Cada `gate`/`run` da tool ou do `/checks` grava `ultima-rodada.json` no diretório de cache do
+projeto: HEAD, impressão digital do working tree, seleção (`tags`/`only`), veredito e resultados.
+A impressão digital é o sha256 de `git status --porcelain=v1 -z --untracked-files=all`, de
+`git diff HEAD --binary` e do conteúdo dos arquivos não rastreados. `last` recalcula tudo e responde
+`fresh` com o resultado, ou `stale` com a parte que divergiu (`head`, `status`, `diff`,
+`untracked`), sem os resultados. `last` só lê: roda `git` com `GIT_OPTIONAL_LOCKS=0` e não grava nada.
+
+## Nos subagentes
+
+O papel recebe a tool quando lista `checks` em `tools:`. Num papel sem `edit`/`write`
+(`AGENT_CHECKS_READONLY=1`), só existem `list` e `last`: `gate`, `run` e `baseline` executariam
+comandos de `.pi/checks.json` fora do sandbox do bash e são recusados. Num papel escritor, sem
+`tags` nem `only`, `gate`/`run`/`baseline` usam `tags: "fast"` (se o manifesto tiver checks `fast`);
+o gate completo fica com o `integrate`.
 
 ## Portão de merge (`bin/pi-merge`)
 
