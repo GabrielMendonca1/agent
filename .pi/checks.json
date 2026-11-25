@@ -237,6 +237,11 @@
       "timeoutMs": 240000
     },
     {
+      "name": "tool-language",
+      "cmd": "node scripts/test-tool-language.mjs",
+      "tags": ["fast", "agent"]
+    },
+    {
       "name": "agent-headless",
       "cmd": "node scripts/test-agent-headless.mjs",
       "tags": ["fast"]
