@@ -6,7 +6,7 @@ import { getAgentDir } from "@earendil-works/pi-coding-agent";
 import { findManifest, gate, lastRun, lastRunLine } from "../checks/runner.ts";
 import type { AgentConfig } from "./agents.ts";
 import type { JobRecord, JobTaskSpec } from "./jobs.ts";
-import { type ChildSkills, plainFileError, posix, projectLocal, rootForms, skillLabel } from "./skills.ts";
+import { projectLocal, rootForms, skillLabel } from "./skills.ts";
 
 function git(cwd: string, args: string[]): string {
 	const r = spawnSync("git", ["-C", cwd, ...args], { encoding: "utf8", maxBuffer: 16 * 1024 * 1024 });
@@ -52,39 +52,13 @@ export function plannedIsolation(record: Pick<JobRecord, "mode" | "tasks" | "cwd
 }
 
 /**
- * Launch check for a writer that will run in a worktree. A project-local skill (lexically under
- * the repository) must be a regular file reached without symlinks, committed at HEAD with mode
- * 100644, and its directory (or the flat .md file) must have no uncommitted changes, so the child
- * reads exactly what was validated. Other skills (personal, company, bundled) keep their path.
+ * Launch check for a writer that will run in a worktree: project-local skills (the catalog path,
+ * as written, lies under the repository) are refused outright. Personal, company and bundled
+ * skills keep their absolute path.
  */
 export function worktreeSkillError(file: string, root: string, cwd?: string): string | undefined {
-	const local = projectLocal(file, rootForms(root, cwd));
-	if (!local) return undefined;
-	const label = skillLabel(file);
-	const rel = posix(local.rel);
-	const plain = plainFileError(local.root, local.rel, label, "the source checkout");
-	if (plain) return plain;
-	const notCommitted = `skill "${label}" (${rel}) is not committed in this worktree; commit it or run the task in place.`;
-	const tree = spawnSync("git", ["-C", local.root, "ls-tree", "HEAD", "--", rel], { encoding: "utf8" });
-	if (tree.status !== 0 || !tree.stdout.trim()) return notCommitted;
-	if (!tree.stdout.startsWith("100644 blob ")) return `skill "${label}" (${rel}) is committed with git mode ${tree.stdout.split(" ")[0]}, not as a regular file (100644); commit a regular file or run the task in place.`;
-	const scope = path.posix.basename(rel) === "SKILL.md" ? path.posix.dirname(rel) : rel;
-	const status = spawnSync("git", ["-C", local.root, "status", "--porcelain", "--untracked-files=all", "--", scope], { encoding: "utf8" });
-	if (status.status !== 0 || status.stdout.trim()) return `skill "${label}" has uncommitted changes; commit them or run the task in place.`;
-	return undefined;
-}
-
-/** Same project skills, lexically at the same relative path in the worktree, rechecked there. */
-export function mapSkillsToWorktree(skills: ChildSkills, root: string, worktree: string, cwd?: string): ChildSkills {
-	const roots = rootForms(root, cwd);
-	const paths = skills.paths.map((file) => {
-		const local = projectLocal(file, roots);
-		if (!local) return file;
-		const error = plainFileError(worktree, local.rel, skillLabel(file), "the worktree");
-		if (error) throw new Error(error);
-		return path.join(worktree, local.rel);
-	});
-	return { ...skills, paths };
+	if (!projectLocal(file, rootForms(root, cwd))) return undefined;
+	return `skill "${skillLabel(file)}" is a project skill; isolated writers only get personal, company and bundled skills. Run the task in place to use it.`;
 }
 
 export function isolateWriters(record: JobRecord, agents: AgentConfig[], persist: () => void): void {
@@ -108,11 +82,6 @@ export function isolateWriters(record: JobRecord, agents: AgentConfig[], persist
 					fs.mkdirSync(path.dirname(target), { recursive: true });
 					fs.symlinkSync(source, target, process.platform === "win32" ? "junction" : undefined);
 				}
-			}
-			// Checked at launch (worktreeSkillError); this refuses anything that still leaves the worktree.
-			if (task.resolvedSkills) {
-				task.resolvedSkills = mapSkillsToWorktree(task.resolvedSkills, root, worktree, cwd);
-				persist();
 			}
 		}
 	}

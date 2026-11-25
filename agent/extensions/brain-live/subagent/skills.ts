@@ -7,8 +7,6 @@
  * from AGENT_CHILD_SKILLS), so the runner passes the advertised names too: debug/tdd carry
  * `disable-model-invocation` and would otherwise stay hidden.
  */
-import { spawnSync } from "node:child_process";
-import * as fs from "node:fs";
 import { realpathSync } from "node:fs";
 import * as path from "node:path";
 import { DefaultResourceLoader, getAgentDir } from "@earendil-works/pi-coding-agent";
@@ -105,7 +103,7 @@ export function skillArgs(skills: ChildSkills | undefined): string[] {
 	return [...(skills.only ? ["--no-skills"] : []), ...skills.paths.flatMap((file) => ["--skill", file])];
 }
 
-// ---- Project skills of isolated writers (lexical, no dereferencing; see worktrees.ts) ----
+// ---- Project skills vs isolated writers (lexical, no dereferencing; see worktrees.ts) ----
 
 export const skillLabel = (file: string) => path.basename(file) === "SKILL.md" ? path.basename(path.dirname(file)) : path.basename(file, ".md");
 
@@ -135,47 +133,3 @@ export function projectLocal(file: string, roots: string[]): { root: string; rel
 	for (const root of roots) if (resolved.startsWith(root + path.sep)) return { root, rel: path.relative(root, resolved) };
 	return undefined;
 }
-
-/** First path component from `root` to `rel` that is a symlink or missing; undefined when all are real. */
-export function badComponent(root: string, rel: string): { at: string; kind: "symlink" | "missing" } | undefined {
-	let current = root;
-	for (const part of rel.split(path.sep)) {
-		current = path.join(current, part);
-		let stat: fs.Stats;
-		try { stat = fs.lstatSync(current); } catch { return { at: current, kind: "missing" }; }
-		if (stat.isSymbolicLink()) return { at: current, kind: "symlink" };
-	}
-	return undefined;
-}
-
-export const posix = (rel: string) => rel.split(path.sep).join("/");
-
-/** Regular file reached only through real directories, whose realpath stays inside `root`. */
-export function plainFileError(root: string, rel: string, label: string, where: string): string | undefined {
-	const bad = badComponent(root, rel);
-	if (bad?.kind === "symlink") return `skill "${label}" (${posix(rel)}) goes through a symlink (${bad.at}) in ${where}; isolated writers only load regular committed skill files.`;
-	if (bad) return `skill "${label}" (${posix(rel)}) is missing in ${where}.`;
-	const file = path.join(root, rel);
-	if (!fs.lstatSync(file).isFile()) return `skill "${label}" (${posix(rel)}) is not a regular file in ${where}.`;
-	if (!realpathSync(file).startsWith(realpathSync(root) + path.sep)) return `skill "${label}" (${posix(rel)}) resolves outside ${where}.`;
-	return undefined;
-}
-
-/**
- * Continue of an isolated writer: every carried project skill (under the worktree of `cwd`) must
- * still be a regular file reached without symlinks inside it. Returns the error, if any.
- */
-export function carriedSkillsError(skills: ChildSkills | undefined, cwd: string): string | undefined {
-	if (!skills?.paths.length) return undefined;
-	const top = spawnSync("git", ["-C", cwd, "rev-parse", "--show-toplevel"], { encoding: "utf8" });
-	if (top.status !== 0 || !top.stdout.trim()) return undefined;
-	const roots = rootForms(top.stdout.trim(), cwd);
-	for (const file of skills.paths) {
-		const local = projectLocal(file, roots);
-		if (!local) continue;
-		const error = plainFileError(local.root, local.rel, skillLabel(file), "the worktree");
-		if (error) return error;
-	}
-	return undefined;
-}
-
