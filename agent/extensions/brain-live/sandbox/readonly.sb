@@ -10,6 +10,9 @@
     (subpath (string-append (param "HOME") "/.npm/_logs"))
     (subpath (string-append (param "HOME") "/.cache"))
     (subpath (string-append (param "CWD") "/node_modules/.cache")))
+; Um checkout dentro de /tmp ou do cache não herda a escrita liberada acima.
+(deny file-write* (subpath (param "CWD_GUARD")))
+(allow file-write* (subpath (string-append (param "CWD") "/node_modules/.cache")))
 ; Metadados do projeto ficam protegidos mesmo em checkouts dentro de /tmp.
 (deny file-write*
     (subpath (string-append (param "CWD") "/.git"))
