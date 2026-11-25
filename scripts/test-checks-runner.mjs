@@ -7,7 +7,7 @@ import { join } from "node:path";
 
 const temp = mkdtempSync(join(tmpdir(), "checks-runner-test-"));
 process.env.PI_CHECKS_CACHE_DIR = join(temp, "cache");
-const { baseline, gate, runChecks, compare, resultOk } = await import("../agent/extensions/brain-live/checks/runner.ts");
+const { baseline, gate, runChecks, compare, resultOk, writeLastRun, lastRun, lastRunLine, repoLockPath, withRepoLock } = await import("../agent/extensions/brain-live/checks/runner.ts");
 const root = join(temp, "repo");
 mkdirSync(root);
 const git = (...args) => execFileSync("git", ["-C", root, ...args], { encoding: "utf8" }).trim();
@@ -132,6 +132,60 @@ try {
   }
   console.log("ok abort kills grandchild, stops queue, removes baseline worktree");
   assert.ok(readdirSync(process.env.PI_CHECKS_CACHE_DIR).length > 0);
+
+  // checks last: HEAD + working-tree fingerprint decide fresh/stale; the record is never trusted blindly.
+  rmSync(join(root, "fail-b"), { force: true });
+  assert.equal(lastRun(root).status, "missing");
+  const lastGate = await gate(manifest, { tags: ["fast"] });
+  assert.ok(writeLastRun(root, { action: "gate", selection: { tags: ["fast"] }, ...lastGate }));
+  const fresh = lastRun(root);
+  assert.equal(fresh.status, "fresh");
+  assert.match(lastRunLine(fresh), /^gate tags=fast: 1\/1 green, new failures: \[\] \(fresh; [0-9a-f]{8} at /);
+  const diverged = () => { const s = lastRun(root); return s.status === "stale" ? s.diverged : s.status; };
+  writeFileSync(join(root, "tracked"), "edited\n");
+  assert.deepEqual(diverged(), ["status", "diff"]);
+  writeFileSync(join(root, "tracked"), "base\n");
+  assert.equal(diverged(), "fresh");
+  writeFileSync(join(root, "untracked"), "one");
+  assert.deepEqual(diverged(), ["status", "untracked"]);
+  assert.ok(writeLastRun(root, { action: "run", selection: {}, ok: true, verdict: "OK", results: lastGate.results }));
+  assert.equal(diverged(), "fresh");
+  writeFileSync(join(root, "untracked"), "two");
+  assert.deepEqual(diverged(), ["untracked"], "same porcelain, different untracked content");
+  writeFileSync(join(root, "untracked"), "one");
+  git("add", "untracked");
+  git("-c", "user.name=fixture", "-c", "user.email=fixture@example.invalid", "commit", "-qm", "untracked");
+  assert.deepEqual(diverged(), ["head", "status", "untracked"]);
+  assert.match(lastRunLine(lastRun(root)), /^run: 1\/1 green, failures: \[\] \(stale: head, status, untracked changed since; /);
+  const cacheEntries = readdirSync(join(process.env.PI_CHECKS_CACHE_DIR, slug));
+  assert.ok(cacheEntries.includes("ultima-rodada.json"));
+  assert.deepEqual(cacheEntries.filter((name) => name.endsWith(".tmp")), [], "atomic writes leave no temp files");
+  console.log("ok last run: fresh, stale by head/status/diff/untracked, atomic write");
+
+  // Repo lock in git-common-dir: serializes, takes over a dead owner, waits for a live one.
+  const lockFile = repoLockPath(root);
+  assert.equal(lockFile, join(root, ".git", "pi-checks.lock"));
+  let inside = 0;
+  let overlap = false;
+  const hold = () => withRepoLock(root, async () => { inside++; if (inside > 1) overlap = true; await pause(40); inside--; });
+  await Promise.all([hold(), hold(), hold()]);
+  assert.equal(overlap, false);
+  assert.equal(existsSync(lockFile), false, "lock released");
+  const zombie = execFileSync(process.execPath, ["-e", "console.log(process.pid)"], { encoding: "utf8" }).trim();
+  writeFileSync(lockFile, JSON.stringify({ pid: Number(zombie), host: (await import("node:os")).hostname(), at: Date.now(), token: "dead" }));
+  assert.equal(await withRepoLock(root, () => "taken"), "taken");
+  assert.equal(existsSync(lockFile), false);
+  writeFileSync(lockFile, JSON.stringify({ pid: process.pid, host: (await import("node:os")).hostname(), at: Date.now(), token: "live" }));
+  const waiting = new AbortController();
+  let waited = false;
+  const blocked = assert.rejects(withRepoLock(root, () => assert.fail("live lock must not be stolen"), { signal: waiting.signal, onWait: () => { waited = true; } }), { name: "AbortError" });
+  await pause(150);
+  waiting.abort();
+  await blocked;
+  assert.ok(waited);
+  assert.equal(JSON.parse(readFileSync(lockFile, "utf8")).token, "live");
+  rmSync(lockFile);
+  console.log("ok repo lock: serial, dead-owner takeover, live owner respected");
   console.log("checks-runner: all passed");
 } finally {
   rmSync(temp, { recursive: true, force: true });

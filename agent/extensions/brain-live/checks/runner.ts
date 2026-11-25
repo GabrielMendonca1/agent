@@ -1,8 +1,8 @@
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { spawn, spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, readdirSync, statSync, rmdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
-import { homedir, tmpdir } from "node:os";
-import { dirname, join, resolve } from "node:path";
+import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, linkSync, readlinkSync, realpathSync, readdirSync, renameSync, statSync, rmdirSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
+import { homedir, hostname, tmpdir } from "node:os";
+import { dirname, isAbsolute, join, resolve } from "node:path";
 
 /**
  * Runner de verificação por projeto.
@@ -54,6 +54,90 @@ export const MANIFEST_PATH = join(".pi", "checks.json");
 function git(cwd: string, args: string[]): { ok: boolean; out: string } {
   const run = spawnSync("git", ["-C", cwd, ...args], { encoding: "utf8" });
   return { ok: run.status === 0, out: (run.stdout ?? "").trim() || (run.stderr ?? "").trim() };
+}
+
+/** Git só de leitura: GIT_OPTIONAL_LOCKS=0 impede o `status` de regravar o índice (vale dentro do sandbox). */
+function gitRead(cwd: string, args: string[]): { ok: boolean; out: Buffer } {
+  const run = spawnSync("git", ["-C", cwd, ...args], { env: { ...process.env, GIT_OPTIONAL_LOCKS: "0" }, maxBuffer: 256 * 1024 * 1024 });
+  return { ok: run.status === 0, out: run.stdout ?? Buffer.alloc(0) };
+}
+
+/** tmp no mesmo diretório + rename: leitor concorrente vê o arquivo antigo ou o novo, nunca meio escrito. */
+export function writeFileAtomic(file: string, data: string): void {
+  mkdirSync(dirname(file), { recursive: true });
+  const temp = `${file}.${process.pid}.${randomUUID()}.tmp`;
+  try {
+    writeFileSync(temp, data, { flag: "wx" });
+    renameSync(temp, file);
+  } catch (error) {
+    try { unlinkSync(temp); } catch {}
+    throw error;
+  }
+}
+
+const sleep = (ms: number) => new Promise((done) => setTimeout(done, ms));
+
+function pidAlive(pid: number): boolean {
+  if (!Number.isSafeInteger(pid) || pid <= 0) return true;
+  try { process.kill(pid, 0); return true; } catch (error: any) { return error?.code !== "ESRCH"; }
+}
+
+/** Lock por repositório no git-common-dir, compartilhado por todos os worktrees do mesmo repo. */
+export function repoLockPath(root: string): string | null {
+  const common = git(root, ["rev-parse", "--git-common-dir"]);
+  if (!common.ok) return null;
+  return join(isAbsolute(common.out) ? common.out : resolve(root, common.out), "pi-checks.lock");
+}
+
+const LOCK_STALE_MS = Number(process.env.PI_CHECKS_LOCK_STALE_MS) > 0 ? Number(process.env.PI_CHECKS_LOCK_STALE_MS) : 10 * 60_000;
+
+/**
+ * Serializa operações curtas de `git worktree add/remove/prune` e a mescla do cache.
+ * O_EXCL cria o lock; dono morto (mesmo host) ou lock mais velho que LOCK_STALE_MS é
+ * tomado: renomeia para um nome único antes de apagar, então só um concorrente vence.
+ */
+export async function withRepoLock<T>(root: string, fn: () => T | Promise<T>, options?: { signal?: AbortSignal; onWait?: () => void }): Promise<T> {
+  const file = repoLockPath(root);
+  if (!file) return fn();
+  const token = `${process.pid}:${randomUUID()}`;
+  let waited = false;
+  for (;;) {
+    options?.signal?.throwIfAborted();
+    try {
+      writeFileSync(file, JSON.stringify({ pid: process.pid, host: hostname(), at: Date.now(), token }), { flag: "wx" });
+      break;
+    } catch (error: any) {
+      // Sem como criar o lock (git dir só leitura, etc.): segue sem ele, como antes do lock existir.
+      if (error?.code !== "EEXIST") return fn();
+    }
+    let owner: { pid?: number; host?: string; at?: number; token?: string } = {};
+    let age = 0;
+    try {
+      owner = JSON.parse(readFileSync(file, "utf8"));
+      age = Date.now() - statSync(file).mtimeMs;
+    } catch {
+      // Lock sumiu ou está sendo escrito agora: tenta de novo.
+      try { age = Date.now() - statSync(file).mtimeMs; } catch { continue; }
+    }
+    const dead = owner.host === hostname() && typeof owner.pid === "number" && !pidAlive(owner.pid);
+    if (dead || age > LOCK_STALE_MS) {
+      const grave = `${file}.stale.${process.pid}.${randomUUID()}`;
+      try { renameSync(file, grave); } catch { continue; }
+      // Entre a leitura e o rename outro concorrente pode ter tomado o lock: devolve o que não era o morto.
+      let taken: { token?: string } = {};
+      try { taken = JSON.parse(readFileSync(grave, "utf8")); } catch {}
+      if (taken.token !== owner.token) { try { linkSync(grave, file); } catch {} }
+      rmSync(grave, { force: true });
+      continue;
+    }
+    if (!waited) { waited = true; options?.onWait?.(); }
+    await sleep(50 + Math.random() * 100);
+  }
+  try {
+    return await fn();
+  } finally {
+    try { if (JSON.parse(readFileSync(file, "utf8")).token === token) unlinkSync(file); } catch {}
+  }
 }
 
 /** O manifesto define a raiz do projeto: sobe até achá-lo, sem adivinhar por marcador de VCS. */
@@ -236,7 +320,7 @@ function pruneCache(): void {
       const dir = join(CACHE_DIR, slug.name);
       try {
         for (const entry of readdirSync(dir, { withFileTypes: true })) {
-          if (!entry.isFile() || !/^(?:[a-f0-9]+|ultima-rodada)\.json$/.test(entry.name)) continue;
+          if (!entry.isFile() || !/^(?:[a-f0-9]+|ultima-rodada)\.json(?:\.\d+\.[0-9a-f-]+\.tmp)?$/.test(entry.name)) continue;
           const file = join(dir, entry.name);
           try { if (statSync(file).mtimeMs < cutoff) rmSync(file); } catch {}
         }
@@ -248,9 +332,7 @@ function pruneCache(): void {
 
 function writeBaselineCache(root: string, cache: BaselineCache): void {
   try {
-    const file = cacheFile(root, cache.sha);
-    mkdirSync(dirname(file), { recursive: true });
-    writeFileSync(file, JSON.stringify(cache, null, 2));
+    writeFileAtomic(cacheFile(root, cache.sha), JSON.stringify(cache, null, 2));
   } catch {
     // Cache é otimização: perdê-lo custa tempo, nunca correção.
   }
@@ -288,27 +370,36 @@ export async function baseline(
   options?.signal?.throwIfAborted();
   const path = mkdtempSync(join(tmpdir(), "pi-checks-base-"));
   const worktree = join(path, "wt");
+  const locked = <T>(fn: () => T) => withRepoLock(manifest.root, fn, {
+    signal: options?.signal, onWait: () => options?.onPhase?.("aguardando lock de worktree do repositório…") });
   try {
-    const add = git(manifest.root, ["worktree", "add", "--detach", worktree, sha]);
-    if (!add.ok) throw new Error(`worktree da baseline falhou em ${sha}: ${add.out}`);
+    await locked(() => {
+      const add = git(manifest.root, ["worktree", "add", "--detach", worktree, sha]);
+      if (!add.ok) throw new Error(`worktree da baseline falhou em ${sha}: ${add.out}`);
+    });
     options?.signal?.throwIfAborted();
     for (const entry of manifest.link) {
       const source = join(manifest.root, entry);
       if (existsSync(source)) { try { symlinkSync(source, join(worktree, entry)); } catch {} }
     }
     const results = await runChecks(manifest, { ...options, cwd: worktree, names: missing.map((c) => c.name) });
-    // Relê antes de mesclar para preservar entradas escritas durante esta rodada.
-    const merged = Object.assign(Object.create(null), readCache(manifest.root, sha)?.results);
-    for (const result of results) {
-      const check = missing.find((c) => c.name === result.name)!;
-      merged[result.name] = { ...result, fp: fingerprint(check, manifest) };
-      selected.set(result.name, result);
-    }
-    writeBaselineCache(manifest.root, { version: 2, sha, at: new Date().toISOString(), results: merged });
+    // Relê sob o lock antes de mesclar para preservar entradas escritas durante esta rodada.
+    await locked(() => {
+      const merged = Object.assign(Object.create(null), readCache(manifest.root, sha)?.results);
+      for (const result of results) {
+        const check = missing.find((c) => c.name === result.name)!;
+        merged[result.name] = { ...result, fp: fingerprint(check, manifest) };
+        selected.set(result.name, result);
+      }
+      writeBaselineCache(manifest.root, { version: 2, sha, at: new Date().toISOString(), results: merged });
+    });
     return { sha, results: selection.map((c) => selected.get(c.name)!), cached: false };
   } finally {
-    git(manifest.root, ["worktree", "remove", "--force", worktree]);
-    git(manifest.root, ["worktree", "prune"]);
+    // Limpeza não pode ser cancelada pelo mesmo sinal que abortou a rodada.
+    await withRepoLock(manifest.root, () => {
+      git(manifest.root, ["worktree", "remove", "--force", worktree]);
+      git(manifest.root, ["worktree", "prune"]);
+    });
     rmSync(path, { recursive: true, force: true });
   }
 }
@@ -339,46 +430,150 @@ export async function gate(manifest: Manifest, options?: RunOptions & { baseline
   }
 }
 
+export type TreeStatePart = "head" | "status" | "diff" | "untracked";
+/** HEAD + impressão digital do working tree: o que um resultado de checks descreve. */
+export interface TreeState {
+  head: string | null;
+  fingerprint: string;
+  parts: Record<Exclude<TreeStatePart, "head">, string>;
+}
+
+const sha256 = (data: Buffer | string) => createHash("sha256").update(data).digest("hex");
+
 /**
- * Grava o relatório da última rodada, com a saída capturada de cada check.
- *
- * Sem isto, uma falha que não se reproduz não deixa rastro: o console mostra o
- * nome do que quebrou, o operador rola a tela, e a evidência se perde. Guardamos
- * só o ÚLTIMO relatório — histórico aqui viraria lixo que ninguém lê e ninguém
- * apaga. Devolve o caminho, ou null se não deu para escrever (nunca lança: um
- * relatório ausente não pode derrubar o portão).
+ * Só lê: `git status --porcelain=v1 -z --untracked-files=all`, `git diff HEAD --binary`
+ * e o conteúdo dos não rastreados (que o diff não vê). Roda dentro do sandbox só leitura.
+ */
+export function treeState(root: string): TreeState | null {
+  const top = gitRead(root, ["rev-parse", "--show-toplevel"]);
+  if (!top.ok) return null;
+  const dir = top.out.toString("utf8").trim();
+  const head = gitRead(dir, ["rev-parse", "--verify", "-q", "HEAD"]);
+  const status = gitRead(dir, ["status", "--porcelain=v1", "-z", "--untracked-files=all"]);
+  if (!status.ok) return null;
+  const diff = head.ok ? gitRead(dir, ["diff", "HEAD", "--binary"]) : { ok: true, out: Buffer.alloc(0) };
+  if (!diff.ok) return null;
+  const untracked = createHash("sha256");
+  for (const entry of status.out.toString("utf8").split("\0")) {
+    if (!entry.startsWith("?? ")) continue;
+    const name = entry.slice(3);
+    const file = join(dir, name);
+    let content: string;
+    try {
+      const stat = lstatSync(file);
+      content = stat.isSymbolicLink() ? `link:${readlinkSync(file)}` : stat.isFile() ? sha256(readFileSync(file)) : `kind:${stat.mode}`;
+    } catch (error: any) { content = `unreadable:${error?.code ?? "?"}`; }
+    untracked.update(`${name}\0${content}\0`);
+  }
+  const parts = { status: sha256(status.out), diff: sha256(diff.out), untracked: untracked.digest("hex") };
+  const headSha = head.ok ? head.out.toString("utf8").trim() : null;
+  return { head: headSha, parts, fingerprint: sha256(JSON.stringify([headSha, parts.status, parts.diff, parts.untracked])) };
+}
+
+export interface LastRunRecord {
+  version: 1;
+  at: string;
+  root: string;
+  action: "gate" | "run";
+  selection: { tags?: string[]; names?: string[] };
+  /** Estado do working tree ao fim da rodada. */
+  tree: TreeState;
+  /** A própria rodada mudou o working tree (saída não ignorada, por exemplo). */
+  treeChangedDuringRun?: boolean;
+  ok: boolean;
+  verdict: string;
+  total: number;
+  green: number;
+  baseSha?: string | null;
+  baselineCached?: boolean;
+  comparison?: Comparison;
+  results: CheckResult[];
+  ambiente: Record<string, string>;
+}
+
+function lastRunFile(root: string): string {
+  const slug = root.replace(/[^a-zA-Z0-9]+/g, "-").replace(/^-|-$/g, "");
+  return join(CACHE_DIR, slug, "ultima-rodada.json");
+}
+
+/**
+ * Grava o relatório da última rodada, com a saída de cada check, HEAD e a impressão
+ * digital do working tree. Só o ÚLTIMO relatório: histórico aqui viraria lixo. É o que
+ * `checks last` devolve a um revisor que não pode executar checks. Nunca lança: um
+ * relatório ausente não pode derrubar o portão.
  */
 export function writeLastRun(
   root: string,
-  payload: { baseSha: string; baselineCached: boolean; results: CheckResult[]; comparison: Comparison },
+  payload: {
+    action: "gate" | "run"; selection: { tags?: string[]; names?: string[] }; before?: TreeState | null;
+    ok: boolean; verdict: string; results: CheckResult[];
+    baseSha?: string | null; baselineCached?: boolean; comparison?: Comparison;
+  },
 ): string | null {
   try {
-    const slug = root.replace(/[^a-zA-Z0-9]+/g, "-").replace(/^-|-$/g, "");
-    const file = join(CACHE_DIR, slug, "ultima-rodada.json");
-    mkdirSync(dirname(file), { recursive: true });
-    writeFileSync(
-      file,
-      JSON.stringify(
-        {
-          at: new Date().toISOString(),
-          root,
-          baseSha: payload.baseSha,
-          baselineCached: payload.baselineCached,
-          // O ambiente entra no relatório porque ele MUDA embaixo do portão: a
-          // release ativa do pi trocou de 0.84.2 para 0.84.3 no meio de um dia de
-          // trabalho, e dois checks leem o compositor dessa release.
-          ambiente: environmentSnapshot(),
-          comparison: payload.comparison,
-          results: payload.results,
-        },
-        null,
-        2,
-      ),
-    );
+    const tree = treeState(root);
+    if (!tree) return null;
+    const file = lastRunFile(root);
+    const record: LastRunRecord = {
+      version: 1,
+      at: new Date().toISOString(),
+      root,
+      action: payload.action,
+      selection: payload.selection,
+      tree,
+      ...(payload.before && payload.before.fingerprint !== tree.fingerprint ? { treeChangedDuringRun: true } : {}),
+      ok: payload.ok,
+      verdict: payload.verdict,
+      total: payload.results.length,
+      green: payload.results.filter((r) => r.ok).length,
+      baseSha: payload.baseSha,
+      baselineCached: payload.baselineCached,
+      comparison: payload.comparison,
+      results: payload.results,
+      // O ambiente entra no relatório porque ele MUDA embaixo do portão: a
+      // release ativa do pi trocou de 0.84.2 para 0.84.3 no meio de um dia de
+      // trabalho, e dois checks leem o compositor dessa release.
+      ambiente: environmentSnapshot(),
+    };
+    writeFileAtomic(file, JSON.stringify(record, null, 2));
     return file;
   } catch {
     return null;
   }
+}
+
+export function readLastRun(root: string): LastRunRecord | null {
+  try {
+    const data = JSON.parse(readFileSync(lastRunFile(root), "utf8"));
+    return data?.version === 1 && data.tree && Array.isArray(data.results) ? data : null;
+  } catch { return null; }
+}
+
+export type LastRunStatus =
+  | { status: "missing"; root: string }
+  | { status: "fresh"; record: LastRunRecord }
+  | { status: "stale"; record: LastRunRecord; diverged: TreeStatePart[] | ["unknown"] };
+
+/** Não confia no registro: recalcula HEAD + impressão digital e diz qual parte divergiu. */
+export function lastRun(root: string): LastRunStatus {
+  const record = readLastRun(root);
+  if (!record) return { status: "missing", root };
+  const now = treeState(root);
+  if (!now) return { status: "stale", record, diverged: ["unknown"] };
+  const diverged: TreeStatePart[] = [];
+  if (now.head !== record.tree.head) diverged.push("head");
+  for (const part of ["status", "diff", "untracked"] as const) if (now.parts[part] !== record.tree.parts[part]) diverged.push(part);
+  return diverged.length ? { status: "stale", record, diverged } : { status: "fresh", record };
+}
+
+/** Uma linha para o resultado do job: `gate: N/M green, new failures: [...] (fresh)`. */
+export function lastRunLine(state: LastRunStatus): string {
+  if (state.status === "missing") return "gate: not run";
+  const r = state.record;
+  const failures = r.comparison?.newFailures ?? r.results.filter((x) => !x.ok).map((x) => x.name);
+  const freshness = state.status === "fresh" ? "fresh" : `stale: ${state.diverged.join(", ")} changed since`;
+  const filter = r.selection.names?.length ? ` only=${r.selection.names.join(",")}` : r.selection.tags?.length ? ` tags=${r.selection.tags.join(",")}` : "";
+  return `${r.action}${filter}: ${r.green}/${r.total} green, ${r.action === "gate" ? "new failures" : "failures"}: [${failures.join(", ")}] (${freshness}; ${r.tree.head?.slice(0, 8) ?? "no HEAD"} at ${r.at})`;
 }
 
 /** O que pode ter mudado por fora e explicar um vermelho que não se reproduz. */
