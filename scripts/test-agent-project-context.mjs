@@ -57,7 +57,7 @@ try {
 
   const { installProjectContext } = await jiti.import(join(repo, 'agent/extensions/brain-live/lib/project-context.ts'));
   const commands = {}; const hooks = {};
-  installProjectContext({ on: (name, fn) => { hooks[name] = fn; }, registerCommand: (name, cmd) => { commands[name] = cmd; }, sendUserMessage: text => { commands.sent = text; } });
+  installProjectContext({ on: (name, fn) => { hooks[name] = fn; }, registerCommand: (name, cmd) => { commands[name] = cmd; }, sendMessage: (message, options) => { commands.sent = message; commands.sentOptions = options; } });
   const notices = []; const ui = { notify: (...args) => notices.push(args), select: async (_title, choices) => choices[1] };
   await commands.remember.handler('UI_RULE', { cwd: project, hasUI: true, ui });
   assert.ok(readFileSync(join(project, 'AGENTS.md'), 'utf8').includes('- UI_RULE'));
@@ -69,7 +69,10 @@ try {
   assert.match(notices.at(-1)[0], /Sem UI/);
   assert.equal(existsSync(join(empty, '.agent/rules.md')), false);
   await commands.rules.handler('init', { cwd: project, ui });
-  assert.match(commands.sent, /Replace the manual AGENTS.md explicitly/);
+  assert.match(commands.sent.content, /Replace the manual AGENTS.md explicitly/);
+  assert.equal(commands.sent.display, false, 'prompt em inglês oculto no TUI');
+  assert.deepEqual(commands.sentOptions, { triggerTurn: true, deliverAs: 'followUp' });
+  assert.deepEqual(notices.at(-1), ['Pedido enviado ao agente: migrar AGENTS.md para .agent/rules.md e .agent/header.md.', 'info']);
 
   fake = await startFakeAnthropic([
     { tool: { name: 'edit', input: { path: '.agent/rules.md', oldText: 'RULE_SENTINEL', newText: 'EDITED_RULE' } } },
@@ -100,6 +103,7 @@ export default function(pi) {
    if (!readFileSync(${JSON.stringify(join(profile, 'AGENTS.md'))}, 'utf8').includes('- PERSONAL_REMEMBERED')) throw new Error('personal remember failed');
    writeFileSync(${JSON.stringify(join(root, 'remember-ok'))}, 'ok');
    pi.sendUserMessage('Verify stable context', { deliverAs: 'followUp' });
+   await commands.rules.handler('init', ctx);
  });
 }`);
   const env = { ...process.env, HOME: home, USERPROFILE: home, PI_CODING_AGENT_DIR: profile, PI_OFFLINE: '1', AGENT_RUNTIME_ENABLED: '1', AGENT_CHILD: '0', NODE_OPTIONS: '' };
@@ -114,7 +118,9 @@ export default function(pi) {
   assert.ok(!/Error|did not rebuild/.test(output), output);
   assert.ok(existsSync(join(root, 'remember-ok')), output);
   const prompts = fake.messages().map(system);
-  assert.ok(prompts.length >= 4, 'tool cycles plus fresh user turn');
+  assert.ok(prompts.length >= 5, 'tool cycles, fresh user turn and /rules init turn');
+  const lastText = body => { const content = body.messages.at(-1).content; return typeof content === 'string' ? content : content.map(part => part.text ?? '').join(''); };
+  assert.ok(fake.messages().some(body => body.messages.at(-1).role === 'user' && lastText(body).startsWith('Migrate this project context to the Agent sources.')), '/rules init chega ao modelo e dispara um turno');
   for (const prompt of prompts) {
     for (const text of ['RULE_SENTINEL', 'HEADER_SENTINEL', 'PERSONAL_SENTINEL', join(project, 'AGENTS.md'), join(project, '.agent/notes.md'), join(project, 'STATUS.md')]) assert.ok(prompt.includes(text), text);
     for (const text of [GENERATED_MARKER, 'STATUS_BODY_SECRET', 'NOTES_BODY_SECRET', 'HISTORY_BODY_SECRET', 'REMEMBERED_RULE', 'PERSONAL_REMEMBERED', 'EDITED_HEADER', 'EDITED_RULE']) assert.ok(!prompt.includes(text), text);

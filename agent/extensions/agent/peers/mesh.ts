@@ -168,9 +168,9 @@ function bytes(value: string): number {
   return Buffer.byteLength(value, "utf8");
 }
 
-export function ageOf(at: number, now: number): string {
+export function ageOf(at: number, now: number, fresh = "agora"): string {
   const minutes = Math.max(0, Math.round((now - at) / 60000));
-  if (minutes < 1) return "agora";
+  if (minutes < 1) return fresh;
   if (minutes < 60) return `${minutes}min`;
   const hours = Math.round(minutes / 60);
   return hours < 48 ? `${hours}h` : `${Math.round(hours / 24)}d`;
@@ -1315,7 +1315,7 @@ export function slotBlock(peers: PeerRecord[], now: number, max = 6): { block: s
   if (others.length === 0) return null;
   const shown = others.slice(0, max);
   const entries = shown
-    .map((peer) => `${peer.short} ${peer.project}${peer.branch ? `@${peer.branch}` : ""} ${peer.status} ${peer.note || peer.subject || "-"} ${ageOf(peer.at, now)}`)
+    .map((peer) => `${peer.short} ${peer.project}${peer.branch ? `@${peer.branch}` : ""} ${peer.status} ${peer.note || peer.subject || "-"} ${ageOf(peer.at, now, "now")}`)
     .join("\n");
   const omitted = others.length - shown.length;
   return {

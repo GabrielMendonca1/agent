@@ -64,7 +64,7 @@ function walkSchema(where, node, path = '') {
   if (Array.isArray(node)) { node.forEach((item, i) => walkSchema(where, item, `${path}[${i}]`)); return; }
   for (const key of ['description', 'title']) if (typeof node[key] === 'string') check(`${where}${path}.${key}`, node[key]);
   for (const [key, value] of Object.entries(node)) {
-    if (key === 'description' || key === 'title') continue;
+    // Só pula o texto já checado: um objeto em `title`/`description` é uma propriedade com esse nome.
     if (value && typeof value === 'object') walkSchema(where, value, `${path}.${key}`);
   }
 }
@@ -87,7 +87,7 @@ function fakePi(tools, handlers, commands, sent) {
   const base = {
     registerTool: (tool) => { tools.set(tool.name, tool); },
     registerCommand: (name, command) => { commands.set(name, command); },
-    sendUserMessage: (text) => { sent.push(text); },
+    sendMessage: (message) => { sent.push(message.content); },
     on: (name, handler) => { (handlers[name] ??= []).push(handler); },
     events: { on: noop, emit: noop, off: noop },
     getAllTools: () => [...tools.values()].map(t => ({ name: t.name, exposure: t.exposure ?? 'direct' })),
@@ -132,6 +132,16 @@ try {
   for (const required of ['plan', 'todo', 'subagent', 'checks', 'jobs', 'ask_user', 'skim', 'web_search', 'web_fetch', 'peers_list', 'megamind_who']) {
     assert.ok(tools.has(required), `tool ${required} não registrada: ${[...tools.keys()].join(', ')}`);
   }
+  // Propriedades chamadas title/description também são percorridas.
+  const probe = { type: 'object', properties: {
+    title: { type: 'string', description: 'Título da tarefa' },
+    description: { type: 'object', title: 'Descrição', properties: { body: { type: 'string', description: 'quando usar' } } },
+  } };
+  const before = failures.length;
+  walkSchema('probe', probe);
+  assert.deepEqual(failures.splice(before).map(f => f.split(':')[0]),
+    ['probe.properties.title.description', 'probe.properties.description.title', 'probe.properties.description.properties.body.description'],
+    'walkSchema desce em propriedades title/description');
   for (const [name, tool] of tools) checkTool(toolSource.get(name), tool);
   console.log(`ok ${tools.size} tools inspecionadas`);
 
@@ -176,7 +186,11 @@ try {
   sent.forEach((text, i) => check(`command prompt ${['notes', 'rules init'][i]}`, text));
   const { slotBlock } = await jiti.import(join(repo, 'agent/extensions/agent/peers/mesh.ts'));
   const peer = { short: 'abc123', project: 'demo', branch: 'main', status: 'idle', note: 'note', at: Date.now() };
-  check('peers slot', slotBlock([peer, { ...peer, short: 'self01', self: true }], Date.now(), 0)?.block);
+  const now = Date.now();
+  const slot = slotBlock([peer, { ...peer, short: 'old123', at: now - 3 * 3600_000 }, { ...peer, short: 'self01', self: true }], now)?.block;
+  assert.match(slot, /^abc123 .* now$/m, 'par recente aparece no slot');
+  assert.match(slot, /^old123 .* 3h$/m, 'par antigo aparece no slot');
+  check('peers slot', slot);
   const guard = await jiti.import(join(repo, 'agent/core/loop-guard.mjs'));
   for (const name of ['NUDGE', 'CYCLE_NUDGE', 'STOP', 'CYCLE_STOP']) check(`loop guard ${name}`, guard[name]);
   console.log('ok seções injetadas, slot de peers e loop guard');
