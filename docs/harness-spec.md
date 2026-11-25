@@ -1,8 +1,21 @@
 # Spec — evolução do harness (5 movimentos)
 
-Estado: proposta, nada implementado. Base: `main` em `c11f098`. Fatos levantados no código (arquivo:linha) em 2026-11-25.
+Estado: aprovada em 2026-11-25 com as decisões abaixo; implementação começa pelo item 0. Base: `main` em `c11f098`. Fatos levantados no código (arquivo:linha) em 2026-11-25.
 
 Ordem de execução proposta: **0 → 1 → 2 → 3 → 4**. A suíte de evals entra primeiro numa versão mínima, porque medir os ganhos de 1 a 4 exige uma linha de base de antes das mudanças.
+
+## Decisões tomadas
+
+| # | Decisão |
+|---|---|
+| (a) | O reviewer não executa checks. Recebe `checks list` e `checks last`. |
+| (b) | No worker, o gate usa `tags: "fast"` por default; `only`/`tags` explícitos continuam aceitos. |
+| (c) | A ação se chama `continue`. |
+| (d) | O `continue` não troca o modelo. Para outro modelo, faz-se um novo `launch`. |
+| (e) | O que o modelo lê fica em inglês; o que o usuário lê fica em português; a policy ganha "Reply to the user in their language." |
+| (f) | `plan` (só `steps`) e `todo` viram duas tools. `todo` é registrada dentro de `plan.ts` com `exposure: "deferred"`, sem mexer na lista de arquivos de `docs/consumer-contract.md:85-97`. |
+| (g) | O handoff vale por até 24 h. |
+| (h) | Worker recebe `skills: [debug, tdd]`; scout, reviewer, visual e planner recebem `[]`. O `launch` aceita `skills?: string[]` para anexar uma skill pontual. |
 
 ---
 
@@ -27,7 +40,7 @@ Ordem de execução proposta: **0 → 1 → 2 → 3 → 4**. A suíte de evals e
    - dois writers em paralelo;
    - implementação seguida de revisão;
    - correção depois da revisão, que é onde o `continue` do item 2 deve brilhar.
-4. Criar arms por flag de ambiente, para comparar antes e depois sem branches: `AGENT_CHILD_CHECKS`, `AGENT_SUBAGENT_CONTINUE`, `AGENT_PROMPT_LANG`.
+4. Comparar antes e depois por commit instalado, sem flags A/B permanentes. O idioma (item 3), por exemplo, compara a linha de base (`c11f098`, que já é mista) com o commit do item 3. Manter duas versões de texto em todas as tools só para um A/B seria código descartável.
 5. Colocar no gate só `node scripts/bench/run.mjs --dry`, que valida que as fixtures falham e as referências passam, sem rede e sem custo. A rodada real fica manual, com `--max-usd`.
 6. Rodar a **linha de base** (main atual) antes de começar o item 1 e guardar `report.json` em `docs/research/`.
 
@@ -55,7 +68,8 @@ Ordem de execução proposta: **0 → 1 → 2 → 3 → 4**. A suíte de evals e
   - O `cwd` do filho já é o worktree, então nada muda no tool.
   - O resultado do job ganha uma linha `gate: N/M verdes, novas falhas: […]`.
 - **Reviewer (somente leitura):** **não executa** checks. Executar checks seria escapar do sandbox, porque o comando vem de `.pi/checks.json`, controlado pelo projeto: é o mesmo problema que tratamos no `shellCommandPrefix`.
-  - Ganha só `checks list` e uma ação nova, `checks last`, que lê o resultado da última rodada para o `HEAD` do worktree. Isso reativa `writeLastRun`.
+  - Ganha só `checks list` e uma ação nova, `checks last`, que lê o resultado da última rodada do worktree. Isso reativa `writeLastRun`.
+  - A rodada é gravada com `head` **e** a impressão digital do working tree: hash de `git status --porcelain` mais `git diff HEAD`. Se qualquer um divergir na leitura, `checks last` responde `stale` em vez do resultado.
   - O reviewer passa a citar "o gate do worker em `<sha>` deu X" com evidência, em vez de confiar no relato.
 - **Concorrência:**
   - Gravar o cache com tmp+rename.
@@ -65,7 +79,7 @@ Ordem de execução proposta: **0 → 1 → 2 → 3 → 4**. A suíte de evals e
   - O gate completo fica com o `integrate`, que já o roda.
 - **Antes, corrigir uma divergência:** `docs/setup.md:184` diz que o scout tem `skim`, mas o arquivo do papel não tem.
 
-**Decisões suas**
+**Decididas** (ver a tabela no topo)
 - (a) O reviewer só lê o último resultado (proposta) ou também pode executar checks?
 - (b) No filho, o default é `fast` ou o gate completo?
 
@@ -91,7 +105,10 @@ Ordem de execução proposta: **0 → 1 → 2 → 3 → 4**. A suíte de evals e
   - Reusa o mesmo `sessionFile`, `cwd`/worktree, modelo, thinking, tools, sandbox e system prompt.
   - O prefixo idêntico aproveita o cache de prompt (`child-cache-prefix.ts`).
 - O registro do job passa a guardar um **snapshot da invocação**: `model`, `thinking`, `tools`, `sandbox`, `systemPromptSha` e `cwd` efetivo. Se o papel mudou desde então, o `continue` usa o snapshot e avisa.
+- **Escritor único sem worktree:** o `continue` captura um `writerCheckpoint` novo, como o `launch` faz (`subagent/index.ts:858`), para o segundo turno continuar coberto pelo `/rewind`.
+- **Papel alterado:** o registro guarda o texto do system prompt usado no launch. O `continue` reusa esse texto e avisa se o `.md` do papel mudou desde então, sem trocar o prompt nem quebrar o cache.
 - **Recusas:**
+  - papel com `runner: agy` (gemini), porque não gera JSONL do Pi; a mensagem manda usar `launch`;
   - a task ainda está rodando;
   - já existe outro `continue` na mesma sessão (lock no JSONL);
   - o worktree já foi integrado ou descartado. A mensagem de erro diz para relançar.
@@ -104,7 +121,7 @@ Ordem de execução proposta: **0 → 1 → 2 → 3 → 4**. A suíte de evals e
   | Julgamento em vários passos ou arquivos, escrita isolada, revisão | `subagent launch` |
   | Ajuste ou pergunta de follow-up para um filho que já tem o contexto | `subagent continue` |
 
-**Decisões suas**
+**Decididas** (ver a tabela no topo)
 - (c) Nome da ação: `continue` (proposta) ou `reply`?
 - (d) O `continue` pode trocar o modelo? Proposta: não, porque quebra o cache. Para trocar, faz-se um novo `launch`.
 
@@ -140,8 +157,9 @@ Ordem de execução proposta: **0 → 1 → 2 → 3 → 4**. A suíte de evals e
   - tudo que o **usuário** lê (UI, notificações e docs) fica em **português**.
   - A política de autonomia ganha uma linha: "Reply to the user in their language."
 - **Guarda permanente:** um check `scripts/test-tool-language.mjs` que carrega as extensões com jiti e falha se o texto lido pelo modelo tiver diacríticos do português.
+- O `subagent` injeta o `description:` dos arquivos de papel na descrição da tool, então os `description:` de `agent/agents/*.md` também passam para inglês e entram no check.
 
-**Decisões suas**
+**Decididas** (ver a tabela no topo)
 - (e) Inglês para o modelo e português para o usuário (proposta), ou tudo em português?
 - (f) Separar `plan`/`todo` (proposta) ou manter uma tool com o schema enxuto?
 
@@ -163,12 +181,13 @@ Ordem de execução proposta: **0 → 1 → 2 → 3 → 4**. A suíte de evals e
 - O `.agent/handoff.md` atual está velho e não seria injetado.
 
 **Proposta (handoff)**
-- A skill grava um frontmatter: `session`, `created_at`, `branch` e `head` (sha).
+- A skill escreve só o corpo. O Node carimba o frontmatter (`session`, `created_at`, `branch`, `head`) de forma determinística, num hook de `tool_result` quando o arquivo `.agent/handoff.md` é gravado, e no `/next`. O modelo não sabe o id real da sessão e erra sha e horário.
 - Na primeira mensagem do usuário numa sessão nova, o handoff é **injetado** se:
   - não foi consumido;
   - está na mesma branch;
   - o `HEAD` atual é igual a `head` ou descendente dele;
   - tem menos de `AGENT_HANDOFF_MAX_AGE` (default 24 h).
+- Num `cwd` sem git, vale só a idade.
 - Caso contrário, aparece **uma linha visível**: "Há um handoff de 3 h atrás na branch X; use /handoff para carregar." Nada de descarte silencioso.
 - `/next` continua forçando a injeção imediata.
 - Documentar em `docs/setup.md` e atualizar `test-agent-compaction`.
@@ -183,9 +202,10 @@ Ordem de execução proposta: **0 → 1 → 2 → 3 → 4**. A suíte de evals e
 - Adicionar `skills:` opcional no frontmatter do papel (allowlist; vazio = nenhuma).
   - Scout, reviewer e visual vêm com `skills: []`, para economizar prompt.
   - Worker recebe `debug, tdd`.
+- O `launch` aceita `skills?: string[]` por task, para o pai anexar uma skill pontual (por exemplo `ui-ux` ou `computer-use`).
 - Medir o tamanho do catálogo por filho antes e depois.
 
-**Decisões suas**
+**Decididas** (ver a tabela no topo)
 - (g) Idade máxima do handoff: 24 h (proposta) ou outro valor?
 - (h) Lista de skills por papel.
 
