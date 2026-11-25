@@ -74,7 +74,7 @@ export default function jobs(pi: ExtensionAPI) {
         try { return JSON.parse(options[1]).background === true; } catch { return false; }
       });
       if (background && registry.list(ctx.sessionManager.getSessionId()).some(job => job.kind === "codemode" && job.status === "running")) {
-        return { block: true, reason: "Já existe um job codemode em segundo plano nesta sessão. Aguarde ou cancele via jobs antes de iniciar outro." };
+        return { block: true, reason: "A background codemode job is already running in this session. Wait for it or cancel it via jobs before starting another." };
       }
     } catch { /* guard failures must not interrupt the agent */ }
   });

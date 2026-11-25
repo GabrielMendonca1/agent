@@ -1,5 +1,5 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { CYCLE_NUDGE, CYCLE_STOP, EMPTY_STOP, initialState, next, NUDGE, STOP } from "../../core/loop-guard.mjs";
+import { CYCLE_NUDGE, CYCLE_STOP, CYCLE_STOP_NOTICE, EMPTY_STOP, initialState, next, NUDGE, STOP, STOP_NOTICE } from "../../core/loop-guard.mjs";
 
 export default function loopGuard(pi: ExtensionAPI) {
   if (process.env.AGENT_LOOP_GUARD === "0") return;
@@ -18,7 +18,7 @@ export default function loopGuard(pi: ExtensionAPI) {
       state = outcome.state;
       if (outcome.stop) {
         const reason = outcome.cycle ? CYCLE_STOP : STOP;
-        try { ctx.ui.notify(reason, "warning"); } catch { /* headless */ }
+        try { ctx.ui.notify(outcome.cycle ? CYCLE_STOP_NOTICE : STOP_NOTICE, "warning"); } catch { /* headless */ }
         return { block: true, reason, terminate: true };
       }
     } catch { /* never interrupt the agent on a guard failure */ }

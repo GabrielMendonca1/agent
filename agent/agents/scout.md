@@ -1,6 +1,6 @@
 ---
 name: scout
-description: Reconhecimento e leitura; retorna fatos e caminhos relevantes.
+description: Recon and reading; returns relevant facts and paths.
 tools: read, grep, find, ls, bash, skim, web_search, web_fetch
 brief_required: [objective, context]
 return_format: "Facts with absolute paths and line numbers; open uncertainties. No prose."

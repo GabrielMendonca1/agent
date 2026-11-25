@@ -1318,7 +1318,7 @@ export function slotBlock(peers: PeerRecord[], now: number, max = 6): { block: s
   const omitted = others.length - shown.length;
   return {
     entries,
-    block: `<peers${omitted > 0 ? ` omitidos="${omitted}"` : ""}>\n${entries}\n</peers>\nOutras sessões do Pi nesta máquina. \`peers_list\` detalha, \`peers_send\` fala (volta um id; \`reply_to\` encadeia), \`peers_ask\`/\`peers_reply\` é pedido acompanhado, \`peers_context\` lê; falar é decisão sua.`,
+    block: `<peers${omitted > 0 ? ` omitted="${omitted}"` : ""}>\n${entries}\n</peers>\nOther Pi sessions on this machine. \`peers_list\` details them, \`peers_send\` messages one (returns an id; \`reply_to\` threads), \`peers_ask\`/\`peers_reply\` is a tracked request, \`peers_context\` reads one; whether to talk is your call.`,
   };
 }
 

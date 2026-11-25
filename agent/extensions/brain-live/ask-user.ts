@@ -128,24 +128,24 @@ export default function askUser(pi: ExtensionAPI) {
 		name: "ask_user",
 		label: "Perguntar",
 		description:
-			"Faça uma pergunta ao usuário com opções selecionáveis quando faltar informação indispensável que não pode descobrir sozinho ou precisar de autorização para uma ação consequente. Decida escolhas rotineiras sozinho.",
-		promptSnippet: "Pergunte ao usuário com seletor de opções quando precisar de uma decisão",
+			"Ask the user a question with selectable options when essential information is missing and you cannot find it yourself, or when you need authorization for a consequential action. Decide routine choices yourself.",
+		promptSnippet: "Ask the user to pick an option when you need their decision",
 		promptGuidelines: [
-			"Use ask_user quando precisar de input do usuário: dê um título curto que explique por que a decisão é necessária, passe a pergunta e 2-4 opções objetivas. Evite títulos genéricos como 'Escolha uma opção'. O usuário também pode digitar uma resposta livre. Não repita a pergunta em texto depois de chamá-la.",
+			"Use ask_user when you need the user's input: give a short title that explains why the decision is needed, the question and 2-4 concrete options. Avoid generic titles like 'Choose an option'. The user can also type a free answer. Do not repeat the question as text after calling it.",
 		],
 		parameters: Type.Object({
 			title: Type.String({
-				description: "Título curto e informativo: explique por que esta decisão é necessária ou o que ela afeta",
+				description: "Short, informative title: why this decision is needed or what it affects",
 			}),
-			question: Type.String({ description: "A pergunta, curta e direta" }),
+			question: Type.String({ description: "The question, short and direct" }),
 			options: Type.Optional(
 				Type.Array(Type.String(), {
-					description: "2-4 opções objetivas. Omita para resposta sempre livre.",
+					description: "2-4 concrete options. Omit for a free-form answer.",
 					minItems: 2,
 					maxItems: 6,
 				}),
 			),
-			context: Type.Optional(Type.String({ description: "Contexto extra visível ao usuário" })),
+			context: Type.Optional(Type.String({ description: "Extra context shown to the user" })),
 		}),
 
 		async execute(_id, params, signal, onUpdate, ctx) {
