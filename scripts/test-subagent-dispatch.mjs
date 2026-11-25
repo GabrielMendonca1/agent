@@ -162,7 +162,7 @@ export default function (pi) {
         const launch = context.messages.find(m => m.role === 'toolResult' && m.toolName === 'subagent');
         const handle = /Handles: ([^ .,]+)/.exec(launch?.content?.map(p => p.text || '').join(' ') || '')?.[1];
         content = [
-          { type: 'toolCall', id: 'cont-1', name: 'subagent', arguments: { action: 'continue', handle, message: 'SEGUNDO-TURNO' } },
+          { type: 'toolCall', id: 'cont-1', name: 'subagent', arguments: { action: 'continue', handle, message: '- SEGUNDO-TURNO' } },
           { type: 'toolCall', id: 'cont-2', name: 'subagent', arguments: { action: 'continue', handle, message: 'CONCORRENTE' } },
           { type: 'toolCall', id: 'cont-3', name: 'subagent', arguments: { action: 'continue', jobId: launchedJob(), message: 'POR-JOBID' } },
         ];
@@ -293,7 +293,7 @@ console.log('ok -p: espera o job, entrega o resultado e o pai reage antes de sai
   assert.equal(turns.length, 2, 'launch + um continue');
   assert.match(turns[0].messages[0][1], /^Task: ## Objective/);
   assert.deepEqual(turns[1].messages[0], turns[0].messages[0], 'o 2º turno começa pelo histórico do 1º');
-  assert.deepEqual(turns[1].messages.slice(1), [['assistant', 'FILHO-TURNO-0'], ['user', 'SEGUNDO-TURNO']], 'só a mensagem nova, sem Task:/contexto repetidos');
+  assert.deepEqual(turns[1].messages.slice(1), [['assistant', 'FILHO-TURNO-0'], ['user', '- SEGUNDO-TURNO']], 'só a mensagem nova (mesmo começando com -), sem Task:/contexto repetidos');
   assert.equal(turns[1].system, turns[0].system, 'mesmo system (preâmbulo e tools)');
   assert.equal(turns[1].cwd, turns[0].cwd, 'mesmo cwd');
   const jobsDir = join(agent, 'subagent-jobs');
@@ -311,7 +311,7 @@ console.log('ok -p: espera o job, entrega o resultado e o pai reage antes de sai
   assert.deepEqual(contJob.tasks[0].invocation, inv, 'continue reusa o snapshot do launch');
   const session = readFileSync(launchJob.tasks[0].sessionFile, 'utf8').trim().split('\n').map(JSON.parse);
   assert.equal(session.filter(e => e.type === 'session').length, 1);
-  assert.deepEqual(session.filter(e => e.message?.role === 'user').map(e => e.message.content.map(p => p.text).join('').slice(0, 13)), ['Task: ## Obje', 'SEGUNDO-TURNO']);
+  assert.deepEqual(session.filter(e => e.message?.role === 'user').map(e => e.message.content.map(p => p.text).join('').slice(0, 13)), ['Task: ## Obje', '- SEGUNDO-TUR']);
   const registry = JSON.parse(readFileSync(join(jobsDir, launchJob.sessionId, 'handles/registry.json'), 'utf8'));
   assert.deepEqual([registry.handles['worker-1'].lifecycle, registry.handles['worker-1'].lastJobId, registry.handles['worker-1'].continues], ['waiting', contJob.jobId, 1]);
   const messages = events.filter(e => e.type === 'message_end').map(e => e.message);
@@ -1069,6 +1069,18 @@ try {
     assert.deepEqual(JSON.parse(readFileSync(join(root, 'recovered-jobs/audit/orphan.json'), 'utf8')).tasks.map(t => t.state), ['completed', 'interrupted', 'not_run']);
     assert.match(taskStatusLines(recovered)[1], /^task 2 auditor · interrupted · /);
     assert.match(traceJob(recovered, 2).text, /## task 2 · auditor · interrupted · \S+\.jsonl\n/);
+
+    // Queda do pai também solta os handles: com sessão Pi → waiting; sem sessão → closed.
+    const { updateRegistry, readRegistry } = await jiti.import(join(repo, 'agent/extensions/brain-live/subagent/handles.ts'));
+    const hbase = join(root, 'recovered-handles');
+    const hentry = (handle, taskIndex) => ({ handle, agent: 'auditor', jobId: 'orphan-h', taskIndex, lastJobId: 'orphan-h', lifecycle: 'running', continues: 0, createdAt: 1, updatedAt: 1 });
+    updateRegistry(hbase, 'audit', reg => { reg.handles['auditor-1'] = hentry('auditor-1', 1); reg.handles['auditor-2'] = hentry('auditor-2', 2); });
+    markInterrupted(hbase, { ...orphan, jobId: 'orphan-h', tasks: [
+      { ...record.tasks[0], state: 'running', handle: 'auditor-1', invocation: { runner: 'pi' } },
+      { agent: 'auditor', task: 'etapa-2', state: 'running', handle: 'auditor-2', invocation: { runner: 'pi' } }] });
+    const hreg = readRegistry(hbase, 'audit');
+    assert.equal(hreg.handles['auditor-1'].lifecycle, 'waiting', 'handle com JSONL fica retomável');
+    assert.equal(hreg.handles['auditor-2'].lifecycle, 'closed', 'handle sem sessão fecha');
 
     // Registro anterior à auditoria por tarefa: estado desconhecido, sessões só no job.
     const [s1, s2] = record.sessionFiles;

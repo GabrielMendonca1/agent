@@ -4,7 +4,7 @@
  *
  * `pi -p` has no interactive stdin, so the runner cannot type into the child. The
  * runner sets AGENT_CHILD_SOFT_DEADLINE_MS (absolute epoch ms: job start + timeout
- * - margin, margin = 10% of the timeout, at least 3 min, never before the start).
+ * - margin, margin = 10% of the timeout, at least 3 min, at most half the timeout).
  * Once past it, while a run is in flight, this extension queues the message with
  * `sendUserMessage(..., { deliverAs: "steer" })`; the agent loop delivers it before
  * the next model call (after the current tool calls finish). At most once per process.

@@ -82,8 +82,11 @@ export function commitWip(worktree: string, jobId: string): string | undefined {
 	const links = (findManifest(worktree)?.link ?? []).map((entry) => `:(exclude)${entry}`);
 	git(worktree, ["add", "-A", "--", ".", ...links]);
 	if (spawnSync("git", ["-C", worktree, "diff", "--cached", "--quiet"]).status === 0) return undefined;
-	const named = spawnSync("git", ["-C", worktree, "config", "user.email"], { encoding: "utf8" }).stdout?.trim();
-	const identity = named ? [] : ["-c", "user.name=Agent", "-c", "user.email=agent@localhost"];
+	const config = (key: string) => spawnSync("git", ["-C", worktree, "config", key], { encoding: "utf8" }).stdout?.trim();
+	const identity = [
+		...(config("user.name") ? [] : ["-c", "user.name=Agent"]),
+		...(config("user.email") ? [] : ["-c", "user.email=agent@localhost"]),
+	];
 	git(worktree, [...identity, "commit", "--no-verify", "-q", "-m", `WIP(agent): timeout ${jobId}`]);
 	return git(worktree, ["rev-parse", "HEAD"]);
 }

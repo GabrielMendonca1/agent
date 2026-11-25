@@ -154,7 +154,7 @@ export interface JobTaskSpec {
 	wipError?: string;
 }
 
-/** Soft timeout margin: 10% of the job timeout, at least 3 minutes. */
+/** Soft timeout margin: 10% of the job timeout, at least 3 minutes, at most half the timeout. */
 export const SOFT_TIMEOUT_MIN_MARGIN_MS = 3 * 60 * 1000;
 
 /** Quota failures, model switches and timeout WIP commits, one line per event. */
@@ -487,7 +487,28 @@ export function markInterrupted(baseDir: string, record: JobRecord): JobRecord {
 	};
 	writeRecord(baseDir, updated);
 	removeJobRunDir(baseDir, updated.sessionId, updated.jobId);
+	settleInterruptedHandles(baseDir, updated);
 	return updated;
+}
+
+/** Parent crash: handles of the interrupted job leave "running" (waiting if a Pi session exists, else closed). */
+function settleInterruptedHandles(baseDir: string, record: JobRecord): void {
+	if (!record.tasks.some((task) => task.handle)) return;
+	try {
+		updateRegistry(baseDir, record.sessionId, (registry) => {
+			for (const task of record.tasks) {
+				const entry = task.handle ? registry.handles[task.handle] : undefined;
+				if (!entry || entry.lastJobId !== record.jobId || entry.lifecycle !== "running") continue;
+				const sessionFile = task.sessionFile ?? entry.sessionFile;
+				const resumable = (task.invocation ?? entry.invocation)?.runner === "pi" && !!sessionFile && fs.existsSync(sessionFile);
+				entry.lifecycle = resumable ? "waiting" : "closed";
+				entry.closedReason = resumable ? undefined : "the parent restarted before the task opened a child session";
+				entry.updatedAt = Date.now();
+			}
+		});
+	} catch {
+		/* best-effort: continueBlocker still reads the job record */
+	}
 }
 
 export function validateTimeoutSeconds(value: number | undefined): { ok: true; value: number } | { ok: false; error: string } {

@@ -727,13 +727,12 @@ export default function (pi: ExtensionAPI) {
 			model: ctx.model ? `${ctx.model.provider}/${ctx.model.id}` : undefined,
 			thinkingLevel: ctx.thinkingLevel,
 		};
-		// A quota model switch resolves like a launch: role allowlist or principal/apoio.
-		if (model) {
-			try {
-				dispatchDefaults.resources = { supportModel: getAgentPreferences().supportModel ?? undefined, slots: {} };
-			} catch (error) {
-				return fail(`Agent preferences unavailable: ${error instanceof Error ? error.message : String(error)}`);
-			}
+		// Same resolution as launch (role allowlist or principal/apoio): a quota model
+		// switch and the read-only automatic fallback both need it.
+		try {
+			dispatchDefaults.resources = { supportModel: getAgentPreferences().supportModel ?? undefined, slots: {} };
+		} catch (error) {
+			return fail(`Agent preferences unavailable: ${error instanceof Error ? error.message : String(error)}`);
 		}
 		// Writer in place: a fresh checkpoint for this turn, so /rewind covers the second turn too.
 		if (process.env.AGENT_CHECKPOINTS !== "0") {
@@ -808,7 +807,7 @@ export default function (pi: ExtensionAPI) {
 			"Subagent dispatch is asynchronous: after launching, report the jobId and continue with independent work. Never loop on `status` waiting for a job — the result is delivered to you automatically.",
 			"If a subagent reports quota/rate failure, continue its handle with model set to another model listed for that role: same session and worktree, partial work kept. Do not relaunch a mutating task from scratch.",
 			"Use the `plan` tool to publish the step list before multi-step work and keep it updated as steps complete.",
-			"Pick the lightest tool: one question about a large source (file, output, page) without needing its exact text → `skim`; several deterministic calls, filtering or chaining results without judgment → `codemode`; multi-step judgment across files, isolated writing or review → subagent `launch`; a fix or follow-up question for a child that already has the context → subagent `continue` with its handle (cheaper than relaunching).",
+			"Pick the lightest tool: one question about a large source (file, output, page) without needing its exact text → `skim`; several deterministic calls, filtering or chaining results without judgment → `codemode`; multi-step judgment across files, isolated writing or review → subagent `launch`; a fix or follow-up question for a child that already has the context → subagent `continue` with its handle (cheaper than relaunching). For a new or unrelated task, launch a fresh subagent instead of continuing an old handle: its history is reread with a cold cache.",
 		],
 		parameters: SubagentParams,
 

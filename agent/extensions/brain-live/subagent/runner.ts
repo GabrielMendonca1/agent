@@ -1195,7 +1195,8 @@ export async function runSingleAgent(opts: RunAgentOptions): Promise<SingleResul
 			messagePath = tmp.filePath;
 			args.push("--", `@${messagePath}`, resume ? "Read the follow-up message in the attached file." : "Execute the task described in the attached file.");
 		} else {
-			args.push(inlineTask);
+			// `--` ends options: a follow-up may start with `-` (Markdown list).
+			args.push("--", inlineTask);
 		}
 
 		const before = sandbox ? checkoutSnapshot(cwd) : undefined;
