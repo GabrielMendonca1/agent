@@ -6,14 +6,14 @@
  * - campos registrados de cada tool (description, promptSnippet, promptGuidelines) e todas as
  *   descriptions aninhadas do schema TypeBox;
  * - política, seção de notas, categorias de skills e as seções injetadas pelo project-prompt
- *   (estruturadas e no prompt forçado);
+ *   (estruturadas e no prompt forçado), o slot de peers, o loop guard e os prompts de /notes e /rules init;
  * - `description:` dos papéis em agent/agents/*.md.
  * Falha com diacríticos do português ou palavras comuns (quando, sempre, antes, depois, arquivo,
  * usuário, tarefa). UI, notificações e docs continuam em português e não entram aqui.
  */
 import './lib/hermetic-test-env.mjs';
 import assert from 'node:assert/strict';
-import { existsSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, mkdirSync } from 'node:fs';
+import { existsSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, mkdirSync, writeFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { homedir, tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -82,10 +82,12 @@ function checkTool(source, tool) {
 }
 
 /** `pi` falso: guarda tools e handlers; o resto é no-op. */
-function fakePi(tools, handlers) {
+function fakePi(tools, handlers, commands, sent) {
   const noop = () => {};
   const base = {
     registerTool: (tool) => { tools.set(tool.name, tool); },
+    registerCommand: (name, command) => { commands.set(name, command); },
+    sendUserMessage: (text) => { sent.push(text); },
     on: (name, handler) => { (handlers[name] ??= []).push(handler); },
     events: { on: noop, emit: noop, off: noop },
     getAllTools: () => [...tools.values()].map(t => ({ name: t.name, exposure: t.exposure ?? 'direct' })),
@@ -99,7 +101,9 @@ function fakePi(tools, handlers) {
 
 const tools = new Map();
 const handlers = {};
-const pi = fakePi(tools, handlers);
+const commands = new Map();
+const sent = [];
+const pi = fakePi(tools, handlers, commands, sent);
 const toolSource = new Map();
 const entries = [
   ...extensionsIn(join(repo, 'agent/extensions/agent')),
@@ -162,6 +166,14 @@ try {
     check(`forced prompt${forced ? '' : ' (none)'}`, injected);
     if (forced) assert.ok(injected.includes('<agent_skill_categories>'), 'prompt forçado recebe categorias');
   }
+  // Prompts que /notes e /rules init mandam ao modelo.
+  mkdirSync(join(sandbox, 'docs'), { recursive: true });
+  writeFileSync(join(sandbox, 'docs', 'guide.md'), '# guide\n');
+  const commandCtx = { cwd: sandbox, hasUI: false, ui: { notify() {} } };
+  await commands.get('notes').handler('', commandCtx);
+  await commands.get('rules').handler('init', commandCtx);
+  assert.equal(sent.length, 2, 'notes e rules init mandam um prompt cada');
+  sent.forEach((text, i) => check(`command prompt ${['notes', 'rules init'][i]}`, text));
   const { slotBlock } = await jiti.import(join(repo, 'agent/extensions/agent/peers/mesh.ts'));
   const peer = { short: 'abc123', project: 'demo', branch: 'main', status: 'idle', note: 'note', at: Date.now() };
   check('peers slot', slotBlock([peer, { ...peer, short: 'self01', self: true }], Date.now(), 0)?.block);
