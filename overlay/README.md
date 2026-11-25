@@ -278,10 +278,12 @@ No checkout:
 ```sh
 # Validar uma release sem instalar ou promover
 node scripts/agent-update.mjs --check
-node scripts/agent-update.mjs --check --ref v0.85.1
+node scripts/agent-update.mjs --check --ref vX.Y.Z
 
+# Só o snapshot fixado (1.5.2) é versionado; outro ref hidrata o catálogo ao vivo
+# (--vendor-model-data grava o snapshot no checkout)
 # Ignorar o snapshot versionado e hidratar o catálogo ao vivo
-node scripts/agent-update.mjs --check --ref v0.85.1 --hydrate
+node scripts/agent-update.mjs --check --ref vX.Y.Z --hydrate
 
 # Hidratar e vendorar o snapshot novo no checkout
 node scripts/agent-update.mjs --check --hydrate --ref v1.5.2 --vendor-model-data
@@ -313,7 +315,7 @@ Depois da instalação:
 agent update
 agent update self
 agent overlay-update
-agent overlay-update --ref v0.85.1
+agent overlay-update --ref vX.Y.Z
 agent overlay-update --with <camada>
 agent overlay-update --without <camada>
 agent overlay-rollback

@@ -137,11 +137,6 @@
 	],
 	"modelData": [
 		{
-			"officialVersion": "0.85.1",
-			"path": "overlay/model-data/0.85.1",
-			"manifestSha256": "e92838bf9dc88cddb9b0cca09eed201135c39e4ab7875e8a6fa447daaf5cdc44"
-		},
-		{
 			"officialVersion": "1.5.2",
 			"path": "overlay/model-data/1.5.2",
 			"manifestSha256": "aa8ae1795ec75bcb34b61d9d835d272ebe03f956a4ba206d1106dcb26a0f7fc1"
