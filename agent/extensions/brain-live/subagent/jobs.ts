@@ -14,7 +14,7 @@
 
 import * as fs from "node:fs";
 import * as path from "node:path";
-import { gcWorktrees, isolateWriters, manageWorktrees, worktreeSummary } from "./worktrees.ts";
+import { gateSummary, gcWorktrees, isolateWriters, manageWorktrees, worktreeSummary } from "./worktrees.ts";
 import { getRoleModelChoices, resolveGeminiPreference, type ResolvedRoleModel, resolveRoleModel } from "../lib/tiers.ts";
 import type { AgentConfig, AgentScope } from "./agents.ts";
 import {
@@ -863,6 +863,8 @@ export class SubagentJobManager {
 		const { usage, sessionFiles } = this.settleTasks(job, error);
 		const isolated = worktreeSummary(job.record);
 		if (isolated) output = `${isolated}\n\n${output}`;
+		const gates = gateSummary(job.record, spec.agents);
+		if (gates) output = `${output}\n\n${gates}`;
 		const outputBytes = Buffer.byteLength(output, "utf-8");
 		if (outputBytes > MAX_STORED_RESULT_BYTES) {
 			// Never silently shrink a result: report the overflow instead.
