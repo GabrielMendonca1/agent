@@ -14,7 +14,7 @@ import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-a
 import { Key, Text, matchesKey, truncateToWidth, wrapTextWithAnsi, type Component, type TUI, type TuiMouseEvent } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
 import { StringEnum } from "@earendil-works/pi-ai";
-import { createTaskTool, TodoParams } from "./todos.ts";
+import { createTaskTool } from "./todos.ts";
 
 const ENTRY_TYPE = "garime-plan";
 const WIDGET_ID = "garime-plan";
@@ -40,14 +40,10 @@ const StepSchema = Type.Object({
 });
 
 const PlanParams = Type.Object({
-	...TodoParams.properties,
-	action: Type.Optional(StringEnum([
-		"steps", "list", "list-all", "get", "create", "update", "append", "delete", "claim", "release",
-	] as const, { description: "Defaults to steps when steps is supplied, otherwise list." })),
-	steps: Type.Optional(Type.Array(StepSchema, {
-		description: `Session checklist, only with action steps. Full replacement (max ${MAX_STEPS}); [] clears it without deleting project tasks. At most one step in_progress.`,
+	steps: Type.Array(StepSchema, {
+		description: `Full replacement of the session checklist (max ${MAX_STEPS}); [] clears it. At most one step in_progress.`,
 		maxItems: MAX_STEPS,
-	})),
+	}),
 });
 
 let steps: Step[] = [];
@@ -214,7 +210,8 @@ function restore(ctx: ExtensionContext): void {
 }
 
 export default function (pi: ExtensionAPI) {
-	const tasks = createTaskTool();
+	// Persistent project tasks live in their own tool, found through tool_search (decision f, docs/harness-spec.md).
+	pi.registerTool({ ...createTaskTool(), exposure: "deferred" });
 	pi.events.on(PLAN_FOCUS_EVENT, (request: PlanFocusRequest) => {
 		if (!activeWidget || steps.length === 0) return;
 		activeWidget.setEditorReturn((data) => {
@@ -237,25 +234,13 @@ export default function (pi: ExtensionAPI) {
 		name: "plan",
 		label: "Plan",
 		description:
-			"Manage persistent project tasks and the visible session checklist. " +
-			"Use steps (or action steps) to replace the checklist; [] clears only the widget. " +
-			"Task actions: list (default), list-all, get, create, update, append, delete, claim, release. " +
-			"Tasks remain in .pi/todos (or PI_TODO_PATH); existing TODO-<hex> ids still work. " +
-			"Title is a summary; body is markdown (update replaces, append adds). " +
-			"Claim before working; update status to closed when complete. Not for personal Vault tasks.",
-		promptSnippet: "Manage persistent project tasks and their visible step checklists",
+			"Show the session step checklist below the editor. Each call replaces the whole list; [] clears it. " +
+			"For persistent project tasks use the todo tool.",
+		promptSnippet: "Publish and update the visible step checklist for multi-step work",
 		parameters: PlanParams,
 		async execute(_id, params, _signal, _onUpdate, ctx) {
-			const action = params.action ?? (params.steps !== undefined ? "steps" : "list");
 			const fail = (text: string) => ({ content: [{ type: "text" as const, text }], details: {}, isError: true });
-			if (action !== "steps") {
-				if (params.steps !== undefined) return fail("Use a separate action steps call to update the checklist.");
-				return tasks.execute(_id, { ...params, action }, _signal, _onUpdate, ctx);
-			}
-			if (!params.steps) return fail("steps is required for action steps; use [] to clear.");
-			if ([params.id, params.title, params.status, params.tags, params.body, params.force].some(value => value !== undefined)) {
-				return fail("Task fields require a task action, not action steps.");
-			}
+			if (!Array.isArray(params.steps)) return fail("steps is required; use [] to clear.");
 			if (params.steps.filter(step => step.status === "in_progress").length > 1) return fail("Keep at most one step in_progress.");
 			steps = cleanSteps(params.steps);
 			pi.appendEntry(ENTRY_TYPE, { steps });
@@ -264,13 +249,9 @@ export default function (pi: ExtensionAPI) {
 			return { content: [{ type: "text", text }], details: { steps } };
 		},
 		renderCall(args, theme) {
-			const action = args.action ?? (args.steps !== undefined ? "steps" : "list");
-			if (action !== "steps") {
-				return new Text(theme.fg("toolTitle", theme.bold("plan ")) + theme.fg("accent", action) + (args.id ? ` ${args.id}` : ""), 0, 0);
-			}
 			const n = args.steps?.length ?? 0;
 			const current = args.steps?.find((step: Step) => step.status === "in_progress")?.text;
-			const head = theme.fg("toolTitle", theme.bold("plan ")) + theme.fg("accent", n === 0 ? "clear" : `${n} passos`);
+			const head = theme.fg("toolTitle", theme.bold("plan ")) + theme.fg("accent", n === 0 ? "limpar" : `${n} passos`);
 			return new Text(current ? `${head}${theme.fg("dim", ` → ${current}`)}` : head, 0, 0);
 		},
 		renderResult(result, _opts, theme) {
