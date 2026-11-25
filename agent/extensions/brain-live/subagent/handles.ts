@@ -16,6 +16,7 @@
 import { createHash } from "node:crypto";
 import * as fs from "node:fs";
 import * as path from "node:path";
+import type { ChildSkills } from "./skills.ts";
 import { ownerMayBeAlive, readProcessIdentity, type ProcessIdentity } from "./process-owner.ts";
 
 /** Everything needed to rebuild the child argv byte for byte on `continue`. */
@@ -37,6 +38,8 @@ export interface ChildInvocation {
 	sandbox?: "seatbelt" | "bwrap" | "none";
 	/** `-e` extensions, in argv order. */
 	extensions: string[];
+	/** Effective skill set (`--no-skills`/`--skill`, advertised names); absent = full catalog. */
+	skills?: ChildSkills;
 	/** Role system prompt text (written to a temp file for `--system-prompt`). */
 	systemPrompt: string;
 	/** Effective child cwd (inside the worktree for isolated writers). */

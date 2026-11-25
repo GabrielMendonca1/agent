@@ -10,7 +10,9 @@ import { subagentMascots } from "../../agent/tui/status-line";
  * Modes (unchanged): single, parallel (tasks[]), chain ({previous} placeholder).
  * Control actions on the same tool: status | result | trace | list | cancel (+ jobId).
  *
- * Child processes still run `--no-extensions --no-skills` in JSON mode.
+ * Child processes run `--no-extensions` in JSON mode. Skills follow the role's `skills:` allowlist
+ * plus names requested at launch (`--no-skills --skill <path>`); a role without the field keeps the
+ * full catalog.
  */
 
 import * as os from "node:os";
@@ -31,6 +33,7 @@ import { getAgentPreferences, isChild } from "../../../core/client.mjs";
 import { NO_DELEGATE_ENV } from "../../../core/child-env.mjs";
 import { parseWorkflow, readWorkflow } from "../../../core/workflow.mjs";
 import { type AgentConfig, type AgentScope, discoverAgents } from "./agents.ts";
+import { requestedSkills, resolveChildSkills } from "./skills.ts";
 import {
 	DEFAULT_TIMEOUT_SECONDS,
 	type JobRecord,
@@ -178,12 +181,14 @@ function briefSchema(described: boolean) {
 }
 
 const BriefSchema = briefSchema(true);
+const SkillsField = Type.Array(Type.String(), { description: "Extra skill names from the catalog for this child, added to the role's skills; names only, not paths" });
 const TaskItem = Type.Object({
 	agent: Type.String(),
 	task: Type.Optional(Type.String()),
 	brief: Type.Optional(briefSchema(false)),
 	cwd: Type.Optional(Type.String()),
 	model: Type.Optional(Type.String()),
+	skills: Type.Optional(SkillsField),
 	name: Type.Optional(Type.String()),
 });
 
@@ -193,6 +198,7 @@ interface BriefItem {
 	brief?: Brief;
 	cwd?: string;
 	model?: string;
+	skills?: string[];
 	name?: string;
 }
 
@@ -248,6 +254,7 @@ const SubagentParams = Type.Object({
 	task: Type.Optional(Type.String({ description: "Extra notes (single mode)" })),
 	brief: Type.Optional(BriefSchema),
 	model: Type.Optional(Type.String({ description: "Allowed provider/model override (single mode; continue only after a quota failure)" })),
+	skills: Type.Optional(SkillsField),
 	tasks: Type.Optional(Type.Array(TaskItem, { description: "Parallel tasks" })),
 	chain: Type.Optional(Type.Array(TaskItem, { description: "Sequential tasks" })),
 	agentScope: Type.Optional(AgentScopeSchema),
@@ -304,8 +311,9 @@ export function describeUserAgents(): string {
 				const modelHint = a.runner === "agy" ? ` [agy model: ${agyModel}]`
 					: choices ? ` [allowed: ${choices}]` : legacy ? ` [legacy default: ${legacy}]` : "";
 				const required = a.briefRequired?.length ? ` [brief: ${a.briefRequired.join(", ")}]` : "";
+				const skills = a.runner !== "agy" && a.skills ? ` [skills: ${a.skills.join(", ") || "none"}]` : "";
 				const tools = a.runner === "agy" ? `${describeAgentTools(a)} (agy-managed capabilities)` : describeAgentTools(a);
-				return `${a.name} — ${a.description} [${tools}]${required}${modelHint}`;
+				return `${a.name} — ${a.description} [${tools}]${skills}${required}${modelHint}`;
 			})
 			.join("; ");
 	} catch {
@@ -790,7 +798,7 @@ export default function (pi: ExtensionAPI) {
 		label: "Subagent",
 		description: [
 			"Delegate to a separate process that cannot see this conversation. Provide a structured brief with known facts, absolute paths and decisions in context; task adds optional notes. Missing role-required brief fields are listed before anything spawns.",
-			"Launch (default) in one mode: single (agent + brief), parallel (tasks), or sequential (chain; {previous} inserts prior output). Independent tasks go in one call as tasks. Items use the same brief, task, cwd and model fields as single mode.",
+			"Launch (default) in one mode: single (agent + brief), parallel (tasks), or sequential (chain; {previous} inserts prior output). Independent tasks go in one call as tasks. Items use the same brief, task, cwd, model and skills fields as single mode.",
 			"ASYNC: the call returns a jobId immediately. Continue other work; don't poll in a loop. A subagent-result message arrives later.",
 			"Actions: list jobs and handles, check status (includes child JSONL paths), read result or trace steps and decisions, cancel, integrate or discard. Parallel writers in one repo use isolated worktrees; review commits before integrating. No automatic merges.",
 			"Each launched task gets a handle (role-n, or name). A finished task waits with its session and worktree: continue (handle + message) resumes it in a new async job with the same model, tools and context. integrate/discard close the handle.",
@@ -962,7 +970,7 @@ export default function (pi: ExtensionAPI) {
 				? (params.chain as BriefItem[])
 				: hasTasks
 					? (params.tasks as BriefItem[])
-					: [{ agent: params.agent!, task: params.task, brief: singleBrief, cwd: params.cwd, model: params.model, name: params.name }];
+					: [{ agent: params.agent!, task: params.task, brief: singleBrief, cwd: params.cwd, model: params.model, skills: params.skills, name: params.name }];
 
 			if (mode === "chain" && items.length > MAX_CHAIN_STEPS)
 				return fail(`Too many chain steps (${items.length}). Max is ${MAX_CHAIN_STEPS}.`);
@@ -1018,8 +1026,19 @@ export default function (pi: ExtensionAPI) {
 				task: composeTaskText(item, agents.find((a) => a.name === item.agent)),
 				cwd: item.cwd,
 				model: item.model,
+				...(requestedSkills(item.skills).length ? { skills: requestedSkills(item.skills) } : {}),
 				name: item.name,
 			}));
+
+			// Unknown skill names or paths fail before anything spawns. The set is resolved once, here.
+			for (const [i, item] of items.entries()) {
+				const role = agents.find((a) => a.name === item.agent)!;
+				const resolved = await resolveChildSkills(role, item.skills, path.resolve(ctx.cwd, item.cwd ?? params.cwd ?? "."));
+				if (!resolved.ok) return fail(`Task ${i}: ${resolved.error} Nothing was launched.`);
+				// Absolute paths from the caller's checkout travel with the task: an isolated worktree
+				// created later must not resolve again (uncommitted project skills are not in it).
+				if (role.runner !== "agy") tasks[i].resolvedSkills = resolved.skills ?? null;
+			}
 
 			// Snapshot role slots from the project recipe before anything launches.
 			if (dispatchDefaults.resources) {

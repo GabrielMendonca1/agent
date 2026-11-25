@@ -47,6 +47,18 @@ try {
     delete process.env.PI_AUTOMATIC_SKILLS;
     console.log(`ok ${entry}: pessoais e system automáticas, catálogo inteiro, fonte intacta e reload`);
   }
+  // Subagent com allowlist: o preload anuncia exatamente AGENT_CHILD_SKILLS (vazia = nenhuma).
+  for (const [child, expected] of [['1', 'debug,tdd'], [undefined, policy.automaticSkillNames().join(',')]]) {
+    const sdk = await import(pathToFileURL(join(root, 'dist/index.js')).href);
+    if (child) process.env.AGENT_CHILD = child; else delete process.env.AGENT_CHILD;
+    process.env.AGENT_CHILD_SKILLS = 'debug,tdd';
+    policy.installSkillPolicy(sdk.formatSkillsForPrompt);
+    assert.equal(process.env.PI_AUTOMATIC_SKILLS, expected, `AGENT_CHILD=${child}`);
+    policy.restoreSkillPolicyEnvironment(process.env);
+    delete process.env.AGENT_CHILD_SKILLS;
+    delete process.env.AGENT_CHILD;
+  }
+  console.log('ok filho com AGENT_CHILD_SKILLS anuncia só a allowlist; fora de filho, a curadoria normal');
   assert.deepEqual(policy.automaticSkillNames(), ['peers', 'megamind', 'diagram', 'computer-use', 'handoff', 'html-plan', 'pr', 'sources']);
   for (const name of ['arca-ops', 'omni-ops', 'pessoal']) assert.equal(policy.isAutomaticSkill(name), false, `${name}: sem enrollment não é automática`);
   assert.equal(policy.isAutomaticSkill('debug'), false);
@@ -54,7 +66,7 @@ try {
   assert.equal(policy.isAutomaticSkill('peers'), true);
   console.log('PASS skill-policy (SDK clássico, zero provider)');
 } finally {
-  for (const key of ['PI_AUTOMATIC_SKILLS', policy.PREVIOUS_SKILL_POLICY_ENV]) {
+  for (const key of ['PI_AUTOMATIC_SKILLS', policy.PREVIOUS_SKILL_POLICY_ENV, 'AGENT_CHILD', 'AGENT_CHILD_SKILLS']) {
     if (Object.hasOwn(savedEnv, key)) process.env[key] = savedEnv[key]; else delete process.env[key];
   }
   rmSync(dir, { recursive: true, force: true });

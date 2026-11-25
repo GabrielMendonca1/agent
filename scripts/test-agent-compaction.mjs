@@ -3,6 +3,7 @@
 // Hooks públicos com pi/ctx falsos. modelRegistry.streamSimple é um dublê;
 // compact()/serialização/validação são os reais do SDK. Nenhuma inferência externa.
 import assert from 'node:assert/strict';
+import { spawnSync } from 'node:child_process';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { registerHooks } from 'node:module';
 import { homedir, tmpdir } from 'node:os';
@@ -79,15 +80,50 @@ await test('/next: hint somente acima de 60k', () => {
   assert.equal(projectPrompt.nextHint(undefined), false);
 });
 
-await test('/next: handoff só no primeiro run de usuário e recente', () => {
-  const input = { messageType: 'user', firstRun: true, mtime: 1_000, now: 600_999 };
-  assert.equal(projectPrompt.shouldInjectHandoff(input), true);
-  assert.equal(projectPrompt.shouldInjectHandoff({ ...input, messageType: undefined }), true);
-  assert.equal(projectPrompt.shouldInjectHandoff({ ...input, messageType: 'custom' }), false);
-  assert.equal(projectPrompt.shouldInjectHandoff({ ...input, firstRun: false }), false);
-  assert.equal(projectPrompt.shouldInjectHandoff({ ...input, now: 601_000 }), false);
-  assert.equal(projectPrompt.shouldInjectHandoff({ ...input, mtime: 601_000 }), false);
+// ---------- handoff: carimbo, branch/HEAD, idade e aviso ----------
+const handoff = await load('agent/extensions/brain-live/lib/handoff.ts');
+const HOUR = 3600_000;
+
+await test('handoff: carimbo idempotente substitui o frontmatter e nunca duplica ---', () => {
+  const meta = { session: 's1', created_at: '2026-01-01T00:00:00.000Z', branch: 'main', head: 'a'.repeat(40) };
+  const once = handoff.stampHandoffText('corpo\n', meta);
+  assert.equal(once, `---\nsession: s1\ncreated_at: 2026-01-01T00:00:00.000Z\nbranch: main\nhead: ${'a'.repeat(40)}\n---\ncorpo\n`);
+  const again = handoff.stampHandoffText(once, { ...meta, session: 's2' });
+  assert.equal(again.match(/^---$/gm).length, 2, 'um único bloco de frontmatter');
+  assert.deepEqual(handoff.parseHandoff(again), { meta: { ...meta, session: 's2' }, body: 'corpo\n' });
+  assert.equal(handoff.stampHandoffText('---\nsession: velho\n---\n\ncorpo', { session: 'novo' }), '---\nsession: novo\n---\ncorpo');
 });
+
+await test('handoff: AGENT_HANDOFF_MAX_AGE (padrão 24 h; s/m/h/d; número puro = horas)', () => {
+  assert.equal(handoff.handoffMaxAgeMs(undefined), 24 * HOUR);
+  assert.equal(handoff.handoffMaxAgeMs('lixo'), 24 * HOUR);
+  assert.equal(handoff.handoffMaxAgeMs('2'), 2 * HOUR);
+  assert.equal(handoff.handoffMaxAgeMs('90m'), 90 * 60_000);
+  assert.equal(handoff.handoffMaxAgeMs('3d'), 72 * HOUR);
+});
+
+await test('handoff: decisão por sessão nova, idade, branch e HEAD; sem git só a idade', () => {
+  const git = { branch: 'main', head: 'b'.repeat(40), exists: sha => sha !== 'c'.repeat(40), isAncestor: sha => sha === 'a'.repeat(40) };
+  const meta = { created_at: new Date(10 * HOUR).toISOString(), branch: 'main', head: 'a'.repeat(40) };
+  const base = { meta, mtime: 0, now: 13 * HOUR, maxAgeMs: 24 * HOUR, git };
+  const reason = (over) => { const d = handoff.handoffDecision({ ...base, ...over }); return d.inject ? 'inject' : d.reason; };
+  assert.equal(reason({}), 'inject', 'HEAD descende do head do handoff');
+  assert.equal(reason({ meta: { ...meta, head: git.head } }), 'inject', 'HEAD igual');
+  assert.equal(reason({ newSession: false }), 'not-new');
+  assert.equal(reason({ now: 34 * HOUR }), 'old', '24 h ou mais');
+  assert.equal(reason({ meta: { ...meta, branch: 'feature' } }), 'other-branch');
+  assert.equal(reason({ meta: { ...meta, head: 'c'.repeat(40) } }), 'missing-head');
+  assert.equal(reason({ meta: { ...meta, head: 'd'.repeat(40) } }), 'diverged');
+  assert.equal(reason({ meta: {} , mtime: 12 * HOUR }), 'unstamped');
+  assert.equal(reason({ meta: {}, mtime: 12 * HOUR, git: undefined }), 'inject', 'sem git vale só a idade (mtime)');
+  assert.equal(reason({ meta: {}, mtime: 0, now: 25 * HOUR, git: undefined }), 'old');
+  const notice = (over) => handoff.handoffNotice(handoff.handoffDecision({ ...base, ...over }), over.meta ?? meta);
+  assert.equal(notice({ meta: { ...meta, branch: 'feature' } }), 'A handoff from 3 h ago on branch feature is pending; use /handoff to load it.');
+  assert.equal(notice({ meta: { ...meta, head: 'c'.repeat(40) } }), 'A handoff from 3 h ago on branch main is pending, but its commit ccccccc no longer exists (rebase or amend?); use /handoff to load it.');
+  assert.match(notice({ meta: { ...meta, head: 'd'.repeat(40) } }), /written on ddddddd, which is not in the current HEAD history; use \/handoff/);
+  assert.match(notice({ now: 60 * HOUR }), /^A handoff from 2 days ago on branch main is pending; use \/handoff to load it\.$/);
+});
+
 
 // ---------- dublês ----------
 const LUNA = { provider: 'openai-codex', id: 'gpt-6-luna', api: 'openai-codex-responses', contextWindow: 400_000 };
@@ -123,17 +159,143 @@ function register(mod) {
   const handlers = {};
   const commands = {};
   const sent = [];
+  const messages = [];
   const base = {
     on: (name, fn) => { (handlers[name] ??= []).push(fn); },
     registerCommand: (name, spec) => { commands[name] = spec; },
     sendUserMessage: text => sent.push(text),
+    sendMessage: (message, options) => messages.push([message, options]),
     events: { emit: () => {}, on: () => {} },
   };
   // O resto da API de extensão (registerShortcut, setModel, ...) não interessa a estes testes.
   const pi = new Proxy(base, { get: (t, k) => (k in t ? t[k] : () => {}) });
   mod.default(pi);
-  return { handlers, commands, sent };
+  return { handlers, commands, sent, messages };
 }
+
+await test('handoff: repo git real — carimbo pelo hook de write, mesma branch injeta; rebase/outra branch avisam', async () => {
+  const repoDir = mkdtempSync(join(tmpdir(), 'agent-handoff-git-'));
+  try {
+    const git = (...args) => { const r = spawnSync('git', args, { cwd: repoDir, encoding: 'utf8' }); assert.equal(r.status, 0, r.stderr); return r.stdout.trim(); };
+    git('init', '-q', '-b', 'main');
+    git('-c', 'user.email=t@t', '-c', 'user.name=t', 'commit', '-q', '--allow-empty', '-m', 'base');
+    const { handlers, commands } = register(projectPrompt);
+    const ctx = { ...fakeCtx(), cwd: repoDir };
+    ctx.sessionManager = { ...ctx.sessionManager, getSessionId: () => 'sessao-1' };
+    const file = join(repoDir, '.agent/handoff.md');
+    mkdirSync(dirname(file), { recursive: true });
+    writeFileSync(file, 'CORPO do handoff\n');
+    for (const fn of handlers.tool_result) await fn({ toolName: 'write', input: { path: '.agent/handoff.md' }, isError: false }, ctx);
+    const stamped = handoff.parseHandoff(readFileSync(file, 'utf8'));
+    assert.deepEqual([stamped.meta.session, stamped.meta.branch, stamped.meta.head, stamped.body], ['sessao-1', 'main', git('rev-parse', 'HEAD'), 'CORPO do handoff\n']);
+    for (const fn of handlers.tool_result) await fn({ toolName: 'edit', input: { path: file }, isError: false }, ctx);
+    assert.equal(readFileSync(file, 'utf8').match(/^---$/gm).length, 2, 'edit recarimba sem duplicar');
+    const text = readFileSync(file, 'utf8');
+    for (const fn of handlers.tool_result) await fn({ toolName: 'write', input: { path: 'outro.md' }, isError: false }, ctx);
+    assert.equal(readFileSync(file, 'utf8'), text, 'outro arquivo não carimba');
+
+    // Commit posterior: HEAD descende do head carimbado → injeta na primeira mensagem.
+    git('-c', 'user.email=t@t', '-c', 'user.name=t', 'commit', '-q', '--allow-empty', '-m', 'depois');
+    const first = async (h, c) => { for (const fn of h.before_agent_start) { const r = await fn({ messageType: 'user' }, c); if (r?.message?.customType === 'agent-handoff') return r.message; } };
+    const injected = await first(handlers, ctx);
+    assert.equal(injected.display, false);
+    assert.match(injected.content, /^Handoff from a previous session \(session sessao-1, written .*, branch main, commit [0-9a-f]{7}\)\. Continue from it\.\n<handoff>\nCORPO do handoff\n<\/handoff>$/);
+    assert.ok(!existsSync(file) && existsSync(join(repoDir, '.agent/handoff.consumed.md')), 'consumido');
+
+    // Outra branch: aviso visível, arquivo intacto; /handoff carrega com nota de desatualizado.
+    writeFileSync(file, handoff.stampHandoffText('CORPO 2', { session: 's', created_at: new Date(Date.now() - 3 * HOUR).toISOString(), branch: 'feature', head: git('rev-parse', 'HEAD') }));
+    const other = register(projectPrompt);
+    const ctx2 = { ...fakeCtx(), cwd: repoDir };
+    assert.equal(await first(other.handlers, ctx2), undefined);
+    assert.deepEqual(ctx2.notes, [{ text: 'A handoff from 3 h ago on branch feature is pending; use /handoff to load it.', level: 'info' }]);
+    assert.ok(existsSync(file), 'nada é descartado');
+    // /handoff only queues: quitting before the next message keeps the file.
+    await other.commands.handoff.handler('', ctx2);
+    assert.match(ctx2.notes.at(-1).text, /^Handoff queued with a note/);
+    assert.ok(existsSync(file), '/handoff does not consume before delivery');
+    assert.deepEqual(other.messages, [], 'nothing sent ahead of the run');
+    const quitter = register(projectPrompt);
+    assert.equal(await first(quitter.handlers, { ...fakeCtx(), cwd: repoDir }), undefined, 'a new process after quitting only shows the notice');
+    assert.ok(existsSync(file));
+    // Next user message in the same session: delivered with the stale note, then consumed.
+    const loaded = await first(other.handlers, ctx2);
+    assert.match(loaded.content, /It may be outdated: it was written on branch feature; the current branch is main\./);
+    assert.ok(!existsSync(file), 'consumed on delivery');
+    assert.equal(await first(other.handlers, ctx2), undefined, 'once');
+    await other.commands.handoff.handler('', ctx2);
+    assert.equal(ctx2.notes.at(-1).text, 'No pending handoff in .agent/handoff.md.');
+
+    // Session opened by /next: injected past the gates (old, other branch), without a stale note.
+    const nextText = handoff.stampHandoffText('CORPO NEXT', { session: 's', created_at: new Date(Date.now() - 72 * HOUR).toISOString(), branch: 'feature', head: 'e'.repeat(40) });
+    writeFileSync(file, nextText);
+    const nextEntries = [{ type: 'custom', customType: 'agent-next', data: { parentSession: '/p.jsonl', handoff: { sha256: handoff.handoffFingerprint(nextText) } } }];
+    const fromNext = register(projectPrompt);
+    const ctxNext = { ...fakeCtx(), cwd: repoDir };
+    ctxNext.sessionManager = { getBranch: () => nextEntries };
+    const forced = await first(fromNext.handlers, ctxNext);
+    assert.match(forced.content, /<handoff>\nCORPO NEXT\n<\/handoff>$/);
+    assert.doesNotMatch(forced.content, /may be outdated/);
+    assert.deepEqual(ctxNext.notes, []);
+    assert.ok(!existsSync(file));
+    // Reopening that session later with an unrelated stale handoff: normal gates, nothing consumed.
+    writeFileSync(file, handoff.stampHandoffText('OUTRO', { session: 's2', created_at: new Date(Date.now() - 72 * HOUR).toISOString(), branch: 'feature', head: 'e'.repeat(40) }));
+    const reopened = register(projectPrompt);
+    const ctxReopen = { ...fakeCtx(), cwd: repoDir };
+    ctxReopen.sessionManager = { getBranch: () => nextEntries };
+    assert.equal(await first(reopened.handlers, ctxReopen), undefined, 'marker bound to the /next file only');
+    assert.match(ctxReopen.notes[0].text, /use \/handoff to load it/);
+    assert.ok(existsSync(file), 'unrelated handoff kept');
+    // Legacy boolean marker never forces.
+    const legacy = register(projectPrompt);
+    const ctxLegacy = { ...fakeCtx(), cwd: repoDir };
+    ctxLegacy.sessionManager = { getBranch: () => [{ type: 'custom', customType: 'agent-next', data: { handoff: true } }] };
+    assert.equal(await first(legacy.handlers, ctxLegacy), undefined);
+    assert.ok(existsSync(file));
+
+    // Commit sumido (rebase/amend): aviso visível, nunca falha.
+    writeFileSync(file, handoff.stampHandoffText('CORPO 3', { session: 's', created_at: new Date().toISOString(), branch: 'main', head: 'f'.repeat(40) }));
+    const gone = register(projectPrompt);
+    const ctx3 = { ...fakeCtx(), cwd: repoDir };
+    assert.equal(await first(gone.handlers, ctx3), undefined);
+    assert.match(ctx3.notes[0].text, /^A handoff from less than 1 min ago on branch main is pending, but its commit fffffff no longer exists \(rebase or amend\?\); use \/handoff to load it\.$/);
+
+    // Sessão retomada (já tem resposta do assistente): oferece, não injeta.
+    writeFileSync(file, handoff.stampHandoffText('CORPO 4', { session: 's', created_at: new Date().toISOString(), branch: 'main', head: git('rev-parse', 'HEAD') }));
+    const resumed = register(projectPrompt);
+    const ctx4 = { ...fakeCtx(), cwd: repoDir };
+    ctx4.sessionManager = { getBranch: () => [{ type: 'message', message: { role: 'assistant' } }] };
+    assert.equal(await first(resumed.handlers, ctx4), undefined);
+    assert.match(ctx4.notes[0].text, /use \/handoff to load it/);
+    assert.ok(existsSync(file));
+  } finally {
+    rmSync(repoDir, { recursive: true, force: true });
+  }
+});
+
+await test('handoff: unborn branch counts as git (branch compared, never age only)', async () => {
+  const repoDir = mkdtempSync(join(tmpdir(), 'agent-handoff-unborn-'));
+  try {
+    const git = (...args) => { const r = spawnSync('git', args, { cwd: repoDir, encoding: 'utf8' }); assert.equal(r.status, 0, r.stderr); return r.stdout.trim(); };
+    git('init', '-q', '-b', 'main');
+    const state = handoff.gitState(repoDir);
+    assert.deepEqual([state.branch, state.head], ['main', ''], 'unborn: branch known, no HEAD');
+    const file = join(repoDir, '.agent/handoff.md');
+    mkdirSync(dirname(file), { recursive: true });
+    writeFileSync(file, 'CORPO');
+    assert.ok(handoff.stampHandoff(repoDir, 's'));
+    const meta = handoff.parseHandoff(readFileSync(file, 'utf8')).meta;
+    assert.deepEqual([meta.branch, meta.head], ['main', undefined]);
+    assert.equal(handoff.readHandoff(repoDir).decision.inject, true, 'same unborn branch');
+    git('-c', 'user.email=t@t', '-c', 'user.name=t', 'commit', '-q', '--allow-empty', '-m', 'first');
+    assert.equal(handoff.readHandoff(repoDir).decision.inject, true, 'first commit on the same branch comes after it');
+    git('checkout', '-q', '--orphan', 'other');
+    assert.equal(handoff.readHandoff(repoDir).decision.reason, 'other-branch', 'unborn other branch is compared, not age only');
+    writeFileSync(file, handoff.stampHandoffText('CORPO', { created_at: new Date().toISOString(), branch: 'other', head: 'a'.repeat(40) }));
+    assert.equal(handoff.readHandoff(repoDir).decision.reason, 'missing-head', 'head recorded, branch unborn now');
+  } finally {
+    rmSync(repoDir, { recursive: true, force: true });
+  }
+});
 
 await test('learning removido mesmo com opt-in legado', async () => {
   process.env.AGENT_LEARN = '1';
@@ -170,11 +332,15 @@ await test('/next: espera handoff antes de trocar; preserva pai e não envia ap�
   ctx.sessionManager = { getSessionFile: () => '/parent.jsonl' };
   ctx.waitForIdle = async () => { order.push('idle'); };
   ctx.newSession = async (options) => {
+    // Written without the write tool (as through bash): /next stamps it before switching.
+    const stamped = handoff.parseHandoff(readFileSync(join(vaultRoot, '.agent/handoff.md'), 'utf8'));
+    assert.ok(Date.parse(stamped.meta.created_at) > 0, 'carimbado antes do newSession');
+    assert.equal(stamped.body, 'handoff novo');
     assert.equal(options.parentSession, '/parent.jsonl');
     assert.equal(typeof options.setup, 'function');
     await options.setup({ appendCustomEntry: (type, data) => {
       assert.equal(type, 'agent-next');
-      assert.deepEqual(data, { parentSession: '/parent.jsonl' });
+      assert.deepEqual(data, { parentSession: '/parent.jsonl', handoff: { sha256: handoff.handoffFingerprint(readFileSync(join(vaultRoot, '.agent/handoff.md'), 'utf8')) } }, 'marker = fingerprint of the stamped file');
     } });
     order.push('new');
     return { cancelled: false };
@@ -241,9 +407,9 @@ await test('/next: run custom não consome elegibilidade do primeiro run de usu�
     writeFileSync(file, 'handoff após custom');
     assert.equal(await handlers.before_agent_start[0]({ messageType: 'custom' }, ctx), undefined);
     assert.equal(existsSync(file), true, 'custom não consome arquivo');
-    assert.deepEqual(await handlers.before_agent_start[0]({ messageType }, ctx), {
-      message: { customType: 'agent-handoff', content: 'handoff após custom', display: false },
-    });
+    const result = await handlers.before_agent_start[0]({ messageType }, ctx);
+    assert.equal(result?.message?.customType, 'agent-handoff');
+    assert.match(result.message.content, /^Handoff from a previous session\. Continue from it\.\n<handoff>\nhandoff após custom\n<\/handoff>$/);
     writeFileSync(file, 'não reinjetar');
     assert.equal(await handlers.before_agent_start[0]({ messageType }, ctx), undefined);
   }
@@ -259,7 +425,7 @@ await test('/next: injeção invisível uma vez e consumo por rename', async () 
     for (const fn of handlers.before_agent_start) results.push(await fn({ messageType: 'user' }, ctx));
     return results.filter(r => r?.message?.customType === 'agent-handoff');
   };
-  assert.deepEqual(await invoke(), [{ message: { customType: 'agent-handoff', content: 'DECISÃO do handoff', display: false } }]);
+  assert.deepEqual(await invoke(), [{ message: { customType: 'agent-handoff', content: 'Handoff from a previous session. Continue from it.\n<handoff>\nDECISÃO do handoff\n</handoff>', display: false } }]);
   assert.equal(existsSync(join(vaultRoot, '.agent/handoff.md')), false);
   assert.equal(readFileSync(join(vaultRoot, '.agent/handoff.consumed.md'), 'utf8'), 'DECISÃO do handoff');
   assert.deepEqual(await invoke(), []);

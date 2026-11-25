@@ -234,6 +234,19 @@ O que desfazer?
 
 Disco: `<perfil>/checkpoints/<sessionId>/index.jsonl` (registro append-only) e `blobs/<sha256>` (conteúdo, deduplicado). Persistem ao retomar a sessão. No início de cada sessão, apaga os checkpoints de sessões sem uso há mais de `AGENT_CHECKPOINTS_DAYS` dias (30) e, se o total passar de `AGENT_CHECKPOINTS_MAX_MB` (500), os das sessões menos recentes; a sessão atual nunca. `AGENT_CHECKPOINTS=0` desliga a gravação e o comando. Não adiciona tool nem texto ao prompt.
 
+## Handoff entre sessões (/next e /handoff)
+
+- `/next [foco]` roda a skill `handoff`, espera o `.agent/handoff.md` mudar e abre uma sessão nova. `--keep` compacta a sessão atual em vez de trocar. Se o arquivo não mudou, a sessão fica como está e aparece um erro. A sessão nova recebe o handoff na primeira mensagem sem os filtros de idade e branch. A entrada `agent-next` guarda o sha256 do arquivo que o `/next` carimbou, e só esse arquivo passa sem filtro: reabrir a sessão depois, com outro handoff, volta aos filtros normais.
+- A skill escreve só o corpo. O Agent carimba o frontmatter (`session`, `created_at`, `branch`, `head`) quando `write` ou `edit` gravam `.agent/handoff.md`. O `/next` carimba de novo antes de trocar, o que cobre um handoff gravado via `bash`. O carimbo substitui qualquer frontmatter anterior.
+- Na primeira mensagem do usuário numa sessão nova, o handoff entra no contexto do modelo (invisível na TUI) e vira `.agent/handoff.consumed.md` quando estas condições valem juntas:
+  - a sessão é nova: ainda não tem resposta do assistente;
+  - a branch atual é a do carimbo;
+  - o `HEAD` é o commit do carimbo ou descende dele (`git merge-base --is-ancestor`);
+  - a idade é menor que `AGENT_HANDOFF_MAX_AGE`. O padrão é 24 h. Aceita número com unidade `s`, `m`, `h` ou `d`; número puro conta como horas.
+- Fora de um repositório git, só a idade conta. Um repositório sem commits (branch ainda sem nascer) continua sendo git: a branch é comparada, e um carimbo sem `head` vale para qualquer `HEAD` da mesma branch. A idade vem de `created_at`; sem carimbo, do mtime do arquivo.
+- Caso contrário, nada é descartado. A TUI mostra uma linha, por exemplo `A handoff from 3 h ago on branch X is pending; use /handoff to load it.`. A linha diz também se o commit do carimbo sumiu (rebase/amend), se o `HEAD` não descende dele ou se o arquivo não tem branch/commit.
+- `/handoff` carrega o handoff pendente na próxima mensagem, mesmo antigo ou de outra branch. Nesse caso, o modelo recebe junto uma nota de que ele pode estar desatualizado e por quê. O `/handoff` só agenda: o arquivo vira `.agent/handoff.consumed.md` quando a mensagem sai de fato. Fechar a sessão antes disso mantém o `.agent/handoff.md`.
+
 ## Atualizar o Pi
 
 O Agent traz o próprio Pi dentro do store, em releases imutáveis. Um Pi global instalado por npm não afeta o Agent.
@@ -394,6 +407,16 @@ O resultado e o uso disponível ficam no registro do job; não há sessão JSONL
 - `last` devolve a última rodada de `gate`/`run` daquele checkout. A rodada é gravada com HEAD e uma impressão digital do working tree (`git status`, `git diff HEAD` e conteúdo dos não rastreados). Se algo divergiu, a resposta é `stale` e diz o quê, em vez do resultado. Funciona dentro do sandbox só leitura: só lê.
 - No fim de um job, cada tarefa de papel escritor com `checks` ganha no resultado a linha `gate: N/M green, new failures: […] (fresh|stale…)`, ou `gate: not run in this job`.
 - A baseline serializa `git worktree add`/`remove`/`prune` por repositório (`<git-common-dir>/pi-checks.lock`); o cache é gravado com tmp+rename.
+
+### Skills nos filhos
+
+- O frontmatter do papel aceita `skills:` opcional, uma allowlist de nomes do catálogo. `skills: []` = nenhuma skill; sem o campo = catálogo inteiro, como antes. Papéis padrão: `scout`, `reviewer`, `visual` e `planner` com `[]`; `worker` com `[debug, tdd]`; `gemini` (agy) sem o campo, e papéis agy recusam skills.
+- Com allowlist, o filho roda `pi --no-skills --skill <SKILL.md>…`. No Pi 1.5.2, `--no-skills` desliga a descoberta (settings, perfil, projeto), mas mantém cada `--skill`. O runner também passa `AGENT_CHILD_SKILLS` com os nomes; o preload do filho copia a lista para `PI_AUTOMATIC_SKILLS`. Sem isso, a curadoria esconderia `debug` e `tdd`, que têm `disable-model-invocation`. O bash do filho não herda `AGENT_CHILD_SKILLS`.
+- O `launch` aceita `skills` (por task, ou no modo single) com nomes extras, somados aos do papel. Num papel sem o campo, os extras entram com `--skill` sobre o catálogo inteiro. Nome desconhecido, caminho ou skill pedida para um papel `agy` falham antes de qualquer spawn, com a lista das skills disponíveis.
+- O catálogo usado para resolver nomes é o que o filho descobriria no `cwd`, mais as skills de empresa do usuário e as skills embutidas no runtime (`agent/skills`). Assim, `debug` e `tdd` existem mesmo num perfil sem `skills` nas settings. A resolução acontece uma vez, no `launch`, no checkout de quem lança, e os caminhos absolutos seguem com a tarefa. Um escritor que vai para um worktree isolado não recebe skills do projeto. Uma skill é do projeto quando o caminho do catálogo, ou o destino dele com os links resolvidos (arquivo ou pasta), fica dentro do repositório; o `cwd` conta como dentro, mesmo quando é um link para uma subpasta. Assim, uma skill pessoal que é link para dentro do repositório também é recusada. A contenção é por diretório (`/repo` não contém `/repo-2`). Se o nome pedido resolve para a cópia do projeto e existe outra skill com o mesmo nome fora do repositório (pessoal, de empresa ou embutida), o `launch` também falha e cita os dois caminhos: o Pi dá prioridade à cópia do projeto, e o escritor isolado nunca a recebe. Pedir uma delas, pelo `skills:` do papel ou pelo `launch`, falha no `launch`, antes de criar registro, worktree ou filho: `skill "X" is a project skill; isolated writers only get personal, company and bundled skills. Run the task in place to use it.` Skills pessoais, de empresa e embutidas mantêm o caminho absoluto. Tarefas no lugar (sem worktree) não mudam. O `continue` reusa o conjunto do launch. A proibição vale para skills pedidas explicitamente: as do `skills:` do papel e as do `launch`. Um papel sem o campo (catálogo inteiro) continua descobrindo, dentro do próprio worktree, as skills de projeto commitadas lá, como antes do item 4; ele lê a cópia commitada do worktree, não o checkout de origem. Exceção: se o `link` do `.pi/checks.json` liga `.pi/skills` (ou uma pasta acima) ao checkout de origem, esse papel também vê as skills ainda sem commit de lá; é um compartilhamento explícito do projeto.
+- O conjunto efetivo (caminhos, `--no-skills` e nomes anunciados) entra no snapshot do launch. `continue` e o aquecimento do cache usam o mesmo argv do filho real.
+- Override do usuário (`<perfil>/agents/<nome>.md`) ou do projeto sem `skills:` herda a allowlist do papel embutido de mesmo nome. Um papel novo sem o campo fica com o catálogo inteiro. Um override que precise de outras skills as lista no campo.
+- Tamanho do bloco `<skills>` no system do filho, medido com o catálogo desta máquina: antes, 3041 bytes em todo filho Pi (7 skills automáticas). Depois, 0 bytes em `scout`, `reviewer`, `visual` e `planner`; 862 bytes em `worker` (`debug`, `tdd`).
 
 ### Custo dos filhos
 

@@ -286,12 +286,12 @@ export function readPeers(options: { dir?: string; now?: number; self?: string }
 /** Resolve `to` (short6 ou id completo) numa sessão viva. */
 export function resolveTarget(to: string, peers: PeerRecord[]): { peer?: PeerRecord; error?: string } {
   const wanted = (to ?? "").trim();
-  if (!wanted) return { error: "informe `to`: o short6 (peers_list) ou o id completo da sessão" };
+  if (!wanted) return { error: "set `to`: the short6 (peers_list) or the full session id" };
   const exact = peers.filter((peer) => peer.id === wanted);
   const matches = exact.length ? exact : peers.filter((peer) => peer.short === wanted);
-  if (matches.length === 0) return { error: `sessão "${wanted}" não está viva nesta máquina (veja peers_list)` };
+  if (matches.length === 0) return { error: `session "${wanted}" is not alive on this machine (see peers_list)` };
   if (matches.length > 1) {
-    return { error: `"${wanted}" é ambíguo: ${matches.map((peer) => peer.id).join(", ")} — use o id completo` };
+    return { error: `"${wanted}" is ambiguous: ${matches.map((peer) => peer.id).join(", ")}; use the full id` };
   }
   return { peer: matches[0] };
 }
@@ -311,14 +311,14 @@ export function request(endpoint: string, envelope: Record<string, unknown>, tim
       if (error) fail(error);
       else done(value);
     };
-    socket.setTimeout(timeoutMs, () => finish(new Error("peer não respondeu a tempo")));
+    socket.setTimeout(timeoutMs, () => finish(new Error("peer did not answer in time")));
     socket.on("error", (error) => finish(error as Error));
     socket.on("connect", () => socket.write(`${JSON.stringify({ v: PROTOCOL, ...envelope })}\n`));
     socket.setEncoding("utf8");
     socket.on("data", (chunk: string) => {
       buffer += chunk;
       if (buffer.length > RESPONSE_MAX) {
-        finish(new Error("resposta grande demais"));
+        finish(new Error("peer response too large"));
         return;
       }
       const newline = buffer.indexOf("\n");
@@ -326,10 +326,10 @@ export function request(endpoint: string, envelope: Record<string, unknown>, tim
       try {
         finish(null, JSON.parse(buffer.slice(0, newline)));
       } catch {
-        finish(new Error("resposta inválida do peer"));
+        finish(new Error("invalid response from peer"));
       }
     });
-    socket.on("close", () => finish(new Error("peer fechou a conexão sem responder")));
+    socket.on("close", () => finish(new Error("peer closed the connection without answering")));
   });
 }
 
@@ -340,9 +340,9 @@ export function checkBody(body: unknown): { text?: string; error?: string } {
           .replace(/[\p{Cc}\p{Cf}]/gu, (char) => (char === "\n" ? char : " "))
           .trim()
       : "";
-  if (!value) return { error: "`body` vazio" };
-  if (bytes(value) > BODY_MAX) return { error: `\`body\` acima de ${BODY_MAX} bytes; mande o essencial ou aponte o arquivo` };
-  if (looksSecret(value)) return { error: "o corpo parece conter um segredo; peers nunca carrega token, senha ou chave" };
+  if (!value) return { error: "`body` is empty" };
+  if (bytes(value) > BODY_MAX) return { error: `\`body\` exceeds ${BODY_MAX} bytes; send the essentials or point to a file` };
+  if (looksSecret(value)) return { error: "the body looks like a secret; peers never carries tokens, passwords or keys" };
   return { text: value };
 }
 
@@ -816,21 +816,21 @@ export class Mesh {
     try {
       envelope = JSON.parse(line);
     } catch {
-      this.respond(socket, { ok: false, error: "json inválido" });
+      this.respond(socket, { ok: false, error: "invalid json" });
       return;
     }
     const version = envelope?.v;
     if (!ACCEPTED_PROTOCOLS.includes(version)) {
       this.respond(socket, {
         ok: false,
-        error: `protocolo peers ${String(version)} != ${PROTOCOL} desta sessão; recarregue (/reload) a sessão mais antiga`,
+        error: `peers protocol ${String(version)} != ${PROTOCOL} of this session; /reload the older session`,
         expected: PROTOCOL,
       });
       return;
     }
     const ctx = this.ctx;
     if (!ctx) {
-      this.respond(socket, { ok: false, error: "sessão ainda não está pronta" });
+      this.respond(socket, { ok: false, error: "session not ready yet" });
       return;
     }
     if (envelope.op === "ping" || envelope.op === "status") {
@@ -840,13 +840,13 @@ export class Mesh {
     if (envelope.op === "context") {
       const chars = Number.isInteger(envelope.chars) ? envelope.chars : CONTEXT_DEFAULT_CHARS;
       if (chars < 1 || chars > CONTEXT_MAX_CHARS) {
-        this.respond(socket, { ok: false, error: `chars deve estar entre 1 e ${CONTEXT_MAX_CHARS}` });
+        this.respond(socket, { ok: false, error: `chars must be between 1 and ${CONTEXT_MAX_CHARS}` });
         return;
       }
       try {
         this.respond(socket, { ...(await contextSnapshot(ctx, this.id!, chars)), v: version });
       } catch {
-        this.respond(socket, { ok: false, error: "contexto indisponível" });
+        this.respond(socket, { ok: false, error: "context unavailable" });
       }
       return;
     }
@@ -865,7 +865,7 @@ export class Mesh {
       await this.accept(socket, envelope, version);
       return;
     }
-    this.respond(socket, { ok: false, error: `operação desconhecida: ${String(envelope.op)}` });
+    this.respond(socket, { ok: false, error: `unknown operation: ${String(envelope.op)}` });
   }
 
   /** Entrada de mensagem, pedido ou resposta: valida, enfileira e confirma. */
@@ -876,7 +876,7 @@ export class Mesh {
       return;
     }
     if (this.queue.length >= QUEUE_MAX) {
-      this.respond(socket, { ok: false, error: `fila cheia (${QUEUE_MAX}); a sessão ainda não leu o que chegou` });
+      this.respond(socket, { ok: false, error: `queue full (${QUEUE_MAX}); the session has not read what arrived yet` });
       return;
     }
     const from = {
@@ -891,7 +891,7 @@ export class Mesh {
     if (envelope.op === "ask") {
       const title = clean(envelope.title, TITLE_MAX);
       if (!title) {
-        this.respond(socket, { ok: false, error: "`title` é obrigatório no pedido" });
+        this.respond(socket, { ok: false, error: "`title` is required for a request" });
         return;
       }
       built = askBlock({ id, from, title, body: checked.text!, at });
@@ -899,7 +899,7 @@ export class Mesh {
     } else if (envelope.op === "reply") {
       const status = clean(envelope.status, 20).toLowerCase();
       if (!REPLY_STATUS.includes(status as ReplyStatus)) {
-        this.respond(socket, { ok: false, error: `status deve ser ${REPLY_STATUS.join(" | ")}` });
+        this.respond(socket, { ok: false, error: `status must be ${REPLY_STATUS.join(" | ")}` });
         return;
       }
       built = replyBlock({ id, from, status, result: checked.text!, at });
@@ -930,7 +930,7 @@ export class Mesh {
         this.outbox.delete(id);
       }
     } catch {
-      this.respond(socket, { ok: false, error: "fila indisponível" });
+      this.respond(socket, { ok: false, error: "queue unavailable" });
       return;
     }
     this.queue.push(item);
@@ -1074,7 +1074,7 @@ export class Mesh {
   private target(tool: string, to: string): { peer?: PeerRecord; error?: string } {
     const found = resolveTarget(to, this.peers());
     if (!found.peer) return { error: `${tool}: ${found.error}` };
-    if (found.peer.self) return { error: `${tool}: essa é a sua própria sessão` };
+    if (found.peer.self) return { error: `${tool}: that is your own session` };
     return { peer: found.peer };
   }
 
@@ -1087,14 +1087,14 @@ export class Mesh {
     const peer = found.peer;
     const chain = typeof replyTo === "string" && replyTo.trim() ? replyTo.trim() : undefined;
     if (chain && !isId(chain)) {
-      return { ok: false, text: `peers_send: \`reply_to\` deve ser um id recebido (p-xxxxxxxx), não "${chain}"` };
+      return { ok: false, text: `peers_send: \`reply_to\` must be a received id (p-xxxxxxxx), not "${chain}"` };
     }
     const id = newId();
     const legacy = peer.v < PROTOCOL;
     if (legacy && chain) {
       return {
         ok: false,
-        text: `peers_send: ${peer.short} ainda está no peers v${peer.v} e não encadeia resposta; peça um /reload nela ou mande sem reply_to`,
+        text: `peers_send: ${peer.short} still runs peers v${peer.v} and cannot thread replies; ask it to /reload or send without reply_to`,
       };
     }
     const envelope = legacy
@@ -1111,17 +1111,17 @@ export class Mesh {
         };
     try {
       const response = await request(peer.endpoint, envelope);
-      if (!response?.ok) return { ok: false, text: `peers_send: ${String(response?.error ?? "recusado pelo peer")}` };
+      if (!response?.ok) return { ok: false, text: `peers_send: ${String(response?.error ?? "refused by peer")}` };
       if (!legacy) this.outbox.set(id, { id, kind: "message", to: peer.id, short: peer.short, state: "queued" });
       const where = `${peer.short} (${peer.project})`;
-      const how = response.busy ? "ocupada, lê quando terminar o turno" : "ociosa, lê agora";
+      const how = response.busy ? "busy, reads it after its turn" : "idle, reads it now";
       return {
         ok: true,
         id,
         peer,
         text: legacy
-          ? `mensagem na fila para ${where}: ${how}; a sessão está no peers v${peer.v}, sem id nem recibo (peça /reload nela)`
-          : `mensagem ${id} na fila para ${where}: ${how}; fila ${response.queued}/${QUEUE_MAX}. O recibo de entrega aparece sozinho.`,
+          ? `message queued for ${where}: ${how}; the session runs peers v${peer.v}, without id or receipt (ask it to /reload)`
+          : `message ${id} queued for ${where}: ${how}; queue ${response.queued}/${QUEUE_MAX}. The delivery receipt arrives on its own.`,
       };
     } catch (error) {
       return { ok: false, text: `peers_send: ${(error as Error).message}` };
@@ -1131,9 +1131,9 @@ export class Mesh {
   /** Pedido acompanhado a outra sessão desta máquina. */
   async ask(to: string, title: unknown, body: unknown): Promise<{ ok: boolean; text: string; id?: string; peer?: PeerRecord; title?: string }> {
     const clean_title = clean(title, TITLE_MAX);
-    if (!clean_title) return { ok: false, text: "peers_ask: `title` é obrigatório (uma linha dizendo o que precisa)" };
+    if (!clean_title) return { ok: false, text: "peers_ask: `title` is required (one line saying what you need)" };
     if (looksSecret(clean_title)) {
-      return { ok: false, text: "peers_ask: o título parece conter um segredo; peers nunca carrega token, senha ou chave" };
+      return { ok: false, text: "peers_ask: the title looks like a secret; peers never carries tokens, passwords or keys" };
     }
     const checked = checkBody(body);
     if (checked.error) return { ok: false, text: `peers_ask: ${checked.error}` };
@@ -1141,7 +1141,7 @@ export class Mesh {
     if (!found.peer) return { ok: false, text: found.error! };
     const peer = found.peer;
     if (peer.v < PROTOCOL) {
-      return { ok: false, text: `peers_ask: ${peer.short} ainda está no peers v${peer.v} e não entende pedido; peça um /reload nela ou use peers_send` };
+      return { ok: false, text: `peers_ask: ${peer.short} still runs peers v${peer.v} and does not understand requests; ask it to /reload or use peers_send` };
     }
     const id = newId();
     try {
@@ -1155,7 +1155,7 @@ export class Mesh {
         from_project: this.project,
         from_branch: this.branch,
       });
-      if (!response?.ok) return { ok: false, text: `peers_ask: ${String(response?.error ?? "recusado pelo peer")}` };
+      if (!response?.ok) return { ok: false, text: `peers_ask: ${String(response?.error ?? "refused by peer")}` };
       this.outbox.set(id, { id, kind: "ask", to: peer.id, short: peer.short, state: "queued", title: clean_title });
       this.onAsksChanged?.();
       return {
@@ -1163,7 +1163,7 @@ export class Mesh {
         id,
         peer,
         title: clean_title,
-        text: `pedido ${id} na fila para ${peer.short} (${peer.project}). A resposta chega sozinha nesta sessão; não fique esperando.`,
+        text: `request ${id} queued for ${peer.short} (${peer.project}). The reply arrives in this session on its own; do not wait for it.`,
       };
     } catch (error) {
       return { ok: false, text: `peers_ask: ${(error as Error).message}` };
@@ -1175,27 +1175,27 @@ export class Mesh {
     const wanted = (id ?? "").trim();
     const state = clean(status, 20).toLowerCase() as ReplyStatus;
     if (!wanted) return { ok: false, text: "peers_reply: `id` is required (it is in the [peers REQUEST <id> …] block)" };
-    if (!REPLY_STATUS.includes(state)) return { ok: false, text: `peers_reply: \`status\` deve ser ${REPLY_STATUS.join(" | ")}` };
+    if (!REPLY_STATUS.includes(state)) return { ok: false, text: `peers_reply: \`status\` must be ${REPLY_STATUS.join(" | ")}` };
     const open = this.openAsks.get(wanted);
     if (!open) {
       return {
         ok: false,
-        text: `peers_reply: pedido "${wanted}" não é um pedido aberto nesta sessão${this.openAsks.size ? ` (abertos: ${this.openAskIds().join(", ")})` : " (nenhum aberto)"}`,
+        text: `peers_reply: "${wanted}" is not an open request in this session${this.openAsks.size ? ` (open: ${this.openAskIds().join(", ")})` : " (none open)"}`,
       };
     }
     const text = typeof result === "string" ? result.trim() : "";
     if (CLOSING_STATUS.includes(state as (typeof CLOSING_STATUS)[number]) && !text) {
-      return { ok: false, text: `peers_reply: \`result\` é obrigatório em ${CLOSING_STATUS.join("/")}` };
+      return { ok: false, text: `peers_reply: \`result\` is required for ${CLOSING_STATUS.join("/")}` };
     }
-    const checked = checkBody(text || `pedido ${state}`);
+    const checked = checkBody(text || `request ${state}`);
     if (checked.error) return { ok: false, text: `peers_reply: ${checked.error}` };
     const peers = this.peers();
     const peer = peers.find((candidate) => candidate.id === open.from && !candidate.self);
     if (!peer) {
-      return { ok: false, text: `peers_reply: a sessão ${open.short} que fez o pedido ${wanted} não está mais viva nesta máquina` };
+      return { ok: false, text: `peers_reply: session ${open.short}, which made request ${wanted}, is no longer alive on this machine` };
     }
     if (peer.v < PROTOCOL) {
-      return { ok: false, text: `peers_reply: ${peer.short} está no peers v${peer.v} e não recebe resposta de pedido; peça um /reload nela` };
+      return { ok: false, text: `peers_reply: ${peer.short} runs peers v${peer.v} and cannot receive request replies; ask it to /reload` };
     }
     try {
       const response = await request(peer.endpoint, {
@@ -1208,7 +1208,7 @@ export class Mesh {
         from_project: this.project,
         from_branch: this.branch,
       });
-      if (!response?.ok) return { ok: false, text: `peers_reply: ${String(response?.error ?? "recusado pelo peer")}` };
+      if (!response?.ok) return { ok: false, text: `peers_reply: ${String(response?.error ?? "refused by peer")}` };
       if (CLOSING_STATUS.includes(state as (typeof CLOSING_STATUS)[number])) {
         this.openAsks.delete(wanted);
         this.onAsksChanged?.();
@@ -1217,7 +1217,7 @@ export class Mesh {
         } catch {
         }
       }
-      return { ok: true, id: wanted, status: state, text: `pedido ${wanted} agora está ${state} (avisei ${peer.short})` };
+      return { ok: true, id: wanted, status: state, text: `request ${wanted} is now ${state} (${peer.short} notified)` };
     } catch (error) {
       return { ok: false, text: `peers_reply: ${(error as Error).message}` };
     }
@@ -1233,7 +1233,7 @@ export class Mesh {
     const peer = found.peer;
     try {
       const response = await request(peer.endpoint, { v: peer.v, op: "context", chars: limit });
-      if (!response?.ok) return { ok: false, text: `peers_context: ${String(response?.error ?? "recusado pelo peer")}` };
+      if (!response?.ok) return { ok: false, text: `peers_context: ${String(response?.error ?? "refused by peer")}` };
       return { ok: true, text: formatContext(peer, response), peer, chars: response.char_limit ?? limit };
     } catch (error) {
       return { ok: false, text: `peers_context: ${(error as Error).message}` };
@@ -1288,25 +1288,25 @@ export function formatPeers(peers: PeerRecord[], now: number, sent?: { queued: n
   const others = peers.filter((peer) => !peer.self);
   if (others.length === 0) {
     const self = peers.find((peer) => peer.self);
-    return `nenhuma outra sessão do Pi viva nesta máquina${self ? ` (só esta, ${self.short})` : ""}; outra máquina é megamind_who`;
+    return `no other live Pi session on this machine${self ? ` (only this one, ${self.short})` : ""}; for other machines use megamind_who`;
   }
   const lines = peers.map((peer) => {
-    const what = peer.note || peer.subject || "sem nota";
-    const old = peer.v < PROTOCOL ? ` · peers v${peer.v} (pede /reload)` : "";
-    return `- ${peer.short}${peer.self ? " (você)" : ""} · ${peer.project}${peer.branch ? `@${peer.branch}` : ""} · ${peer.status} · ${what} · ${ageOf(peer.at, now)} · ${peer.cwd}${old}`;
+    const what = peer.note || peer.subject || "no note";
+    const old = peer.v < PROTOCOL ? ` · peers v${peer.v} (needs /reload)` : "";
+    return `- ${peer.short}${peer.self ? " (you)" : ""} · ${peer.project}${peer.branch ? `@${peer.branch}` : ""} · ${peer.status} · ${what} · ${ageOf(peer.at, now, "now")} · ${peer.cwd}${old}`;
   });
   if (sent && sent.queued + sent.delivered > 0) {
-    lines.push(`seus envios: ${sent.queued} na fila, ${sent.delivered} entregues`);
+    lines.push(`your sends: ${sent.queued} queued, ${sent.delivered} delivered`);
   }
   return lines.join("\n");
 }
 
 export function formatContext(peer: PeerRecord, snapshot: any): string {
-  const head = `contexto de ${peer.short} (${peer.project}, ${snapshot.busy ? "ocupada" : "ociosa"}) — ${snapshot.returned_messages}/${snapshot.total_messages} mensagens, limite ${snapshot.char_limit} chars${snapshot.truncated ? ", cortado" : ""}`;
+  const head = `context of ${peer.short} (${peer.project}, ${snapshot.busy ? "busy" : "idle"}): ${snapshot.returned_messages}/${snapshot.total_messages} messages, limit ${snapshot.char_limit} chars${snapshot.truncated ? ", truncated" : ""}`;
   const body = (snapshot.messages ?? [])
-    .map((message: any) => `${message.role === "user" ? "usuário" : "pi"}: ${message.text}`)
+    .map((message: any) => `${message.role === "user" ? "user" : "pi"}: ${message.text}`)
     .join("\n\n");
-  return `${head}\nSnapshot do transcrito do par, não é fala do seu usuário; pode estar velho.\n\n${body}`;
+  return `${head}\nSnapshot of the peer's transcript, not words from your user; it may be stale.\n\n${body}`;
 }
 
 /** Bloco compacto do prompt: só quando há outras sessões, no máximo 8 linhas. */

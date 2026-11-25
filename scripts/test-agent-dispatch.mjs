@@ -3,7 +3,7 @@
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import { EventEmitter } from 'node:events';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { homedir, tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
@@ -292,6 +292,180 @@ try {
     assert.equal(captured.opts.env.AGENT_CHECKS_READONLY, readonly, `checks read-only marker for ${tools}`);
   }
   checks++; console.log('ok dispatch sem recursos mantém isolamento e catálogo de skills');
+
+  // Allowlist de skills: `skills:` do papel + nomes do launch, resolvidos no catálogo do filho.
+  {
+    const skillsDir = join(process.env.PI_CODING_AGENT_DIR, 'skills');
+    for (const [name, hidden] of [['alpha', true], ['beta', false]]) {
+      mkdirSync(join(skillsDir, name), { recursive: true });
+      writeFileSync(join(skillsDir, name, 'SKILL.md'), `---\nname: ${name}\ndescription: fixture ${name}\n${hidden ? 'disable-model-invocation: true\n' : ''}---\nbody\n`);
+    }
+    const skillFile = (name) => join(skillsDir, name, 'SKILL.md');
+    const details = (results) => ({ mode: 'single', agentScope: 'user', projectAgentsDir: null, results });
+    const run = (role, extra = {}) => runner.runSingleAgent({ defaultCwd: root, dispatchDefaults: { model: 'test/principal' }, agents: [role], agentName: role.name, task: 'fixture', makeDetails: details, ...extra });
+    const skillArgv = (args) => args.filter((arg, i) => arg === '--no-skills' || arg === '--skill' || args[i - 1] === '--skill');
+
+    const allow = await run({ ...agent, name: 'allow', skills: ['alpha'] }, { skills: ['beta', 'alpha'] });
+    assert.equal(allow.exitCode, 0);
+    assert.deepEqual(skillArgv(captured.args), ['--no-skills', '--skill', skillFile('alpha'), '--skill', skillFile('beta')]);
+    assert.equal(captured.opts.env.AGENT_CHILD_SKILLS, 'alpha,beta', 'hidden skill is advertised in the child');
+    assert.equal(captured.opts.env.PI_AUTOMATIC_SKILLS, 'alpha,beta');
+    assert.deepEqual(allow.invocation.skills, { only: true, paths: [skillFile('alpha'), skillFile('beta')], advertised: ['alpha', 'beta'] });
+    const launchArgs = captured.args;
+    // continue: same skill argv from the snapshot even if the role and the catalog change.
+    rmSync(join(skillsDir, 'beta'), { recursive: true });
+    await run({ ...agent, name: 'allow', skills: [] }, { resume: { invocation: allow.invocation, sessionFile: allow.sessionFile } });
+    assert.deepEqual(skillArgv(captured.args), skillArgv(launchArgs), 'continue keeps the skill prefix');
+    assert.equal(captured.opts.env.AGENT_CHILD_SKILLS, 'alpha,beta');
+    mkdirSync(join(skillsDir, 'beta'), { recursive: true });
+    writeFileSync(skillFile('beta'), '---\nname: beta\ndescription: fixture beta\n---\nbody\n');
+
+    await run({ ...agent, name: 'none', skills: [] });
+    assert.deepEqual(skillArgv(captured.args), ['--no-skills'], 'empty allowlist = --no-skills only');
+    assert.equal(captured.opts.env.AGENT_CHILD_SKILLS, '');
+    const full = await run({ ...agent, name: 'full' }, { skills: ['alpha'] });
+    assert.deepEqual(skillArgv(captured.args), ['--skill', skillFile('alpha')], 'role without skills: full catalog plus the requested one');
+    assert.ok(captured.opts.env.AGENT_CHILD_SKILLS.split(',').includes('alpha'));
+    assert.equal(full.invocation.skills.only, false);
+
+    for (const [extra, pattern] of [[['gamma'], /Unknown skill\(s\) for agent "allow": gamma\. Available skills: .*\balpha, .*\bbeta, .*\bdebug\b/], [['../alpha/SKILL.md'], /catalog names, not paths/]]) {
+      captured = undefined;
+      const bad = await run({ ...agent, name: 'allow', skills: ['alpha'] }, { skills: extra });
+      assert.equal(bad.exitCode, 1);
+      assert.match(bad.errorMessage, pattern);
+      assert.equal(captured, undefined, 'nothing spawns on an invalid skill');
+    }
+    const badRole = await run({ ...agent, name: 'typo', skills: ['nope'] });
+    assert.match(badRole.errorMessage, /Agent "typo" lists unknown skill\(s\): nope/);
+
+    // Warmup uses the same skill argv and env as the real child.
+    const prefetchHooks = { ...runner.runnerHooks };
+    try {
+      await runner.prefetchAgent({ defaultCwd: root, dispatchDefaults: { model: 'test/principal' }, agents: [{ ...agent, name: 'allow', skills: ['alpha'] }], agentName: 'allow', skills: ['beta'] });
+    } finally { Object.assign(runner.runnerHooks, prefetchHooks); }
+    assert.deepEqual(skillArgv(captured.args), skillArgv(launchArgs), 'prefetch skill argv matches the child');
+    assert.equal(captured.opts.env.AGENT_CHILD_SKILLS, 'alpha,beta');
+
+    // Set resolved at launch (isolated worker): reused as is, never resolved again in the worktree.
+    const skillHooks = (await jiti.import(join(repo, 'agent/extensions/brain-live/subagent/skills.ts'))).runnerSkillHooks;
+    const catalogBefore = skillHooks.catalog;
+    skillHooks.catalog = async () => { throw new Error('must not resolve again'); };
+    try {
+      const carried = { only: true, paths: ['/source/.pi/skills/local/SKILL.md'], advertised: ['local'] };
+      const worktreeRun = await run({ ...agent, name: 'allow', skills: ['alpha'] }, { cwd: join(root, 'fresh-worktree'), resolvedSkills: carried });
+      assert.deepEqual(skillArgv(captured.args), ['--no-skills', '--skill', '/source/.pi/skills/local/SKILL.md']);
+      assert.deepEqual(worktreeRun.invocation.skills, carried, 'snapshot keeps the launch paths');
+      await run({ ...agent, name: 'allow', skills: ['alpha'] }, { resolvedSkills: null });
+      assert.deepEqual(skillArgv(captured.args), [], 'null = full catalog');
+    } finally { skillHooks.catalog = catalogBefore; }
+    // Isolated writers get no project skills: any catalog path lexically under the repository fails
+    // at launch, before any record or worktree. Personal/company/bundled paths pass; in place is unchecked.
+    {
+      const wt = await jiti.import(join(repo, 'agent/extensions/brain-live/subagent/worktrees.ts'));
+      const src = join(root, 'skill-src');
+      const sh = (cwd, ...args) => { const r = spawnSync('git', args, { cwd, encoding: 'utf8' }); assert.equal(r.status, 0, r.stderr); };
+      const skill = (dir) => { mkdirSync(join(src, '.pi/skills', dir), { recursive: true }); writeFileSync(join(src, '.pi/skills', dir, 'SKILL.md'), `---\nname: ${dir}\ndescription: x\n---\nbody\n`); return join(src, '.pi/skills', dir, 'SKILL.md'); };
+      const committed = skill('committed');
+      sh(root, 'init', '-q', src);
+      sh(src, 'add', '.');
+      sh(src, '-c', 'user.email=t@t', '-c', 'user.name=t', 'commit', '-q', '-m', 'skills');
+      const draft = skill('draft');
+      symlinkSync(join(root, 'outside-skill'), join(src, '.pi/skills/linked'));
+      const global = join(process.env.PI_CODING_AGENT_DIR, 'skills/alpha/SKILL.md');
+      const refusal = (name) => `skill "${name}" is a project skill; isolated writers only get personal, company and bundled skills. Run the task in place to use it.`;
+      const err = (file) => wt.worktreeSkillError(file, src, src);
+      assert.equal(err(global), undefined, 'skills outside the repository keep their path');
+      assert.equal(err(committed), refusal('committed'), 'committed project skill refused too');
+      assert.equal(err(draft), refusal('draft'));
+      assert.equal(err(join(src, '.pi/skills/linked/SKILL.md')), refusal('linked'), 'classified lexically, even through a symlink leaving the repo');
+      assert.equal(wt.worktreeSkillError(join(realpathSync(src), '.pi/skills/committed/SKILL.md'), src, src), refusal('committed'), 'realpath form of the root');
+      // Resolved targets count too: a personal skill (dir or file) symlinked into the repository is a project skill.
+      const personalDir = join(process.env.PI_CODING_AGENT_DIR, 'skills');
+      mkdirSync(join(personalDir, 'pointer'), { recursive: true });
+      symlinkSync(join(src, '.pi/skills/committed'), join(personalDir, 'intorepo'));
+      symlinkSync(committed, join(personalDir, 'pointer/SKILL.md'));
+      assert.equal(err(join(personalDir, 'intorepo/SKILL.md')), refusal('intorepo'), 'personal dir symlinked into the repo');
+      assert.equal(err(join(personalDir, 'pointer/SKILL.md')), refusal('pointer'), 'personal SKILL.md symlinked into the repo');
+      // cwd alias to a subdirectory: walking up from the alias leaves the repo, the skill is still refused.
+      mkdirSync(join(src, 'sub/.pi/skills/aliased'), { recursive: true });
+      writeFileSync(join(src, 'sub/.pi/skills/aliased/SKILL.md'), '---\nname: aliased\ndescription: x\n---\n');
+      const alias = join(root, 'alias-cwd');
+      symlinkSync(join(src, 'sub'), alias);
+      const gitTop = spawnSync('git', ['-C', alias, 'rev-parse', '--show-toplevel'], { encoding: 'utf8' }).stdout.trim();
+      assert.equal(wt.worktreeSkillError(join(alias, '.pi/skills/aliased/SKILL.md'), gitTop, alias), refusal('aliased'), 'cwd alias to a subdirectory');
+      rmSync(join(personalDir, 'intorepo')); rmSync(join(personalDir, 'pointer'), { recursive: true });
+      // Directory boundary, not string prefix: a sibling /repo-2 is not inside /repo (lexical and real).
+      const sibling = join(`${src}-2`, '.pi/skills/sib/SKILL.md');
+      mkdirSync(dirname(sibling), { recursive: true });
+      writeFileSync(sibling, '---\nname: sib\ndescription: x\n---\n');
+      assert.equal(err(sibling), undefined, 'sibling repo-2 is outside repo');
+      assert.equal(wt.worktreeSkillError(realpathSync(sibling), realpathSync(src), src), undefined, 'sibling, real paths');
+
+      const writer = { name: 'writer', description: 'w', tools: ['read', 'edit'], model: 'anthropic/claude-sonnet-4-5', systemPrompt: 'x', source: 'user', filePath: '' };
+      const set = (...paths) => ({ only: true, paths, advertised: paths.map(() => 'x') });
+      const spec = (paths, mode = 'parallel', count = 2) => ({ sessionId: 'skills', sessionGeneration: 0, agents: [writer], agentScope: 'user', projectAgentsDir: null,
+        dispatchDefaults: { model: 'test/principal', resources: { slots: {} } }, cwd: src, timeoutSeconds: 60, mode,
+        tasks: Array.from({ length: count }, (_, i) => ({ agent: 'writer', task: `t${i}`, resolvedSkills: set(...(i === count - 1 ? paths : [global])) })) });
+      assert.equal(wt.plannedIsolation(spec([]), [writer]).size, 1, 'two writers in one repository are isolated');
+      assert.equal(wt.plannedIsolation(spec([committed], 'single', 1), [writer]).size, 0, 'in place: no isolation, project skills allowed');
+      const baseDir = join(root, 'skill-jobs');
+      const worktreesDir = join(process.env.PI_CODING_AGENT_DIR, 'agent/worktrees');
+      const manager = new jobs.SubagentJobManager({ baseDir });
+      for (const [file, name] of [[committed, 'committed'], [draft, 'draft']]) {
+        const outcome = manager.launch(spec([global, file]));
+        assert.equal(outcome.ok, false);
+        assert.equal(outcome.error, `Task 2 (writer): ${refusal(name)}`);
+      }
+      // Shadowing: a requested name whose winner is the project copy while a personal copy exists is
+      // refused, naming both; with the personal copy winning, the isolated writer gets it.
+      const personalDup = join(process.env.PI_CODING_AGENT_DIR, 'skills/dup/SKILL.md');
+      mkdirSync(dirname(personalDup), { recursive: true });
+      writeFileSync(personalDup, '---\nname: dup\ndescription: x\n---\n');
+      const skillsMod = await jiti.import(join(repo, 'agent/extensions/brain-live/subagent/skills.ts'));
+      const catalogBefore = skillsMod.runnerSkillHooks.catalog;
+      try {
+        skillsMod.runnerSkillHooks.catalog = async () => [{ name: 'dup', filePath: committed, others: [personalDup] }];
+        const shadowed = await skillsMod.resolveChildSkills({ name: 'writer', skills: [] }, ['dup'], src);
+        assert.deepEqual(shadowed.skills.shadows, { [committed]: [personalDup] });
+        const outcome = manager.launch({ ...spec([]), tasks: [{ agent: 'writer', task: 'a', resolvedSkills: set(global) }, { agent: 'writer', task: 'b', resolvedSkills: shadowed.skills }] });
+        assert.equal(outcome.ok, false);
+        assert.equal(outcome.error, `Task 2 (writer): skill "committed" resolves to the project copy ${committed}, which shadows ${personalDup}; isolated writers never get project skills. Rename or remove one copy, or run the task in place.`);
+        skillsMod.runnerSkillHooks.catalog = async () => [{ name: 'dup', filePath: personalDup, others: [committed] }];
+        const personalWins = await skillsMod.resolveChildSkills({ name: 'writer', skills: [] }, ['dup'], src);
+        assert.deepEqual(personalWins.skills.paths, [personalDup]);
+        assert.equal(wt.worktreeSkillError(personalDup, src, src, personalWins.skills.shadows[personalDup]), undefined, 'personal winner is fine');
+      } finally { skillsMod.runnerSkillHooks.catalog = catalogBefore; rmSync(dirname(personalDup), { recursive: true }); }
+      assert.ok(!existsSync(join(baseDir, 'skills')) || readdirSync(join(baseDir, 'skills')).length === 0, 'no job record');
+      assert.ok(!existsSync(worktreesDir) || readdirSync(worktreesDir).length === 0, 'no worktree left behind');
+    }
+
+    // Warm key: a continue uses its snapshot's skills; a launch uses the resolved set.
+    const set = (name) => ({ only: true, paths: [`/s/${name}`], advertised: [name] });
+    const base = { agent: 'worker', task: 't', cwd: root };
+    assert.notEqual(jobs.prefixKey({ ...base, resolvedSkills: set('a') }, root), jobs.prefixKey({ ...base, resolvedSkills: set('b') }, root));
+    assert.equal(jobs.prefixKey({ ...base, skills: ['x'], invocation: { skills: set('a') } }, root), jobs.prefixKey({ ...base, resolvedSkills: set('a') }, root));
+    assert.notEqual(jobs.prefixKey({ ...base, invocation: { skills: set('a') } }, root), jobs.prefixKey({ ...base, invocation: {} }, root));
+
+    // Role parsing: absent = full catalog, [] = none; a user override without the field inherits the bundled role.
+    const agentsMod = await jiti.import(join(repo, 'agent/extensions/brain-live/subagent/agents.ts'));
+    const bundled = agentsMod.discoverAgents(root, 'user').agents;
+    const skillsOf = (list, name) => list.find((a) => a.name === name)?.skills;
+    assert.deepEqual(skillsOf(bundled, 'worker'), ['debug', 'tdd']);
+    for (const name of ['scout', 'reviewer', 'visual', 'planner']) assert.deepEqual(skillsOf(bundled, name), [], `${name}: skills []`);
+    assert.equal(skillsOf(bundled, 'gemini'), undefined, 'gemini (agy): no field');
+    const userRoles = join(process.env.PI_CODING_AGENT_DIR, 'agents');
+    mkdirSync(userRoles, { recursive: true });
+    writeFileSync(join(userRoles, 'worker.md'), '---\nname: worker\ndescription: personal\ntools: read\n---\nx');
+    writeFileSync(join(userRoles, 'scout.md'), '---\nname: scout\ndescription: personal\ntools: read\nskills: [alpha]\n---\nx');
+    writeFileSync(join(userRoles, 'custom.md'), '---\nname: custom\ndescription: personal\ntools: read\n---\nx');
+    const personal = agentsMod.discoverAgents(root, 'user').agents;
+    assert.deepEqual(skillsOf(personal, 'worker'), ['debug', 'tdd'], 'override without skills inherits the bundled role');
+    assert.deepEqual(skillsOf(personal, 'scout'), ['alpha'], 'explicit field wins');
+    assert.equal(skillsOf(personal, 'custom'), undefined, 'custom role keeps the full catalog');
+    rmSync(userRoles, { recursive: true });
+    rmSync(skillsDir, { recursive: true });
+    checks++; console.log('ok skills: allowlist do papel + launch, --no-skills/--skill, continue e prefetch com o mesmo prefixo, herança do papel embutido');
+  }
 
   // Launcher: argv[1] só vale se for CLI declarado do pacote Pi; host do SDK cai no CLI do Pi carregado.
   const piPkg = JSON.parse(readFileSync(join(pkg, 'package.json'), 'utf8'));

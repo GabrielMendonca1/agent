@@ -2,6 +2,7 @@
 name: visual
 description: Interprets supplied images and reports visual evidence.
 tools: read
+skills: []
 brief_required: [objective]
 return_format: "Visible evidence vs inference; unreadable details flagged."
 ---

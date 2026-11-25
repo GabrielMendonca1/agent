@@ -168,7 +168,7 @@ export default function (pi) {
         ];
         stopReason = 'toolUse';
       } else if (!child && n === 0) {
-        content = [{ type: 'toolCall', id: 'call-1', name: 'subagent', arguments: { agent: process.env.FG_AGENT || 'worker', brief: { objective: 'o', context: 'c', scope: 's', done_when: 'd', stop_if: 'x' }, task: 'fixture' } }];
+        content = [{ type: 'toolCall', id: 'call-1', name: 'subagent', arguments: { agent: process.env.FG_AGENT || 'worker', brief: { objective: 'o', context: 'c', scope: 's', done_when: 'd', stop_if: 'x' }, task: 'fixture', ...(process.env.FG_SKILLS ? { skills: process.env.FG_SKILLS.split(',') } : {}) } }];
         stopReason = 'toolUse';
       } else content = [{ type: 'text', text: child ? 'FILHO-PRONTO' : 'PAI-TERMINOU' }];
       const message = { role: 'assistant', content, api: model.api, provider: model.provider, model: model.id, timestamp: Date.now(), stopReason, usage: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0, totalTokens: 2, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } } };
@@ -239,13 +239,21 @@ const bundledLaunch = bundledEvents.find(e => e.type === 'tool_execution_end' &&
 assert.match(bundledLaunch.content[0].text, /Launched subagent job/);
 const bundledContext = JSON.parse(readFileSync(bundledDump, 'utf8'));
 assert.match(JSON.stringify(bundledContext), /Read only. Bash is for inspection only/);
-assert.match(JSON.stringify(bundledContext), /OFFLINE-SKILL-CATALOG/);
+assert.doesNotMatch(JSON.stringify(bundledContext), /OFFLINE-SKILL-CATALOG|<skills>/, 'bundled scout runs with skills: []');
 assert.match(JSON.stringify(bundledContext), /Inspect with `rg -n` and excerpts of up to ~150 lines/, 'role prompt asks for bounded reads');
 const bundledTools = bundledContext.messages.find(m => m.role === 'system').toolsAdded;
 assert.ok(bundledTools.some(t => t.name === 'read'));
 assert.ok(!bundledTools.some(t => ['edit', 'write', 'subagent'].includes(t.name)), 'bundled scout scope is retained');
 assert.ok(!existsSync(join(cleanProfile, 'agents')), 'dispatch never installs roles into profile');
-console.log('ok bundled: relocated discovery, personal/project precedence, async scout prompt/tools/skills');
+// A skill named at launch reaches the scout's real Pi child through --no-skills --skill.
+const attachedDump = join(root, 'attached-context.json');
+runPi({ PI_CODING_AGENT_DIR: cleanProfile, FG_AGENT: 'scout', FG_SKILLS: 'fixture', FG_CHILD_CTX: attachedDump, FG_KEEPALIVE: '4' });
+const attachedSkills = JSON.parse(readFileSync(attachedDump, 'utf8')).messages.find(m => m.role === 'system').sections.skills ?? '';
+assert.match(attachedSkills, /OFFLINE-SKILL-CATALOG/);
+assert.deepEqual([...attachedSkills.matchAll(/<name>([^<]+)<\/name>/g)].map(m => m[1]), ['fixture'], 'only the attached skill');
+const rejected = runPi({ PI_CODING_AGENT_DIR: cleanProfile, FG_AGENT: 'scout', FG_SKILLS: 'missing-skill' });
+assert.match(rejected.find(e => e.type === 'tool_execution_end' && e.toolName === 'subagent').result.content[0].text, /Unknown skill\(s\) for agent "scout": missing-skill\. Available skills: .*\bfixture\b.*\. Nothing was launched\./);
+console.log('ok bundled: relocated discovery, personal/project precedence, async scout prompt/tools/skills ([] by default, attached by name)');
 
 const chainDump = join(root, 'chain-context.json');
 const chainEvents = runPi({ FG_CHAIN: '1', FG_CHILD_CTX: chainDump, FG_KEEPALIVE: '6' });
@@ -502,7 +510,7 @@ try {
   const writer = await checksRun(['read', 'bash', 'edit', 'checks'], {});
   assert.ok(!writer.toolResult.isError, writer.text);
   assert.match(writer.text, /^default tags fast \(subagent\)/);
-  assert.match(writer.text, /^OK: tudo verde/m);
+  assert.match(writer.text, /^OK: all green/m);
   assert.equal(readFileSync(ranLog, 'utf8'), 'quick\n', 'writer child ran only the fast check');
   assert.deepEqual(writer.schema.parameters.properties.action.enum, ['gate', 'run', 'baseline', 'list', 'last']);
   const explicit = await checksRun(['read', 'bash', 'edit', 'checks'], { action: 'run', only: 'full' });

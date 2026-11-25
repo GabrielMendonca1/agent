@@ -5,11 +5,11 @@ import { categoryPrompt } from '../../core/skill-categories.mjs';
 import { companySkillDirs } from '../../core/companies.mjs';
 import { appendPolicy, policySections, POLICY_SECTIONS, notesSection } from '../../core/policy.mjs';
 import { readNotesMetadata, unmappedDocs } from '../../core/notes.mjs';
-import { existsSync, readFileSync, renameSync, statSync } from 'node:fs';
-import { join } from 'node:path';
+import { existsSync, readFileSync, statSync } from 'node:fs';
 import { allowAutoCompaction } from '../../core/cache-policy.mjs';
 import { installProjectContext } from './lib/project-context.ts';
 import { clearBeforeAutoCompaction } from './compaction/tool-clear.ts';
+import { consumeHandoff, handoffFingerprint, handoffMessage, handoffNotice, handoffPath, isHandoffPath, readHandoff, stampHandoff } from './lib/handoff.ts';
 
 const COMPACT_AT_1M = 450_000;
 const TEAM_TOOL = 'subagent';
@@ -24,11 +24,24 @@ export function nextHint(tokens: number | null | undefined): boolean {
   return typeof tokens === 'number' && tokens > 60_000;
 }
 
-export function shouldInjectHandoff({ messageType, firstRun, mtime, now }: {
-  messageType?: string; firstRun: boolean; mtime: number; now: number;
-}): boolean {
-  return (messageType === undefined || messageType === 'user') && firstRun
-    && now >= mtime && now - mtime < 10 * 60_000;
+/**
+ * Session opened by /next for this exact handoff: its `agent-next` entry carries the fingerprint
+ * of the file /next stamped. Any other file (a later handoff, after the first was delivered and
+ * renamed) goes through the normal gates, so reopening the session never forces again.
+ */
+export function openedByNext(ctx: Pick<ExtensionContext, 'sessionManager'>, text: string): boolean {
+  try {
+    const fingerprint = handoffFingerprint(text);
+    return ctx.sessionManager.getBranch().some((entry: any) => entry?.type === 'custom' && entry.customType === 'agent-next'
+      && entry.data?.handoff?.sha256 === fingerprint);
+  } catch { return false; }
+}
+
+/** A session that already has an assistant reply is resumed, not new: its handoff is offered, not injected. */
+export function sessionHasHistory(ctx: Pick<ExtensionContext, 'sessionManager'>): boolean {
+  try {
+    return ctx.sessionManager.getBranch().some((entry: any) => entry?.type === 'message' && entry.message?.role === 'assistant');
+  } catch { return false; }
 }
 
 /**
@@ -51,20 +64,61 @@ export default function (pi: ExtensionAPI) {
   // /next is isolated from policy/notes injection: switching the host
   // unloads this extension, so nothing is sent after newSession.
   let firstHandoffRun = true;
+  // /handoff asks for delivery with the next user run; the file is consumed only then.
+  let handoffRequested = false;
   let nextRunning = false;
   let handoffFinished: (() => void) | undefined;
   pi.on('agent_end', async () => { handoffFinished?.(); });
+  // Handoff: first user message of a session. Fresh, same branch and HEAD at or after its commit
+  // → injected once; otherwise one visible line points to /handoff (never a silent drop).
+  // A session opened by /next and a /handoff request skip the gates. The file is renamed only
+  // here, when the message goes out with this run.
   pi.on('before_agent_start', async (event, ctx) => {
     if (event.messageType !== undefined && event.messageType !== 'user') return;
-    const firstRun = firstHandoffRun;
+    const requested = handoffRequested;
+    const first = firstHandoffRun;
+    handoffRequested = false;
     firstHandoffRun = false;
-    const file = join(ctx.cwd, '.agent/handoff.md');
+    if (!requested && !first) return;
     try {
-      if (!shouldInjectHandoff({ messageType: event.messageType, firstRun, mtime: Math.floor(statSync(file).mtimeMs), now: Date.now() })) return;
-      const content = readFileSync(file, 'utf8');
-      renameSync(file, join(ctx.cwd, '.agent/handoff.consumed.md'));
+      const pending = readHandoff(ctx.cwd, { newSession: !sessionHasHistory(ctx) });
+      if (!pending) {
+        if (requested) ctx.ui.notify('The requested handoff is gone from .agent/handoff.md; nothing was loaded.', 'warning');
+        return;
+      }
+      const fromNext = first && openedByNext(ctx, pending.text);
+      if (!requested && !fromNext && !pending.decision.inject) {
+        ctx.ui.notify(handoffNotice(pending.decision, pending.meta), 'info');
+        return;
+      }
+      // /next wrote it for this session: no stale note. /handoff keeps the note when gates failed.
+      const decision = fromNext ? { inject: true as const, ageMs: pending.decision.ageMs } : pending.decision;
+      const content = handoffMessage(pending.text, decision, pending.git);
+      consumeHandoff(ctx.cwd);
       return { message: { customType: 'agent-handoff', content, display: false } };
-    } catch { /* absent/unreadable handoff must not block a normal run */ }
+    } catch (error) {
+      ctx.ui.notify(`Handoff not loaded: ${error instanceof Error ? error.message : String(error)}; use /handoff to try again.`, 'warning');
+    }
+  });
+  // The skill writes only the body; the stamp (session, time, branch, HEAD) comes from here.
+  pi.on('tool_result', async (event: any, ctx) => {
+    if ((event.toolName !== 'write' && event.toolName !== 'edit') || event.isError || !isHandoffPath(event.input?.path, ctx.cwd)) return;
+    try { stampHandoff(ctx.cwd, ctx.sessionManager?.getSessionId?.()); } catch { /* the /next stamp still covers it */ }
+  });
+  pi.registerCommand('handoff', {
+    description: 'Load the pending .agent/handoff.md (old or from another branch) with the next message',
+    handler: async (_args, ctx) => {
+      try {
+        const pending = readHandoff(ctx.cwd, { newSession: !sessionHasHistory(ctx) });
+        if (!pending) return ctx.ui.notify('No pending handoff in .agent/handoff.md.', 'info');
+        // Delivered and consumed by before_agent_start with the next message; quitting first keeps the file.
+        handoffRequested = true;
+        ctx.ui.notify(pending.decision.inject ? 'Handoff queued; it goes with the next message.'
+          : 'Handoff queued with a note to the model that it may be outdated; it goes with the next message.', 'info');
+      } catch (error) {
+        ctx.ui.notify(`Could not load the handoff: ${error instanceof Error ? error.message : String(error)}`, 'error');
+      }
+    },
   });
   pi.registerCommand('next', {
     description: 'Encerra a tarefa com handoff e abre sessão nova (--keep compacta aqui)',
@@ -75,23 +129,25 @@ export default function (pi: ExtensionAPI) {
       const keep = /(?:^|\s)--keep(?=\s|$)/.test(args);
       const focus = args.replace(/(?:^|\s)--keep(?=\s|$)/g, ' ').trim();
       try {
-        const file = join(ctx.cwd, '.agent/handoff.md');
+        const file = handoffPath(ctx.cwd);
         const previous = existsSync(file) ? { mtime: statSync(file).mtimeMs, content: readFileSync(file, 'utf8') } : null;
         // Subscribe before sending: waitForIdle alone can race with run startup.
         const finished = new Promise<void>(resolve => { handoffFinished = resolve; });
         pi.sendUserMessage(`/skill:handoff${focus ? ` ${focus}` : ''}`);
         await finished;
         await ctx.waitForIdle();
-        const mtime = statSync(file).mtimeMs;
-        if ((previous && previous.mtime === mtime && previous.content === readFileSync(file, 'utf8'))
-          || !shouldInjectHandoff({ firstRun: true, mtime: Math.floor(mtime), now: Date.now() })) {
-          throw new Error('Handoff não foi atualizado; sessão mantida.');
+        const mtime = existsSync(file) ? statSync(file).mtimeMs : undefined;
+        if (mtime === undefined || (previous && previous.mtime === mtime && previous.content === readFileSync(file, 'utf8'))) {
+          throw new Error('Handoff was not updated; session kept.');
         }
+        // Covers a handoff written through bash: the new session sees this branch and HEAD.
+        const sha256 = stampHandoff(ctx.cwd, ctx.sessionManager?.getSessionId?.());
         if (keep) { ctx.compact(); return; }
         const parentSession = ctx.sessionManager.getSessionFile();
         await ctx.newSession({
           parentSession,
-          setup: async manager => { manager.appendCustomEntry('agent-next', { parentSession }); },
+          // The first message of the new session injects this exact file past the age/branch gates.
+          setup: async manager => { manager.appendCustomEntry('agent-next', { parentSession, ...(sha256 ? { handoff: { sha256 } } : {}) }); },
         });
       } catch (error) {
         ctx.ui.notify(error instanceof Error ? error.message : String(error), 'error');
@@ -154,6 +210,7 @@ export default function (pi: ExtensionAPI) {
     // Usage is native session data, never profile accounting.
     state = { ...state, team: [], cacheHit: undefined, sessionUsd: 0, nextHint: false };
     firstHandoffRun = true;
+    handoffRequested = false;
     compacting = false;
     projectNotes = notesSection(readNotesMetadata(ctx.cwd));
     applyTools();
@@ -249,22 +306,22 @@ export default function (pi: ExtensionAPI) {
 
   // Independente dos comandos de modo: /notes só pede manutenção do mapa ao agente.
   pi.registerCommand('notes', {
-    description: 'Agent: acrescentar ao mapa os documentos ainda sem nota',
+    description: 'Agent: add the documents without a note to the map',
     handler: async (_args, ctx) => {
       let files: string[];
       try { files = unmappedDocs(ctx.cwd); } catch (error) {
-        ctx.ui.notify(`Não foi possível listar notas: ${error instanceof Error ? error.message : String(error)}`, 'error');
+        ctx.ui.notify(`Could not list notes: ${error instanceof Error ? error.message : String(error)}`, 'error');
         return;
       }
-      if (!files.length) { ctx.ui.notify('Nenhum documento sem linha em .agent/notes.md.', 'info'); return; }
-      // Prompt em inglês só para o modelo; o TUI mostra o aviso em português.
+      if (!files.length) { ctx.ui.notify('Every document already has a line in .agent/notes.md.', 'info'); return; }
+      // The prompt goes to the model; the TUI shows a short notice.
       pi.sendMessage({ customType: 'agent-notes', display: false, content: [
         'Update .agent/notes.md in this project (create the map if it does not exist).',
         'Read the documents below and add one line per file in the format path — subject; keep existing lines and do not duplicate paths.',
         'Documents without a line in the map:',
         ...files.map(file => `- ${file}`),
       ].join('\n') }, { triggerTurn: true, deliverAs: 'followUp' });
-      ctx.ui.notify(`Pedido enviado ao agente: mapear ${files.length} documento(s) em .agent/notes.md.`, 'info');
+      ctx.ui.notify(`Sent to the agent: map ${files.length} document(s) in .agent/notes.md.`, 'info');
     },
   });
   installProjectContext(pi);

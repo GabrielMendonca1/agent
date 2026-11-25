@@ -25,7 +25,7 @@ export type LocalFile = { path: string; name: string; mime: string; size: number
 
 /** Caminhos do agente (`~`, relativo ao cwd) → arquivos regulares dentro dos limites do servidor. */
 export async function resolveFiles(paths: readonly string[], cwd: string): Promise<LocalFile[]> {
-  if (paths.length > MAX_FILES) throw new Error(`no máximo ${MAX_FILES} arquivos por mensagem`);
+  if (paths.length > MAX_FILES) throw new Error(`at most ${MAX_FILES} files per message`);
   const out: LocalFile[] = [];
   for (const raw of paths) {
     const trimmed = raw.trim();
@@ -33,9 +33,9 @@ export async function resolveFiles(paths: readonly string[], cwd: string): Promi
     const expanded = trimmed === "~" || trimmed.startsWith("~/") ? join(homedir(), trimmed.slice(1)) : trimmed;
     const path = isAbsolute(expanded) ? expanded : resolve(cwd, expanded);
     const info = await stat(path).catch(() => undefined);
-    if (!info?.isFile()) throw new Error(`arquivo não encontrado: ${trimmed}`);
-    if (info.size === 0) throw new Error(`arquivo vazio: ${trimmed}`);
-    if (info.size > MAX_FILE_BYTES) throw new Error(`arquivo maior que 25 MiB: ${trimmed}`);
+    if (!info?.isFile()) throw new Error(`file not found: ${trimmed}`);
+    if (info.size === 0) throw new Error(`empty file: ${trimmed}`);
+    if (info.size > MAX_FILE_BYTES) throw new Error(`file larger than 25 MiB: ${trimmed}`);
     out.push({ path, name: basename(path), mime: MIME[extname(path).toLowerCase()] ?? "application/octet-stream", size: info.size });
   }
   return out;
@@ -59,7 +59,7 @@ async function authorized(signal?: AbortSignal): Promise<{ endpoint: string; bea
 async function failure(response: Response, what: string): Promise<Error> {
   // Rota sem o ramo de agente: Mainframe anterior a esta versão.
   if (response.status === 404 || response.status === 405) {
-    return new Error(`este ${megamindName()} ainda não aceita arquivos de agentes (HTTP ${response.status})`);
+    return new Error(`this ${megamindName()} does not accept files from agents yet (HTTP ${response.status})`);
   }
   let code = "";
   try {
@@ -92,7 +92,7 @@ export async function uploadChat(args: UploadArgs, signal?: AbortSignal): Promis
     body: form,
     signal: auth.signal,
   });
-  if (!response.ok) throw await failure(response, "envio de arquivo recusado");
+  if (!response.ok) throw await failure(response, "file upload refused");
   const result: unknown = await response.json();
   return object(result) ? result : {};
 }
@@ -118,9 +118,9 @@ export async function downloadAttachment(message_id: string, name: string, dir: 
   });
   if (!response.ok) throw await failure(response, `baixa de ${name} recusada`);
   const length = Number(response.headers.get("content-length") ?? "0");
-  if (length > MAX_FILE_BYTES) throw new Error(`${name} é maior que 25 MiB`);
+  if (length > MAX_FILE_BYTES) throw new Error(`${name} is larger than 25 MiB`);
   const bytes = new Uint8Array(await response.arrayBuffer());
-  if (bytes.byteLength > MAX_FILE_BYTES) throw new Error(`${name} é maior que 25 MiB`);
+  if (bytes.byteLength > MAX_FILE_BYTES) throw new Error(`${name} is larger than 25 MiB`);
   await mkdir(dir, { recursive: true });
   const path = join(dir, safeFileName(name));
   await writeFile(path, bytes);

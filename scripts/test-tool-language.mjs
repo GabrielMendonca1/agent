@@ -9,7 +9,8 @@
  *   (estruturadas e no prompt forçado), o slot de peers, o loop guard e os prompts de /notes e /rules init;
  * - `description:` dos papéis em agent/agents/*.md.
  * Falha com diacríticos do português ou palavras comuns (quando, sempre, antes, depois, arquivo,
- * usuário, tarefa). UI, notificações e docs continuam em português e não entram aqui.
+ * usuário, tarefa, resultado, pedido, mensagem, nenhum(a), ainda).
+ * UI, notificações e docs não entram aqui.
  */
 import './lib/hermetic-test-env.mjs';
 import assert from 'node:assert/strict';
@@ -46,7 +47,8 @@ process.env.AGENT_CHILD = '0';
 process.env.PI_ACCOUNTS_MIRROR = '0';
 
 const DIACRITICS = /[áàâãäéèêëíìîïóòôõöúùûüçñ]/i;
-const STOPWORDS = /\b(quando|sempre|antes|depois|arquivo|usu[aá]rio|tarefa)\b/i;
+// Only words that are not English and not common in URLs or acronyms (no sem, para, agora, com, nao).
+const STOPWORDS = /\b(quando|sempre|antes|depois|arquivo|usu[aá]rio|tarefa|resultado|pedido|mensagem|nenhum|nenhuma|ainda)\b/i;
 const failures = [];
 let inspected = 0;
 function check(where, text) {
@@ -142,6 +144,11 @@ try {
   assert.deepEqual(failures.splice(before).map(f => f.split(':')[0]),
     ['probe.properties.title.description', 'probe.properties.description.title', 'probe.properties.description.properties.body.description'],
     'walkSchema desce em propriedades title/description');
+  // Stopwords: Portuguese without accents fails; English with look-alike tokens passes.
+  const stopBefore = failures.length;
+  check('probe-pt', 'megamind_reply: o resultado looks like a secret');
+  check('probe-en', 'SEM image at https://agora.example/para?com=1; nao.example is a host');
+  assert.deepEqual(failures.splice(stopBefore).map(f => f.split(':')[0]), ['probe-pt'], 'only the Portuguese probe fails');
   for (const [name, tool] of tools) checkTool(toolSource.get(name), tool);
   console.log(`ok ${tools.size} tools inspecionadas`);
 
@@ -229,7 +236,66 @@ try {
   const reason = blocked.find(r => r?.block)?.reason;
   assert.ok(reason, 'ask_user bloqueado com goal em execução');
   check('ask_user goal block reason', reason);
-  console.log('ok wrappers de runtime: peers, megamind, soft timeout e bloqueio do ask_user');
+  // Resultados e erros de runtime de peers e megamind (amostra representativa).
+  const peerRow = { id: 'abcdef123456', short: 'abcdef', project: 'demo', branch: 'main', status: 'idle', note: '', at: Date.now(), cwd: '/tmp/demo', v: 2 };
+  check('peers list (empty)', mesh.formatPeers([], Date.now()));
+  check('peers list', mesh.formatPeers([peerRow, { ...peerRow, short: 'self01', self: true, v: 1 }], Date.now(), { queued: 1, delivered: 2 }));
+  check('peers context', mesh.formatContext(peerRow, { busy: true, returned_messages: 1, total_messages: 3, char_limit: 100, truncated: true, messages: [{ role: 'user', text: 'x' }] }).replace(/\nuser: x$/, ''));
+  for (const to of ['', 'zzzzzz']) check(`peers resolveTarget ${to || 'empty'}`, mesh.resolveTarget(to, [peerRow]).error);
+  for (const body of ['', 'x'.repeat(1 << 20), 'token sk-ant-api03-' + 'a'.repeat(40)]) check('peers checkBody', mesh.checkBody(body).error);
+  const megamindTools = await jiti.import(join(repo, 'extensions/megamind/tools.ts'));
+  const { CoreError } = await jiti.import(join(repo, 'extensions/megamind/core.ts'));
+  check('megamind conflict', megamindTools.formatCoreError(new CoreError('conflict', 'conflict', [{ session_id: 'abc', owner: '@ana', status: 'idle' }])));
+  try { megamindTools.sessionOwner([], 'nobody'); } catch (error) { check('megamind sessionOwner', error.message); }
+  // Com presença falsa, a validação dos argumentos responde antes de qualquer rede.
+  const present = new Map();
+  megamindTools.registerMegamindTools(fakePi(present, {}, new Map(), []), { presence: () => ({ session_id: 'abcdef123456' }), core: async () => { throw new Error('offline'); }, now: Date.now });
+  check('megamind no presence', (await tools.get('megamind_send').execute('t', { to: '@ana', body: 'x' }, undefined, undefined, { cwd: sandbox })).content[0].text);
+  for (const [name, params] of [['megamind_send', {}], ['megamind_send', { to: '@ana' }], ['megamind_ask', { to: '@ana' }], ['megamind_reply', {}], ['megamind_reply', { id: 'r1', status: 'bogus' }], ['megamind_reply', { id: 'r1', status: 'done', result: 'token sk-ant-api03-' + 'a'.repeat(40) }], ['megamind_send', { to: '@ana', body: 'token sk-ant-api03-' + 'a'.repeat(40) }], ['megamind_fetch', {}]]) {
+    const out = await (present.get(name) ?? tools.get(name)).execute('t', params, undefined, undefined, { cwd: sandbox });
+    check(`${name} ${JSON.stringify(params)}`, out?.content?.map(part => part.text ?? '').join('\n'));
+  }
+
+  // Mais resultados de runtime: checks, web, megamind who/prioridade, nota do peers.
+  const checksRunner = await jiti.import(join(repo, 'agent/extensions/brain-live/checks/runner.ts'));
+  const sample = [{ name: 'a', ok: false, ms: 10, tail: '' }, { name: 'b', ok: false, ms: 10, tail: '' }, { name: 'c', ok: true, ms: 10, tail: '' }];
+  check('checks formatResults', checksRunner.formatResults(sample, { newFailures: ['a'], stillFailing: ['b'], fixed: ['c'] }));
+  const allGreen = await checksRunner.gate({ root: sandbox, checks: [{ name: 'ok', cmd: 'true' }] });
+  check('checks gate verdict', allGreen.verdict);
+  const webCore = await jiti.import(join(repo, 'agent/extensions/agent/web/core.ts'));
+  check('web wrapper', webCore.wrap('https://example.com', 'body'));
+  check('megamind who', megamindTools.formatPeople([{ handle: 'ana', name: '', app_online: true, sessions: [] }, { handle: 'bob', name: '', app_online: false, sessions: [{ session_id: 'abc', status: 'idle' }] }], undefined, Date.now()).join('\n'));
+  const priorities = await jiti.import(join(repo, 'extensions/megamind/priorities.ts'));
+  check('megamind priority context', priorities.formatPriorityContext({ title: 'ship', done: 1, total: 2, next: 'docs', blocked: ['ci'] }, 'demo'));
+  for (const note of ['', 'x']) check('peers note', (await tools.get('peers_status').execute('t', { note })).content[0].text.replace(/: x$/, ''));
+  // Skills de sistema: o corpo do SKILL.md é lido pelo modelo.
+  for (const dir of readdirSync(join(repo, 'agent/skills/system'))) {
+    const file = join(repo, 'agent/skills/system', dir, 'SKILL.md');
+    if (existsSync(file)) check(`skill system/${dir}`, readFileSync(file, 'utf8'));
+  }
+
+  // Erros de skills do launch (nome desconhecido, caminho, agy, papel com nome inválido).
+  const childSkills = await jiti.import(join(repo, 'agent/extensions/brain-live/subagent/skills.ts'));
+  childSkills.runnerSkillHooks.catalog = async () => [{ name: 'debug', filePath: '/skills/debug/SKILL.md' }];
+  for (const [role, extra] of [
+    [{ name: 'worker', skills: ['debug'] }, ['nope']],
+    [{ name: 'worker', skills: ['debug'] }, ['../x/SKILL.md']],
+    [{ name: 'gemini', runner: 'agy' }, ['debug']],
+    [{ name: 'custom', skills: ['nope'] }, []],
+  ]) {
+    const resolved = await childSkills.resolveChildSkills(role, extra, sandbox);
+    assert.equal(resolved.ok, false, `skills error for ${role.name}`);
+    check(`subagent skills error ${role.name}`, resolved.error);
+  }
+  // Handoff injetado ou carregado por /handoff: wrapper e notas de desatualizado.
+  const handoffLib = await jiti.import(join(repo, 'agent/extensions/brain-live/lib/handoff.ts'));
+  const handoffText = handoffLib.stampHandoffText('body', { session: 's1', created_at: '2026-01-01T00:00:00.000Z', branch: 'main', head: 'a'.repeat(40) });
+  const repoState = { branch: 'feature', head: 'b'.repeat(40) };
+  check('handoff wrapper', handoffLib.handoffMessage(handoffText, { inject: true, ageMs: 0 }, repoState));
+  for (const reason of ['old', 'other-branch', 'unstamped', 'missing-head', 'diverged', 'not-new']) {
+    check(`handoff stale ${reason}`, handoffLib.handoffMessage(handoffText, { inject: false, ageMs: 30 * 3600_000, reason }, repoState).replace('body', ''));
+  }
+  console.log('ok wrappers de runtime: peers, megamind, soft timeout, bloqueio do ask_user, erros de skills e handoff');
 
   // Papéis: o description: entra na descrição da tool subagent.
   for (const file of readdirSync(join(repo, 'agent/agents')).filter(f => f.endsWith('.md'))) {

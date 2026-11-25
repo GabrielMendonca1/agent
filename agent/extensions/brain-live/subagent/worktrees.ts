@@ -6,6 +6,7 @@ import { getAgentDir } from "@earendil-works/pi-coding-agent";
 import { findManifest, gate, lastRun, lastRunLine } from "../checks/runner.ts";
 import type { AgentConfig } from "./agents.ts";
 import type { JobRecord, JobTaskSpec } from "./jobs.ts";
+import { isProjectSkill, rootForms, skillLabel } from "./skills.ts";
 
 function git(cwd: string, args: string[]): string {
 	const r = spawnSync("git", ["-C", cwd, ...args], { encoding: "utf8", maxBuffer: 16 * 1024 * 1024 });
@@ -31,9 +32,10 @@ function verifyMerged(t: JobTaskSpec): void {
 }
 
 /** Chamadas síncronas serializam worktree add antes de qualquer filho nascer. */
-export function isolateWriters(record: JobRecord, agents: AgentConfig[], persist: () => void): void {
-	if (record.mode !== "parallel") return;
+/** Writer tasks isolateWriters moves into worktrees (2+ writers of one repository in parallel), by root. */
+export function plannedIsolation(record: Pick<JobRecord, "mode" | "tasks" | "cwd">, agents: AgentConfig[]): Map<string, { task: JobTaskSpec; index: number; cwd: string }[]> {
 	const groups = new Map<string, { task: JobTaskSpec; index: number; cwd: string }[]>();
+	if (record.mode !== "parallel") return groups;
 	record.tasks.forEach((task, index) => {
 		const agent = agents.find((a) => a.name === task.agent)!;
 		// Lista ausente/vazia usa as ferramentas padrão, que incluem edição.
@@ -45,8 +47,26 @@ export function isolateWriters(record: JobRecord, agents: AgentConfig[], persist
 		group.push({ task, index, cwd });
 		groups.set(root, group);
 	});
-	for (const [root, group] of groups) {
-		if (group.length < 2) continue;
+	for (const [root, group] of groups) if (group.length < 2) groups.delete(root);
+	return groups;
+}
+
+/**
+ * Launch check for a writer that will run in a worktree: project skills (isProjectSkill: lexical
+ * path or resolved target inside the repository) are refused outright. Personal, company and
+ * bundled skills keep their absolute path.
+ */
+export function worktreeSkillError(file: string, root: string, cwd?: string, shadowed: string[] = []): string | undefined {
+	const roots = rootForms(root, cwd);
+	if (!isProjectSkill(file, roots)) return undefined;
+	// Same name elsewhere: the isolated writer must never get the project copy; refuse, naming both.
+	const outside = shadowed.filter((other) => !isProjectSkill(other, roots));
+	if (outside.length) return `skill "${skillLabel(file)}" resolves to the project copy ${file}, which shadows ${outside.join(", ")}; isolated writers never get project skills. Rename or remove one copy, or run the task in place.`;
+	return `skill "${skillLabel(file)}" is a project skill; isolated writers only get personal, company and bundled skills. Run the task in place to use it.`;
+}
+
+export function isolateWriters(record: JobRecord, agents: AgentConfig[], persist: () => void): void {
+	for (const [root, group] of plannedIsolation(record, agents)) {
 		const baseSha = git(root, ["rev-parse", "HEAD"]);
 		const sourceBranch = currentBranch(root);
 		for (const { task, index, cwd } of group) {

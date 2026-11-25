@@ -47,10 +47,10 @@ const Params = Type.Object({
 
 function accountIdFromToken(token: string): string {
 	const parts = token.split(".");
-	if (parts.length !== 3) throw new Error("token Codex inválido");
+	if (parts.length !== 3) throw new Error("invalid Codex token");
 	const payload = JSON.parse(Buffer.from(parts[1], "base64url").toString("utf-8")) as Record<string, { chatgpt_account_id?: string }>;
 	const id = payload?.[JWT_CLAIM_PATH]?.chatgpt_account_id;
-	if (!id) throw new Error("token Codex sem chatgpt_account_id");
+	if (!id) throw new Error("Codex token without chatgpt_account_id");
 	return id;
 }
 
@@ -92,26 +92,26 @@ export default function (pi: ExtensionAPI) {
 			const requestedModel = params.model ?? "auto";
 			const explicitModel = requestedModel !== "auto";
 			const out = params.output ? resolve(params.output) : join(DEFAULT_DIR, timestampName());
-			if (extname(out).toLowerCase() !== ".png") throw new Error(`output precisa terminar em .png: ${out}`);
-			if (existsSync(out)) throw new Error(`output já existe; sobrescrita recusada: ${out}`);
+			if (extname(out).toLowerCase() !== ".png") throw new Error(`output must end in .png: ${out}`);
+			if (existsSync(out)) throw new Error(`output already exists; refusing to overwrite: ${out}`);
 
 			const tier = loadTiers().tiers.image;
 			const [provider, ...rest] = tier.model.split("/");
 			if (provider !== "openai-codex") {
-				throw new Error(`tier image precisa de um modelo openai-codex (atual: ${tier.model}); ajuste em /models`);
+				throw new Error(`the image tier needs an openai-codex model (current: ${tier.model}); change it in /models`);
 			}
 			const hostModel = rest.join("/");
 			const token = await ctx.modelRegistry.getApiKeyForProvider("openai-codex");
-			if (!token) throw new Error("sem login Codex — rode /login openai-codex");
+			if (!token) throw new Error("no Codex login; run /login openai-codex");
 			const accountId = accountIdFromToken(token);
 
 			const refs = (params.reference_images ?? []).map((p) => resolve(p));
 			for (const r of refs) {
-				if (!existsSync(r)) throw new Error(`referência não encontrada: ${r}`);
-				if (!REFERENCE_EXTENSIONS.has(extname(r).toLowerCase())) throw new Error(`formato de referência não permitido: ${r}`);
+				if (!existsSync(r)) throw new Error(`reference not found: ${r}`);
+				if (!REFERENCE_EXTENSIONS.has(extname(r).toLowerCase())) throw new Error(`reference format not allowed: ${r}`);
 				const stat = statSync(r);
-				if (!stat.isFile()) throw new Error(`referência não é arquivo: ${r}`);
-				if (stat.size > MAX_REFERENCE_BYTES) throw new Error(`referência excede 20MB: ${r}`);
+				if (!stat.isFile()) throw new Error(`reference is not a file: ${r}`);
+				if (stat.size > MAX_REFERENCE_BYTES) throw new Error(`reference exceeds 20MB: ${r}`);
 			}
 
 			const content: Array<Record<string, string>> = [{ type: "input_text", text: params.prompt }];
@@ -140,10 +140,10 @@ export default function (pi: ExtensionAPI) {
 			};
 
 			const progressText = explicitModel
-				? `variante solicitada: ${requestedModel}; aguardando confirmação do backend…`
-				: "modelo automático do servidor; suporte ao seletor GPT Image 2.5 ainda não confirmado…";
+				? `requested variant: ${requestedModel}; waiting for backend confirmation…`
+				: "server-chosen model; GPT Image 2.5 selector support not confirmed yet…";
 			onUpdate?.({
-				content: [{ type: "text", text: `${refs.length ? "editando" : "gerando"} imagem — ${progressText}` }],
+				content: [{ type: "text", text: `${refs.length ? "editing" : "generating"} image: ${progressText}` }],
 				details: { requestedModel, actualModel: "server/unconfirmed" },
 			});
 
@@ -163,7 +163,7 @@ export default function (pi: ExtensionAPI) {
 			});
 			if (!res.ok || !res.body) {
 				throw new Error(
-					`Codex recusou a variante solicitada ${requestedModel} em tools[].model (sem fallback): ${res.status} ${(await res.text()).slice(0, 400)}`,
+					`Codex rejected the requested variant ${requestedModel} in tools[].model (no fallback): ${res.status} ${(await res.text()).slice(0, 400)}`,
 				);
 			}
 
@@ -198,7 +198,7 @@ export default function (pi: ExtensionAPI) {
 							if (explicitModel && !confirmedModel(requestedModel, reportedModel)) {
 								await reader.cancel().catch(() => undefined);
 								throw new Error(
-									`backend não confirmou ${requestedModel}: response.tools image_generation informou ${reportedModel}; PNG descartado (sem retry/fallback)`,
+									`backend did not confirm ${requestedModel}: response.tools image_generation reported ${reportedModel}; PNG discarded (no retry/fallback)`,
 								);
 							}
 						}
@@ -223,15 +223,15 @@ export default function (pi: ExtensionAPI) {
 				}
 			}
 			if (errorMsg) {
-				throw new Error(`Codex falhou com a variante solicitada ${requestedModel} (sem fallback): ${errorMsg}`);
+				throw new Error(`Codex failed with the requested variant ${requestedModel} (no fallback): ${errorMsg}`);
 			}
 			if (explicitModel && !actualModel) {
 				throw new Error(
-					`backend não informou response.tools image_generation.model para confirmar ${requestedModel}; PNG descartado (sem retry/fallback)`,
+					`backend did not report response.tools image_generation.model to confirm ${requestedModel}; PNG discarded (no retry/fallback)`,
 				);
 			}
 			if (!b64) {
-				throw new Error(`Codex não devolveu PNG para a variante solicitada ${requestedModel} (sem retry/fallback)`);
+				throw new Error(`Codex returned no PNG for the requested variant ${requestedModel} (no retry/fallback)`);
 			}
 
 			mkdirSync(dirname(out), { recursive: true });

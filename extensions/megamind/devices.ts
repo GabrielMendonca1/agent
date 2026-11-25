@@ -36,7 +36,7 @@ export function coordinateHint(session_id: string, place: Locality, harness?: st
 
 /** Sufixo de `megamind_who` para sessão desta mesma máquina. */
 export function localMark(session_id: string, place: Locality, harness?: string): string | undefined {
-  if (place === "peers") return `esta máquina — use peers_send ${short6(session_id)}`;
-  if (place === "local") return `esta máquina${harness ? ` (${harness})` : ""} — fora do peers`;
+  if (place === "peers") return `this machine; use peers_send ${short6(session_id)}`;
+  if (place === "local") return `this machine${harness ? ` (${harness})` : ""}, outside peers`;
   return undefined;
 }

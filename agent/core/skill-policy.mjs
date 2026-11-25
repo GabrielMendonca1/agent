@@ -14,6 +14,8 @@ export function isAutomaticSkill(name) {
 }
 
 export const PREVIOUS_SKILL_POLICY_ENV = 'AGENT_SKILLS_BEFORE';
+/** Skill names a subagent advertises (comma list, may be empty). Set by the runner; bash never inherits it. */
+export const CHILD_SKILLS_ENV = 'AGENT_CHILD_SKILLS';
 
 /** Desfazer só a política instalada pelo Agent, preservando eventual env do usuário. */
 export function restoreSkillPolicyEnvironment(env) {
@@ -37,7 +39,9 @@ export function restoreSkillPolicyEnvironment(env) {
 export function installSkillPolicy(formatSkillsForPrompt) {
   const env = process.env;
   env[PREVIOUS_SKILL_POLICY_ENV] ??= JSON.stringify(env.PI_AUTOMATIC_SKILLS ?? null);
-  env.PI_AUTOMATIC_SKILLS = automaticSkillNames().join(',');
+  // Subagent with an allowlist (runner.ts): advertise exactly what the parent resolved.
+  const child = env.AGENT_CHILD === '1' && env[CHILD_SKILLS_ENV] !== undefined;
+  env.PI_AUTOMATIC_SKILLS = child ? env[CHILD_SKILLS_ENV] : automaticSkillNames().join(',');
   const probe = { name: 'agent-policy-probe', description: 'compatibility probe', filePath: '/agent-policy-probe/SKILL.md', baseDir: '/agent-policy-probe', source: 'user', disableModelInvocation: false };
   if (typeof formatSkillsForPrompt !== 'function' || formatSkillsForPrompt([probe]) !== '') {
     restoreSkillPolicyEnvironment(env);

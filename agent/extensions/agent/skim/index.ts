@@ -40,7 +40,7 @@ async function commandSource(command: string, ctx: any, signal?: AbortSignal): P
 
 export async function urlSource(web: ReturnType<typeof createWeb>, url: string, signal?: AbortSignal): Promise<SkimSource> {
 	const page = await web.fetchText({ url }, signal);
-	if (page.text === "PDF não suportado") throw new Error("skim: PDF not supported");
+	if (page.text === "PDF not supported") throw new Error("skim: PDF not supported");
 	return { label: page.url, text: page.text, numbered: false };
 }
 

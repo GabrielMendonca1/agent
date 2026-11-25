@@ -21,6 +21,7 @@ assert.equal(run({ PI_AUTOMATIC_SKILLS: 'peers' }).PI_AUTOMATIC_SKILLS, 'peers')
 assert.equal(run({ PI_AUTOMATIC_SKILLS: 'peers', AGENT_SKILLS_BEFORE: 'null' }).PI_AUTOMATIC_SKILLS, undefined);
 const s = run({ PI_AUTOMATIC_SKILLS: 'peers', AGENT_SKILLS_BEFORE: '"a,b"', AGENT_JUICE_X: '1', KEEP: '1' });
 assert.deepEqual(s, { PI_AUTOMATIC_SKILLS: 'a,b', KEEP: '1' });
+assert.equal(run({ AGENT_CHILD_SKILLS: 'debug,tdd' }).AGENT_CHILD_SKILLS, undefined, 'bash never inherits the child skill allowlist');
 const original = { NODE_OPTIONS: url, AGENT_SKILLS_BEFORE: 'null', PI_AUTOMATIC_SKILLS: 'peers' };
 run(original);
 assert.equal(original.NODE_OPTIONS, url); // não muta

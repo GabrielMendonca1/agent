@@ -15,9 +15,10 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { type ModelRegistry, type ModelRuntime, resolveCliModel } from "@earendil-works/pi-coding-agent";
-import { commitWip, gateSummary, gcWorktrees, isolateWriters, manageWorktrees, worktreeSummary } from "./worktrees.ts";
+import { commitWip, gateSummary, gcWorktrees, isolateWriters, manageWorktrees, plannedIsolation, worktreeSkillError, worktreeSummary } from "./worktrees.ts";
 import { getRoleModelChoices, isGoogleApiModel, resolveGeminiPreference, resolveModelRef, resolveRoleModel } from "../lib/tiers.ts";
 import type { AgentConfig, AgentScope } from "./agents.ts";
+import type { ChildSkills } from "./skills.ts";
 import {
 	type DurableRunState,
 	MAX_RESUMES,
@@ -62,7 +63,9 @@ export const MAX_CONCURRENCY = GLOBAL_CHILD_LIMIT;
 
 /** Prefixo de cache de um filho: papel + modelo + thinking + cwd (system e tools derivam disso). */
 export function prefixKey(task: JobTaskSpec, defaultCwd: string): string {
-	return JSON.stringify([task.agent, task.model ?? null, task.thinking ?? null, task.sourceCwd ?? task.cwd ?? defaultCwd]);
+	// Effective skill set: the launch snapshot for a continue, else the set resolved at launch.
+	const skills = task.invocation ? task.invocation.skills ?? null : task.resolvedSkills !== undefined ? task.resolvedSkills : task.skills ?? null;
+	return JSON.stringify([task.agent, task.model ?? null, task.thinking ?? null, task.sourceCwd ?? task.cwd ?? defaultCwd, skills]);
 }
 
 /**
@@ -129,6 +132,13 @@ export interface JobTaskSpec {
 	worktreeRemoved?: boolean;
 	/** Optional per-call selection. It must match this role's central allowlist. */
 	model?: string;
+	/** Extra skill names requested at launch, on top of the role allowlist. */
+	skills?: string[];
+	/**
+	 * Skill set resolved once at launch in the caller's checkout (absolute SKILL.md paths);
+	 * null = full catalog. Isolated writers reuse it instead of resolving in their fresh worktree.
+	 */
+	resolvedSkills?: ChildSkills | null;
 	/** Internal per-brief decision; role defaults never overwrite a sibling task's choice. */
 	slot?: "apoio" | "principal";
 	/** Populated internally from the authorized model-role pair; never caller-controlled. */
@@ -271,7 +281,7 @@ export function resolveJobTaskModels(tasks: JobTaskSpec[], defaults?: DispatchDe
 				const slot = task.slot ?? defaults.resources?.slots?.[task.agent] ?? (task.agent === "scout" ? "apoio" : "principal");
 				const model = task.model ?? (slot === "apoio" ? support() : primary);
 				if (model !== primary && model !== support()) {
-					throw new Error(`Agent: ${task.agent} deve usar principal ou apoio configurado em /models; recebido ${model}.`);
+					throw new Error(`Agent: ${task.agent} must use the principal or apoio model configured in /models; got ${model}.`);
 				}
 				// Papel sem config própria: slot do piloto e o thinking do pedido.
 				checkPiModel(model);
@@ -519,7 +529,7 @@ export function markInterrupted(baseDir: string, record: JobRecord): JobRecord {
 		error:
 			record.error ??
 			(exhausted
-				? `Job interrupted: limite de ${MAX_RESUMES} retomadas atingido depois de quedas sucessivas.`
+				? `Job interrupted: limit of ${MAX_RESUMES} resumes reached after repeated crashes.`
 				: "Job interrupted: pi restarted while the subagent was running."),
 		notified: record.notified ?? false,
 		runs: undefined,
@@ -671,6 +681,17 @@ export class SubagentJobManager {
 		if (!resolvedTasks.ok) return resolvedTasks;
 		spec = { ...spec, tasks: resolvedTasks.tasks };
 
+		// Writers headed for a worktree get no project skills (only personal, company and bundled ones).
+		// Refused here, before any record, worktree or child exists.
+		for (const [root, group] of plannedIsolation(spec, spec.agents)) {
+			for (const { task, index } of group) {
+				for (const file of task.resolvedSkills?.paths ?? []) {
+					const error = worktreeSkillError(file, root, path.resolve(task.cwd ?? spec.cwd), task.resolvedSkills?.shadows?.[file]);
+					if (error) return { ok: false, error: `Task ${index + 1} (${task.agent}): ${error}` };
+				}
+			}
+		}
+
 		const jobId = spec.jobId && isSafeId(spec.jobId) ? spec.jobId : this.reserveJobId();
 		if (!isSafeId(spec.sessionId)) return { ok: false, error: "Unsafe session id; refusing to persist a job." };
 		if (this.active.has(jobId)) return { ok: false, error: `Job ${jobId} already exists.` };
@@ -687,6 +708,8 @@ export class SubagentJobManager {
 				cwd: t.cwd,
 				model: t.model,
 				thinking: t.thinking,
+				...(t.skills?.length ? { skills: [...t.skills] } : {}),
+				...(t.resolvedSkills !== undefined ? { resolvedSkills: t.resolvedSkills } : {}),
 			})),
 			cwd: spec.cwd,
 			agentScope: spec.agentScope,
@@ -806,6 +829,8 @@ export class SubagentJobManager {
 			cwd: task.cwd,
 			sourceCwd: task.sourceCwd,
 			roleModel: task.model && task.thinking ? { model: task.model, thinking: task.thinking } : undefined,
+			skills: task.skills,
+			resolvedSkills: task.resolvedSkills,
 			signal: warm.controller.signal,
 			acquireSlot: (s?: AbortSignal) => this.slots.acquire(s),
 		}).then((code) => {
@@ -845,6 +870,8 @@ export class SubagentJobManager {
 			sourceCwd: resume ? resume.invocation.sourceCwd : task.sourceCwd,
 			resume,
 			roleModel: task.model && task.thinking ? { model: task.model, thinking: task.thinking } : undefined,
+			skills: task.skills,
+			resolvedSkills: task.resolvedSkills,
 			step: opts.step,
 			signal,
 			makeDetails,

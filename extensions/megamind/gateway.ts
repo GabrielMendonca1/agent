@@ -39,7 +39,7 @@ export function configPath(): string {
 }
 
 /** Mensagem única do sentinela: a sessão não fala com Megamind nenhum. */
-export const MEGAMIND_OFF = "Megamind desligado para este projeto (ARCA_MEGAMIND_CONFIG=none)";
+export const MEGAMIND_OFF = "Megamind is off for this project (ARCA_MEGAMIND_CONFIG=none)";
 
 /** `ARCA_MEGAMIND_CONFIG=none`: projeto sem Megamind, nada de rede nesta sessão. */
 export function megamindDisabled(): boolean {

@@ -21,7 +21,7 @@ export function priorityPercent(priority: CorePriority): number | null {
 
 function progress(priority: CorePriority): string {
   const percent = priorityPercent(priority);
-  return percent === null ? "sem tarefas" : `${percent}% (${priority.done}/${priority.total})`;
+  return percent === null ? "no tasks" : `${percent}% (${priority.done}/${priority.total})`;
 }
 
 /** Linha da barra de status do Pi. */
@@ -32,11 +32,11 @@ export function priorityStatus(priority: CorePriority): string {
 
 /** Aviso que entra no contexto quando a prioridade do projeto muda. */
 export function formatPriorityContext(priority: CorePriority, project: string): string {
-  const parts = [`Prioridade do projeto ${safeText(project, 60) || "desconhecido"}: ${safeText(priority.title) || "sem título"} — ${progress(priority)}.`];
+  const parts = [`Project priority ${safeText(project, 60) || "unknown"}: ${safeText(priority.title) || "untitled"}, ${progress(priority)}.`];
   const next = safeText(priority.next);
-  if (next) parts.push(`Próxima: ${next}.`);
+  if (next) parts.push(`Next: ${next}.`);
   const blocked = priority.blocked.slice(0, BLOCKED_MAX).map((item) => safeText(item)).filter(Boolean);
-  if (blocked.length > 0) parts.push(`Bloqueios: ${blocked.join("; ")}.`);
+  if (blocked.length > 0) parts.push(`Blocked: ${blocked.join("; ")}.`);
   return parts.join(" ");
 }
 

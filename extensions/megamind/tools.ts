@@ -86,7 +86,7 @@ export function shortId(value: string): string {
 }
 
 export function ageOf(at: number | undefined, now: number): string {
-  if (at === undefined) return "idade desconhecida";
+  if (at === undefined) return "age unknown";
   const minutes = Math.max(0, Math.round((now - at) / 60_000));
   if (minutes < 60) return `${minutes}min`;
   const hours = Math.round(minutes / 60);
@@ -95,9 +95,9 @@ export function ageOf(at: number | undefined, now: number): string {
 
 /** `status` do `who` em palavra de gente. */
 export function sessionState(status: string | undefined): string {
-  if (status === "working") return "trabalhando";
-  if (status === "idle") return "parada";
-  return "encerrada";
+  if (status === "working") return "working";
+  if (status === "idle") return "idle";
+  return "ended";
 }
 
 /** Uma pessoa por bloco, uma linha por sessão dela (o id é o endereço). */
@@ -109,14 +109,14 @@ export function formatPeople(people: CorePerson[], mine: Presence | undefined, a
     const name = safeInline(person.name, 32);
     lines.push(`@${safeInline(person.handle, 32)}${name ? ` · ${name}` : ""}${person.org_role ? ` · org ${safeInline(person.org_role)}` : ""} · app ${person.app_online ? "online" : "offline"}`);
     if (person.sessions.length === 0) {
-      lines.push("- sem sessão na última hora");
+      lines.push("- no session in the last hour");
       continue;
     }
     for (const session of person.sessions.slice(0, WHO_MAX_SESSIONS - total)) {
       total += 1;
       const who = safeInline(session.label) || safeInline(session.harness) || "agente";
       const marks: string[] = [];
-      if (mine && session.session_id === mine.session_id) marks.push("você");
+      if (mine && session.session_id === mine.session_id) marks.push("you");
       else {
         marks.push(sessionState(session.status));
         const local = localMark(session.session_id, localityOf(session), safeInline(session.harness));
@@ -126,8 +126,8 @@ export function formatPeople(people: CorePerson[], mine: Presence | undefined, a
         who,
         ...(session.harness && session.harness !== who ? [safeInline(session.harness)] : []),
         safeInline(session.session_id),
-        safeInline(session.project_id) || "sem projeto",
-        safeInline(session.note) || "sem nota",
+        safeInline(session.project_id) || "no project",
+        safeInline(session.note) || "no note",
         ...(session.branch ? [safeInline(session.branch)] : []),
         ageOf(session.at, at),
         ...marks,
@@ -142,7 +142,7 @@ export function formatPeople(people: CorePerson[], mine: Presence | undefined, a
 export function formatCandidates(candidates: AddressCandidate[]): string[] {
   return candidates.slice(0, CANDIDATES_MAX).map((candidate) => {
     const fields = [
-      safeInline(candidate.label) || "agente",
+      safeInline(candidate.label) || "agent",
       safeInline(candidate.owner),
       safeInline(candidate.status),
     ].filter(Boolean);
@@ -155,7 +155,7 @@ export function formatCoreError(error: unknown): string {
   if (!(error instanceof CoreError)) return safeMessage(error);
   if (error.code !== "conflict" || error.candidates.length === 0) return redactBearer(error.message);
   return [
-    "conflict: esse endereço casa com mais de uma sessão. Repita com o id completo de uma delas:",
+    "conflict: this address matches more than one session. Retry with the full id of one of them:",
     ...formatCandidates(error.candidates),
   ].join("\n");
 }
@@ -168,33 +168,33 @@ export function sessionOwner(people: CorePerson[], address: string): { channel: 
   const matches = exact.length ? exact : all.filter(({ session }) =>
     (value.length >= 6 && session.session_id.toLowerCase().startsWith(value))
     || session.label?.toLowerCase() === value);
-  if (!matches.length) throw new CoreError("not_found: sessão não encontrada (veja megamind_who)", "not_found");
-  if (matches.length > 1) throw new CoreError("conflict: sessão ambígua", "conflict", matches.map(({ person, session }) => ({
+  if (!matches.length) throw new CoreError("not_found: session not found (see megamind_who)", "not_found");
+  if (matches.length > 1) throw new CoreError("conflict: ambiguous session", "conflict", matches.map(({ person, session }) => ({
     session_id: session.session_id, label: session.label, owner: person.handle, status: session.status,
   })));
   return { channel: matches[0]!.person.handle.replace(/^@/u, ""), to_session: matches[0]!.session.session_id };
 }
 
 /** Para onde a mensagem foi, no vocabulário do `to` que o servidor resolveu. */
-function destination(sent: CoreSent): string {
+function destination(sent: CoreSent, en = false): string {
   const target = sent.to;
-  if (!target) return "o destino";
+  if (!target) return en ? "the destination" : "o destino";
   const label = safeInline(target.label) || safeInline(target.handle);
-  if (target.kind === "channel") return label || "o canal";
-  if (target.kind === "person") return label ? (label.startsWith("@") ? label : `@${label}`) : "o sócio";
-  return `${label ? `${label} · ` : ""}${safeInline(target.session_id) || "a sessão"}`;
+  if (target.kind === "channel") return label || (en ? "the channel" : "o canal");
+  if (target.kind === "person") return label ? (label.startsWith("@") ? label : `@${label}`) : (en ? "the partner" : "o sócio");
+  return `${label ? `${label} · ` : ""}${safeInline(target.session_id) || (en ? "the session" : "a sessão")}`;
 }
 
 function wokeLine(sent: CoreSent): string {
   if (sent.woke.length > 0) {
-    return `acordei ${sent.woke.map((entry) => safeInline(entry.label) || safeInline(entry.session_id)).join(", ")}.`;
+    return `woke ${sent.woke.map((entry) => safeInline(entry.label) || safeInline(entry.session_id)).join(", ")}.`;
   }
-  return "ninguém foi acordado agora: fica na caixa até a sessão voltar, e o app do destinatário notifica.";
+  return "nobody was woken now: it waits in the inbox until the session is back, and the recipient's app notifies them.";
 }
 
 /** Uma linha por item de conversa (`megamind_read {with}`). */
 export function formatConversation(items: CoreItem[]): string {
-  if (items.length === 0) return "nada nessa conversa ainda.";
+  if (items.length === 0) return "nothing in this conversation yet.";
   return items
     .map((item) => {
       const head = `${whoOf(item)} @ ${safeInline(item.created_at)}`;
@@ -246,7 +246,7 @@ export function registerMegamindTools(pi: ExtensionAPI, deps: ToolDeps): void {
     pi.registerTool(deps.disabled?.() ? { ...tool, execute: async () => toolError(MEGAMIND_OFF) } : tool);
   };
   const profile = megamindProfile();
-  const noPresence = `${megamindName(profile)} sem presença nesta sessão: aguarde o registro no Mainframe`;
+  const noPresence = `${megamindName(profile)} has no presence in this session yet: wait for the Mainframe registration`;
   const group = `#${chatGroup(profile.id)}`;
   const owners = profile.label ? `the ${profile.label} partners` : "the partners";
 
@@ -265,13 +265,13 @@ export function registerMegamindTools(pi: ExtensionAPI, deps: ToolDeps): void {
         const people = await core.who(project, signal);
         const mine = deps.presence();
         const head = mine
-          ? `sua sessão: ${mine.session_id} no projeto ${mine.project_id}${deps.selfHandle() ? ` (você é @${safeInline(deps.selfHandle())})` : ""}`
-          : "esta sessão não tem presença";
+          ? `your session: ${mine.session_id} in project ${mine.project_id}${deps.selfHandle() ? ` (you are @${safeInline(deps.selfHandle())})` : ""}`
+          : "this session has no presence";
         const lines = formatPeople(people, mine, deps.now());
         const info = core.whoInfo;
         if (info?.org) lines.unshift(`org: ${safeInline(info.org)}`);
-        if (info?.maintainers) lines.unshift(`maintainers: ${info.maintainers.map((handle) => safeInline(handle)).join(", ") || "nenhum informado"}`);
-        if (info?.org_sync_error) lines.unshift(`AVISO: falha na sincronização da org: ${safeInline(info.org_sync_error)}`);
+        if (info?.maintainers) lines.unshift(`maintainers: ${info.maintainers.map((handle) => safeInline(handle)).join(", ") || "none listed"}`);
+        if (info?.org_sync_error) lines.unshift(`WARNING: org sync failed: ${safeInline(info.org_sync_error)}`);
         // `details` só alimenta a renderização da TUI; o texto do modelo não muda.
         const details = {
           ...info,
@@ -281,7 +281,7 @@ export function registerMegamindTools(pi: ExtensionAPI, deps: ToolDeps): void {
         };
         if (lines.length === 0) {
           return toolResult({
-            content: [{ type: "text", text: project ? `nenhuma sessão em ${project}` : "nenhum sócio conhecido" }],
+            content: [{ type: "text", text: project ? `no session in ${project}` : "no known partner" }],
             details,
           });
         }
@@ -309,16 +309,16 @@ export function registerMegamindTools(pi: ExtensionAPI, deps: ToolDeps): void {
       const to = oneLine(args.to).trim();
       const body = outgoing(redactBearer(text(args.body) ?? ""), LIMITS.body);
       const paths = Array.isArray(args.files) ? args.files.filter((value): value is string => typeof value === "string") : [];
-      if (!to) return toolError("megamind_send: `to` é obrigatório (megamind_who lista os endereços)");
-      if (!body.trim() && paths.length === 0) return toolError("megamind_send: `body` é obrigatório");
-      if (looksSecret(to, body)) return toolError(`megamind_send: a mensagem ${SECRET_MSG}`);
+      if (!to) return toolError("megamind_send: `to` is required (megamind_who lists the addresses)");
+      if (!body.trim() && paths.length === 0) return toolError("megamind_send: `body` is required");
+      if (looksSecret(to, body)) return toolError(`megamind_send: the message ${SECRET_MSG}`);
       try {
         const core = await deps.core();
         if (paths.length > 0) {
           let channel = chatChannelOf(to, core.group, group.slice(1));
           let to_session: string | undefined;
           if (!channel) {
-            if (!core.directDelivery) return toolError("megamind_send: este Mainframe ainda não entrega a uma sessão específica");
+            if (!core.directDelivery) return toolError("megamind_send: this Mainframe cannot deliver to a specific session yet");
             const target = sessionOwner(await core.who(undefined, signal), to);
             channel = target.channel;
             to_session = target.to_session;
@@ -329,13 +329,13 @@ export function registerMegamindTools(pi: ExtensionAPI, deps: ToolDeps): void {
           const label = channel === core.group ? `#${channel}` : `@${channel}`;
           const names = files.map((file) => file.name).join(", ");
           return toolResult({
-            content: [{ type: "text", text: `mensagem ${text(posted.message_id) ?? ""} com ${files.length} arquivo(s) (${names}) para ${label}: ${woken.filter(Boolean).length > 0 ? `acordou ${woken.filter(Boolean).join(", ")}` : "na caixa do sócio"}`.replace(/\s{2,}/gu, " ") }],
+            content: [{ type: "text", text: `message ${text(posted.message_id) ?? ""} with ${files.length} file(s) (${names}) to ${label}: ${woken.filter(Boolean).length > 0 ? `woke ${woken.filter(Boolean).join(", ")}` : "in the partner's inbox"}`.replace(/\s{2,}/gu, " ") }],
             details: { to: label, body, files: files.map((file) => file.name), ...(text(posted.message_id) ? { id: text(posted.message_id)! } : {}) },
           });
         }
         const sent = await core.send(current.session_id, { to, body }, signal);
         return toolResult({
-          content: [{ type: "text", text: `mensagem ${sent.id ?? ""} para ${destination(sent)}: ${wokeLine(sent)}`.replace(/\s{2,}/gu, " ") }],
+          content: [{ type: "text", text: `message ${sent.id ?? ""} to ${destination(sent, true)}: ${wokeLine(sent)}`.replace(/\s{2,}/gu, " ") }],
           details: { to: destination(sent), body, ...(sent.id ? { id: sent.id } : {}) },
         });
       } catch (error) {
@@ -402,7 +402,7 @@ export function registerMegamindTools(pi: ExtensionAPI, deps: ToolDeps): void {
       const names = [text(args.name), ...(Array.isArray(args.names) ? args.names.map(text) : [])]
         .map((value) => value?.trim() ?? "")
         .filter((value, index, all) => value && all.indexOf(value) === index);
-      if (!message_id) return toolError("megamind_fetch: `message_id` é obrigatório");
+      if (!message_id) return toolError("megamind_fetch: `message_id` is required");
       if (names.length === 0) return toolError("megamind_fetch: pass `name` or `names` (they are on the message's attachments: line)");
       const cwd = ctx?.cwd ?? process.cwd();
       const rawDir = text(args.dir)?.trim();
@@ -410,7 +410,7 @@ export function registerMegamindTools(pi: ExtensionAPI, deps: ToolDeps): void {
       try {
         const saved: string[] = [];
         for (const name of names) saved.push(await downloadAttachment(message_id, name, dir, signal));
-        return toolResult({ content: [{ type: "text", text: `salvo:\n${saved.join("\n")}` }], details: { message_id, saved } });
+        return toolResult({ content: [{ type: "text", text: `saved:\n${saved.join("\n")}` }], details: { message_id, saved } });
       } catch (error) {
         return toolError(`megamind_fetch: ${safeMessage(error)}`);
       }
@@ -434,10 +434,10 @@ export function registerMegamindTools(pi: ExtensionAPI, deps: ToolDeps): void {
       const to = oneLine(args.to).trim();
       const title = outgoing(redactBearer(oneLine(args.title)), LIMITS.title).trim();
       const body = outgoing(redactBearer(text(args.body) ?? ""), LIMITS.body);
-      if (!to) return toolError("megamind_ask: `to` é obrigatório (megamind_who lista os endereços)");
-      if (!title) return toolError("megamind_ask: `title` é obrigatório");
-      if (!body.trim()) return toolError("megamind_ask: `body` é obrigatório");
-      if (looksSecret(to, title, body)) return toolError(`megamind_ask: o pedido ${SECRET_MSG}`);
+      if (!to) return toolError("megamind_ask: `to` is required (megamind_who lists the addresses)");
+      if (!title) return toolError("megamind_ask: `title` is required");
+      if (!body.trim()) return toolError("megamind_ask: `body` is required");
+      if (looksSecret(to, title, body)) return toolError(`megamind_ask: the request ${SECRET_MSG}`);
       try {
         const core = await deps.core();
         const sent = await core.send(current.session_id, {
@@ -445,11 +445,11 @@ export function registerMegamindTools(pi: ExtensionAPI, deps: ToolDeps): void {
           body,
           ask: { title },
         }, signal);
-        const tracked = sent.id ? `pedido ${sent.id}` : "pedido";
+        const tracked = sent.id ? `request ${sent.id}` : "request";
         return toolResult({
           content: [{
             type: "text",
-            text: `${tracked} para ${destination(sent)}. A resposta chega sozinha nesta sessão; não fique esperando.`,
+            text: `${tracked} to ${destination(sent, true)}. The reply arrives in this session on its own; do not wait for it.`,
           }],
           details: { to: destination(sent), title, ...(sent.id ? { id: sent.id } : {}) },
         });
@@ -476,20 +476,20 @@ export function registerMegamindTools(pi: ExtensionAPI, deps: ToolDeps): void {
       const id = oneLine(args.id).trim();
       const status = oneLine(args.status).trim().toLowerCase();
       const result = outgoing(redactBearer(text(args.result) ?? ""), LIMITS.result);
-      if (!id) return toolError("megamind_reply: `id` é obrigatório");
+      if (!id) return toolError("megamind_reply: `id` is required");
       if (!STATUSES.includes(status)) {
-        return toolError(`megamind_reply: \`status\` deve ser ${REPLY_STATUS.join(" | ")}`);
+        return toolError(`megamind_reply: \`status\` must be ${REPLY_STATUS.join(" | ")}`);
       }
       if (CLOSING_STATUS.includes(status) && !result.trim()) {
-        return toolError(`megamind_reply: \`result\` é obrigatório em ${CLOSING_STATUS.join("/")}`);
+        return toolError(`megamind_reply: \`result\` is required for ${CLOSING_STATUS.join("/")}`);
       }
-      if (looksSecret(result)) return toolError(`megamind_reply: o resultado ${SECRET_MSG}`);
+      if (looksSecret(result)) return toolError(`megamind_reply: the result ${SECRET_MSG}`);
       try {
         const core = await deps.core();
         await core.reply(current.session_id, { id, status, ...(result ? { result } : {}) }, signal);
         if (CLOSING_STATUS.includes(status)) deps.openRequests.delete(id);
         else deps.openRequests.set(id, deps.openRequests.get(id) ?? "");
-        return toolResult({ content: [{ type: "text", text: `pedido ${id} agora está ${status}` }], details: { id, status, ...(result ? { result } : {}) } });
+        return toolResult({ content: [{ type: "text", text: `request ${id} is now ${status}` }], details: { id, status, ...(result ? { result } : {}) } });
       } catch (error) {
         // `conflict`: o pedido já fechou, expirou ou é de outra sessão. O estado
         // local não pode andar sozinho — o status do pedido vem do servidor.
