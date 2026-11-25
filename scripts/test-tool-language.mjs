@@ -242,7 +242,15 @@ try {
     assert.equal(resolved.ok, false, `skills error for ${role.name}`);
     check(`subagent skills error ${role.name}`, resolved.error);
   }
-  console.log('ok wrappers de runtime: peers, megamind, soft timeout, bloqueio do ask_user e erros de skills');
+  // Handoff injetado ou carregado por /handoff: wrapper e notas de desatualizado.
+  const handoffLib = await jiti.import(join(repo, 'agent/extensions/brain-live/lib/handoff.ts'));
+  const handoffText = handoffLib.stampHandoffText('body', { session: 's1', created_at: '2026-01-01T00:00:00.000Z', branch: 'main', head: 'a'.repeat(40) });
+  const repoState = { branch: 'feature', head: 'b'.repeat(40) };
+  check('handoff wrapper', handoffLib.handoffMessage(handoffText, { inject: true, ageMs: 0 }, repoState));
+  for (const reason of ['old', 'other-branch', 'unstamped', 'missing-head', 'diverged', 'not-new']) {
+    check(`handoff stale ${reason}`, handoffLib.handoffMessage(handoffText, { inject: false, ageMs: 30 * 3600_000, reason }, repoState).replace('body', ''));
+  }
+  console.log('ok wrappers de runtime: peers, megamind, soft timeout, bloqueio do ask_user, erros de skills e handoff');
 
   // Papéis: o description: entra na descrição da tool subagent.
   for (const file of readdirSync(join(repo, 'agent/agents')).filter(f => f.endsWith('.md'))) {

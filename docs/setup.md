@@ -234,6 +234,19 @@ O que desfazer?
 
 Disco: `<perfil>/checkpoints/<sessionId>/index.jsonl` (registro append-only) e `blobs/<sha256>` (conteúdo, deduplicado). Persistem ao retomar a sessão. No início de cada sessão, apaga os checkpoints de sessões sem uso há mais de `AGENT_CHECKPOINTS_DAYS` dias (30) e, se o total passar de `AGENT_CHECKPOINTS_MAX_MB` (500), os das sessões menos recentes; a sessão atual nunca. `AGENT_CHECKPOINTS=0` desliga a gravação e o comando. Não adiciona tool nem texto ao prompt.
 
+## Handoff entre sessões (/next e /handoff)
+
+- `/next [foco]` roda a skill `handoff`, espera o `.agent/handoff.md` mudar e abre uma sessão nova. `--keep` compacta a sessão atual em vez de trocar. Se o arquivo não mudou, a sessão fica como está e aparece um erro.
+- A skill escreve só o corpo. O Agent carimba o frontmatter (`session`, `created_at`, `branch`, `head`) quando `write` ou `edit` gravam `.agent/handoff.md`. O `/next` carimba de novo antes de trocar, o que cobre um handoff gravado via `bash`. O carimbo substitui qualquer frontmatter anterior.
+- Na primeira mensagem do usuário numa sessão nova, o handoff entra no contexto do modelo (invisível na TUI) e vira `.agent/handoff.consumed.md` quando estas condições valem juntas:
+  - a sessão é nova: ainda não tem resposta do assistente;
+  - a branch atual é a do carimbo;
+  - o `HEAD` é o commit do carimbo ou descende dele (`git merge-base --is-ancestor`);
+  - a idade é menor que `AGENT_HANDOFF_MAX_AGE`. O padrão é 24 h. Aceita número com unidade `s`, `m`, `h` ou `d`; número puro conta como horas.
+- Fora de um repositório git, só a idade conta. A idade vem de `created_at`; sem carimbo, do mtime do arquivo.
+- Caso contrário, nada é descartado. A TUI mostra uma linha, por exemplo `Há um handoff de 3 h atrás na branch X; use /handoff para carregar.`. A linha diz também se o commit do carimbo sumiu (rebase/amend), se o `HEAD` não descende dele ou se o arquivo não tem branch/commit.
+- `/handoff` carrega o handoff pendente na próxima mensagem, mesmo antigo ou de outra branch. Nesse caso, o modelo recebe junto uma nota de que ele pode estar desatualizado e por quê.
+
 ## Atualizar o Pi
 
 O Agent traz o próprio Pi dentro do store, em releases imutáveis. Um Pi global instalado por npm não afeta o Agent.

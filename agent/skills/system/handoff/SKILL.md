@@ -5,8 +5,10 @@ argument-hint: "Foco da próxima sessão"
 ---
 
 Encerre a tarefa atual escrevendo um handoff de no máximo 40 linhas em
-`.agent/handoff.md` do cwd (crie `.agent/` se necessário). Sobrescreva o handoff
-anterior; não grave em diretório temporário.
+`.agent/handoff.md` do cwd (crie `.agent/` se necessário) com a tool `write`.
+Sobrescreva o handoff anterior; não grave em diretório temporário.
+Escreva só o corpo, sem frontmatter: o Agent carimba sessão, horário, branch e
+HEAD sozinho. A próxima sessão nesta branch recebe o handoff na primeira mensagem.
 
 Inclua apenas o necessário para continuar:
 - Objetivo e estado atual, considerando os argumentos como foco da próxima sessão.

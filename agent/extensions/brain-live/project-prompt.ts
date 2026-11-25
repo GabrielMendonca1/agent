@@ -5,11 +5,11 @@ import { categoryPrompt } from '../../core/skill-categories.mjs';
 import { companySkillDirs } from '../../core/companies.mjs';
 import { appendPolicy, policySections, POLICY_SECTIONS, notesSection } from '../../core/policy.mjs';
 import { readNotesMetadata, unmappedDocs } from '../../core/notes.mjs';
-import { existsSync, readFileSync, renameSync, statSync } from 'node:fs';
-import { join } from 'node:path';
+import { existsSync, readFileSync, statSync } from 'node:fs';
 import { allowAutoCompaction } from '../../core/cache-policy.mjs';
 import { installProjectContext } from './lib/project-context.ts';
 import { clearBeforeAutoCompaction } from './compaction/tool-clear.ts';
+import { consumeHandoff, handoffMessage, handoffNotice, handoffPath, isHandoffPath, readHandoff, stampHandoff } from './lib/handoff.ts';
 
 const COMPACT_AT_1M = 450_000;
 const TEAM_TOOL = 'subagent';
@@ -24,11 +24,11 @@ export function nextHint(tokens: number | null | undefined): boolean {
   return typeof tokens === 'number' && tokens > 60_000;
 }
 
-export function shouldInjectHandoff({ messageType, firstRun, mtime, now }: {
-  messageType?: string; firstRun: boolean; mtime: number; now: number;
-}): boolean {
-  return (messageType === undefined || messageType === 'user') && firstRun
-    && now >= mtime && now - mtime < 10 * 60_000;
+/** A session that already has an assistant reply is resumed, not new: its handoff is offered, not injected. */
+export function sessionHasHistory(ctx: Pick<ExtensionContext, 'sessionManager'>): boolean {
+  try {
+    return ctx.sessionManager.getBranch().some((entry: any) => entry?.type === 'message' && entry.message?.role === 'assistant');
+  } catch { return false; }
 }
 
 /**
@@ -54,17 +54,45 @@ export default function (pi: ExtensionAPI) {
   let nextRunning = false;
   let handoffFinished: (() => void) | undefined;
   pi.on('agent_end', async () => { handoffFinished?.(); });
+  // Handoff: first user message of a session. Fresh, same branch and HEAD at or after its commit
+  // → injected once; otherwise one visible line points to /handoff (never a silent drop).
   pi.on('before_agent_start', async (event, ctx) => {
     if (event.messageType !== undefined && event.messageType !== 'user') return;
-    const firstRun = firstHandoffRun;
+    if (!firstHandoffRun) return;
     firstHandoffRun = false;
-    const file = join(ctx.cwd, '.agent/handoff.md');
     try {
-      if (!shouldInjectHandoff({ messageType: event.messageType, firstRun, mtime: Math.floor(statSync(file).mtimeMs), now: Date.now() })) return;
-      const content = readFileSync(file, 'utf8');
-      renameSync(file, join(ctx.cwd, '.agent/handoff.consumed.md'));
-      return { message: { customType: 'agent-handoff', content, display: false } };
-    } catch { /* absent/unreadable handoff must not block a normal run */ }
+      const pending = readHandoff(ctx.cwd, { newSession: !sessionHasHistory(ctx) });
+      if (!pending) return;
+      if (!pending.decision.inject) {
+        ctx.ui.notify(handoffNotice(pending.decision, pending.meta), 'info');
+        return;
+      }
+      consumeHandoff(ctx.cwd);
+      return { message: { customType: 'agent-handoff', content: handoffMessage(pending.text, pending.decision, pending.git), display: false } };
+    } catch (error) {
+      ctx.ui.notify(`Handoff não carregado: ${error instanceof Error ? error.message : String(error)}; use /handoff para tentar de novo.`, 'warning');
+    }
+  });
+  // The skill writes only the body; the stamp (session, time, branch, HEAD) comes from here.
+  pi.on('tool_result', async (event: any, ctx) => {
+    if ((event.toolName !== 'write' && event.toolName !== 'edit') || event.isError || !isHandoffPath(event.input?.path, ctx.cwd)) return;
+    try { stampHandoff(ctx.cwd, ctx.sessionManager?.getSessionId?.()); } catch { /* the /next stamp still covers it */ }
+  });
+  pi.registerCommand('handoff', {
+    description: 'Carrega o .agent/handoff.md pendente (antigo ou de outra branch) na próxima mensagem',
+    handler: async (_args, ctx) => {
+      try {
+        const pending = readHandoff(ctx.cwd, { newSession: !sessionHasHistory(ctx) });
+        if (!pending) return ctx.ui.notify('Nenhum handoff pendente em .agent/handoff.md.', 'info');
+        pi.sendMessage({ customType: 'agent-handoff', content: handoffMessage(pending.text, pending.decision, pending.git), display: false }, { deliverAs: 'nextTurn' });
+        consumeHandoff(ctx.cwd);
+        firstHandoffRun = false;
+        ctx.ui.notify(pending.decision.inject ? 'Handoff carregado; vai junto com a próxima mensagem.'
+          : 'Handoff carregado, com aviso ao modelo de que pode estar desatualizado; vai junto com a próxima mensagem.', 'info');
+      } catch (error) {
+        ctx.ui.notify(`Não foi possível carregar o handoff: ${error instanceof Error ? error.message : String(error)}`, 'error');
+      }
+    },
   });
   pi.registerCommand('next', {
     description: 'Encerra a tarefa com handoff e abre sessão nova (--keep compacta aqui)',
@@ -75,18 +103,19 @@ export default function (pi: ExtensionAPI) {
       const keep = /(?:^|\s)--keep(?=\s|$)/.test(args);
       const focus = args.replace(/(?:^|\s)--keep(?=\s|$)/g, ' ').trim();
       try {
-        const file = join(ctx.cwd, '.agent/handoff.md');
+        const file = handoffPath(ctx.cwd);
         const previous = existsSync(file) ? { mtime: statSync(file).mtimeMs, content: readFileSync(file, 'utf8') } : null;
         // Subscribe before sending: waitForIdle alone can race with run startup.
         const finished = new Promise<void>(resolve => { handoffFinished = resolve; });
         pi.sendUserMessage(`/skill:handoff${focus ? ` ${focus}` : ''}`);
         await finished;
         await ctx.waitForIdle();
-        const mtime = statSync(file).mtimeMs;
-        if ((previous && previous.mtime === mtime && previous.content === readFileSync(file, 'utf8'))
-          || !shouldInjectHandoff({ firstRun: true, mtime: Math.floor(mtime), now: Date.now() })) {
+        const mtime = existsSync(file) ? statSync(file).mtimeMs : undefined;
+        if (mtime === undefined || (previous && previous.mtime === mtime && previous.content === readFileSync(file, 'utf8'))) {
           throw new Error('Handoff não foi atualizado; sessão mantida.');
         }
+        // Covers a handoff written through bash: the new session sees this branch and HEAD.
+        stampHandoff(ctx.cwd, ctx.sessionManager?.getSessionId?.());
         if (keep) { ctx.compact(); return; }
         const parentSession = ctx.sessionManager.getSessionFile();
         await ctx.newSession({
