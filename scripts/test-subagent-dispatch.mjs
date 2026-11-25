@@ -61,6 +61,9 @@ export default function (pi) {
         // Processo filho (AGENT_CHILD=1) tentando delegar.
         content = [{ type: 'toolCall', id: 'call-child', name: 'subagent', arguments: { agent: 'worker', brief: { objective: 'o', context: 'c', scope: 's', done_when: 'd', stop_if: 'x' } } }];
         stopReason = 'toolUse';
+      } else if (child && n === 0 && process.env.FG_CHECKS_ARGS) {
+        content = [{ type: 'toolCall', id: 'call-checks', name: 'checks', arguments: JSON.parse(process.env.FG_CHECKS_ARGS) }];
+        stopReason = 'toolUse';
       } else if (child && n === 0 && process.env.FG_SANDBOX_COMMAND) {
         content = [{ type: 'toolCall', id: 'call-sandbox', name: 'bash', arguments: { command: process.env.FG_SANDBOX_COMMAND } }];
         stopReason = 'toolUse';
@@ -381,6 +384,72 @@ try {
     assert.ok(!existsSync(join(sandboxCwd, 'novo.txt')));
     console.log('ok sandbox=seatbelt: bash do filho não altera arquivo sujo nem cria arquivo');
   }
+
+  // checks in children: -e only when the role lists it; writer defaults to "fast" and records
+  // the run; a read-only role (Seatbelt on macOS) gets list/last only and reads the record.
+  const checksRepo = mkdtempSync(join(root, 'checks-repo-'));
+  const ranLog = join(root, 'checks-ran.log');
+  const checksGit = (...args) => assert.equal(spawnSync('git', ['-C', checksRepo, '-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.invalid', ...args]).status, 0, args.join(' '));
+  mkdirSync(join(checksRepo, '.pi'));
+  writeFileSync(join(checksRepo, '.pi/checks.json'), JSON.stringify({ checks: [
+    { name: 'quick', cmd: `printf 'quick\\n' >> '${ranLog}'`, tags: ['fast'] },
+    { name: 'full', cmd: `printf 'full\\n' >> '${ranLog}'` },
+  ] }));
+  writeFileSync(join(checksRepo, 'tracked'), 'base\n');
+  checksGit('init', '-q', '-b', 'main');
+  checksGit('add', '.');
+  checksGit('commit', '-qm', 'base');
+  process.env.PI_CHECKS_CACHE_DIR = join(root, 'checks-cache');
+  const checksDump = join(root, 'checks-context.json');
+  process.env.FG_CHILD_CTX = checksDump;
+  const checksRun = async (tools, args) => {
+    process.env.FG_CHECKS_ARGS = JSON.stringify(args);
+    const role = { name: 'checks-' + tools.join('-'), source: 'user', tools, systemPrompt: 'fixture' };
+    const result = await runner.runSingleAgent({ defaultCwd: checksRepo, agents: [role], agentName: role.name, task: 'fixture', dispatchDefaults: { model: 'fg-fake/fake', resources: { slots: {} } }, makeDetails: results => ({ mode: 'single', agentScope: 'user', projectAgentsDir: null, results }) });
+    assert.equal(result.exitCode, 0, result.errorMessage || result.stderr);
+    const ctx = JSON.parse(readFileSync(checksDump, 'utf8'));
+    const toolResult = ctx.messages.find(m => m.role === 'toolResult' && m.toolName === 'checks');
+    const schema = ctx.messages.find(m => m.role === 'system').toolsAdded.find(t => t.name === 'checks');
+    return { result, toolResult, text: toolResult?.content.map(p => p.text).join('') ?? '', schema };
+  };
+  const unloaded = await checksRun(['read', 'bash', 'edit'], {});
+  assert.equal(unloaded.schema, undefined, 'no -e checks unless the role lists it');
+  const jobStart = Date.now();
+  const writer = await checksRun(['read', 'bash', 'edit', 'checks'], {});
+  assert.ok(!writer.toolResult.isError, writer.text);
+  assert.match(writer.text, /^default tags fast \(subagent\)/);
+  assert.match(writer.text, /^OK: tudo verde/m);
+  assert.equal(readFileSync(ranLog, 'utf8'), 'quick\n', 'writer child ran only the fast check');
+  assert.deepEqual(writer.schema.parameters.properties.action.enum, ['gate', 'run', 'baseline', 'list', 'last']);
+  const explicit = await checksRun(['read', 'bash', 'edit', 'checks'], { action: 'run', only: 'full' });
+  assert.ok(!explicit.toolResult.isError, explicit.text);
+  assert.equal(readFileSync(ranLog, 'utf8'), 'quick\nfull\n', 'explicit only is honored');
+  const regate = await checksRun(['read', 'bash', 'edit', 'checks'], {});
+  assert.ok(!regate.toolResult.isError, regate.text);
+  writeFileSync(ranLog, '');
+  const refused = await checksRun(['read', 'bash', 'checks'], { action: 'gate' });
+  assert.equal(refused.toolResult.isError, true);
+  assert.match(refused.text, /^checks gate is not available in a read-only subagent: it would execute project-controlled commands/);
+  assert.deepEqual(refused.schema.parameters.properties.action.enum, ['list', 'last']);
+  assert.equal(refused.schema.parameters.properties.tags, undefined);
+  if (process.platform === 'darwin') assert.equal(refused.result.sandbox, 'seatbelt');
+  const freshLast = await checksRun(['read', 'bash', 'checks'], { action: 'last' });
+  assert.ok(!freshLast.toolResult.isError, freshLast.text);
+  assert.match(freshLast.text, /^fresh: gate tags=fast: 1\/1 green, new failures: \[\]/);
+  writeFileSync(join(checksRepo, 'tracked'), 'edited\n');
+  const staleLast = await checksRun(['read', 'bash', 'checks'], { action: 'last' });
+  assert.match(staleLast.text, /^stale: status, diff changed since the recorded run/);
+  assert.equal(readFileSync(ranLog, 'utf8'), '', 'read-only child executed no check');
+  const { gateSummary } = await jiti.import(join(repo, 'agent/extensions/brain-live/subagent/worktrees.ts'));
+  const writerRole = { name: 'w', tools: ['read', 'edit', 'checks'] };
+  const jobRecord = (createdAt) => ({ tasks: [{ agent: 'w', task: 't', cwd: checksRepo }], cwd: checksRepo, createdAt });
+  assert.match(gateSummary(jobRecord(jobStart), [writerRole]), /^gate tags=fast: 1\/1 green, new failures: \[\] \(stale: status, diff changed since; /);
+  assert.equal(gateSummary(jobRecord(Date.now() + 1000), [writerRole]), 'gate: not run in this job');
+  assert.equal(gateSummary(jobRecord(jobStart), [{ ...writerRole, tools: ['read', 'checks'] }]), '', 'read-only roles get no gate line');
+  delete process.env.FG_CHECKS_ARGS;
+  delete process.env.FG_CHILD_CTX;
+  console.log(`ok checks in children: -e by role, writer defaults to fast, read-only (${refused.result.sandbox}) refuses gate and reads last fresh/stale, job gate line`);
+
   process.env.AGENT_TEST_SANDBOX_NONE = '1';
   process.env.FG_SANDBOX_COMMAND = 'printf depois > dirty.txt';
   const detected = await run();

@@ -248,6 +248,8 @@ const WEB_EXTENSION_PATH = path.join(path.dirname(fileURLToPath(import.meta.url)
 const WEB_TOOLS = new Set(["web_search", "web_fetch"]);
 /** Extensão que registra skim; só entra no filho cujo papel declara a tool. */
 const SKIM_EXTENSION_PATH = path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "..", "agent", "skim", "index.ts");
+/** Extensão que registra checks; só entra no filho cujo papel declara a tool. */
+const CHECKS_EXTENSION_PATH = path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "checks", "index.ts");
 /** Child-only cap for large tool outputs (AGENT_CHILD_TOOL_OUTPUT_MAX). */
 const CHILD_OUTPUT_CAP_PATH = path.join(path.dirname(fileURLToPath(import.meta.url)), "child-output-cap.ts");
 /** Child-only: Anthropic system cache breakpoint before the trailing <cwd> section. */
@@ -964,7 +966,9 @@ export async function runSingleAgent(opts: RunAgentOptions): Promise<SingleResul
 	const args: string[] = ["--mode", "json", "-p", "--no-extensions", "--no-context-files"];
 	const cwd = opts.cwd ?? opts.defaultCwd;
 	const sandbox = sandboxForTools(agent.tools);
-	const extraEnv: Record<string, string> = { AGENT_BASH_SANDBOX: "", AGENT_SANDBOX_CWD: "" };
+	// AGENT_CHECKS_READONLY marca o papel sem edit/write mesmo sem sandbox disponível:
+	// ali checks só lê (list/last); executar o manifesto escaparia do sandbox.
+	const extraEnv: Record<string, string> = { AGENT_BASH_SANDBOX: "", AGENT_SANDBOX_CWD: "", AGENT_CHECKS_READONLY: sandbox ? "1" : "" };
 	if (sandbox && sandbox !== "none") {
 		args.push("-e", path.join(path.dirname(CACHE_KEEPER_PATH), "bash-sandbox.ts"));
 		extraEnv.AGENT_BASH_SANDBOX = sandbox;
@@ -997,6 +1001,7 @@ export async function runSingleAgent(opts: RunAgentOptions): Promise<SingleResul
 	// sem ela o --tools filtra para nada e o filho fica sem web.
 	if (agent.tools?.some((t) => WEB_TOOLS.has(t)) && fs.existsSync(WEB_EXTENSION_PATH)) args.push("-e", WEB_EXTENSION_PATH);
 	if (agent.tools?.includes("skim") && fs.existsSync(SKIM_EXTENSION_PATH)) args.push("-e", SKIM_EXTENSION_PATH);
+	if (agent.tools?.includes("checks") && fs.existsSync(CHECKS_EXTENSION_PATH)) args.push("-e", CHECKS_EXTENSION_PATH);
 	const inheritsDispatchConfig = !agent.model;
 	// Central role config wins for native roles. Without it, preserve legacy
 	// project/user frontmatter (`model`, `tier:*`, `thinking`) and parent defaults.

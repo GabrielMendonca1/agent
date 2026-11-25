@@ -205,8 +205,17 @@ try {
   const sandbox = runner.sandboxForTools(agent.tools);
   // Children run with the 5 min cache unless explicitly overridden; an inherited `none` stays.
   const childRetention = process.env.AGENT_CHILD_CACHE_RETENTION || (process.env.PI_CACHE_RETENTION === 'none' ? 'none' : 'short');
-  assert.deepEqual(captured.opts.env, { ...process.env, AGENT_CHILD: '1', AGENT_NO_DELEGATE: '1', PI_CACHE_RETENTION: childRetention, AGENT_BASH_SANDBOX: sandbox === 'none' ? '' : sandbox, AGENT_SANDBOX_CWD: sandbox === 'none' ? '' : root });
+  assert.deepEqual(captured.opts.env, { ...process.env, AGENT_CHILD: '1', AGENT_NO_DELEGATE: '1', PI_CACHE_RETENTION: childRetention, AGENT_BASH_SANDBOX: sandbox === 'none' ? '' : sandbox, AGENT_SANDBOX_CWD: sandbox === 'none' ? '' : root, AGENT_CHECKS_READONLY: '1' });
   assert.ok(!captured.args.includes('--no-skills'));
+  const checksExt = (args) => args.filter((arg) => arg.endsWith('/brain-live/checks/index.ts'));
+  assert.deepEqual(checksExt(captured.args), [], 'no checks extension unless the role lists checks');
+  for (const [tools, readonly] of [[['read', 'checks'], '1'], [['read', 'edit', 'checks'], '']]) {
+    const role = { ...agent, name: 'checker', tools };
+    await runner.runSingleAgent({ defaultCwd: root, dispatchDefaults: { model: 'test/principal' }, agents: [role], agentName: 'checker', task: 'fixture', makeDetails: (results) => ({ mode: 'single', agentScope: 'user', projectAgentsDir: null, results }) });
+    assert.equal(checksExt(captured.args).length, 1, `-e checks for ${tools}`);
+    assert.equal(captured.args[captured.args.indexOf('--tools') + 1], tools.join(','));
+    assert.equal(captured.opts.env.AGENT_CHECKS_READONLY, readonly, `checks read-only marker for ${tools}`);
+  }
   checks++; console.log('ok dispatch sem recursos mantém isolamento e catálogo de skills');
 
   // Launcher: argv[1] só vale se for CLI declarado do pacote Pi; host do SDK cai no CLI do Pi carregado.
