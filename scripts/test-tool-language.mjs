@@ -9,7 +9,8 @@
  *   (estruturadas e no prompt forçado), o slot de peers, o loop guard e os prompts de /notes e /rules init;
  * - `description:` dos papéis em agent/agents/*.md.
  * Falha com diacríticos do português ou palavras comuns (quando, sempre, antes, depois, arquivo,
- * usuário, tarefa). UI, notificações e docs continuam em português e não entram aqui.
+ * usuário, tarefa, resultado, pedido, mensagem, nenhum, ainda, agora, sem, para, não, está).
+ * UI, notificações e docs não entram aqui.
  */
 import './lib/hermetic-test-env.mjs';
 import assert from 'node:assert/strict';
@@ -46,7 +47,7 @@ process.env.AGENT_CHILD = '0';
 process.env.PI_ACCOUNTS_MIRROR = '0';
 
 const DIACRITICS = /[áàâãäéèêëíìîïóòôõöúùûüçñ]/i;
-const STOPWORDS = /\b(quando|sempre|antes|depois|arquivo|usu[aá]rio|tarefa)\b/i;
+const STOPWORDS = /\b(quando|sempre|antes|depois|arquivo|usu[aá]rio|tarefa|resultado|pedido|mensagem|nenhum|nenhuma|ainda|agora|sem|para|n[aã]o|est[aá])\b/i;
 const failures = [];
 let inspected = 0;
 function check(where, text) {
