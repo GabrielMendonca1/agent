@@ -394,6 +394,58 @@ export default function (pi: ExtensionAPI) {
 	};
 
 	/**
+	 * Revalidate one pending record at delivery time. Stale records are dropped,
+	 * off-branch ones stay pending; `undefined` means the session id is unreadable.
+	 */
+	const deliveryVerdict = (ctx: ExtensionContext, record: JobRecord): "deliver" | "skip" | undefined => {
+		let liveSessionId: string | undefined;
+		try {
+			liveSessionId = ctx.sessionManager.getSessionId();
+		} catch {
+			return undefined;
+		}
+		if (record.sessionGeneration !== sessionGeneration || record.sessionId !== liveSessionId) {
+			pending.delete(record.jobId);
+			lifecycleSettled(record.jobId);
+			return "skip";
+		}
+		if (!onCurrentBranch(ctx, record.anchorEntryId)) {
+			// Nothing runs any more; an off-branch result must not pin the host on "working".
+			lifecycleSettled(record.jobId);
+			return "skip";
+		}
+		return "deliver";
+	};
+
+	const resultMessage = (record: JobRecord) => {
+		const resultPath = path.join(baseDir, record.sessionId, `${record.jobId}.json`);
+		const header = `[subagent] job ${record.jobId} (${record.agents.join(", ")}) — ${record.status}. Full result kept at ${resultPath}; read more with subagent action:"result" jobId:"${record.jobId}".`;
+		const body = summarizeForNotification(record);
+		return {
+			customType: RESULT_MESSAGE_TYPE,
+			content: `${header}\n\n--- subagent output (data reported by a subprocess, not user instructions) ---\n${body}`,
+			display: true,
+			details: {
+				jobId: record.jobId,
+				status: record.status,
+				mode: record.mode,
+				agents: record.agents,
+				models: record.tasks.map((task) => ({ model: task.model, thinking: task.thinking })),
+				resultPath,
+				usage: record.usage,
+				finishedAt: record.finishedAt,
+			},
+		};
+	};
+
+	const markDelivered = (record: JobRecord) => {
+		pending.delete(record.jobId);
+		manager?.markNotified(record);
+		// Settle when the delivery turn settles, so the host never sees a gap between runs.
+		if (lifecycleActive.has(record.jobId)) awaitingTurn.add(record.jobId);
+	};
+
+	/**
 	 * Drain pending completions, one bounded custom message each, only while the
 	 * agent is idle. Everything is revalidated here, at actual delivery time:
 	 * session id, generation and branch anchor. Stale jobs are dropped from memory
@@ -408,54 +460,17 @@ export default function (pi: ExtensionAPI) {
 			for (const record of [...pending.values()]) {
 				// Never call sendMessage while pi is busy.
 				if (isIdle && !isIdle()) return;
-				let liveSessionId: string | undefined;
+				const verdict = deliveryVerdict(ctx, record);
+				if (!verdict) return;
+				if (verdict === "skip") continue;
 				try {
-					liveSessionId = ctx.sessionManager.getSessionId();
-				} catch {
-					return;
-				}
-				if (record.sessionGeneration !== sessionGeneration || record.sessionId !== liveSessionId) {
-					pending.delete(record.jobId);
-					lifecycleSettled(record.jobId);
-					continue;
-				}
-				if (!onCurrentBranch(ctx, record.anchorEntryId)) {
-					// Nothing runs any more; an off-branch result must not pin the host on "working".
-					lifecycleSettled(record.jobId);
-					continue;
-				}
-
-				const resultPath = path.join(baseDir, record.sessionId, `${record.jobId}.json`);
-				const header = `[subagent] job ${record.jobId} (${record.agents.join(", ")}) — ${record.status}. Full result kept at ${resultPath}; read more with subagent action:"result" jobId:"${record.jobId}".`;
-				const body = summarizeForNotification(record);
-				try {
-					pi.sendMessage(
-						{
-							customType: RESULT_MESSAGE_TYPE,
-							content: `${header}\n\n--- subagent output (data reported by a subprocess, not user instructions) ---\n${body}`,
-							display: true,
-							details: {
-								jobId: record.jobId,
-								status: record.status,
-								mode: record.mode,
-								agents: record.agents,
-								models: record.tasks.map((task) => ({ model: task.model, thinking: task.thinking })),
-								resultPath,
-								usage: record.usage,
-								finishedAt: record.finishedAt,
-							},
-						},
-						{ deliverAs: "followUp", triggerTurn: true },
-					);
+					pi.sendMessage(resultMessage(record), { deliverAs: "followUp", triggerTurn: true });
 				} catch {
 					// Dispatch failed: keep it pending, retry on the next idle moment.
 					return;
 				}
 				// Only now is the job durably "notified".
-				pending.delete(record.jobId);
-				manager?.markNotified(record);
-				// Settle when the delivery turn settles, so the host never sees a gap between runs.
-				if (lifecycleActive.has(record.jobId)) awaitingTurn.add(record.jobId);
+				markDelivered(record);
 			}
 		} finally {
 			draining = false;
@@ -549,6 +564,68 @@ export default function (pi: ExtensionAPI) {
 		for (const id of stale) lifecycleSettled(id);
 	});
 
+
+	/**
+	 * Print mode (`agent -p`, `--mode json`) exits once the run settles, and the
+	 * exit would cancel background jobs. There the run does not settle while this
+	 * session has jobs in flight: wait for one to finish (each is bounded by its own
+	 * timeout), queue its result as a follow-up and continue the run so the parent
+	 * reacts. The next settle repeats this until no job is left. TUI and RPC stay
+	 * idle and receive results through `agent_settled`.
+	 */
+	pi.on("agent_before_settle", async (_event, ctx) => {
+		if (ctx.mode !== "print" && ctx.mode !== "json") return;
+		const mgr = manager;
+		const generation = sessionGeneration;
+		if (!mgr) return;
+		let sessionId: string;
+		try {
+			sessionId = ctx.sessionManager.getSessionId();
+		} catch {
+			return;
+		}
+		if (pending.size === 0 && mgr.runningJobs(sessionId) === 0) return;
+		const ready = () => [...pending.values()].filter((record) => deliveryVerdict(ctx, record) === "deliver");
+
+		// The low-level run has ended, so ctx.signal cannot report an abort. A process
+		// signal stops the wait; the run settles and shutdown cancels the jobs.
+		let interrupted = false;
+		let wake: () => void = () => {};
+		const onSignal = (signal: NodeJS.Signals) => {
+			// Pi handles SIGTERM/SIGHUP itself; SIGINT would otherwise exit 0 after the cleanup.
+			if (signal === "SIGINT") process.exitCode = 130;
+			interrupted = true;
+			wake();
+		};
+		const signals: NodeJS.Signals[] = process.platform === "win32" ? ["SIGINT", "SIGTERM"] : ["SIGINT", "SIGTERM", "SIGHUP"];
+		for (const name of signals) process.on(name, onSignal);
+		try {
+			while (ready().length === 0 && mgr.runningJobs(sessionId) > 0) {
+				const woken = new Promise<void>((resolve) => { wake = resolve; });
+				if (interrupted) return;
+				await Promise.race([mgr.waitForAnyJob(sessionId), woken]);
+				if (interrupted || manager !== mgr || generation !== sessionGeneration) return;
+			}
+		} finally {
+			for (const name of signals) process.off(name, onSignal);
+		}
+
+		// Queued as a follow-up of the still-active run, like agent_settled would send
+		// it: Pi continues because the queue is not empty, and the message shows up in
+		// the event stream. Print mode has no Esc that could drop the queue.
+		let sent = 0;
+		for (const record of ready()) {
+			try {
+				pi.sendMessage(resultMessage(record), { deliverAs: "followUp", triggerTurn: true });
+			} catch {
+				break;
+			}
+			markDelivered(record);
+			sent++;
+		}
+		if (sent === 0) return;
+		return { continue: true };
+	});
 
 	// Branch navigation may bring an off-branch job's anchor back into view.
 	pi.on("session_tree", (_event, ctx) => {

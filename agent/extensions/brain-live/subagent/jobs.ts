@@ -449,6 +449,23 @@ export class SubagentJobManager {
 		return id;
 	}
 
+	/** In-flight jobs of one session. */
+	runningJobs(sessionId: string): number {
+		let count = 0;
+		for (const job of this.active.values()) if (job.record.sessionId === sessionId) count++;
+		return count;
+	}
+
+	/**
+	 * Resolves when any in-flight job of the session settles (at once if none).
+	 * Each job is bounded by its own timeout timer; `onComplete` has already run.
+	 */
+	async waitForAnyJob(sessionId: string): Promise<void> {
+		const jobs = [...this.active.values()].filter((job) => job.record.sessionId === sessionId);
+		if (jobs.length === 0) return;
+		await Promise.race(jobs.map((job) => job.done.catch(() => undefined)));
+	}
+
 	/** Children currently spawned by this manager (global ceiling guard). */
 	activeChildren(): number {
 		return this.slots.active;
