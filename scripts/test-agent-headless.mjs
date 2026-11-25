@@ -131,7 +131,7 @@ try {
 	assert.deepEqual(enabled.tools, disabled.tools, 'schema estável');
 	assert.equal(enabled.toolBytes, disabled.toolBytes, 'bytes do schema estáveis');
 	assert.doesNotMatch(enabled.system, /<agent_complex>|Modo complex/);
-	assert.match(enabled.system, /Quem decide é o seu usuário/);
+	assert.match(enabled.system, /Your user \(the person in this session\) decides/);
 	for (const r of [enabled, fullRun]) {
 		assert.match(r.system, /subagent: Delegate reading, recon, review and self-contained implementation to subagents/, 'snippet de orquestrador');
 		assert.match(r.system, /Act as an orchestrator: delegate recon and bulk reading to `scout`, isolated implementation to `worker`, and review to `reviewer`/, 'diretriz de orquestrador no system');
