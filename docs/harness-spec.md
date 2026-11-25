@@ -158,7 +158,7 @@ Ordem de execução proposta: **0 → 1 → 2 → 3 → 4**. A suíte de evals e
 | schemas das tools, perfil completo | 17202 B | 16097 B |
 | schemas das tools, headless | 12326 B | 12301 B |
 
-Fica em português o que o usuário lê e os blocos de mensagem de `peers`/`megamind` (`[peers PEDIDO …]`, `[arca-megamind …]`), cujo formato os renderers e o Megamind remoto interpretam.
+Os blocos de mensagem, pedido e resposta de `peers` e `megamind` também estão em inglês, com a orientação de autoridade, o rodapé, a linha de anexos, o aviso de sobreposição de arquivos e as dicas de coordenação. As cercas (`[peers …]`, `[arca-megamind …]`), os ids e a linha `megamind:` não mudam. O peers renderiza pelos `details`, e o parser do Megamind lê os cabeçalhos novos e os antigos em português, então transcritos antigos mostram o mesmo cabeçalho em português na TUI. A orientação ao modelo, que a TUI mostra só expandida, fica em inglês. O `headless` prova no runtime real que o `tool_search` encontra `todo` com uma consulta em linguagem natural e que a chamada executa.
 
 **Antes do item 3**
 - `plan` é uma tool só com dois domínios (`plan.ts:236-258`):
