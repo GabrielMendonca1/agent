@@ -82,8 +82,6 @@ Ordem de execução proposta: **0 → 1 → 2 → 3 → 4**. A suíte de evals e
 - **Antes, corrigir uma divergência:** `docs/setup.md:184` diz que o scout tem `skim`, mas o arquivo do papel não tem.
 
 **Decididas** (ver a tabela no topo)
-- (a) O reviewer só lê o último resultado (proposta) ou também pode executar checks?
-- (b) No filho, o default é `fast` ou o gate completo?
 
 **Verificação:** estender `test-subagent-dispatch.mjs` para afirmar o `-e checks` só quando `tools:` tem `checks`. Um teste temporário confirma que dois gates em worktrees paralelos não corrompem o cache.
 
@@ -124,11 +122,16 @@ Ordem de execução proposta: **0 → 1 → 2 → 3 → 4**. A suíte de evals e
   | Ajuste ou pergunta de follow-up para um filho que já tem o contexto | `subagent continue` |
 
 **Decididas** (ver a tabela no topo)
-- (c) Nome da ação: `continue` (proposta) ou `reply`?
-- (d) O `continue` pode trocar o modelo? Proposta: não, porque quebra o cache. Para trocar, faz-se um novo `launch`.
+
+**Ajustes de 2026-11-25 (antes de implementar)**
+- **Handle e estado `waiting`.** Cada task ganha um `handle` estável (`<papel>-<n>` ou nome dado no launch). Estados: `queued → running → waiting → running … → done | failed | cancelled`. Em `waiting` o filho terminou o turno, o processo saiu (custo zero), JSONL e worktree continuam vivos; `continue` acorda a task pelo handle (`continue({ handle, message })`, além de `jobId`/`taskIndex`). O worktree só sai com `integrate` ou `discard`.
+- **Troca de modelo por cota.** Quando a task falha por cota, rate limit ou capacidade (classificar o erro do provedor, não o texto do modelo), o registro marca `failure: "quota"`. Só nesse caso o `continue` aceita `model` explícito (da allowlist do papel), no mesmo JSONL e no mesmo worktree: perde o cache, mantém contexto e trabalho. Em papéis somente leitura, o runner tenta sozinho o próximo modelo da lista do papel, uma vez, e registra a troca. Em writers a troca nunca é automática.
+- **Soft-timeout e commit WIP.** A uma margem do teto (10 % do timeout, mínimo 3 min), o runner injeta no filho: "commit what works and summarize what is left". Se o teto duro chegar, antes de matar o processo o runner faz `WIP(agent): timeout <jobId>` no worktree do job (só se houver mudanças) e grava o hash no resultado; a task fica `waiting`, retomável por `continue`. Escritor único sem worktree não ganha commit: o `/rewind` cobre.
 
 **Verificação:**
 - Fake-anthropic: o segundo turno vê o histórico do primeiro.
+- Fake-anthropic devolvendo 429: a task fica `failure: "quota"`; `continue` com outro modelo reusa o JSONL; papel somente leitura troca sozinho uma vez.
+- Timeout curto num worker de teste com arquivo sujo: o resultado traz o commit WIP e a task fica `waiting`.
 - `test-subagent-dispatch` afirma o mesmo argv do launch mais o mesmo `--session`.
 - No bench, a tarefa "correção depois da revisão" deve ficar mais barata do que com relaunch.
 
@@ -162,8 +165,6 @@ Ordem de execução proposta: **0 → 1 → 2 → 3 → 4**. A suíte de evals e
 - O `subagent` injeta o `description:` dos arquivos de papel na descrição da tool, então os `description:` de `agent/agents/*.md` também passam para inglês e entram no check.
 
 **Decididas** (ver a tabela no topo)
-- (e) Inglês para o modelo e português para o usuário (proposta), ou tudo em português?
-- (f) Separar `plan`/`todo` (proposta) ou manter uma tool com o schema enxuto?
 
 **Verificação:**
 - Bench: comparar pass-rate e tokens do pai entre `AGENT_PROMPT_LANG=pt` e `en`.
@@ -208,8 +209,6 @@ Ordem de execução proposta: **0 → 1 → 2 → 3 → 4**. A suíte de evals e
 - Medir o tamanho do catálogo por filho antes e depois.
 
 **Decididas** (ver a tabela no topo)
-- (g) Idade máxima do handoff: 24 h (proposta) ou outro valor?
-- (h) Lista de skills por papel.
 
 **Verificação:**
 - `test-agent-compaction` cobre branch e `HEAD`, idade e aviso.
