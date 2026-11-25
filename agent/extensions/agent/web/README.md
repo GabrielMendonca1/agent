@@ -14,7 +14,7 @@ Viaja no setup/vendor, mas não entra nos settings interativos nem headless.
   Resposta curta e fontes `{title,url}` dentro do marcador não confiável.
 - `web_fetch({url,offset?})`: GET público, timeout total 20s, até 2 MiB e 5
   redirects; HTML convertido sem dependências, JSON/CSV/texto preservados;
-  PDF retorna “PDF não suportado”. Páginas de 40.000 caracteres; próximo offset
+  PDF retorna “PDF not supported”. Páginas de 40.000 caracteres; próximo offset
   em `details.nextOffset` e no aviso de truncamento. Cada página refaz o GET.
 - `web_fetch({url,prompt})`: mesmo GET, página inteira; devolve só a resposta de
   um modelo barato (mesmo motor do `skim`, ver `../skim/core.ts` e

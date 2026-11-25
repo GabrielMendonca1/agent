@@ -252,7 +252,7 @@ export function registerPeerTools(pi: ExtensionAPI, mesh: Mesh): void {
     execute(_id, params) {
       const note = str(((params ?? {}) as Record<string, unknown>).note);
       mesh.setNote(note);
-      return result(mesh.note ? `nota desta sessão: ${mesh.note}` : "nota desta sessão limpa", true, {
+      return result(mesh.note ? `note for this session: ${mesh.note}` : "note for this session cleared", true, {
         ok: true,
         op: "status",
         summary: mesh.note,

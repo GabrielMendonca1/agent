@@ -47,7 +47,7 @@ function split(value?: string): string[] | undefined {
 
 function summary(results: CheckResult[]): string {
   const red = results.filter((result) => !result.ok).length;
-  return `${results.length - red}/${results.length} verdes`;
+  return `${results.length - red}/${results.length} green`;
 }
 
 /** Subagente escritor: sem tags/only, roda só "fast" (o gate completo fica com o integrate). */
@@ -156,7 +156,7 @@ export default function checksExtension(pi: ExtensionAPI) {
       const defaulted = tags !== explicitTags ? `default tags ${tags!.join(",")} (subagent); pass tags or only for other checks\n` : "";
 
       if (action === "list") {
-        const lines = manifest.checks.map((check) => `${check.name}  [${(check.tags ?? []).join(",") || "sem tag"}]  ${check.cmd}`);
+        const lines = manifest.checks.map((check) => `${check.name}  [${(check.tags ?? []).join(",") || "no tag"}]  ${check.cmd}`);
         return { content: [{ type: "text", text: `${manifest.root}\n${lines.join("\n")}` }], details: { name: "checks", action, total: manifest.checks.length } };
       }
 
@@ -165,7 +165,7 @@ export default function checksExtension(pi: ExtensionAPI) {
         let done = 0;
         let red = 0;
         const emit = (phase?: string) => onUpdate?.({ content: [{ type: "text", text:
-          `${prefix}${done}/${total} · ✗${red} · ${phase ?? `rodando: ${[...running].join(", ") || "—"}`}` }] });
+          `${prefix}${done}/${total} · ✗${red} · ${phase ?? `running: ${[...running].join(", ") || "—"}`}` }] });
         return {
           onStart: (check: { name: string }) => { running.add(check.name); emit(); },
           onResult: (result: CheckResult) => { running.delete(result.name); done++; if (!result.ok) red++; emit(); },

@@ -259,8 +259,8 @@ try {
   const { createJiti } = req('jiti');
   const tiers = await createJiti(import.meta.url, { fsCache: false, moduleCache: false }).import(join(repo, 'agent/extensions/brain-live/lib/tiers.ts'));
   const snapshot = bytes();
-  assert.throws(() => tiers.setRolePreference('scout', 'test/opus'), /não está autorizado/);
-  assert.throws(() => tiers.setRolePreference('inexistente', 'test/opus'), /não tem modelos autorizados/);
+  assert.throws(() => tiers.setRolePreference('scout', 'test/opus'), /is not allowed/);
+  assert.throws(() => tiers.setRolePreference('inexistente', 'test/opus'), /has no allowed models/);
   assert.equal(bytes(), snapshot, 'recusa não grava');
   checks++; console.log('ok helper recusa modelo fora da allowlist e papel inexistente');
   console.log(`PASS /models por papel (${checks} blocos)`);

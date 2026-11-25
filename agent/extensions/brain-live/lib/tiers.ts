@@ -60,7 +60,7 @@ export const DEFAULT_GEMINI_MODEL: Readonly<RoleModelChoice> = { model: agyFamil
 export function resolveAgyFamily(choice: RoleModelChoice): RoleModelChoice {
 	const family = AGY_FAMILIES.find(({ id }) => agyFamilyRef(id) === choice?.model);
 	const requested = AGY_THINKING.indexOf(choice?.thinking as AgyThinking);
-	if (!family || requested < 0) throw new Error("gemini: escolha uma família Antigravity e thinking low, medium, high ou xhigh");
+	if (!family || requested < 0) throw new Error("gemini: choose an Antigravity family and thinking low, medium, high or xhigh");
 	const distance = (level: AgyThinking) => Math.abs(AGY_THINKING.indexOf(level) - requested);
 	const effort = family.levels?.reduce((best, level) => distance(level) < distance(best) ? level : best) ?? AGY_THINKING[requested];
 	return { model: family.levels ? `${family.id}-${effort}` : family.id, thinking: effort };
@@ -93,16 +93,16 @@ export function loadTiers(): TiersFile {
 		const t = parsed.tiers[name];
 		if (!t) continue;
 		if (typeof t.model !== "string" || !t.model.includes("/")) {
-			throw new Error(`${MODELS_FILE}: tier "${name}" precisa de "model" no formato provider/modelId`);
+			throw new Error(`${MODELS_FILE}: tier "${name}" needs "model" as provider/modelId`);
 		}
 	}
 	if (parsed.roleModels !== undefined) {
 		if (!parsed.roleModels || typeof parsed.roleModels !== "object" || Array.isArray(parsed.roleModels)) {
-			throw new Error(`${MODELS_FILE}: campo "roleModels" precisa ser um objeto`);
+			throw new Error(`${MODELS_FILE}: field "roleModels" must be an object`);
 		}
 		for (const [role, choices] of Object.entries(parsed.roleModels)) {
 			if (!role.trim() || !Array.isArray(choices)) {
-				throw new Error(`${MODELS_FILE}: roleModels."${role}" precisa ser uma lista de opções`);
+				throw new Error(`${MODELS_FILE}: roleModels."${role}" must be a list of options`);
 			}
 			const seen = new Set<string>();
 			for (const choice of choices) {
@@ -113,9 +113,9 @@ export function loadTiers(): TiersFile {
 					typeof choice.thinking !== "string" ||
 					!choice.thinking
 				) {
-					throw new Error(`${MODELS_FILE}: opção inválida em roleModels."${role}" (model + thinking obrigatórios)`);
+					throw new Error(`${MODELS_FILE}: invalid option in roleModels."${role}" (model and thinking are required)`);
 				}
-				if (seen.has(choice.model)) throw new Error(`${MODELS_FILE}: modelo duplicado em roleModels."${role}": ${choice.model}`);
+				if (seen.has(choice.model)) throw new Error(`${MODELS_FILE}: duplicate model in roleModels."${role}": ${choice.model}`);
 				seen.add(choice.model);
 			}
 		}
@@ -155,21 +155,21 @@ export function loadRoleModels(data = loadTiers()): Record<string, RoleModelChoi
  * do usuário em /models), autoriza o modelo novo naquele papel com esse thinking.
  */
 export function setRolePreference(role: string, model: string, addWithThinking?: string): RoleModelChoice[] {
-	if (isGoogleApiModel(model)) throw new Error("Gemini está disponível pelo papel agy, não pela API do Pi.");
+	if (isGoogleApiModel(model)) throw new Error("Gemini is available through the agy role, not the Pi API.");
 	const data = loadTiers();
 	const choices = data.roleModels && Object.hasOwn(data.roleModels, role) ? data.roleModels[role] : undefined;
 	if (addWithThinking && !choices?.some((choice) => choice.model === model)) {
-		if (!model.includes("/")) throw new Error(`modelo "${model}" precisa do formato provider/modelId`);
+		if (!model.includes("/")) throw new Error(`model "${model}" must be provider/modelId`);
 		const next = [{ model, thinking: addWithThinking }, ...(choices ?? [])];
 		data.roleModels = { ...(data.roleModels ?? {}), [role]: next };
 		saveTiers(data);
 		return allowedRoleChoices(next);
 	}
 	const allowed = allowedRoleChoices(choices ?? []);
-	if (!choices || !allowed.length) throw new Error(`papel "${role}" não tem modelos autorizados em ${MODELS_FILE}`);
+	if (!choices || !allowed.length) throw new Error(`role "${role}" has no allowed models in ${MODELS_FILE}`);
 	const index = choices.findIndex((choice) => choice.model === model);
 	if (index < 0) {
-		throw new Error(`modelo "${model}" não está autorizado para "${role}" (autorizados: ${allowed.map((c) => c.model).join(", ")})`);
+		throw new Error(`model "${model}" is not allowed for "${role}" (allowed: ${allowed.map((c) => c.model).join(", ")})`);
 	}
 	if (index === 0) return allowed;
 	const next = [choices[index], ...choices.filter((_, i) => i !== index)];
@@ -251,6 +251,6 @@ export function resolveModelRef(value: string): { model: string; thinking?: stri
 		throw new Error(`tier desconhecido "${name}" — use ${TIER_NAMES.join(", ")}`);
 	}
 	const tier = loadTiers().tiers[name];
-	if (!tier) throw new Error(`tier "${name}" não configurado em ${MODELS_FILE}`);
+	if (!tier) throw new Error(`tier "${name}" is not configured in ${MODELS_FILE}`);
 	return { model: tier.model, thinking: tier.thinking, tier: name };
 }

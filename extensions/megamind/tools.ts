@@ -86,7 +86,7 @@ export function shortId(value: string): string {
 }
 
 export function ageOf(at: number | undefined, now: number): string {
-  if (at === undefined) return "idade desconhecida";
+  if (at === undefined) return "age unknown";
   const minutes = Math.max(0, Math.round((now - at) / 60_000));
   if (minutes < 60) return `${minutes}min`;
   const hours = Math.round(minutes / 60);
@@ -95,9 +95,9 @@ export function ageOf(at: number | undefined, now: number): string {
 
 /** `status` do `who` em palavra de gente. */
 export function sessionState(status: string | undefined): string {
-  if (status === "working") return "trabalhando";
-  if (status === "idle") return "parada";
-  return "encerrada";
+  if (status === "working") return "working";
+  if (status === "idle") return "idle";
+  return "ended";
 }
 
 /** Uma pessoa por bloco, uma linha por sessão dela (o id é o endereço). */
@@ -109,14 +109,14 @@ export function formatPeople(people: CorePerson[], mine: Presence | undefined, a
     const name = safeInline(person.name, 32);
     lines.push(`@${safeInline(person.handle, 32)}${name ? ` · ${name}` : ""}${person.org_role ? ` · org ${safeInline(person.org_role)}` : ""} · app ${person.app_online ? "online" : "offline"}`);
     if (person.sessions.length === 0) {
-      lines.push("- sem sessão na última hora");
+      lines.push("- no session in the last hour");
       continue;
     }
     for (const session of person.sessions.slice(0, WHO_MAX_SESSIONS - total)) {
       total += 1;
       const who = safeInline(session.label) || safeInline(session.harness) || "agente";
       const marks: string[] = [];
-      if (mine && session.session_id === mine.session_id) marks.push("você");
+      if (mine && session.session_id === mine.session_id) marks.push("you");
       else {
         marks.push(sessionState(session.status));
         const local = localMark(session.session_id, localityOf(session), safeInline(session.harness));
@@ -126,8 +126,8 @@ export function formatPeople(people: CorePerson[], mine: Presence | undefined, a
         who,
         ...(session.harness && session.harness !== who ? [safeInline(session.harness)] : []),
         safeInline(session.session_id),
-        safeInline(session.project_id) || "sem projeto",
-        safeInline(session.note) || "sem nota",
+        safeInline(session.project_id) || "no project",
+        safeInline(session.note) || "no note",
         ...(session.branch ? [safeInline(session.branch)] : []),
         ageOf(session.at, at),
         ...marks,
@@ -194,7 +194,7 @@ function wokeLine(sent: CoreSent): string {
 
 /** Uma linha por item de conversa (`megamind_read {with}`). */
 export function formatConversation(items: CoreItem[]): string {
-  if (items.length === 0) return "nada nessa conversa ainda.";
+  if (items.length === 0) return "nothing in this conversation yet.";
   return items
     .map((item) => {
       const head = `${whoOf(item)} @ ${safeInline(item.created_at)}`;
@@ -265,13 +265,13 @@ export function registerMegamindTools(pi: ExtensionAPI, deps: ToolDeps): void {
         const people = await core.who(project, signal);
         const mine = deps.presence();
         const head = mine
-          ? `sua sessão: ${mine.session_id} no projeto ${mine.project_id}${deps.selfHandle() ? ` (você é @${safeInline(deps.selfHandle())})` : ""}`
-          : "esta sessão não tem presença";
+          ? `your session: ${mine.session_id} in project ${mine.project_id}${deps.selfHandle() ? ` (you are @${safeInline(deps.selfHandle())})` : ""}`
+          : "this session has no presence";
         const lines = formatPeople(people, mine, deps.now());
         const info = core.whoInfo;
         if (info?.org) lines.unshift(`org: ${safeInline(info.org)}`);
-        if (info?.maintainers) lines.unshift(`maintainers: ${info.maintainers.map((handle) => safeInline(handle)).join(", ") || "nenhum informado"}`);
-        if (info?.org_sync_error) lines.unshift(`AVISO: falha na sincronização da org: ${safeInline(info.org_sync_error)}`);
+        if (info?.maintainers) lines.unshift(`maintainers: ${info.maintainers.map((handle) => safeInline(handle)).join(", ") || "none listed"}`);
+        if (info?.org_sync_error) lines.unshift(`WARNING: org sync failed: ${safeInline(info.org_sync_error)}`);
         // `details` só alimenta a renderização da TUI; o texto do modelo não muda.
         const details = {
           ...info,
@@ -281,7 +281,7 @@ export function registerMegamindTools(pi: ExtensionAPI, deps: ToolDeps): void {
         };
         if (lines.length === 0) {
           return toolResult({
-            content: [{ type: "text", text: project ? `nenhuma sessão em ${project}` : "nenhum sócio conhecido" }],
+            content: [{ type: "text", text: project ? `no session in ${project}` : "no known partner" }],
             details,
           });
         }

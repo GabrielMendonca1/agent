@@ -88,10 +88,10 @@ export function installToolClear(pi: ExtensionAPI) {
       if (turn === 0 || turn > turns - keep || m.role !== 'toolResult' || !allowed.has(m.toolName)) continue;
       const call = calls.get(m.toolCallId);
       if (!call || call.name !== m.toolName || !Array.isArray(m.content) || !m.content.length || m.content.some((c: any) => c.type !== 'text')) continue;
-      if (m.content.some((c: any) => c.text.startsWith('[resultado antigo removido:'))) continue;
+      if (m.content.some((c: any) => c.text.startsWith('[old result removed:') || c.text.startsWith('[resultado antigo removido:'))) continue;
       const size = m.content.reduce((n: number, c: any) => n + c.text.length, 0);
       const args = JSON.stringify(call.arguments ?? {}).replace(/\s+/g, ' ').slice(0, 160);
-      const text = `[resultado antigo removido: ${m.toolName} ${args}; ${size} chars — rode de novo se precisar]`;
+      const text = `[old result removed: ${m.toolName} ${args}; ${size} chars; run it again if needed]`;
       const saved = Math.floor((size - text.length) / 4);
       if (saved <= 0) continue;
       replacements.push({ toolCallId: m.toolCallId, sourceHash: hash(m), text });

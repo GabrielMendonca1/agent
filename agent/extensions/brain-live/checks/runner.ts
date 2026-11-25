@@ -155,15 +155,15 @@ export function findManifest(from: string): Manifest | null {
 export function parseManifest(root: string, raw: string): Manifest {
   let data: any;
   try { data = JSON.parse(raw); } catch (error) {
-    throw new Error(`${join(root, MANIFEST_PATH)}: JSON inválido (${error instanceof Error ? error.message : String(error)})`);
+    throw new Error(`${join(root, MANIFEST_PATH)}: invalid JSON (${error instanceof Error ? error.message : String(error)})`);
   }
   const checks = Array.isArray(data?.checks) ? data.checks : [];
-  if (!checks.length) throw new Error(`${join(root, MANIFEST_PATH)}: nenhum check declarado`);
+  if (!checks.length) throw new Error(`${join(root, MANIFEST_PATH)}: no checks declared`);
   const seen = new Set<string>();
   for (const check of checks) {
-    if (typeof check?.name !== "string" || !check.name.trim()) throw new Error("cada check precisa de um name");
+    if (typeof check?.name !== "string" || !check.name.trim()) throw new Error("every check needs a name");
     if (typeof check?.cmd !== "string" || !check.cmd.trim()) throw new Error(`check "${check.name}": cmd ausente`);
-    if (seen.has(check.name)) throw new Error(`check "${check.name}" duplicado — o nome é o que torna a falha atribuível`);
+    if (seen.has(check.name)) throw new Error(`duplicate check "${check.name}": the name is what makes a failure attributable`);
     seen.add(check.name);
   }
   return {
@@ -220,7 +220,7 @@ function runOne(check: Check, cwd: string, timeoutMs: number, signal?: AbortSign
         ok: !timedOut && !signal?.aborted && !error && code === 0,
         code,
         ms: Date.now() - started,
-        tail: error ? `falhou ao iniciar: ${error.message}` : timedOut ? `${tail(output)}\n[timeout após ${timeoutMs}ms]` : tail(output),
+        tail: error ? `failed to start: ${error.message}` : timedOut ? `${tail(output)}\n[timeout after ${timeoutMs}ms]` : tail(output),
         ...(timedOut ? { timedOut: true } : {}),
       });
     };
@@ -352,7 +352,7 @@ export async function baseline(
 ): Promise<{ sha: string; results: CheckResult[]; cached: boolean }> {
   options?.signal?.throwIfAborted();
   const sha = options?.sha ?? baseSha(manifest.root);
-  if (!sha) throw new Error(`${manifest.root} não é um repositório git — baseline precisa de um commit base`);
+  if (!sha) throw new Error(`${manifest.root} is not a git repository; the baseline needs a base commit`);
   const selection = selectChecks(manifest, options);
   const cache = readCache(manifest.root, sha);
   const valid = (check: Check) => !options?.refresh && cache?.results[check.name]?.fp === fingerprint(check, manifest);
@@ -371,11 +371,11 @@ export async function baseline(
   const path = mkdtempSync(join(tmpdir(), "pi-checks-base-"));
   const worktree = join(path, "wt");
   const locked = <T>(fn: () => T) => withRepoLock(manifest.root, fn, {
-    signal: options?.signal, onWait: () => options?.onPhase?.("aguardando lock de worktree do repositório…") });
+    signal: options?.signal, onWait: () => options?.onPhase?.("waiting for the repository worktree lock…") });
   try {
     await locked(() => {
       const add = git(manifest.root, ["worktree", "add", "--detach", worktree, sha]);
-      if (!add.ok) throw new Error(`worktree da baseline falhou em ${sha}: ${add.out}`);
+      if (!add.ok) throw new Error(`baseline worktree failed at ${sha}: ${add.out}`);
     });
     options?.signal?.throwIfAborted();
     for (const entry of manifest.link) {
@@ -414,19 +414,19 @@ export async function gate(manifest: Manifest, options?: RunOptions & { baseline
   const failed = results.filter((r) => !r.ok).map((r) => r.name);
   if (!failed.length) {
     return { results, ok: true, baseSha: baseSha(manifest.root), baselineSkipped: true,
-      verdict: "OK: tudo verde (baseline dispensada)" };
+      verdict: "OK: all green (baseline skipped)" };
   }
   try {
     const base = await baseline(manifest, { ...options?.baselineOptions, names: failed, signal: options?.signal });
     const comparison = compare(base.results, results);
     return { results, comparison, baseSha: base.sha, baselineCached: base.cached, ok: comparison.newFailures.length === 0,
       verdict: comparison.newFailures.length
-        ? `BLOQUEIA: ${comparison.newFailures.length} check(s) que passavam em ${base.sha.slice(0, 8)} quebraram`
-        : `OK: nada que funcionava em ${base.sha.slice(0, 8)} quebrou` };
+        ? `BLOCKS: ${comparison.newFailures.length} check(s) that passed at ${base.sha.slice(0, 8)} broke`
+        : `OK: nothing that worked at ${base.sha.slice(0, 8)} broke` };
   } catch (error) {
     options?.signal?.throwIfAborted();
     return { results, ok: false,
-      verdict: `baseline indisponível (${error instanceof Error ? error.message : String(error)}); exigindo suíte inteira verde` };
+      verdict: `baseline unavailable (${error instanceof Error ? error.message : String(error)}); requiring the whole suite green` };
   }
 }
 
@@ -615,16 +615,16 @@ export function compare(base: CheckResult[], now: CheckResult[]): Comparison {
 export function formatResults(results: CheckResult[], comparison?: Comparison): string {
   const mark = (result: CheckResult) => {
     if (result.ok) return comparison?.fixed.includes(result.name) ? "✓+" : "✓";
-    return comparison?.newFailures.includes(result.name) ? "✗NOVO" : "✗";
+    return comparison?.newFailures.includes(result.name) ? "✗NEW" : "✗";
   };
   const lines = results.map((result) => `${mark(result).padEnd(6)} ${result.name.padEnd(22)} ${(result.ms / 1000).toFixed(1)}s`);
   if (comparison?.newFailures.length) {
-    lines.push("", `quebrou agora: ${comparison.newFailures.join(", ")}`);
+    lines.push("", `broke now: ${comparison.newFailures.join(", ")}`);
     for (const name of comparison.newFailures) {
       const result = results.find((r) => r.name === name);
       if (result) lines.push("", `--- ${name} ---`, result.tail);
     }
   }
-  if (comparison?.stillFailing.length) lines.push("", `já estava vermelho: ${comparison.stillFailing.join(", ")}`);
+  if (comparison?.stillFailing.length) lines.push("", `already red: ${comparison.stillFailing.join(", ")}`);
   return lines.join("\n");
 }

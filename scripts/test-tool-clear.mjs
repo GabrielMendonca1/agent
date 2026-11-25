@@ -64,7 +64,7 @@ assert.equal(cold.batches()[0].data.replacements.length, 24);
 for (let i = 0; i < messages.length; i++) {
   const m = messages[i];
   const changed = m.role === 'toolResult' && /^[012]-/.test(m.toolCallId) && names.slice(0, 8).includes(m.toolName);
-  if (changed) assert.match(projected[i].content[0].text, /rode de novo se precisar/);
+  if (changed) assert.match(projected[i].content[0].text, /run it again if needed/);
   else assert.deepEqual(projected[i], m, `protected ${i}`);
 }
 assert.deepEqual(cold.context(), projected, 'same next request');
@@ -172,7 +172,7 @@ try {
   // OpenAI Responses conversion consumes exactly the same projected toolResult messages.
   const { convertResponsesMessages } = await import(pathToFileURL(join(piRoot, 'node_modules/@earendil-works/pi-ai/dist/api/openai-responses-shared.js')).href);
   const oai = convertResponsesMessages({ api: 'openai-responses', provider: 'openai', id: 'gpt-test', input: ['text'] }, { messages: projected }, new Set());
-  assert.match(JSON.stringify(oai), /rode de novo se precisar/);
+  assert.match(JSON.stringify(oai), /run it again if needed/);
   assert.doesNotMatch(JSON.stringify(oai.filter(m => m.type === 'function_call_output' && m.call_id === '0-read')), /old output/);
   console.log('ok Pi 1.5.2 journal + fake wire + process resume + OpenAI serializer');
 } finally { await fake.close(); }

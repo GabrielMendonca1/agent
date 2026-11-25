@@ -1,24 +1,25 @@
 ---
 name: handoff
-description: "Encerra a tarefa com um handoff curto para a próxima sessão."
-argument-hint: "Foco da próxima sessão"
+description: "End the task with a short handoff for the next session."
+argument-hint: "Focus of the next session"
 ---
 
-Encerre a tarefa atual escrevendo um handoff de no máximo 40 linhas em
-`.agent/handoff.md` do cwd (crie `.agent/` se necessário) com a tool `write`.
-Sobrescreva o handoff anterior; não grave em diretório temporário.
-Escreva só o corpo, sem frontmatter: o Agent carimba sessão, horário, branch e
-HEAD sozinho. A próxima sessão nesta branch recebe o handoff na primeira mensagem.
+End the current task by writing a handoff of at most 40 lines to
+`.agent/handoff.md` in the cwd (create `.agent/` if needed) with the `write` tool.
+Overwrite the previous handoff; do not write to a temporary directory.
+Write only the body, without frontmatter: the Agent stamps session, time, branch
+and HEAD itself. The next session on this branch receives the handoff with its
+first message.
 
-Inclua apenas o necessário para continuar:
-- Objetivo e estado atual, considerando os argumentos como foco da próxima sessão.
-- Decisões tomadas e seus motivos, de forma curta.
-- Commits relevantes do ramo: consulte `git log --oneline` e registre hashes e títulos.
-- Pendências, bloqueios e checks que falharam ou não foram executados.
-- Caminhos tocados; referencie planos, notas e diffs existentes em vez de copiá-los.
-- Um próximo passo concreto.
+Include only what is needed to continue:
+- Goal and current state, taking the arguments as the focus of the next session.
+- Decisions made and their reasons, briefly.
+- Relevant commits on the branch: check `git log --oneline` and record hashes and titles.
+- Open items, blockers, and checks that failed or were not run.
+- Paths touched; reference existing plans, notes and diffs instead of copying them.
+- One concrete next step.
 
-Não inclua segredos nem invente commits, resultados ou verificações. Fora de um
-repositório git, indique que commits não se aplicam. Não faça commit automaticamente.
-Termine o handoff lembrando: se criou ou alterou uma nota, atualize `.agent/notes.md`.
-Confirme brevemente o caminho gravado.
+Do not include secrets or invent commits, results or verification. Outside a git
+repository, state that commits do not apply. Do not commit automatically.
+End the handoff with a reminder: if you created or changed a note, update `.agent/notes.md`.
+Briefly confirm the path written.

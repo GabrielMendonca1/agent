@@ -510,7 +510,7 @@ try {
   const writer = await checksRun(['read', 'bash', 'edit', 'checks'], {});
   assert.ok(!writer.toolResult.isError, writer.text);
   assert.match(writer.text, /^default tags fast \(subagent\)/);
-  assert.match(writer.text, /^OK: tudo verde/m);
+  assert.match(writer.text, /^OK: all green/m);
   assert.equal(readFileSync(ranLog, 'utf8'), 'quick\n', 'writer child ran only the fast check');
   assert.deepEqual(writer.schema.parameters.properties.action.enum, ['gate', 'run', 'baseline', 'list', 'last']);
   const explicit = await checksRun(['read', 'bash', 'edit', 'checks'], { action: 'run', only: 'full' });

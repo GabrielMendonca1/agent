@@ -249,6 +249,24 @@ try {
     check(`${name} ${JSON.stringify(params)}`, out?.content?.map(part => part.text ?? '').join('\n'));
   }
 
+  // Mais resultados de runtime: checks, web, megamind who/prioridade, nota do peers.
+  const checksRunner = await jiti.import(join(repo, 'agent/extensions/brain-live/checks/runner.ts'));
+  const sample = [{ name: 'a', ok: false, ms: 10, tail: '' }, { name: 'b', ok: false, ms: 10, tail: '' }, { name: 'c', ok: true, ms: 10, tail: '' }];
+  check('checks formatResults', checksRunner.formatResults(sample, { newFailures: ['a'], stillFailing: ['b'], fixed: ['c'] }));
+  const allGreen = await checksRunner.gate({ root: sandbox, checks: [{ name: 'ok', cmd: 'true' }] });
+  check('checks gate verdict', allGreen.verdict);
+  const webCore = await jiti.import(join(repo, 'agent/extensions/agent/web/core.ts'));
+  check('web wrapper', webCore.wrap('https://example.com', 'body'));
+  check('megamind who', megamindTools.formatPeople([{ handle: 'ana', name: '', app_online: true, sessions: [] }, { handle: 'bob', name: '', app_online: false, sessions: [{ session_id: 'abc', status: 'idle' }] }], undefined, Date.now()).join('\n'));
+  const priorities = await jiti.import(join(repo, 'extensions/megamind/priorities.ts'));
+  check('megamind priority context', priorities.formatPriorityContext({ title: 'ship', done: 1, total: 2, next: 'docs', blocked: ['ci'] }, 'demo'));
+  for (const note of ['', 'x']) check('peers note', (await tools.get('peers_status').execute('t', { note })).content[0].text.replace(/: x$/, ''));
+  // Skills de sistema: o corpo do SKILL.md é lido pelo modelo.
+  for (const dir of readdirSync(join(repo, 'agent/skills/system'))) {
+    const file = join(repo, 'agent/skills/system', dir, 'SKILL.md');
+    if (existsSync(file)) check(`skill system/${dir}`, readFileSync(file, 'utf8'));
+  }
+
   // Erros de skills do launch (nome desconhecido, caminho, agy, papel com nome inválido).
   const childSkills = await jiti.import(join(repo, 'agent/extensions/brain-live/subagent/skills.ts'));
   childSkills.runnerSkillHooks.catalog = async () => [{ name: 'debug', filePath: '/skills/debug/SKILL.md' }];

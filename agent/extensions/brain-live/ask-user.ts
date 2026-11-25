@@ -156,7 +156,7 @@ export default function askUser(pi: ExtensionAPI) {
 				nestedCalls.delete(_id);
 				return { content: [{ type: "text" as const, text: reason }], isError: true };
 			}
-			const fallback = () => ({ content: [{ type: "text" as const, text: "Usuário não está disponível interativamente agora. Faça a pergunta numa mensagem normal e aguarde a próxima resposta dele." }] });
+			const fallback = () => ({ content: [{ type: "text" as const, text: "The user is not available interactively right now. Ask the question in a normal message and wait for their next reply." }] });
 
 			const options = params.options && params.options.length >= 2 ? params.options.map(normalizeOption) : [];
 			const state: AskState = { options, selected: 0 };
@@ -301,12 +301,12 @@ export default function askUser(pi: ExtensionAPI) {
 				if (!clean) {
 					state.dismissed = true;
 					return {
-						content: [{ type: "text", text: `O usuário dispensou a pergunta (${state.source}). Siga com o melhor julgamento e diga o que assumiu.` }],
+						content: [{ type: "text", text: `The user dismissed the question (${state.source}). Proceed with your best judgment and state what you assumed.` }],
 						details: { ...state },
 					};
 				}
 				state.answer = clean;
-				return { content: [{ type: "text", text: `Resposta do usuário (${state.source}): ${clean}` }], details: { ...state } };
+				return { content: [{ type: "text", text: `User answer (${state.source}): ${clean}` }], details: { ...state } };
 			} finally {
 				clearWidget();
 			}

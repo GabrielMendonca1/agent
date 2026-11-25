@@ -308,7 +308,7 @@ export class CoreV6 implements MegamindCore {
       const id = text(record.id) ?? text(record.message_id);
       return { ...(id ? { id } : {}), to: { kind: "person", label: args.to.trim() }, woke: [], held: true };
     }
-    if (args.to_session && !this.directDelivery) throw new CoreError("este Mainframe ainda não entrega a uma sessão específica");
+    if (args.to_session && !this.directDelivery) throw new CoreError("this Mainframe cannot deliver to a specific session yet");
     const payload: JsonObject = {
       session_id,
       to: groupAddress(args.to, this.group, this.alias),

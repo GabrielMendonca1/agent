@@ -45,14 +45,14 @@ export function targetOf(to: string, group = CHAT_GROUP, alias = group): Target 
   const value = to.trim();
   if (value.startsWith("#")) {
     const channel = value.slice(1).toLowerCase();
-    if (channel !== group && channel !== alias) throw new CoreError(`not_found: o único canal é #${alias}`, "not_found");
+    if (channel !== group && channel !== alias) throw new CoreError(`not_found: the only channel is #${alias}`, "not_found");
     return { kind: "channel", address: group };
   }
   if (value.startsWith("@")) return { kind: "person", address: value.slice(1).toLowerCase() };
   if (value.startsWith("actor:")) return { kind: "person", address: value };
   if (UUID.test(value) || value.startsWith("device:")) return { kind: "session", address: value };
   throw new CoreError(
-    `not_found: este Mainframe ainda é v5 e não resolve "${value}"; use o id completo da sessão (megamind_who), @handle ou #${alias}`,
+    `not_found: this Mainframe is still v5 and cannot resolve "${value}"; use the full session id (megamind_who), @handle or #${alias}`,
     "not_found",
   );
 }
@@ -204,7 +204,7 @@ export class CoreV5 implements MegamindCore {
   /** `chat_members` no formato de `who`. */
   private async members(signal?: AbortSignal): Promise<CorePerson[]> {
     const record = resultRecord(await checkedToolCall(TOOL.chatMembers, {}, signal));
-    if (!record || !Array.isArray(record.items)) throw new CoreError("not_found: servidor sem chat_members", "not_found");
+    if (!record || !Array.isArray(record.items)) throw new CoreError("not_found: server has no chat_members", "not_found");
     const people: CorePerson[] = [];
     for (const item of record.items) {
       if (!object(item)) continue;
@@ -261,7 +261,7 @@ export class CoreV5 implements MegamindCore {
     const target = targetOf(args.to, this.group, this.alias);
     const request_id = randomUUID();
     if (args.ask) {
-      if (target.kind === "channel") throw new CoreError("invalid_request: um canal não responde pedido", "invalid_request");
+      if (target.kind === "channel") throw new CoreError("invalid_request: a channel cannot answer a request", "invalid_request");
       const created = requireOk(TOOL.requestCreate, await toolCall(TOOL.requestCreate, {
         from_session: session_id,
         to: target.kind === "person" ? args.to.trim() : target.address,
@@ -312,7 +312,7 @@ export class CoreV5 implements MegamindCore {
     if (args.with) {
       const target = targetOf(args.with, this.group, this.alias);
       if (target.kind === "session") {
-        throw new CoreError("invalid_request: este Mainframe é v5 e não lê a conversa com uma sessão; leia a caixa sem `with`", "invalid_request");
+        throw new CoreError("invalid_request: this Mainframe is v5 and cannot read a conversation with one session; read the inbox without `with`", "invalid_request");
       }
       const payload: JsonObject = {
         session_id,

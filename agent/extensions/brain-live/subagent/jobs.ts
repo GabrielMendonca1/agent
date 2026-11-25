@@ -273,7 +273,7 @@ export function resolveJobTaskModels(tasks: JobTaskSpec[], defaults?: DispatchDe
 				const slot = task.slot ?? defaults.resources?.slots?.[task.agent] ?? (task.agent === "scout" ? "apoio" : "principal");
 				const model = task.model ?? (slot === "apoio" ? support() : primary);
 				if (model !== primary && model !== support()) {
-					throw new Error(`Agent: ${task.agent} deve usar principal ou apoio configurado em /models; recebido ${model}.`);
+					throw new Error(`Agent: ${task.agent} must use the principal or apoio model configured in /models; got ${model}.`);
 				}
 				// Papel sem config própria: slot do piloto e o thinking do pedido.
 				checkPiModel(model);
@@ -521,7 +521,7 @@ export function markInterrupted(baseDir: string, record: JobRecord): JobRecord {
 		error:
 			record.error ??
 			(exhausted
-				? `Job interrupted: limite de ${MAX_RESUMES} retomadas atingido depois de quedas sucessivas.`
+				? `Job interrupted: limit of ${MAX_RESUMES} resumes reached after repeated crashes.`
 				: "Job interrupted: pi restarted while the subagent was running."),
 		notified: record.notified ?? false,
 		runs: undefined,

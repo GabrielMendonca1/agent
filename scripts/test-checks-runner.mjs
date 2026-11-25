@@ -32,7 +32,7 @@ try {
   const green = await gate(manifest, { baselineOptions: { onPhase: () => phases++ } });
   assert.equal(green.ok, true);
   assert.equal(green.baselineSkipped, true);
-  assert.match(green.verdict, /baseline dispensada/);
+  assert.match(green.verdict, /baseline skipped/);
   assert.equal(phases, 0);
   assert.equal(existsSync(process.env.PI_CHECKS_CACHE_DIR), false);
   assert.equal(worktrees(), before);
@@ -93,7 +93,7 @@ try {
   assert.equal(resultOk({ ok: true, results: failedOnly.results }), true);
   const unavailable = await gate(manifest, { baselineOptions: { sha: "not-a-commit" } });
   assert.equal(unavailable.ok, false);
-  assert.match(unavailable.verdict, /baseline indisponível/);
+  assert.match(unavailable.verdict, /baseline unavailable/);
   console.log("ok baseline only failed names; green skips worktree; renderer ok fallback");
 
   const oldDir = join(process.env.PI_CHECKS_CACHE_DIR, "old-project");
