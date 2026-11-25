@@ -125,13 +125,18 @@ try {
 	}
 	assert.ok(fullRun.tools.includes('tool_search'), `perfil completo deveria ter tool_search para as tools deferred: ${fullRun.tools}`);
 	assert.ok(!fullRun.tools.some((t) => /^peers_|^megamind_(?!read$)/.test(t)), `peers/megamind deveriam estar deferred: ${fullRun.tools}`);
+	// Decisão f (docs/harness-spec.md): plan declarada só com steps; todo fica deferred, fora do schema.
+	const planTool = fullRun.payloadTools.find((t) => t.name === 'plan');
+	assert.ok(planTool, `perfil completo sem plan declarada: ${fullRun.tools}`);
+	assert.deepEqual(Object.keys(planTool.input_schema?.properties ?? {}), ['steps'], 'plan só com steps');
+	assert.ok(!fullRun.tools.includes('todo'), `todo deveria estar deferred: ${fullRun.tools}`);
 	ok(`tools headless: ${enabled.tools.join(', ')}`);
 
 	assert.equal(enabled.system, disabled.system, 'mesma política entre processos');
 	assert.deepEqual(enabled.tools, disabled.tools, 'schema estável');
 	assert.equal(enabled.toolBytes, disabled.toolBytes, 'bytes do schema estáveis');
 	assert.doesNotMatch(enabled.system, /<agent_complex>|Modo complex/);
-	assert.match(enabled.system, /Quem decide é o seu usuário/);
+	assert.match(enabled.system, /Your user \(the person in this session\) decides/);
 	for (const r of [enabled, fullRun]) {
 		assert.match(r.system, /subagent: Delegate reading, recon, review and self-contained implementation to subagents/, 'snippet de orquestrador');
 		assert.match(r.system, /Act as an orchestrator: delegate recon and bulk reading to `scout`, isolated implementation to `worker`, and review to `reviewer`/, 'diretriz de orquestrador no system');
@@ -146,6 +151,40 @@ try {
 	ok(`política de autoridade e diretriz de orquestrador, sem modos nem inferência extra; schema subagent ${subagentBytes} B`);
 	assert.ok(enabled.bytes < fullRun.bytes, `headless (${enabled.bytes}) não é menor que o completo (${fullRun.bytes})`);
 	ok(`prompt: completo ${fullRun.bytes} B, headless ${enabled.bytes} B; schemas: completo ${fullRun.toolBytes} B, headless ${enabled.toolBytes} B`);
+	// todo deferred de verdade: o modelo acha pelo tool_search com uma consulta em linguagem natural,
+	// a tool entra declarada na requisição seguinte e a chamada executa.
+	{
+		const search = await startFakeAnthropic([
+			{ tool: { name: 'tool_search', input: { query: 'persistent project tasks claim' } } },
+			{ tool: { name: 'todo', input: { action: 'list' } } },
+			{ text: 'done' },
+		]);
+		try {
+			const agent = agentDirFor('search');
+			writeFileSync(join(agent.agentDir, 'models.json'), JSON.stringify({ providers: { anthropic: { baseUrl: search.baseUrl, apiKey: 'agent-headless-test-not-a-key' } } }));
+			const h = join(home, 'search');
+			const result = await spawnAsync(pi, ['-p', '--mode', 'json', '--no-session', '--model', 'anthropic/claude-sonnet-4-5', 'list the project tasks'], {
+				cwd: root,
+				env: {
+					PATH: process.env.PATH, HOME: h, USERPROFILE: h, TMPDIR: root, XDG_CONFIG_HOME: join(h, '.config'),
+					PI_CODING_AGENT_DIR: agent.agentDir, PI_ACCOUNTS_MIRROR: '0', ORCA_BACKGROUND_LAUNCH: '1',
+					AGENT_RUNTIME_ENABLED: '1', AGENT_PI_ROOT: piRoot, AGENT_CHILD: '0', NODE_OPTIONS: `--import=${preload}`,
+				},
+			});
+			assert.equal(result.status, 0, result.output.slice(-1500));
+			const sent = search.messages();
+			assert.equal(sent.length, 3, `requisições: ${sent.length}\n${result.output.slice(-1500)}`);
+			const names = (payload) => (payload.tools ?? []).map((t) => t.name);
+			assert.ok(!names(sent[0]).includes('todo'), 'todo fora da primeira requisição');
+			const results = (payload) => JSON.stringify(payload.messages.at(-1).content);
+			assert.match(results(sent[1]), /todo/, 'tool_search devolve todo');
+			assert.ok(names(sent[1]).includes('todo'), `todo declarada depois do tool_search: ${names(sent[1])}`);
+			assert.doesNotMatch(results(sent[2]), /Tool todo not found|is_error":true/, `todo executou: ${results(sent[2])}`);
+			ok('todo deferred: tool_search acha com consulta natural, declara e executa no runtime real');
+		} finally {
+			await search.close();
+		}
+	}
 	console.log(`${checks} checks passed`);
 } finally {
 	await fake.close();

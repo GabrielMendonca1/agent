@@ -304,7 +304,8 @@ export function nextRoleModel(agent: string, current: string | undefined, defaul
 	let list: string[];
 	try {
 		const own = getRoleModelChoices(agent);
-		if (own?.length) list = own.map((choice) => choice.model);
+		// A configured role (even with an empty list) never falls back to the pilot pair.
+		if (own !== undefined) list = own.map((choice) => choice.model);
 		else {
 			const file = roleFiles.find((role) => role.name === agent);
 			if (!defaults?.resources || !defaults.model || file?.runner === "agy" || file?.model || file?.thinking) return undefined;

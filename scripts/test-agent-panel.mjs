@@ -211,7 +211,7 @@ try {
   // para medir o texto que o modelo vê de fato.
   {
     const { buildSystemPrompt, buildSystemPromptSections, diffSystemPromptSections } = await load(join(root, 'dist/core/system-prompt.js'));
-    const AUT = 'Política de trabalho:';
+    const AUT = 'Work policy:';
     const CPX = 'Modo complex (vale só enquanto o modo for complex):';
     const count = (text, needle) => text.split(needle).length - 1;
     const run = async (extra = {}) => {
@@ -231,8 +231,9 @@ try {
     assert.equal(back.prompt, first.prompt, 'mesmo texto entre turnos (prefixo de cache intacto)');
     const patch = diffSystemPromptSections(buildSystemPromptSections(first.options), buildSystemPromptSections(back.options));
     assert.equal(patch, undefined, 'turnos não mudam as seções de política');
-    assert.match(back.prompt, /Quem decide é o seu usuário/);
-    assert.match(back.prompt, /push, merge, deploy, ação destrutiva ou efeito em terceiros/);
+    assert.match(back.prompt, /Your user \(the person in this session\) decides/);
+    assert.match(back.prompt, /push, merge, deploy, a destructive action or an effect on third parties/);
+    assert.match(back.prompt, /Reply to the user in their language\./);
 
     // Prompt forçado (Vault no clássico): as políticas entram no texto, uma vez.
     const forced = await run({ forceSystemPrompt: 'PROMPT DO VAULT' });
@@ -270,7 +271,7 @@ try {
             }
             delete process.env.AGENT_JUICE_PI_ENTRY;
             const prompt = options.forceSystemPrompt ?? buildSystemPrompt(options);
-            assert.equal(count(prompt, 'Mapa de notas do projeto'), 1, `notas uma vez — ${where}`);
+            assert.equal(count(prompt, 'Project notes map'), 1, `notas uma vez — ${where}`);
             assert.doesNotMatch(prompt, /docs\/private.md|privado/, `conteúdo do mapa fora — ${where}`);
             assert.equal(count(prompt, AUT), 1, `autonomia uma vez — ${where}:\n${prompt}`);
             assert.equal(count(prompt, CPX), 0, `sem política de delegação obrigatória — ${where}:\n${prompt}`);
@@ -322,15 +323,19 @@ try {
     }
     delete process.env.AGENT_JUICE_PI_ENTRY;
     const requests = [];
-    runtime.sendUserMessage = (text, options) => requests.push({ text, options });
+    runtime.sendUserMessage = () => assert.fail('/notes não aparece como fala do usuário');
+    runtime.sendMessage = (message, options) => requests.push({ text: message.content, message, options });
     mkdirSync(join(dir, 'docs'), { recursive: true });
     writeFileSync(join(dir, 'docs/known.md'), 'known');
     writeFileSync(join(dir, 'docs/missing.md'), 'missing');
+    const noticesBefore = notices.length;
     await extension.commands.get('notes').handler('', ctx);
     assert.match(requests[0].text, /docs\/missing.md/);
     assert.doesNotMatch(requests[0].text, /docs\/known.md/);
-    assert.match(requests[0].text, /caminho — assunto/);
-    assert.deepEqual(requests[0].options, { deliverAs: 'followUp' });
+    assert.match(requests[0].text, /path — subject/);
+    assert.equal(requests[0].message.display, false, 'prompt em inglês oculto no TUI');
+    assert.deepEqual(requests[0].options, { triggerTurn: true, deliverAs: 'followUp' });
+    assert.deepEqual(notices.slice(noticesBefore), [{ text: 'Pedido enviado ao agente: mapear 1 documento(s) em .agent/notes.md.', level: 'info' }]);
     rmSync(map);
     await extension.commands.get('notes').handler('', ctx);
     assert.match(requests[1].text, /docs\/known.md/);

@@ -666,7 +666,7 @@ function todoSelectLabel(todo: TodoFrontMatter, currentSessionId?: string): stri
   return `${BOLD(formatTodoId(todo.id))} ${getTodoTitle(todo)} ${FAINT(`(${state})`)}`;
 }
 
-/** Internal task backend. Only plan is registered as an agent tool. */
+/** Persistent project tasks; plan.ts registers it as the deferred `todo` tool. */
 export function createTaskTool(): ToolDefinition<typeof TodoParams> {
   const todosDirLabel = getTodosDirLabel(process.cwd());
   return {

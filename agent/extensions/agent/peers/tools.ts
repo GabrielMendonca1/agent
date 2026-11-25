@@ -120,7 +120,7 @@ export function registerPeerTools(pi: ExtensionAPI, mesh: Mesh): void {
     name: "peers_list",
     label: "Peers List",
     description:
-      "Outras sessões do Pi nesta mesma máquina: short6, projeto, branch, cwd, ociosa/ocupada, no que estão e há quanto tempo. Outra máquina ou outro sócio é megamind_who",
+      "Other Pi sessions on this machine: short6, project, branch, cwd, idle/busy, what they are doing and for how long. For another machine or partner use megamind_who",
     parameters: Type.Object({}),
     execute: () => {
       const peers = mesh.peers();
@@ -141,11 +141,11 @@ export function registerPeerTools(pi: ExtensionAPI, mesh: Mesh): void {
     name: "peers_send",
     label: "Peers Send",
     description:
-      "Manda uma mensagem para outra sessão do Pi nesta máquina (short6 do peers_list ou id completo) e devolve o id dela. Ela lê quando ficar ociosa; quem recebe decide o que fazer. `reply_to` encadeia a conversa. Sem segredo, sem código em massa",
+      "Send a message to another Pi session on this machine (short6 from peers_list or full id) and return its id. The session reads it when idle; the recipient decides what to do. `reply_to` threads the conversation. No secrets, no bulk code",
     parameters: Type.Object({
-      to: Type.String({ description: "short6 (peers_list) ou id completo da sessão" }),
-      body: Type.String({ description: "mensagem curta e completa; até 8 KB" }),
-      reply_to: Type.Optional(Type.String({ description: "id (p-xxxxxxxx) de uma mensagem/pedido que você recebeu; liga a conversa" })),
+      to: Type.String({ description: "short6 (peers_list) or full session id" }),
+      body: Type.String({ description: "short, complete message; up to 8 KB" }),
+      reply_to: Type.Optional(Type.String({ description: "id (p-xxxxxxxx) of a message/request you received; threads the conversation" })),
     }),
     async execute(_id, params) {
       const args = (params ?? {}) as Record<string, unknown>;
@@ -168,11 +168,11 @@ export function registerPeerTools(pi: ExtensionAPI, mesh: Mesh): void {
     name: "peers_ask",
     label: "Peers Ask",
     description:
-      "Pede algo a outra sessão desta máquina e acompanha: vira um pedido com id que ela responde com peers_reply (accepted/declined, depois done/failed). Volta na hora — a resposta chega sozinha nesta sessão",
+      "Ask another session on this machine for something and track it: it becomes a request with an id that the session answers with peers_reply (accepted/declined, then done/failed). Returns immediately; the answer arrives in this session on its own",
     parameters: Type.Object({
-      to: Type.String({ description: "short6 (peers_list) ou id completo da sessão que deve fazer o trabalho" }),
-      title: Type.String({ description: "uma linha dizendo o que precisa (até 200 chars)" }),
-      body: Type.String({ description: "contexto, critério de pronto e limites; até 8 KB, sem segredo" }),
+      to: Type.String({ description: "short6 (peers_list) or full id of the session that should do the work" }),
+      title: Type.String({ description: "one line saying what you need (up to 200 chars)" }),
+      body: Type.String({ description: "context, done criteria and limits; up to 8 KB, no secrets" }),
     }),
     async execute(_id, params) {
       const args = (params ?? {}) as Record<string, unknown>;
@@ -195,11 +195,11 @@ export function registerPeerTools(pi: ExtensionAPI, mesh: Mesh): void {
     name: "peers_reply",
     label: "Peers Reply",
     description:
-      "Responde um pedido que chegou pelo peers (bloco [peers PEDIDO <id> …]): aceita, recusa ou informa pronto/falhou com o resumo do que foi feito",
+      "Answer a request received through peers (block [peers REQUEST <id> …]): accept, decline, or report done/failed with a summary of what was done",
     parameters: Type.Object({
-      id: Type.String({ description: "id do pedido recebido (p-xxxxxxxx)" }),
+      id: Type.String({ description: "id of the received request (p-xxxxxxxx)" }),
       status: Type.String({ description: REPLY_STATUS.join(" | ") }),
-      result: Type.Optional(Type.String({ description: "resumo do que foi feito ou motivo da recusa (obrigatório em declined/done/failed)" })),
+      result: Type.Optional(Type.String({ description: "summary of what was done or reason for declining (required for declined/done/failed)" })),
     }),
     async execute(_id, params) {
       const args = (params ?? {}) as Record<string, unknown>;
@@ -219,11 +219,11 @@ export function registerPeerTools(pi: ExtensionAPI, mesh: Mesh): void {
     name: "peers_context",
     label: "Peers Context",
     description:
-      "Lê um recorte recente do transcrito de outra sessão desta máquina (só leitura, não interrompe ninguém). Use antes de perguntar o óbvio",
+      "Read a recent slice of another session's transcript on this machine (read-only, interrupts no one). Use it before asking the obvious",
     parameters: Type.Object({
-      to: Type.String({ description: "short6 (peers_list) ou id completo da sessão" }),
+      to: Type.String({ description: "short6 (peers_list) or full session id" }),
       chars: Type.Optional(
-        Type.Number({ description: `teto de caracteres (1..${CONTEXT_MAX_CHARS}, default ${CONTEXT_DEFAULT_CHARS})` }),
+        Type.Number({ description: `character cap (1..${CONTEXT_MAX_CHARS}, default ${CONTEXT_DEFAULT_CHARS})` }),
       ),
     }),
     async execute(_id, params) {
@@ -245,9 +245,9 @@ export function registerPeerTools(pi: ExtensionAPI, mesh: Mesh): void {
     exposure: "deferred",
     name: "peers_status",
     label: "Peers Status",
-    description: "Diz numa linha no que esta sessão está trabalhando; as outras sessões desta máquina veem no peers_list",
+    description: "Say in one line what this session is working on; other sessions on this machine see it in peers_list",
     parameters: Type.Object({
-      note: Type.String({ description: "resumo curto (até 120 chars); string vazia limpa" }),
+      note: Type.String({ description: "short summary (up to 120 chars); an empty string clears it" }),
     }),
     execute(_id, params) {
       const note = str(((params ?? {}) as Record<string, unknown>).note);

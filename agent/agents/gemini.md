@@ -1,6 +1,6 @@
 ---
 name: gemini
-description: "Gemini/agy (se faltar: agent deps --install): lê, roda e edita."
+description: "Gemini/agy (if missing: agent deps --install): reads, runs and edits."
 runner: agy
 tools: [read, grep, find, ls, bash, edit, write]
 brief_required: [objective, context, scope, done_when, stop_if]

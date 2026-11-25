@@ -1,6 +1,6 @@
 ---
 name: worker
-description: Implementa uma tarefa delimitada e verifica a mudança.
+description: Implements a bounded task and verifies the change.
 tools: read, grep, find, ls, bash, edit, write, skim, checks, web_search, web_fetch
 brief_required: [objective, context, scope, done_when, stop_if]
 return_format: "Files changed, checks run with results, blockers or deviations from the brief."

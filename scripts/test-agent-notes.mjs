@@ -6,7 +6,7 @@ import { join } from 'node:path';
 import * as policy from '../agent/core/policy.mjs';
 assert.equal(typeof policy.notesSection, 'function', 'notesSection existe');
 assert.equal(policy.notesSection({ count: 0, ageDays: 9 }), '');
-assert.equal(policy.notesSection({ count: 2, ageDays: 3 }), '<agent_notes>Mapa de notas do projeto em .agent/notes.md (2 linhas, atualizado há 3 dias): leia-o antes de explorar e responda pela nota quando ela cobrir a pergunta; quando a resposta for decidir algo, verifique no código.</agent_notes>');
+assert.equal(policy.notesSection({ count: 2, ageDays: 3 }), '<agent_notes>Project notes map at .agent/notes.md (2 lines, updated 3 days ago): read it before exploring and answer from the note when it covers the question; when the answer decides something, verify it in the code.</agent_notes>');
 const { readNotesMetadata, unmappedDocs } = await import('../agent/core/notes.mjs');
 const dir = mkdtempSync(join(tmpdir(), 'agent-notes-'));
 try {

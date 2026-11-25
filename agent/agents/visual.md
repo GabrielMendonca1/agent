@@ -1,6 +1,6 @@
 ---
 name: visual
-description: Interpreta imagens fornecidas e relata evidências visuais.
+description: Interprets supplied images and reports visual evidence.
 tools: read
 brief_required: [objective]
 return_format: "Visible evidence vs inference; unreadable details flagged."

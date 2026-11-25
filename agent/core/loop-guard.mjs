@@ -1,9 +1,12 @@
 import { createHash } from "node:crypto";
 
-export const NUDGE = "loop guard: esta chamada rodou 3 vezes com o mesmo resultado. Mude a abordagem.";
-export const STOP = "loop guard: sexta chamada idêntica após 5 resultados iguais. Execução interrompida.";
-export const CYCLE_NUDGE = "loop guard: este ciclo de chamadas rodou 3 vezes com os mesmos resultados. Mude a abordagem.";
-export const CYCLE_STOP = "loop guard: início do sexto ciclo de chamadas após 5 repetições com os mesmos erros. Execução interrompida.";
+// Model-facing (tool result and block reason): English. Notifications for the user: Portuguese.
+export const NUDGE = "loop guard: this call ran 3 times with the same result. Change your approach.";
+export const STOP = "loop guard: sixth identical call after 5 identical results. Run stopped.";
+export const CYCLE_NUDGE = "loop guard: this call cycle ran 3 times with the same results. Change your approach.";
+export const CYCLE_STOP = "loop guard: start of a sixth call cycle after 5 repeats with the same errors. Run stopped.";
+export const STOP_NOTICE = "loop guard: sexta chamada idêntica após 5 resultados iguais. Execução interrompida.";
+export const CYCLE_STOP_NOTICE = "loop guard: início do sexto ciclo de chamadas após 5 repetições com os mesmos erros. Execução interrompida.";
 export const EMPTY_STOP = "loop guard: 3 turnos sem texto e sem chamadas bem-sucedidas. Execução interrompida.";
 
 export function stableStringify(value) {

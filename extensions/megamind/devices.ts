@@ -25,11 +25,11 @@ export function localityOf(session: { same_device?: boolean; harness?: string } 
 export function coordinateHint(session_id: string, place: Locality, harness?: string): string {
   if (place === "peers") {
     const id = short6(session_id);
-    return `Ela está nesta mesma máquina: use peers_send {to: "${id}"} (CLI: pi-peers send ${id}), não megamind_send.`;
+    return `It is on this same machine: use peers_send {to: "${id}"} (CLI: pi-peers send ${id}), not megamind_send.`;
   }
   if (place === "local") {
     const what = harness ? ` (${harness})` : "";
-    return `Ela está nesta mesma máquina, mas não é uma sessão Pi${what}: o peers não alcança — combine pelo ${megamindApp()} ou com o seu usuário; megamind_send {to: "${session_id}"} só em último caso.`;
+    return `It is on this same machine but is not a Pi session${what}: peers cannot reach it; coordinate through ${megamindApp()} or with your user, and use megamind_send {to: "${session_id}"} only as a last resort.`;
   }
   return `Use megamind_send {to: "${session_id}"}.`;
 }

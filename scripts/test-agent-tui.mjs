@@ -530,7 +530,7 @@ async function runHotSwitch(host) {
     assert.equal(p3.obs.at(-1).system, p2.obs.at(-1).system, `${host}: turnos seguidos mandam o mesmo system efetivo (sem acúmulo)`);
     assert.equal(p4.obs.at(-1).system, p1.obs.at(-1).system, `${host}: quarto turno preserva o system efetivo inicial`);
     assert.equal(p2.obs.at(-1).system, p1.obs.at(-1).system, `${host}: segundo turno preserva o system efetivo`);
-    assert.match(p1.obs[0].system, /Quem decide é o seu usuário/);
+    assert.match(p1.obs[0].system, /Your user \(the person in this session\) decides/);
     assert.match(p1.obs[0].system, /Act as an orchestrator: delegate recon and bulk reading to `scout`/, `${host}: diretriz de orquestrador no system`);
     assert.equal(hotFake.messages().length, 4, `quatro turnos, sem inferência auxiliar: ${JSON.stringify(hotFake.messages().map(p => ({ model: p.model, max_tokens: p.max_tokens })))}`);
     console.log(`ok hot ${host}: subagentes sempre ligados (PID ${pids[0]}, ${all.length} observações seq 1..${all.length}) em 4 turnos — autoridade e diretriz de orquestrador estáveis, sem inferência extra`);

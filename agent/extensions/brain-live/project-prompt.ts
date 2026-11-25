@@ -257,12 +257,14 @@ export default function (pi: ExtensionAPI) {
         return;
       }
       if (!files.length) { ctx.ui.notify('Nenhum documento sem linha em .agent/notes.md.', 'info'); return; }
-      pi.sendUserMessage([
-        'Atualize .agent/notes.md neste projeto (crie o mapa se não existir).',
-        'Leia os documentos abaixo e acrescente uma linha por arquivo no formato caminho — assunto; preserve as linhas existentes e não duplique caminhos.',
-        'Documentos sem linha no mapa:',
+      // Prompt em inglês só para o modelo; o TUI mostra o aviso em português.
+      pi.sendMessage({ customType: 'agent-notes', display: false, content: [
+        'Update .agent/notes.md in this project (create the map if it does not exist).',
+        'Read the documents below and add one line per file in the format path — subject; keep existing lines and do not duplicate paths.',
+        'Documents without a line in the map:',
         ...files.map(file => `- ${file}`),
-      ].join('\n'), { deliverAs: 'followUp' });
+      ].join('\n') }, { triggerTurn: true, deliverAs: 'followUp' });
+      ctx.ui.notify(`Pedido enviado ao agente: mapear ${files.length} documento(s) em .agent/notes.md.`, 'info');
     },
   });
   installProjectContext(pi);

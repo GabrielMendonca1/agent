@@ -29,7 +29,7 @@ export function loadAllSkillCategories(companies = userCompanies()) {
 /** Só as categorias gerais: as de empresa são automáticas e já vêm em <available_skills>. */
 export function categoryPrompt(categories = loadSkillCategories()) {
   return categories.filter(c => c.name !== 'system' && c.skills.length)
-    .map(c => `${c.name}: ${c.skills.join(', ')} — invoque com /skill:nome ou leia o SKILL.md quando a tarefa pedir.`).join('\n');
+    .map(c => `${c.name}: ${c.skills.join(', ')} — invoke with /skill:name or read its SKILL.md when the task calls for it.`).join('\n');
 }
 
 /** Frontmatter do SKILL.md. */

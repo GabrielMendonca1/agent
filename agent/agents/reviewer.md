@@ -1,6 +1,6 @@
 ---
 name: reviewer
-description: Identifica bugs, riscos de segurança e regressões concretas.
+description: Finds bugs, security risks and concrete regressions.
 tools: read, grep, find, ls, bash, skim, checks, web_search, web_fetch
 brief_required: [objective, context, scope]
 return_format: "Findings by severity with path:line and evidence; say 'none' if none; verification limits."

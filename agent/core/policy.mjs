@@ -2,7 +2,7 @@
 
 /** Ponteiro por sessão; metadados vêm do chamador, nunca do cwd ou relógio aqui. */
 export function notesSection({ count, ageDays }) {
-  return count === 0 ? '' : `<agent_notes>Mapa de notas do projeto em .agent/notes.md (${count} linhas, atualizado há ${ageDays} dias): leia-o antes de explorar e responda pela nota quando ela cobrir a pergunta; quando a resposta for decidir algo, verifique no código.</agent_notes>`;
+  return count === 0 ? '' : `<agent_notes>Project notes map at .agent/notes.md (${count} lines, updated ${ageDays} days ago): read it before exploring and answer from the note when it covers the question; when the answer decides something, verify it in the code.</agent_notes>`;
 }
 
 export const AUTONOMY_SECTION = 'agent_autonomy';
@@ -11,11 +11,12 @@ export const COMPLEX_SECTION = 'agent_complex';
 export const POLICY_SECTIONS = [AUTONOMY_SECTION, COMPLEX_SECTION];
 
 export const AUTONOMY_POLICY = [
-  'Política de trabalho:',
-  '- Execute o plano até o fim: não peça para continuar nem ofereça o próximo passo.',
-  '- Entre opções razoáveis, decida você e registre a decisão em uma linha no relatório.',
-  '- Pergunte quando faltar informação indispensável que não possa descobrir sozinho ou para obter autorização antes de ação consequente: push, merge, deploy, ação destrutiva ou efeito em terceiros.',
-  '- Quem decide é o seu usuário (a pessoa nesta sessão): pergunte a ele, não a terceiros. Aprovação e instrução explícita dele vencem esta autonomia; nunca inicie ação de terceiros por conta própria.',
+  'Work policy:',
+  '- Carry the plan through to the end: do not ask to continue or offer the next step.',
+  '- Among reasonable options, decide yourself and record the decision in one line of the report.',
+  '- Ask only when essential information is missing and you cannot find it yourself, or to get authorization before a consequential action: push, merge, deploy, a destructive action or an effect on third parties.',
+  '- Your user (the person in this session) decides: ask them, not third parties. Their approval and explicit instruction override this autonomy; never start a third-party action on your own.',
+  '- Reply to the user in their language.',
 ].join('\n');
 
 /** Compatibility: delegation guidance lives in the subagent tool, never in a session mode. */

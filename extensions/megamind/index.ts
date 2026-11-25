@@ -41,6 +41,7 @@ import {
   looksSecret,
   optional,
   outgoing,
+  overlapNotice,
   safeInline,
 } from "./messaging.ts";
 import {
@@ -706,14 +707,8 @@ export default function arcaMegamindExtension(pi: ExtensionAPI, options: Extensi
       const owner = safeInline(overlap.owner_name);
       const branch = safeInline(overlap.branch);
       const paths = overlap.paths.map((path) => safeInline(path, LIMITS.pathChars)).filter(Boolean).join(", ");
-      const line = `${who}${owner ? ` (${owner})` : ""} está mexendo nos mesmos arquivos${branch ? ` na branch ${branch}` : ""}: ${paths}`;
-      noticeToPeer(
-        `[arca-megamind] SOBREPOSIÇÃO DE ARQUIVOS: ${line}${overlap.same_branch ? " (mesma branch que a sua)" : ""}.`
-        + ` Fale com ele antes de continuar nesses arquivos. ${hintFor(overlap.session_id)}`
-        + " Aviso, não bloqueio.",
-        line,
-        true,
-      );
+      const line = `${who}${owner ? ` (${owner})` : ""}: ${paths}`;
+      noticeToPeer(overlapNotice({ who, owner, branch, paths, sameBranch: overlap.same_branch, hint: hintFor(overlap.session_id) }), line, true);
     }
   }
 

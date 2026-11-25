@@ -313,8 +313,8 @@ async function runHost(host) {
         assert.match(content, /subagents cannot launch subagents/, `${toolName}: filho bloqueado com mensagem clara`);
         assert.doesNotMatch(content, /Unknown agent|Launched subagent job/, `${toolName}: filho não chega ao dispatch`);
       }
-      assert.match(sys0, /Quem decide é o seu usuário/);
-      assert.match(sys0, /push, merge, deploy, ação destrutiva ou efeito em terceiros/);
+      assert.match(sys0, /Your user \(the person in this session\) decides/);
+      assert.match(sys0, /push, merge, deploy, a destructive action or an effect on third parties/);
       // Volta à semente e aplica o contrato de instalação no mesmo HOME isolado.
       // Sem normalizar schemas: descrições e defaults também têm de ser iguais.
       assert.deepEqual(rollbackAgentResources({ receiptPath: info.resourceReceipt }).conflicts, []);
