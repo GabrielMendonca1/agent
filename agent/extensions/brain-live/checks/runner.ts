@@ -162,7 +162,7 @@ export function parseManifest(root: string, raw: string): Manifest {
   const seen = new Set<string>();
   for (const check of checks) {
     if (typeof check?.name !== "string" || !check.name.trim()) throw new Error("every check needs a name");
-    if (typeof check?.cmd !== "string" || !check.cmd.trim()) throw new Error(`check "${check.name}": cmd ausente`);
+    if (typeof check?.cmd !== "string" || !check.cmd.trim()) throw new Error(`check "${check.name}": missing cmd`);
     if (seen.has(check.name)) throw new Error(`duplicate check "${check.name}": the name is what makes a failure attributable`);
     seen.add(check.name);
   }

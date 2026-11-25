@@ -15,7 +15,7 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { type ModelRegistry, type ModelRuntime, resolveCliModel } from "@earendil-works/pi-coding-agent";
-import { commitWip, gateSummary, gcWorktrees, isolateWriters, manageWorktrees, worktreeSummary } from "./worktrees.ts";
+import { commitWip, gateSummary, gcWorktrees, isolateWriters, manageWorktrees, plannedIsolation, worktreeSkillError, worktreeSummary } from "./worktrees.ts";
 import { getRoleModelChoices, isGoogleApiModel, resolveGeminiPreference, resolveModelRef, resolveRoleModel } from "../lib/tiers.ts";
 import type { AgentConfig, AgentScope } from "./agents.ts";
 import type { ChildSkills } from "./skills.ts";
@@ -680,6 +680,17 @@ export class SubagentJobManager {
 		const resolvedTasks = resolveJobTaskModels(spec.tasks, spec.dispatchDefaults, spec.agents, spec.modelRegistry);
 		if (!resolvedTasks.ok) return resolvedTasks;
 		spec = { ...spec, tasks: resolvedTasks.tasks };
+
+		// Writers headed for a worktree read project skills from it: each must be committed there.
+		// Refused here, before any record, worktree or child exists.
+		for (const [root, group] of plannedIsolation(spec, spec.agents)) {
+			for (const { task, index } of group) {
+				for (const file of task.resolvedSkills?.paths ?? []) {
+					const error = worktreeSkillError(file, root);
+					if (error) return { ok: false, error: `Task ${index + 1} (${task.agent}): ${error}` };
+				}
+			}
+		}
 
 		const jobId = spec.jobId && isSafeId(spec.jobId) ? spec.jobId : this.reserveJobId();
 		if (!isSafeId(spec.sessionId)) return { ok: false, error: "Unsafe session id; refusing to persist a job." };

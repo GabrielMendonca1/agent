@@ -6,6 +6,7 @@ import { getAgentDir } from "@earendil-works/pi-coding-agent";
 import { findManifest, gate, lastRun, lastRunLine } from "../checks/runner.ts";
 import type { AgentConfig } from "./agents.ts";
 import type { JobRecord, JobTaskSpec } from "./jobs.ts";
+import type { ChildSkills } from "./skills.ts";
 
 function git(cwd: string, args: string[]): string {
 	const r = spawnSync("git", ["-C", cwd, ...args], { encoding: "utf8", maxBuffer: 16 * 1024 * 1024 });
@@ -31,9 +32,10 @@ function verifyMerged(t: JobTaskSpec): void {
 }
 
 /** Chamadas síncronas serializam worktree add antes de qualquer filho nascer. */
-export function isolateWriters(record: JobRecord, agents: AgentConfig[], persist: () => void): void {
-	if (record.mode !== "parallel") return;
+/** Writer tasks isolateWriters moves into worktrees (2+ writers of one repository in parallel), by root. */
+export function plannedIsolation(record: Pick<JobRecord, "mode" | "tasks" | "cwd">, agents: AgentConfig[]): Map<string, { task: JobTaskSpec; index: number; cwd: string }[]> {
 	const groups = new Map<string, { task: JobTaskSpec; index: number; cwd: string }[]>();
+	if (record.mode !== "parallel") return groups;
 	record.tasks.forEach((task, index) => {
 		const agent = agents.find((a) => a.name === task.agent)!;
 		// Lista ausente/vazia usa as ferramentas padrão, que incluem edição.
@@ -45,8 +47,48 @@ export function isolateWriters(record: JobRecord, agents: AgentConfig[], persist
 		group.push({ task, index, cwd });
 		groups.set(root, group);
 	});
-	for (const [root, group] of groups) {
-		if (group.length < 2) continue;
+	for (const [root, group] of groups) if (group.length < 2) groups.delete(root);
+	return groups;
+}
+
+const skillLabel = (file: string) => path.basename(file) === "SKILL.md" ? path.basename(path.dirname(file)) : path.basename(file, ".md");
+
+/**
+ * Launch check for a writer that will run in a worktree. A skill inside the repository must be a
+ * regular file committed at HEAD and must not sit under a manifest `link` (those resolve back to
+ * the source checkout). Skills outside the repository keep their absolute path.
+ */
+export function worktreeSkillError(file: string, root: string): string | undefined {
+	const rootReal = realpathSync(root);
+	let real: string;
+	try { real = realpathSync(file); } catch { return `skill "${skillLabel(file)}" (${file}) does not exist.`; }
+	if (!real.startsWith(rootReal + path.sep)) return undefined;
+	const rel = path.relative(rootReal, real).split(path.sep).join("/");
+	const notCommitted = `skill "${skillLabel(real)}" (${rel}) is not committed in this worktree; commit it or run the task in place.`;
+	const links = (findManifest(rootReal)?.link ?? []).map((entry) => path.posix.normalize(entry).replace(/\/+$/, ""));
+	if (links.some((entry) => rel === entry || rel.startsWith(entry + "/"))) return notCommitted;
+	const tree = spawnSync("git", ["-C", rootReal, "ls-tree", "HEAD", "--", rel], { encoding: "utf8" });
+	return tree.status === 0 && /^100(644|755) blob /.test(tree.stdout) ? undefined : notCommitted;
+}
+
+/** Same skills read from the worktree; a mapped file whose realpath leaves the worktree is refused. */
+export function mapSkillsToWorktree(skills: ChildSkills, root: string, worktree: string): ChildSkills {
+	const rootReal = realpathSync(root);
+	const worktreeReal = realpathSync(worktree);
+	const paths = skills.paths.map((file) => {
+		const real = realpathSync(file);
+		if (!real.startsWith(rootReal + path.sep)) return file;
+		const mapped = path.join(worktree, path.relative(rootReal, real));
+		let mappedReal = "";
+		try { mappedReal = realpathSync(mapped); } catch { /* missing: refused below */ }
+		if (!mappedReal.startsWith(worktreeReal + path.sep)) throw new Error(`skill "${skillLabel(real)}" is not committed in this worktree; commit it or run the task in place.`);
+		return mapped;
+	});
+	return { ...skills, paths };
+}
+
+export function isolateWriters(record: JobRecord, agents: AgentConfig[], persist: () => void): void {
+	for (const [root, group] of plannedIsolation(record, agents)) {
 		const baseSha = git(root, ["rev-parse", "HEAD"]);
 		const sourceBranch = currentBranch(root);
 		for (const { task, index, cwd } of group) {
@@ -66,6 +108,11 @@ export function isolateWriters(record: JobRecord, agents: AgentConfig[], persist
 					fs.mkdirSync(path.dirname(target), { recursive: true });
 					fs.symlinkSync(source, target, process.platform === "win32" ? "junction" : undefined);
 				}
+			}
+			// Checked at launch (worktreeSkillError); this refuses anything that still leaves the worktree.
+			if (task.resolvedSkills) {
+				task.resolvedSkills = mapSkillsToWorktree(task.resolvedSkills, root, worktree);
+				persist();
 			}
 		}
 	}
