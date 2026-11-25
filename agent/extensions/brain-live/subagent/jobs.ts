@@ -14,8 +14,9 @@
 
 import * as fs from "node:fs";
 import * as path from "node:path";
+import { type ModelRegistry, type ModelRuntime, resolveCliModel } from "@earendil-works/pi-coding-agent";
 import { gateSummary, gcWorktrees, isolateWriters, manageWorktrees, worktreeSummary } from "./worktrees.ts";
-import { getRoleModelChoices, resolveGeminiPreference, type ResolvedRoleModel, resolveRoleModel } from "../lib/tiers.ts";
+import { isGoogleApiModel, resolveGeminiPreference, resolveModelRef, resolveRoleModel } from "../lib/tiers.ts";
 import type { AgentConfig, AgentScope } from "./agents.ts";
 import {
 	type DurableRunState,
@@ -136,21 +137,40 @@ export interface JobTaskSpec {
  */
 export type TaskState = "running" | "completed" | "failed" | "not_run" | "interrupted";
 
-/**
- * Config própria do papel (`roleModels` no models.json do usuário), quando existe.
- * Ausência do arquivo é suportada por getRoleModelChoices; configuração existente
- * inválida NÃO vira ausência silenciosa nem permite ignorar a allowlist do usuário.
- * Escolha explícita fora da lista continua sendo erro (propaga).
- */
-function ownRoleModel(role: string, requestedModel?: string): ResolvedRoleModel | undefined {
-	const configured = (getRoleModelChoices(role)?.length ?? 0) > 0;
-	return configured ? resolveRoleModel(role, requestedModel) : undefined;
-}
-
 /** Config do papel no próprio arquivo .md do usuário (`model:`/`tier:`/`thinking:`). */
 export type RoleFileConfig = Pick<AgentConfig, "name" | "runner" | "model" | "thinking">;
+type DispatchModelRegistry = Pick<ModelRegistry, "getAll" | "hasConfiguredAuth">;
 
-export function resolveJobTaskModels(tasks: JobTaskSpec[], defaults?: DispatchDefaults, roleFiles?: readonly RoleFileConfig[]): { ok: true; tasks: JobTaskSpec[] } | { ok: false; error: string } {
+function piModelFilter(registry?: DispatchModelRegistry): typeof isGoogleApiModel {
+	let runtime: Pick<ModelRuntime, "getModels" | "hasConfiguredAuth"> | undefined;
+	const checked = new Map<string, boolean>();
+	return (ref) => {
+		if (isGoogleApiModel(ref)) return true;
+		if (!ref || !registry) return false;
+		const cached = checked.get(ref);
+		if (cached !== undefined) return cached;
+		if (!runtime) {
+			const models = registry.getAll();
+			const byProvider = new Map(models.map((m) => [m.provider, m]));
+			runtime = {
+				getModels: () => models,
+				hasConfiguredAuth: (provider) => {
+					const model = byProvider.get(provider);
+					return model !== undefined && registry.hasConfiguredAuth(model);
+				},
+			};
+		}
+		// Pi's --model also matches partial IDs and display names. Reuse its
+		// resolver (which only reads these two methods), not our own fuzzy rules.
+		const { model } = resolveCliModel({ cliModel: ref, modelRuntime: runtime as ModelRuntime });
+		const blocked = model ? isGoogleApiModel(`${model.provider}/${model.id}`) : false;
+		checked.set(ref, blocked);
+		return blocked;
+	};
+}
+
+export function resolveJobTaskModels(tasks: JobTaskSpec[], defaults?: DispatchDefaults, roleFiles?: readonly RoleFileConfig[], registry?: DispatchModelRegistry): { ok: true; tasks: JobTaskSpec[] } | { ok: false; error: string } {
+	const isBlocked = piModelFilter(registry);
 	const externalTask = (task: JobTaskSpec): JobTaskSpec | undefined => {
 		const role = roleFiles?.find((file) => file.name === task.agent);
 		if (role?.runner !== "agy") return undefined;
@@ -164,30 +184,42 @@ export function resolveJobTaskModels(tasks: JobTaskSpec[], defaults?: DispatchDe
 		const choice = role.name === "gemini" ? resolveGeminiPreference(role) : undefined;
 		return { ...task, ...choice, agyResolved: true };
 	};
+	const checkPiModel = (model: string | undefined) => {
+		if (isBlocked(model)) throw new Error("Agent: Google API models are not available for Pi subagents. Choose another model in /models or use the gemini role via agy.");
+	};
+	const checkInheritedModel = (file?: RoleFileConfig) => {
+		checkPiModel(file?.model ? resolveModelRef(file.model).model : defaults?.model);
+	};
 	try {
 		if (defaults?.resources) {
 			const primary = defaults.model;
-			const support = defaults.resources.supportModel || primary;
+			const configuredSupport = defaults.resources.supportModel;
+			const support = () => configuredSupport && !isBlocked(configuredSupport) ? configuredSupport : primary;
 			return { ok: true, tasks: tasks.map((task) => {
 				const external = externalTask(task);
 				if (external) return external;
+				checkPiModel(task.model);
 				if (!primary) throw new Error("Agent: parent model unavailable.");
 				// A config do papel que o usuário já tinha (`roleModels`: modelo + thinking por papel)
 				// é autoritativa e NUNCA é zerada pelo piloto; o slot principal/apoio só preenche
 				// papel sem config própria.
-				const own = ownRoleModel(task.agent, task.model);
+				const own = resolveRoleModel(task.agent, task.model, { isBlocked, allowUnconfiguredOverride: true });
 				if (own) return { ...task, model: own.model, thinking: own.thinking };
 				// Papel que traz `model`/`thinking` no próprio .md e chamada sem escolha explícita:
 				// o arquivo do usuário decide (o runner resolve `tier:`/thinking do frontmatter).
 				const file = roleFiles?.find((role) => role.name === task.agent);
-				if (!task.model && (file?.model || file?.thinking)) return { ...task };
+				if (!task.model && (file?.model || file?.thinking)) {
+					checkInheritedModel(file);
+					return { ...task };
+				}
 				// Slot vem da receita; sem receita, scout em apoio e o resto no principal.
 				const slot = task.slot ?? defaults.resources?.slots?.[task.agent] ?? (task.agent === "scout" ? "apoio" : "principal");
-				const model = task.model ?? (slot === "apoio" ? support : primary);
-				if (model !== primary && model !== support) {
+				const model = task.model ?? (slot === "apoio" ? support() : primary);
+				if (model !== primary && model !== support()) {
 					throw new Error(`Agent: ${task.agent} deve usar principal ou apoio configurado em /models; recebido ${model}.`);
 				}
 				// Papel sem config própria: slot do piloto e o thinking do pedido.
+				checkPiModel(model);
 				return { ...task, model, thinking: defaults.thinkingLevel ?? "medium" };
 			}) };
 		}
@@ -196,8 +228,11 @@ export function resolveJobTaskModels(tasks: JobTaskSpec[], defaults?: DispatchDe
 			tasks: tasks.map((task) => {
 				const external = externalTask(task);
 				if (external) return external;
-				const selected = resolveRoleModel(task.agent, task.model);
-				return selected ? { ...task, model: selected.model, thinking: selected.thinking } : { ...task };
+				checkPiModel(task.model);
+				const selected = resolveRoleModel(task.agent, task.model, { isBlocked });
+				if (selected) return { ...task, model: selected.model, thinking: selected.thinking };
+				checkInheritedModel(roleFiles?.find((role) => role.name === task.agent));
+				return { ...task };
 			}),
 		};
 	} catch (error) {
@@ -249,6 +284,7 @@ export interface LaunchSpec {
 	agentScope: AgentScope;
 	projectAgentsDir: string | null;
 	dispatchDefaults: DispatchDefaults;
+	modelRegistry?: DispatchModelRegistry;
 	cwd: string;
 	timeoutSeconds: number;
 }
@@ -498,7 +534,7 @@ export class SubagentJobManager {
 
 		// Resolve every preference / explicit selection before creating a record or
 		// scheduling work. `thinking` comes only from the authorized pair.
-		const resolvedTasks = resolveJobTaskModels(spec.tasks, spec.dispatchDefaults, spec.agents);
+		const resolvedTasks = resolveJobTaskModels(spec.tasks, spec.dispatchDefaults, spec.agents, spec.modelRegistry);
 		if (!resolvedTasks.ok) return resolvedTasks;
 		spec = { ...spec, tasks: resolvedTasks.tasks };
 

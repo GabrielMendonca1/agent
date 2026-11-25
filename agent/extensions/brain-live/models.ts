@@ -19,7 +19,7 @@ import { getSelectListTheme } from "@earendil-works/pi-coding-agent";
 import { Container, fuzzyFilter, Input, Key, matchesKey, type SelectItem, SelectList, Spacer, Text, truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
 import { getAgentPreferences, isChild, runtimeEnabled, setAgentPreferences } from "../../core/client.mjs";
 import { AGY_FAMILIES, AGY_THINKING, agyFamilyRef, DEFAULT_GEMINI_MODEL, getGeminiPreference, resolveAgyFamily, setGeminiPreference } from "./lib/tiers.ts";
-import { loadRoleModels, loadTiers, MODELS_FILE, ROLE_NAMES, type RoleModelChoice, saveTiers, setRolePreference, TIER_NAMES, type Tier, type TierName, type TiersFile } from "./lib/tiers.ts";
+import { isGoogleApiModel, loadRoleModels, loadTiers, MODELS_FILE, ROLE_NAMES, type RoleModelChoice, saveTiers, setRolePreference, TIER_NAMES, type Tier, type TierName, type TiersFile } from "./lib/tiers.ts";
 import { type AgentConfig, discoverAgents } from "./subagent/agents.ts";
 
 const THINKING = ["off", "minimal", "low", "medium", "high", "xhigh"];
@@ -33,7 +33,6 @@ const PROVIDERS: Record<string, { glyph: string; color: string; name: string }> 
 	"openai-codex": { glyph: "⬢", color: "success", name: "OpenAI" },
 	openai: { glyph: "⬢", color: "success", name: "OpenAI" },
 	anthropic: { glyph: "✳", color: "warning", name: "Anthropic" },
-	google: { glyph: "◆", color: "accent", name: "Google" },
 	openrouter: { glyph: "◈", color: "muted", name: "OpenRouter" },
 };
 const OTHER = { glyph: "●", color: "dim", name: "" };
@@ -81,7 +80,7 @@ function modelOptions(ctx: ExtensionCommandContext, pilot = false): SelectItem[]
 	for (const m of scoped) {
 		if (pilot && m.type && m.type !== "chat") continue;
 		const id = `${m.provider}/${m.id}`;
-		if (seen.has(id)) continue;
+		if (isGoogleApiModel(id) || seen.has(id)) continue;
 		seen.add(id);
 		const p = providerOf(id);
 		const bits: string[] = [];
@@ -97,7 +96,7 @@ function modelOptions(ctx: ExtensionCommandContext, pilot = false): SelectItem[]
 		items.push({ value: id, label: `${p.glyph} ${m.name && m.name !== m.id ? m.name : m.id}`, description: `${p.name || m.provider} · ${bits.join(" · ")}` });
 	}
 	// primeiro os provedores diretos, depois openrouter e o resto
-	const rank = (id: string) => (id.startsWith("openai-codex/") ? 0 : id.startsWith("anthropic/") ? 1 : id.startsWith("google/") ? 2 : id.startsWith("openrouter/") ? 4 : 3);
+	const rank = (id: string) => (id.startsWith("openai-codex/") ? 0 : id.startsWith("anthropic/") ? 1 : id.startsWith("openrouter/") ? 3 : 2);
 	return items.sort((a, b) => rank(a.value) - rank(b.value) || a.label.localeCompare(b.label));
 }
 
@@ -169,7 +168,8 @@ export default function (pi: ExtensionAPI) {
 		if (!runtimeEnabled() || isChild() || processFlags[supportWarningKey]) return;
 		try {
 			// Só avisa quando o scout de fato herdaria o principal: sem apoio e sem modelo próprio do papel.
-			if (getAgentPreferences().supportModel || (loadRoleModels().scout?.length ?? 0) > 0) return;
+			const { supportModel } = getAgentPreferences();
+			if ((supportModel && !isGoogleApiModel(supportModel)) || (loadRoleModels().scout?.length ?? 0) > 0) return;
 			processFlags[supportWarningKey] = true;
 			ctx.ui.notify("Modelo de apoio não configurado: sem uma escolha própria, o scout herda o modelo principal. Configure o apoio em /models.", "warning");
 		} catch { /* Aviso de custo não impede a abertura da sessão. */ }
@@ -209,7 +209,7 @@ export default function (pi: ExtensionAPI) {
 			// Allowlist por papel: vale nos dois modos. Config quebrada é dita, não escondida —
 			// e no piloto não derruba o painel (slots seguem servindo de fallback).
 			try {
-				roleChoices = data ? (data.roleModels ?? {}) : loadRoleModels();
+				roleChoices = loadRoleModels(data);
 			} catch (err) {
 				roleError = err instanceof Error ? err.message : String(err);
 			}
@@ -250,6 +250,7 @@ export default function (pi: ExtensionAPI) {
 			};
 			const options = modelOptions(ctx, pilot);
 			const currentDefault = () => (ctx.model ? `${ctx.model.provider}/${ctx.model.id}` : "");
+			const normalModel = (model?: string | null) => isGoogleApiModel(model) ? "" : model ?? "";
 			const supportUnset = "__agent_support_inherit__";
 
 			await ctx.ui.custom((tui, theme, _kb, done) => {
@@ -260,7 +261,7 @@ export default function (pi: ExtensionAPI) {
 						latest.tiers[name] = { ...latest.tiers[name], ...patch };
 						saveTiers(latest);
 						data = latest;
-						roleChoices = latest.roleModels ?? {};
+						roleChoices = loadRoleModels(latest);
 					} catch (err) {
 						ctx.ui.notify(`erro salvando tier: ${err instanceof Error ? err.message : String(err)}`, "error");
 					}
@@ -298,7 +299,7 @@ export default function (pi: ExtensionAPI) {
 								id: "default",
 								label: "Principal",
 								description: "sessão · fallback dos papéis sem allowlist",
-								model: currentDefault,
+								model: () => normalModel(currentDefault()),
 								// Thinking do principal é escolha manual (←→ aqui, ou /thinking) e persiste:
 								// o modo simple/complex não mexe nele.
 								extra: () => ["sessão", ctx.thinkingLevel ?? ""],
@@ -308,7 +309,7 @@ export default function (pi: ExtensionAPI) {
 								id: "support",
 								label: "Apoio",
 								description: "fallback económico dos papéis sem allowlist",
-								model: () => resourcePrefs?.supportModel ?? "",
+								model: () => normalModel(resourcePrefs?.supportModel),
 								extra: () => ["fallback"],
 							},
 							...roleRows,
@@ -319,7 +320,7 @@ export default function (pi: ExtensionAPI) {
 								id: "default",
 								label: "Default",
 								description: "você · chats novos",
-								model: currentDefault,
+								model: () => normalModel(currentDefault()),
 								extra: () => [ctx.thinkingLevel ?? ""],
 							},
 							...TIER_NAMES.map((name): Row => {
@@ -329,7 +330,7 @@ export default function (pi: ExtensionAPI) {
 									id: name,
 									label: t().label,
 									description: `${USAGE[name] ?? ""} · ${t().description}`,
-									model: () => t().model,
+									model: () => name === "image" ? t().model : normalModel(t().model),
 									extra: () => (name === "image" ? [t().quality ?? "auto", t().size ?? "auto"] : [t().thinking ?? "medium"]),
 								};
 							}),

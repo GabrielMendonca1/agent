@@ -101,8 +101,8 @@ export function loadTiers(): TiersFile {
 			throw new Error(`${MODELS_FILE}: campo "roleModels" precisa ser um objeto`);
 		}
 		for (const [role, choices] of Object.entries(parsed.roleModels)) {
-			if (!role.trim() || !Array.isArray(choices) || choices.length === 0) {
-				throw new Error(`${MODELS_FILE}: roleModels."${role}" precisa ter ao menos uma opção`);
+			if (!role.trim() || !Array.isArray(choices)) {
+				throw new Error(`${MODELS_FILE}: roleModels."${role}" precisa ser uma lista de opções`);
 			}
 			const seen = new Set<string>();
 			for (const choice of choices) {
@@ -123,18 +123,27 @@ export function loadTiers(): TiersFile {
 	return parsed as TiersFile;
 }
 
-export function getRoleModelChoices(role: string): RoleModelChoice[] | undefined {
-	if (!existsSync(MODELS_FILE)) return undefined;
-	return loadTiers().roleModels?.[role];
+/** Model refs from the Pi catalog, not native IDs for the agy runner. */
+export function isGoogleApiModel(ref: string | null | undefined): boolean {
+	if (!ref || ref.startsWith("agy/")) return false;
+	// Direct providers and publisher/model IDs exposed through aggregators.
+	return /^google(?:-ai-studio|-gemini-cli|-antigravity|-vertex)?\//i.test(ref) ||
+		/(?:^|[/.:])~?(?:google[/:]|gemini(?:[-/:.]|$))/i.test(ref);
 }
 
-/**
- * Allowlist por papel para exibição. Arquivo ausente = nada configurado;
- * arquivo existente e inválido propaga o erro (não vira ausência silenciosa).
- */
-export function loadRoleModels(): Record<string, RoleModelChoice[]> {
-	if (!existsSync(MODELS_FILE)) return {};
-	return loadTiers().roleModels ?? {};
+function allowedRoleChoices(choices: RoleModelChoice[], isBlocked = isGoogleApiModel): RoleModelChoice[] {
+	return choices.filter((choice) => !isBlocked(choice.model));
+}
+
+/** undefined = absent; [] = configured but no allowed model. */
+export function getRoleModelChoices(role: string, isBlocked = isGoogleApiModel): RoleModelChoice[] | undefined {
+	const roles = loadTiers().roleModels;
+	return roles && Object.hasOwn(roles, role) ? allowedRoleChoices(roles[role], isBlocked) : undefined;
+}
+
+/** Keep empty configured roles visible in /models so they can be reconfigured. */
+export function loadRoleModels(data = loadTiers()): Record<string, RoleModelChoice[]> {
+	return Object.fromEntries(Object.entries(data.roleModels ?? {}).map(([role, choices]) => [role, allowedRoleChoices(choices)]));
 }
 
 /**
@@ -146,34 +155,42 @@ export function loadRoleModels(): Record<string, RoleModelChoice[]> {
  * do usuário em /models), autoriza o modelo novo naquele papel com esse thinking.
  */
 export function setRolePreference(role: string, model: string, addWithThinking?: string): RoleModelChoice[] {
+	if (isGoogleApiModel(model)) throw new Error("Gemini está disponível pelo papel agy, não pela API do Pi.");
 	const data = loadTiers();
-	const choices = data.roleModels?.[role];
+	const choices = data.roleModels && Object.hasOwn(data.roleModels, role) ? data.roleModels[role] : undefined;
 	if (addWithThinking && !choices?.some((choice) => choice.model === model)) {
 		if (!model.includes("/")) throw new Error(`modelo "${model}" precisa do formato provider/modelId`);
 		const next = [{ model, thinking: addWithThinking }, ...(choices ?? [])];
 		data.roleModels = { ...(data.roleModels ?? {}), [role]: next };
 		saveTiers(data);
-		return next;
+		return allowedRoleChoices(next);
 	}
-	if (!choices) throw new Error(`papel "${role}" não tem modelos autorizados em ${MODELS_FILE}`);
+	const allowed = allowedRoleChoices(choices ?? []);
+	if (!choices || !allowed.length) throw new Error(`papel "${role}" não tem modelos autorizados em ${MODELS_FILE}`);
 	const index = choices.findIndex((choice) => choice.model === model);
 	if (index < 0) {
-		throw new Error(`modelo "${model}" não está autorizado para "${role}" (autorizados: ${choices.map((c) => c.model).join(", ")})`);
+		throw new Error(`modelo "${model}" não está autorizado para "${role}" (autorizados: ${allowed.map((c) => c.model).join(", ")})`);
 	}
-	if (index === 0) return choices;
+	if (index === 0) return allowed;
 	const next = [choices[index], ...choices.filter((_, i) => i !== index)];
 	data.roleModels![role] = next;
 	saveTiers(data);
-	return next;
+	return allowedRoleChoices(next);
 }
 
 /** Resolve a preferência ou valida uma escolha explícita sem consultar quota/disponibilidade. */
-export function resolveRoleModel(role: string, requestedModel?: string): ResolvedRoleModel | undefined {
-	const choices = getRoleModelChoices(role);
+export function resolveRoleModel(role: string, requestedModel?: string, options?: {
+	isBlocked?: typeof isGoogleApiModel;
+	allowUnconfiguredOverride?: boolean;
+}): ResolvedRoleModel | undefined {
+	const choices = getRoleModelChoices(role, options?.isBlocked);
 	if (!choices) {
-		if (requestedModel !== undefined) throw new Error(`Agent "${role}" has no configured model choices; explicit model override is not allowed.`);
+		if (requestedModel !== undefined && !options?.allowUnconfiguredOverride) {
+			throw new Error(`Agent "${role}" has no configured model choices; explicit model override is not allowed.`);
+		}
 		return undefined;
 	}
+	if (!choices.length) throw new Error(`Agent "${role}" has no allowed Pi models. Choose one in /models before dispatching.`);
 	const choice = requestedModel !== undefined ? choices.find((item) => item.model === requestedModel) : choices[0];
 	if (!choice) {
 		const allowed = choices.map((item, index) => `${item.model} (thinking ${item.thinking}${index === 0 ? ", preferred" : ""})`).join(", ");
@@ -184,7 +201,7 @@ export function resolveRoleModel(role: string, requestedModel?: string): Resolve
 
 export function formatRoleModelChoices(role: string): string | undefined {
 	const choices = getRoleModelChoices(role);
-	if (!choices) return undefined;
+	if (!choices?.length) return undefined;
 	return choices
 		.map((choice, index) => `${choice.model} (thinking ${choice.thinking}${index === 0 ? ", preferred" : ""})`)
 		.join(" OR ");

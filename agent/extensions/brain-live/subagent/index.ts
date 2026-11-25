@@ -889,7 +889,7 @@ export default function (pi: ExtensionAPI) {
 				// Explicit role configuration is authoritative; no classifier inference.
 				await mapWithConcurrencyLimit(tasks, 4, async (t) => {
 					const role = agents.find((a) => a.name === t.agent);
-					if (role?.runner === "agy" || t.model || role?.model || role?.thinking || getRoleModelChoices(t.agent)?.length) return;
+					if (role?.runner === "agy" || t.model || role?.model || role?.thinking || getRoleModelChoices(t.agent) !== undefined) return;
 					const step = recipe.steps.find((st) => st.role === t.agent);
 					const fromRecipe = step?.slot ?? (t.agent === "scout" ? "apoio" : "principal");
 					t.slot = fromRecipe;
@@ -898,7 +898,7 @@ export default function (pi: ExtensionAPI) {
 
 			// Validate all explicit choices and snapshot preferences before approval,
 			// anchoring, persistence, or spawn. Callers cannot supply `thinking`.
-			const selected = resolveJobTaskModels(tasks, dispatchDefaults, agents);
+			const selected = resolveJobTaskModels(tasks, dispatchDefaults, agents, ctx.modelRegistry);
 			if (!selected.ok) return fail(selected.error);
 			tasks = selected.tasks;
 
@@ -963,6 +963,7 @@ export default function (pi: ExtensionAPI) {
 				agentScope,
 				projectAgentsDir: discovery.projectAgentsDir,
 				dispatchDefaults,
+				modelRegistry: ctx.modelRegistry,
 				cwd: params.cwd ?? ctx.cwd,
 				timeoutSeconds: timeout.value,
 			});
