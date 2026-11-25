@@ -444,6 +444,8 @@ const sha256 = (data: Buffer | string) => createHash("sha256").update(data).dige
  * Só lê: `git status --porcelain=v1 -z --untracked-files=all`, `git diff HEAD --binary`
  * e o conteúdo dos não rastreados (que o diff não vê). Roda dentro do sandbox só leitura.
  */
+const UNTRACKED_HASH_LIMIT = 8 * 1024 * 1024;
+
 export function treeState(root: string): TreeState | null {
   const top = gitRead(root, ["rev-parse", "--show-toplevel"]);
   if (!top.ok) return null;
@@ -461,7 +463,11 @@ export function treeState(root: string): TreeState | null {
     let content: string;
     try {
       const stat = lstatSync(file);
-      content = stat.isSymbolicLink() ? `link:${readlinkSync(file)}` : stat.isFile() ? sha256(readFileSync(file)) : `kind:${stat.mode}`;
+      // Large untracked files are fingerprinted by size and mtime instead of being read whole.
+      content = stat.isSymbolicLink() ? `link:${readlinkSync(file)}`
+        : !stat.isFile() ? `kind:${stat.mode}`
+        : stat.size > UNTRACKED_HASH_LIMIT ? `stat:${stat.size}:${stat.mtimeMs}`
+        : sha256(readFileSync(file));
     } catch (error: any) { content = `unreadable:${error?.code ?? "?"}`; }
     untracked.update(`${name}\0${content}\0`);
   }
