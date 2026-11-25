@@ -64,7 +64,7 @@ function walkSchema(where, node, path = '') {
   if (Array.isArray(node)) { node.forEach((item, i) => walkSchema(where, item, `${path}[${i}]`)); return; }
   for (const key of ['description', 'title']) if (typeof node[key] === 'string') check(`${where}${path}.${key}`, node[key]);
   for (const [key, value] of Object.entries(node)) {
-    if (key === 'description' || key === 'title') continue;
+    // Só pula o texto já checado: um objeto em `title`/`description` é uma propriedade com esse nome.
     if (value && typeof value === 'object') walkSchema(where, value, `${path}.${key}`);
   }
 }
@@ -132,6 +132,16 @@ try {
   for (const required of ['plan', 'todo', 'subagent', 'checks', 'jobs', 'ask_user', 'skim', 'web_search', 'web_fetch', 'peers_list', 'megamind_who']) {
     assert.ok(tools.has(required), `tool ${required} não registrada: ${[...tools.keys()].join(', ')}`);
   }
+  // Propriedades chamadas title/description também são percorridas.
+  const probe = { type: 'object', properties: {
+    title: { type: 'string', description: 'Título da tarefa' },
+    description: { type: 'object', title: 'Descrição', properties: { body: { type: 'string', description: 'quando usar' } } },
+  } };
+  const before = failures.length;
+  walkSchema('probe', probe);
+  assert.deepEqual(failures.splice(before).map(f => f.split(':')[0]),
+    ['probe.properties.title.description', 'probe.properties.description.title', 'probe.properties.description.properties.body.description'],
+    'walkSchema desce em propriedades title/description');
   for (const [name, tool] of tools) checkTool(toolSource.get(name), tool);
   console.log(`ok ${tools.size} tools inspecionadas`);
 
