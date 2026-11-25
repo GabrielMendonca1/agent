@@ -56,6 +56,9 @@ import {
 } from "./jobs.ts";
 import { taskStatusLines, traceJob } from "./trace.ts";
 import {
+	BOARD_DEFAULT_USD,
+	BOARD_MAX_USD,
+	BOARD_MIN_USD,
 	isGitRepo,
 	SWARM_DEFAULT_ROUNDS,
 	SWARM_DEFAULT_USD,
@@ -285,8 +288,8 @@ const SubagentParams = Type.Object({
 
 /** Deferred `swarm` tool: never in the initial schema; the model loads it with tool_search. */
 const SwarmParams = Type.Object({
-	mode: StringEnum(["loop"] as const, { description: "loop: a writer implements, a read-only reviewer reviews; rounds repeat until the reviewer approves or a cap stops them" }),
-	writer: Type.Object({
+	mode: StringEnum(["loop", "board"] as const, { description: "loop: a writer implements, a read-only reviewer reviews, in rounds until approval or a cap. board: 2+ coupled agents in parallel sharing an append-only board" }),
+	writer: Type.Optional(Type.Object({
 		agent: Type.Optional(Type.String({ description: "Writer role with edit/write (default worker)" })),
 		brief: BriefSchema,
 		task: Type.Optional(Type.String({ description: "Extra notes" })),
@@ -294,7 +297,7 @@ const SwarmParams = Type.Object({
 		model: Type.Optional(Type.String()),
 		skills: Type.Optional(SkillsField),
 		name: Type.Optional(Type.String({ description: "Handle name" })),
-	}),
+	}, { description: "loop: required" })),
 	reviewer: Type.Optional(Type.Object({
 		agent: Type.Optional(Type.String({ description: "Read-only reviewer role (default reviewer)" })),
 		brief: Type.Optional(briefSchema(false)),
@@ -305,7 +308,8 @@ const SwarmParams = Type.Object({
 	}, { description: "Omit brief to derive objective, context, scope and done_when from the writer brief" })),
 	isolate: Type.Optional(Type.Boolean({ description: "Run the writer in its own git worktree (default true inside a git repository); the reviewer reads the same worktree" })),
 	maxRounds: Type.Optional(Type.Integer({ minimum: 1, maximum: SWARM_MAX_ROUNDS, description: `Writer+reviewer rounds, 1..${SWARM_MAX_ROUNDS} (default ${SWARM_DEFAULT_ROUNDS})` })),
-	maxUsd: Type.Optional(Type.Number({ minimum: SWARM_MIN_USD, maximum: SWARM_MAX_USD, description: `Cost cap in USD, checked before each new round, ${SWARM_MIN_USD}..${SWARM_MAX_USD} (default ${SWARM_DEFAULT_USD})` })),
+	tasks: Type.Optional(Type.Array(TaskItem, { description: `board: 2..${MAX_PARALLEL_TASKS} parallel tasks, same items as subagent tasks` })),
+	maxUsd: Type.Optional(Type.Number({ minimum: SWARM_MIN_USD, maximum: BOARD_MAX_USD, description: `Cost cap in USD. loop: checked before each new round, ${SWARM_MIN_USD}..${SWARM_MAX_USD} (default ${SWARM_DEFAULT_USD}); board: checked as tasks finish, ${BOARD_MIN_USD}..${BOARD_MAX_USD} (default ${BOARD_DEFAULT_USD})` })),
 	cwd: Type.Optional(Type.String({ description: "Working directory (default: session cwd)" })),
 	agentScope: Type.Optional(AgentScopeSchema),
 	confirmProjectAgents: Type.Optional(Type.Boolean({ description: "Confirm project-local agents", default: true })),
@@ -1386,13 +1390,15 @@ export default function (pi: ExtensionAPI) {
 		if (process.env[NO_DELEGATE_ENV] === "1")
 			return fail(`This process descends from a subagent (${NO_DELEGATE_ENV}=1); it cannot launch a swarm.`);
 		if (signal?.aborted) return fail("Swarm aborted before launch.");
-		if ((params.mode as string) !== "loop") return fail(`Swarm mode "${String(params.mode)}" is not available; use mode "loop".`);
+		const mode = params.mode as string;
+		if (mode !== "loop" && mode !== "board") return fail(`Unknown swarm mode "${mode}"; use "loop" or "board".`);
 		if (!isSafeId(sessionId)) return fail("Unsafe session id; refusing to launch a swarm job.");
 
 		const maxRounds = params.maxRounds ?? SWARM_DEFAULT_ROUNDS;
 		if (!Number.isInteger(maxRounds) || maxRounds < 1 || maxRounds > SWARM_MAX_ROUNDS) return fail(`maxRounds must be an integer 1..${SWARM_MAX_ROUNDS}.`);
-		const maxUsd = params.maxUsd ?? SWARM_DEFAULT_USD;
-		if (!Number.isFinite(maxUsd) || maxUsd < SWARM_MIN_USD || maxUsd > SWARM_MAX_USD) return fail(`maxUsd must be ${SWARM_MIN_USD}..${SWARM_MAX_USD}.`);
+		const [minUsd, topUsd] = mode === "board" ? [BOARD_MIN_USD, BOARD_MAX_USD] : [SWARM_MIN_USD, SWARM_MAX_USD];
+		const maxUsd = params.maxUsd ?? (mode === "board" ? BOARD_DEFAULT_USD : SWARM_DEFAULT_USD);
+		if (!Number.isFinite(maxUsd) || maxUsd < minUsd || maxUsd > topUsd) return fail(`maxUsd must be ${minUsd}..${topUsd} for mode ${mode}.`);
 		const timeout = validateTimeoutSeconds(params.timeoutSeconds);
 		if (!timeout.ok) return fail(timeout.error);
 
@@ -1409,7 +1415,107 @@ export default function (pi: ExtensionAPI) {
 
 		const discovery = discoverAgents(ctx.cwd, agentScope);
 		const agents = discovery.agents;
+		const confirmed = async (roles: AgentConfig[]) => {
+			const project = roles.filter((role) => role.source === "project");
+			if (project.length === 0 || !(params.confirmProjectAgents ?? true) || !ctx.hasUI || ctx.isProjectTrusted()) return true;
+			return ctx.ui.confirm(
+				"Run project-local agents?",
+				`Agents: ${[...new Set(project.map((a) => a.name))].join(", ")}\nSource: ${discovery.projectAgentsDir ?? "(unknown)"}\n\nProject agents are repo-controlled. Only continue for trusted repositories.`,
+			);
+		};
+		const anchor = (jobId: string, agentNames: string[]): string | null | undefined => {
+			const before = ctx.sessionManager.getLeafId();
+			pi.appendEntry(ANCHOR_ENTRY_TYPE, { jobId, mode: `swarm-${mode}`, agents: agentNames, createdAt: Date.now() });
+			const after = ctx.sessionManager.getLeafId();
+			return after !== before ? after : before;
+		};
+
+		if (mode === "board") {
+			const items = (params.tasks ?? []) as BriefItem[];
+			if (items.length < 2 || items.length > MAX_PARALLEL_TASKS) return fail(`Board needs 2..${MAX_PARALLEL_TASKS} tasks; got ${items.length}.`);
+			const unknown = [...new Set(items.map((item) => item.agent))].filter((name) => !agents.some((a) => a.name === name));
+			if (unknown.length > 0) return fail(`Unknown agent(s): ${unknown.join(", ")}. Available agents: ${agents.map((a) => `${a.name} (${a.source})`).join(", ") || "none"}`);
+			const roleOf = (item: BriefItem) => agents.find((a) => a.name === item.agent)!;
+			const agy = items.filter((item) => roleOf(item).runner === "agy").map((item) => item.agent);
+			if (agy.length > 0) return fail(`Board members cannot run on agy (no board tool there): ${[...new Set(agy)].join(", ")}.`);
+			const empty = items.flatMap((item, i) => (!(item.task ?? "").trim() && !hasBriefContent(item.brief) ? [i] : []));
+			if (empty.length > 0) return fail(`Empty task(s) at index ${empty.join(", ")}: each item needs a brief or a task text.`);
+			const gaps = items
+				.map((item, i) => ({ item, i, required: requiredBriefFields(roleOf(item)) }))
+				.map((gap) => ({ ...gap, missing: gap.required.filter((field) => !briefValue(gap.item.brief, field)) }))
+				.filter((gap) => gap.missing.length > 0);
+			if (gaps.length > 0)
+				return fail(["Incomplete brief; nothing was launched.", ...gaps.map((gap) => `- ${gap.item.agent} (task ${gap.i}): missing brief ${gap.missing.join(", ")}; this role requires ${gap.required.join(", ")}`)].join("\n"));
+			const names = items.map((item) => item.name).filter((name): name is string => name !== undefined);
+			const badNames = names.filter((name) => !validHandleName(name));
+			if (badNames.length > 0)
+				return fail(`Invalid handle name(s): ${badNames.join(", ")}. Use 1-48 letters, digits, "-" or "_", starting with a letter or digit.`);
+			const taken = [...names.filter((name, i) => names.indexOf(name) !== i), ...takenHandles(baseDir, sessionId, names)];
+			if (taken.length > 0) return fail(`Handle name(s) already used: ${[...new Set(taken)].join(", ")}. Pick another name or omit it.`);
+			const jobCwd = path.resolve(ctx.cwd, params.cwd ?? ".");
+			let tasks: JobTaskSpec[] = items.map((item) => ({
+				agent: item.agent,
+				task: composeTaskText(item, roleOf(item)),
+				cwd: item.cwd ? path.resolve(jobCwd, item.cwd) : undefined,
+				model: item.model,
+				name: item.name,
+				...(requestedSkills(item.skills).length ? { skills: requestedSkills(item.skills) } : {}),
+			}));
+			for (const [i, item] of items.entries()) {
+				const resolved = await resolveChildSkills(roleOf(item), item.skills, path.resolve(jobCwd, item.cwd ?? "."));
+				if (!resolved.ok) return fail(`Task ${i}: ${resolved.error} Nothing was launched.`);
+				tasks[i].resolvedSkills = resolved.skills ?? null;
+			}
+			const recipe = readRecipe(ctx.cwd);
+			for (const t of tasks) {
+				const role = agents.find((a) => a.name === t.agent);
+				if (t.model || role?.model || role?.thinking || getRoleModelChoices(t.agent) !== undefined) continue;
+				t.slot = recipe.steps.find((st) => st.role === t.agent)?.slot ?? (t.agent === "scout" ? "apoio" : "principal");
+			}
+			const selected = resolveJobTaskModels(tasks, dispatchDefaults, agents, ctx.modelRegistry);
+			if (!selected.ok) return fail(selected.error);
+			tasks = selected.tasks;
+			if (!(await confirmed(items.map(roleOf)))) return { content: [{ type: "text" as const, text: "Canceled: project-local agents not approved." }], details: controlDetails() };
+			if (signal?.aborted) return fail("Swarm aborted before launch.");
+			if (!swarmEnabled) return fail(SWARM_OFF_ERROR);
+			if (process.env.AGENT_CHECKPOINTS !== "0") {
+				const user = lastUser(ctx);
+				if (user) dispatchDefaults.writerCheckpoint = { root: path.join(getAgentDir(), "checkpoints"), sessionId, turn: user.id, prompt: user.prompt };
+			}
+			const jobId = mgr.reserveJobId();
+			let anchorEntryId: string | null | undefined;
+			try {
+				anchorEntryId = anchor(jobId, tasks.map((t) => t.agent));
+			} catch (e) {
+				return fail(`Could not anchor the swarm job in the session: ${e instanceof Error ? e.message : String(e)}`);
+			}
+			const swarm: SwarmRecord = { kind: "board", isolate: false, maxRounds: 0, maxUsd, spentUsd: 0, rounds: [] };
+			const outcome = mgr.launch({
+				jobId, sessionId, sessionGeneration, anchorEntryId, mode: "parallel", tasks, agents, agentScope,
+				projectAgentsDir: discovery.projectAgentsDir, dispatchDefaults, modelRegistry: ctx.modelRegistry,
+				cwd: jobCwd, timeoutSeconds: timeout.value, swarm,
+			});
+			if (!outcome.ok) return fail(`${outcome.error} Nothing was launched.`);
+			if (outcome.record.status === "running") lifecycleStarted(outcome.record.jobId);
+			emitTeam(outcome.record);
+			const isolated = outcome.record.tasks.filter((t) => t.worktree).length;
+			return {
+				content: [{
+					type: "text" as const,
+					text: [
+						`Launched swarm board job ${outcome.record.jobId}, status running.`,
+						`Members: ${outcome.record.tasks.map((t) => `${t.handle} (${t.agent}=${t.model ?? "default"})`).join(", ")}.`,
+						`Board: ${outcome.record.swarm?.boardPath}.${isolated ? ` ${isolated} writer(s) isolated in their own worktrees.` : ""}`,
+						`Cap: $${maxUsd.toFixed(2)} over finished tasks; timeout ${timeout.value}s. Result file: ${outcome.resultPath}.`,
+						"The result arrives as a subagent-result message; manage the job with the subagent tool (status/result/trace/cancel/integrate/discard/continue). Do not poll in a loop.",
+					].join(" "),
+				}],
+				details: controlDetails(toSummary(outcome.record, outcome.resultPath)),
+			};
+		}
+
 		const writerIn = params.writer;
+		if (!writerIn) return fail("Mode loop needs writer (with brief).");
 		const reviewerIn = params.reviewer ?? {};
 		const writerRole = agents.find((a) => a.name === (writerIn.agent ?? "worker"));
 		const reviewerRole = agents.find((a) => a.name === (reviewerIn.agent ?? "reviewer"));
@@ -1473,15 +1579,7 @@ export default function (pi: ExtensionAPI) {
 		if (!selected.ok) return fail(selected.error);
 		tasks = selected.tasks;
 
-		const confirmProjectAgents = params.confirmProjectAgents ?? true;
-		const projectRoles = [writerRole, reviewerRole].filter((role) => role.source === "project");
-		if (projectRoles.length > 0 && confirmProjectAgents && ctx.hasUI && !ctx.isProjectTrusted()) {
-			const ok = await ctx.ui.confirm(
-				"Run project-local agents?",
-				`Agents: ${[...new Set(projectRoles.map((a) => a.name))].join(", ")}\nSource: ${discovery.projectAgentsDir ?? "(unknown)"}\n\nProject agents are repo-controlled. Only continue for trusted repositories.`,
-			);
-			if (!ok) return { content: [{ type: "text" as const, text: "Canceled: project-local agents not approved." }], details: controlDetails() };
-		}
+		if (!(await confirmed([writerRole, reviewerRole]))) return { content: [{ type: "text" as const, text: "Canceled: project-local agents not approved." }], details: controlDetails() };
 		if (signal?.aborted) return fail("Swarm aborted before launch.");
 		// Re-check: the user may have turned swarm off while a confirmation was open.
 		if (!swarmEnabled) return fail(SWARM_OFF_ERROR);
@@ -1494,10 +1592,7 @@ export default function (pi: ExtensionAPI) {
 		const jobId = mgr.reserveJobId();
 		let anchorEntryId: string | null | undefined;
 		try {
-			const before = ctx.sessionManager.getLeafId();
-			pi.appendEntry(ANCHOR_ENTRY_TYPE, { jobId, mode: "swarm", agents: tasks.map((t) => t.agent), createdAt: Date.now() });
-			const after = ctx.sessionManager.getLeafId();
-			anchorEntryId = after !== before ? after : before;
+			anchorEntryId = anchor(jobId, tasks.map((t) => t.agent));
 		} catch (e) {
 			return fail(`Could not anchor the swarm job in the session: ${e instanceof Error ? e.message : String(e)}`);
 		}
@@ -1533,6 +1628,7 @@ export default function (pi: ExtensionAPI) {
 			"Swarm loop (only while the user has /swarm on): a writer implements the brief, then a read-only reviewer reviews the change; on REQUEST_CHANGES both resume their own sessions with only the findings or the delta, until the reviewer approves or a cap (maxRounds, maxUsd, timeout) stops the loop.",
 			"The writer runs in its own git worktree by default and the reviewer reads that worktree. A turn where the writer changes nothing ends the loop as stalled; a reviewer reply without a final `VERDICT: APPROVE` line never counts as approval.",
 			"ASYNC: returns a jobId at once; one subagent-result message arrives at the end with outcome, rounds, cost, the last verdict, handles and the worktree. The job is a normal subagent job: use the subagent tool for status/result/trace/list/cancel/integrate/discard/continue.",
+			"Board: 2+ tasks (same items as subagent tasks) run in parallel, writers of one repository in their own worktrees; each child gets a `board` tool to post claim, decision, blocker, done and note entries and to read new ones. No chat between children. maxUsd stops the job once finished tasks reach it; the result ends with the board.",
 			"Review the final diff yourself before integrate.",
 		].join(" "),
 		parameters: SwarmParams,
@@ -1540,7 +1636,7 @@ export default function (pi: ExtensionAPI) {
 			return launchSwarm(params, ctx, signal);
 		},
 		renderCall(args, theme) {
-			const objective = brief(args.writer?.brief?.objective || args.writer?.task || "...");
+			const objective = args.mode === "board" ? `${args.tasks?.length ?? 0} tasks` : brief(args.writer?.brief?.objective || args.writer?.task || "...");
 			return compactCard([`${theme.fg("toolTitle", theme.bold("swarm "))}${theme.fg("accent", args.mode ?? "loop")} ${theme.fg("dim", `— ${objective}`)}`]);
 		},
 		renderResult(result, _options, theme) {

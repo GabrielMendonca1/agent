@@ -284,6 +284,8 @@ const CHILD_OUTPUT_CAP_PATH = path.join(path.dirname(fileURLToPath(import.meta.u
 const CHILD_CACHE_PREFIX_PATH = path.join(path.dirname(fileURLToPath(import.meta.url)), "child-cache-prefix.ts");
 /** Child-only: one steer message at AGENT_CHILD_SOFT_DEADLINE_MS (soft timeout). */
 const CHILD_SOFT_DEADLINE_PATH = path.join(path.dirname(fileURLToPath(import.meta.url)), "child-soft-deadline.ts");
+/** Child-only: the `board` tool of a swarm board member (AGENT_BOARD_PATH/AGENT_BOARD_HANDLE). */
+const CHILD_BOARD_PATH = path.join(path.dirname(fileURLToPath(import.meta.url)), "child-board.ts");
 
 /**
  * AGENTS.md/CLAUDE.md the child's Pi would load for `cwd` (same discovery: global agent dir
@@ -555,6 +557,8 @@ export interface RunAgentOptions {
 	resume?: { invocation: ChildInvocation; sessionFile: string };
 	/** Absolute epoch ms for the soft-timeout steer (AGENT_CHILD_SOFT_DEADLINE_MS). */
 	softDeadlineMs?: number;
+	/** Swarm board member: board file and own handle; adds child-board.ts and the `board` tool. */
+	board?: { path: string; handle: string };
 }
 
 interface ChildRunOptions {
@@ -1025,6 +1029,7 @@ function launchInvocation(agent: AgentConfig, opts: RunAgentOptions, skills: Chi
 	if (fs.existsSync(CHILD_OUTPUT_CAP_PATH)) extensions.push(CHILD_OUTPUT_CAP_PATH);
 	if (fs.existsSync(CHILD_CACHE_PREFIX_PATH)) extensions.push(CHILD_CACHE_PREFIX_PATH);
 	if (fs.existsSync(CHILD_SOFT_DEADLINE_PATH)) extensions.push(CHILD_SOFT_DEADLINE_PATH);
+	if (opts.board) extensions.push(CHILD_BOARD_PATH);
 	// Explicit child extensions can provide an offline
 	// provider in checks. Never inherit the parent's whole profile.
 	for (const ext of (process.env.AGENT_SUBAGENT_CHILD_EXTENSIONS ?? "").split(":").filter(Boolean)) extensions.push(ext);
@@ -1050,7 +1055,8 @@ function launchInvocation(agent: AgentConfig, opts: RunAgentOptions, skills: Chi
 		model,
 		modelLabel: prettyModelLabel(model, resolved?.tier),
 		thinking,
-		tools: agent.tools && agent.tools.length > 0 ? [...agent.tools] : undefined,
+		// A role with a tool list needs `board` in it, or --tools would filter the board tool out.
+		tools: agent.tools && agent.tools.length > 0 ? [...agent.tools, ...(opts.board && !agent.tools.includes("board") ? ["board"] : [])] : undefined,
 		sandbox,
 		extensions,
 		...(skills ? { skills } : {}),
@@ -1058,6 +1064,7 @@ function launchInvocation(agent: AgentConfig, opts: RunAgentOptions, skills: Chi
 		cwd,
 		sourceCwd: opts.sourceCwd,
 		writes: agent.tools?.length ? agent.tools.some((tool) => tool === "edit" || tool === "write") : true,
+		...(opts.board ? { board: { ...opts.board } } : {}),
 	};
 }
 
@@ -1120,7 +1127,10 @@ export async function runSingleAgent(opts: RunAgentOptions): Promise<SingleResul
 	// AGENT_CHECKS_READONLY marca o papel sem edit/write mesmo sem sandbox disponível:
 	// ali checks só lê (list/last); executar o manifesto escaparia do sandbox.
 	const extraEnv: Record<string, string> = { AGENT_BASH_SANDBOX: "", AGENT_SANDBOX_CWD: "", AGENT_CHECKS_READONLY: sandbox ? "1" : "",
-		AGENT_CHILD_SOFT_DEADLINE_MS: !opts.prefetch && opts.softDeadlineMs ? String(Math.floor(opts.softDeadlineMs)) : "" };
+		AGENT_CHILD_SOFT_DEADLINE_MS: !opts.prefetch && opts.softDeadlineMs ? String(Math.floor(opts.softDeadlineMs)) : "",
+		// From the invocation, so a continue keeps the board; empty clears an inherited value.
+		AGENT_BOARD_PATH: !opts.prefetch && invocation.board ? invocation.board.path : "",
+		AGENT_BOARD_HANDLE: !opts.prefetch && invocation.board ? invocation.board.handle : "" };
 	if (sandbox && sandbox !== "none") {
 		extraEnv.AGENT_BASH_SANDBOX = sandbox;
 		extraEnv.AGENT_SANDBOX_CWD = cwd;

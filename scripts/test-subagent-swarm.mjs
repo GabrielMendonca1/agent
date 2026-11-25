@@ -7,10 +7,12 @@ import './lib/hermetic-test-env.mjs';
 // project skill refused before any worktree).
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { homedir, tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { createRequire } from 'node:module';
+import { userCommandEnv } from '../agent/core/child-env.mjs';
 
 const repo = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const piRoot = process.env.AGENT_PI_ROOT || join(homedir(), '.local/share/agent/current/lib/node_modules/@earendil-works/pi-coding-agent');
@@ -42,7 +44,7 @@ export default function (pi) {
       // Tools arrive as system messages with toolsAdded; a tool loaded by tool_search appends one later.
       const tools = context.messages.filter(m => m.role === 'system').flatMap(m => (m.toolsAdded ?? []).map(t => t.name));
       const system = JSON.stringify(context.messages.find(m => m.role === 'system')?.sections ?? {});
-            const last = context.messages.at(-1);
+      const last = context.messages.at(-1);
       let content, stopReason = 'stop';
       const cost = Number(process.env.FG_COST || 0);
       if (!process.env.AGENT_CHILD) {
@@ -50,11 +52,31 @@ export default function (pi) {
         const script = JSON.parse(process.env.FG_SCRIPT || '[]');
         const step = script[n];
         const all = context.messages.map(text).join('\\n');
-        const job = /Launched swarm loop job (\\S+),/.exec(all)?.[1] ?? '';
+        const job = /Launched swarm (?:loop|board) job (\\S+),/.exec(all)?.[1] ?? '';
+        const member = /Members: (\\S+) \\(/.exec(all)?.[1] ?? '';
         if (step?.tool) {
-          content = [{ type: 'toolCall', id: 'call-' + n, name: step.tool, arguments: JSON.parse(JSON.stringify(step.args ?? {}).replaceAll('$JOB', job)) }];
+          content = [{ type: 'toolCall', id: 'call-' + n, name: step.tool, arguments: JSON.parse(JSON.stringify(step.args ?? {}).replaceAll('$JOB', job).replaceAll('$MEMBER', member)) }];
           stopReason = 'toolUse';
         } else content = [{ type: 'text', text: step?.text ?? 'PARENT-DONE' }];
+      } else if (tools.includes('board')) {
+        // Board member: a fixed sequence of board calls per turn; every tool result goes to FG_LOG.
+        const me = process.env.AGENT_BOARD_HANDLE;
+        const turn = context.messages.filter(m => m.role === 'user').length;
+        const since = context.messages.findLastIndex(m => m.role === 'user');
+        const step = context.messages.slice(since).filter(m => m.role === 'assistant').length;
+        if (process.env.FG_LOG && last.role === 'toolResult') appendFileSync(process.env.FG_LOG, JSON.stringify({ me, turn, step, result: text(last), env: [me, process.env.AGENT_BOARD_PATH] }) + '\\n');
+        const seen = Math.max(0, ...context.messages.filter(m => m.role === 'toolResult').flatMap(m => [...text(m).matchAll(/#(\\d+)/g)].map(x => Number(x[1]))));
+        const plan = turn === 1
+          ? [{ action: 'post', kind: 'claim', text: me + ' claims src/' + me + '.ts', refs: ['src/' + me + '.ts'] },
+             { action: 'post', kind: 'decision', text: me + ' uses JSON for the shared format' },
+             { action: 'read' },
+             { action: 'read', since: seen },
+             { action: 'post', kind: 'done', text: me + ' finished' }]
+          : [{ action: 'read', kind: 'done' }];
+        if (step < plan.length) {
+          content = [{ type: 'toolCall', id: 'b-' + turn + '-' + step, name: 'board', arguments: plan[step] }];
+          stopReason = 'toolUse';
+        } else content = [{ type: 'text', text: 'BOARD-DONE-' + me + '-' + turn }];
       } else {
         const role = tools.includes('edit') ? 'writer' : 'reviewer';
         const turn = context.messages.filter(m => m.role === 'user').length;
@@ -199,6 +221,8 @@ try {
     assert.ok(!integrate.isError, resultText(integrate));
     assert.match(resultText(integrate), /Task 1: integrate complete/);
     assert.equal(reviewer.worktree, undefined, 'only the writer owns a worktree');
+    const registry = JSON.parse(readFileSync(join(jobsDir, record.sessionId, 'handles', 'registry.json'), 'utf8'));
+    for (const task of record.tasks) assert.equal(registry.handles[task.handle].lifecycle, 'closed', `integrate closes ${task.handle}`);
     console.log('ok loop approve: isolated writer, reviewer in the same worktree, compact result, integrate merges');
   }
 
@@ -260,6 +284,21 @@ try {
     console.log('ok ambiguous: a reply without VERDICT is not approval');
   }
 
+  // 7b. discard with taskIndex 2 (the reviewer) still acts on the loop as one unit: worktree gone, both handles closed.
+  {
+    const events = runPi({ AGENT_SWARM: '1', FG_VERDICTS: 'NONE', FG_SCRIPT: JSON.stringify([search, swarmCall(), { text: 'waiting' },
+      { tool: 'subagent', args: { action: 'discard', jobId: '$JOB', taskIndex: 2, force: true } }, { text: 'discarded' }]) });
+    const jobId = /Launched swarm loop job (\S+),/.exec(resultText(toolResults(events, 'swarm')[0]))[1];
+    const discard = toolResults(events, 'subagent').at(-1);
+    assert.ok(!discard.isError, resultText(discard));
+    assert.match(resultText(discard), /Task 1: discard complete/);
+    const record = readJob(jobId);
+    assert.ok(!existsSync(record.tasks[0].worktree), 'writer worktree removed');
+    const registry = JSON.parse(readFileSync(join(jobsDir, record.sessionId, 'handles', 'registry.json'), 'utf8'));
+    for (const task of record.tasks) assert.equal(registry.handles[task.handle].lifecycle, 'closed', `discard closes ${task.handle}`);
+    console.log('ok loop handles: integrate and discard (even with taskIndex) close writer and reviewer');
+  }
+
   // 8. Isolated writer with a project skill fails at launch, before any job or worktree.
   {
     mkdirSync(join(work, '.pi/skills/local'), { recursive: true });
@@ -279,6 +318,85 @@ try {
     const events = runPi({ AGENT_SWARM: '1', FG_SCRIPT: JSON.stringify([search, swarmCall({ reviewer: { agent: 'mutator' } })]) });
     assert.match(resultText(toolResults(events, 'swarm')[0]), /Reviewer mutator must be read-only/);
     console.log('ok roles: reviewer with edit refused');
+  }
+
+  // 10. Board: two parallel members post concurrently, seq stays monotonic, read with since is incremental,
+  // the result ends with the board, and a continue keeps the board tool.
+  {
+    const log = join(root, 'board.log');
+    const members = ['a', 'b'].map((x) => ({ agent: 'worker', brief: { ...brief, objective: `board part ${x}` } }));
+    const events = runPi({ AGENT_SWARM: '1', FG_LOG: log, FG_SCRIPT: JSON.stringify([search, { tool: 'swarm', args: { mode: 'board', tasks: members } }, { text: 'waiting' },
+      { tool: 'subagent', args: { action: 'continue', handle: '$MEMBER', message: 'check the done entries' } }, { text: 'waiting again' }, { text: 'end' }]) });
+    const [launch] = toolResults(events, 'swarm');
+    assert.ok(!launch.isError, resultText(launch));
+    const jobId = /Launched swarm board job (\S+),/.exec(resultText(launch))[1];
+    const record = readJob(jobId);
+    assert.equal(record.mode, 'parallel');
+    assert.equal(record.swarm.kind, 'board');
+    assert.equal(record.status, 'completed', record.error);
+    assert.equal(record.swarm.outcome, 'done');
+    const file = record.swarm.boardPath;
+    assert.equal(file, join(jobsDir, record.sessionId, jobId, 'board.jsonl'));
+    assert.equal(statSync(file).mode & 0o777, 0o600);
+    const entries = readFileSync(file, 'utf8').trim().split('\n').map(l => JSON.parse(l));
+    assert.deepEqual(entries.map(e => e.seq), [1, 2, 3, 4, 5, 6], 'strictly monotonic seq across both children');
+    const handles = record.tasks.map(t => t.handle);
+    for (const h of handles) assert.deepEqual(entries.filter(e => e.handle === h).map(e => e.kind), ['claim', 'decision', 'done'], `${h} entries`);
+    for (const e of entries) assert.deepEqual(Object.keys(e).filter(k => !['seq', 'ts', 'handle', 'kind', 'text', 'refs'].includes(k)), [], 'no chat fields');
+    assert.ok(record.tasks.every(t => t.worktree), 'two writers of one repo run in worktrees');
+    assert.match(record.tasks[0].task, /^Swarm board: you are \S+\. Siblings working in parallel: \S+ \(board part b\)\./);
+    const turns = readLog(log);
+    for (const h of handles) {
+      const mine = turns.filter(t => t.me === h && t.turn === 1);
+      assert.match(mine[0].result, /^Posted #\d+ \(claim\)\.$/);
+      assert.deepEqual(mine[0].env, [h, file]);
+      const full = mine[2].result.split('\n');
+      assert.ok(full.some(l => new RegExp(`^#\\d+ \\[${h} · claim\\] .* \\(refs: src/`).test(l)), mine[2].result);
+      const lastSeen = Math.max(...[...mine.slice(0, 3).map(t => t.result).join(' ').matchAll(/#(\d+)/g)].map(x => Number(x[1])));
+      const incremental = mine[3].result;
+      if (/^No new board entries since #\d+\.$/.test(incremental)) assert.equal(incremental, `No new board entries since #${lastSeen}.`);
+      else for (const l of incremental.split('\n')) assert.ok(Number(/^#(\d+)/.exec(l)[1]) > lastSeen, `since filters: ${incremental}`);
+    }
+    const delivered = events.filter(e => e.type === 'message_end' && e.message.customType === 'subagent-result').map(e => e.message);
+    assert.match(delivered[0].content, /^swarm board · outcome: done · tasks: 2 · cost: \$0\.00/m);
+    assert.match(delivered[0].content, /### board \(6 entries\)\n#1 \[/);
+    assert.ok(delivered[0].content.includes(`full board: ${file}`));
+    // continue: same invocation, so the board tool and env come back.
+    const cont = turns.filter(t => t.turn === 2);
+    assert.equal(cont.length, 1, JSON.stringify(turns));
+    assert.deepEqual(cont[0].env, [handles[0], file]);
+    assert.equal(cont[0].result.split('\n').length, 2, 'read with kind=done after continue');
+    console.log('ok board: concurrent posts with monotonic seq, incremental read, result summary, board survives continue');
+  }
+
+  // 11. Board caps (400 chars, refs, 100 entries, 64 KiB; read always works) and env hygiene.
+  {
+    const { createJiti } = createRequire(join(piRoot, 'package.json'))('jiti');
+    const swarm = await createJiti(import.meta.url, { fsCache: false }).import(join(repo, 'agent/extensions/brain-live/subagent/swarm.ts'));
+    const file = join(root, 'caps/board.jsonl');
+    swarm.createBoard(file);
+    const post = (extra) => swarm.postBoard(file, { handle: 'h-1', kind: 'note', text: 'x', ...extra });
+    assert.match(post({ text: 'y'.repeat(401) }).error, /text has 401 characters; the limit is 400/);
+    assert.match(post({ text: '   ' }).error, /text is required/);
+    assert.match(post({ kind: 'chat' }).error, /kind must be one of claim, decision, note, blocker, done/);
+    assert.match(post({ refs: Array(9).fill('r') }).error, /refs has 9 items; the limit is 8/);
+    assert.match(post({ refs: ['r'.repeat(161)] }).error, /limited to 160 characters/);
+    assert.equal(post({ text: `  ${'y'.repeat(400)}  ` }).entry.text.length, 400, 'trimmed, 400 accepted');
+    for (let i = 2; i <= 100; i++) assert.equal(post({}).entry.seq, i);
+    assert.match(post({}).error, /board is full \(100 entries\); reading still works/);
+    assert.equal(swarm.readBoard(file).length, 100);
+    const big = join(root, 'caps-bytes/board.jsonl');
+    swarm.createBoard(big);
+    let result;
+    for (let i = 0; i < 100 && !(result = swarm.postBoard(big, { handle: 'h-1', kind: 'note', text: 'z'.repeat(400), refs: Array(8).fill('q'.repeat(160)) })).error; i++);
+    assert.match(result.error, /board is full \(64 KiB\)/);
+    assert.ok(statSync(big).size <= 64 * 1024);
+    assert.ok(swarm.readBoard(big).length > 20);
+    const cleaned = userCommandEnv({ AGENT_BOARD_PATH: file, AGENT_BOARD_HANDLE: 'h-1', KEEP: '1' });
+    assert.equal(cleaned.AGENT_BOARD_PATH, undefined);
+    assert.equal(cleaned.AGENT_BOARD_HANDLE, undefined);
+    assert.equal(cleaned.KEEP, '1');
+    console.log('ok board caps: 400 chars, refs, 100 entries, 64 KiB, read after full; userCommandEnv strips AGENT_BOARD_*');
   }
 } finally {
   rmSync(root, { recursive: true, force: true });

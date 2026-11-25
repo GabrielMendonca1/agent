@@ -48,6 +48,8 @@ export interface ChildInvocation {
 	sourceCwd?: string;
 	/** Role can edit/write: a continue without worktree captures a writer checkpoint. */
 	writes: boolean;
+	/** Swarm board member: board file and own handle (child-board.ts; env AGENT_BOARD_PATH/HANDLE). */
+	board?: { path: string; handle: string };
 }
 
 export type HandleLifecycle = "running" | "waiting" | "closed";

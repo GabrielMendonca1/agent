@@ -19,7 +19,7 @@ import { commitWip, gateSummary, gcWorktrees, isolateWriters, manageWorktrees, p
 import { getRoleModelChoices, isGoogleApiModel, resolveGeminiPreference, resolveModelRef, resolveRoleModel } from "../lib/tiers.ts";
 import type { AgentConfig, AgentScope } from "./agents.ts";
 import type { ChildSkills } from "./skills.ts";
-import { runSwarmLoop, type SwarmRecord } from "./swarm.ts";
+import { boardBlock, boardPath, boardSummary, createBoard, runSwarmLoop, type SwarmRecord } from "./swarm.ts";
 import {
 	type DurableRunState,
 	MAX_RESUMES,
@@ -165,6 +165,8 @@ export interface JobTaskSpec {
 	/** Hard timeout: sha of `WIP(agent): timeout <jobId>` in the job worktree. */
 	wipCommit?: string;
 	wipError?: string;
+	/** Swarm board member: board file and own handle (reaches the child invocation). */
+	board?: { path: string; handle: string };
 }
 
 /** Soft timeout margin: 10% of the job timeout, at least 3 minutes, at most half the timeout. */
@@ -593,6 +595,8 @@ interface ActiveJob {
 	releaseLock?: () => void;
 	/** AGENT_CHILD_SOFT_DEADLINE_MS for this job's children. */
 	softDeadlineMs?: number;
+	/** Swarm board: maxUsd reached by finished tasks; the job was aborted. */
+	budgetStopped?: boolean;
 }
 
 export type LaunchOutcome = { ok: true; record: JobRecord; resultPath: string } | { ok: false; error: string };
@@ -726,8 +730,21 @@ export class SubagentJobManager {
 			sessionGeneration: spec.sessionGeneration,
 			parentPid: process.pid,
 			parentIdentity: readProcessIdentity(process.pid),
-			...(spec.mode === "swarm" && spec.swarm ? { swarm: structuredClone(spec.swarm) } : {}),
+			...(spec.swarm ? { swarm: structuredClone(spec.swarm) } : {}),
 		};
+
+		// Swarm board: the shared file exists before any child; removed again if the launch fails.
+		let board: string | undefined;
+		if (record.swarm?.kind === "board" && record.tasks.length >= 2) {
+			board = boardPath(this.deps.baseDir, spec.sessionId, jobId);
+			try {
+				createBoard(board);
+			} catch (error) {
+				return { ok: false, error: `Could not create the swarm board: ${error instanceof Error ? error.message : String(error)}` };
+			}
+			record.swarm.boardPath = board;
+		}
+		const dropBoard = () => { if (board) fs.rmSync(path.dirname(board), { recursive: true, force: true }); };
 
 		// Handles are reserved with the record: names are unique per parent session.
 		try {
@@ -739,7 +756,15 @@ export class SubagentJobManager {
 			});
 			record.tasks.forEach((task, index) => { task.handle = handles[index]; });
 		} catch (error) {
+			dropBoard();
 			return { ok: false, error: error instanceof Error ? error.message : String(error) };
+		}
+		if (board) {
+			const members = record.tasks.map((task) => ({ handle: task.handle!, task: task.task }));
+			for (const task of record.tasks) {
+				task.board = { path: board, handle: task.handle! };
+				task.task = `${boardBlock(task.handle!, members.filter((m) => m.handle !== task.handle))}\n\n${task.task}`;
+			}
 		}
 
 		// Persist the launch before acknowledging it, so a crash right after the
@@ -884,6 +909,7 @@ export class SubagentJobManager {
 			roleModel: task.model && task.thinking ? { model: task.model, thinking: task.thinking } : undefined,
 			skills: task.skills,
 			resolvedSkills: task.resolvedSkills,
+			board: task.board,
 			step: opts.step,
 			signal,
 			makeDetails,
@@ -900,7 +926,7 @@ export class SubagentJobManager {
 			result = await this.quotaFallback(job, spec, task, result, common);
 			if (opts.carryUsage) for (const key of ["input", "output", "cacheRead", "cacheWrite", "cost", "turns"] as const) result.usage[key] += opts.carryUsage[key];
 			// The child and its process tree are gone here (runChild waits): safe to commit.
-			if (job.timedOut && result.stopReason === "aborted") this.commitTimeoutWip(job, task);
+			if ((job.timedOut || job.budgetStopped) && result.stopReason === "aborted") this.commitTimeoutWip(job, task);
 		} catch (e) {
 			job.thrown.set(slot, e instanceof Error ? e.message : String(e));
 			this.settleTask(job, slot);
@@ -909,8 +935,20 @@ export class SubagentJobManager {
 		}
 		job.returned.set(slot, result);
 		this.settleTask(job, slot);
+		this.boardBudget(job);
 		this.persist(job.record);
 		return result;
+	}
+
+	/** Swarm board: once finished tasks cost maxUsd, stop the rest (pending never start, running abort). */
+	private boardBudget(job: ActiveJob): void {
+		const swarm = job.record.swarm;
+		if (swarm?.kind !== "board") return;
+		swarm.spentUsd = [...job.returned.values()].reduce((sum, result) => sum + (result.usage.cost || 0), 0);
+		if (swarm.spentUsd < swarm.maxUsd || job.controller.signal.aborted) return;
+		job.budgetStopped = true;
+		swarm.outcome = "max_usd";
+		job.controller.abort();
 	}
 
 	/**
@@ -1248,6 +1286,14 @@ export class SubagentJobManager {
 		const gates = gateSummary(job.record, spec.agents);
 		if (gates) output = `${output}\n\n${gates}`;
 		if (swarmTail) output = `${output}\n\n${swarmTail}`;
+		const board = job.record.swarm?.kind === "board" ? job.record.swarm : undefined;
+		if (board) {
+			if (job.budgetStopped) error = `Swarm board stopped: finished tasks cost $${board.spentUsd.toFixed(2)} of $${board.maxUsd.toFixed(2)}.${error ? ` ${error}` : ""}`;
+			board.outcome ??= error || job.cancelRequested || job.timedOut ? "failed" : "done";
+			board.spentUsd = usage.cost;
+			output = `swarm board · outcome: ${board.outcome} · tasks: ${job.record.tasks.length} · cost: $${usage.cost.toFixed(2)}\n\n${output}`;
+			if (board.boardPath) output = `${output}\n\n${boardSummary(board.boardPath)}`;
+		}
 		const outputBytes = Buffer.byteLength(output, "utf-8");
 		if (outputBytes > MAX_STORED_RESULT_BYTES) {
 			// Never silently shrink a result: report the overflow instead.
@@ -1305,6 +1351,7 @@ export class SubagentJobManager {
 		for (const record of records) {
 			if (gcWorktrees(record, this.now(), () => this.persist(record))) {
 				fs.unlinkSync(jobPath(this.deps.baseDir, sessionId, record.jobId));
+				if (record.swarm?.boardPath) fs.rmSync(path.dirname(record.swarm.boardPath), { recursive: true, force: true });
 			} else this.persist(record);
 		}
 		return listRecords(this.deps.baseDir, sessionId);
@@ -1492,6 +1539,8 @@ export class SubagentJobManager {
 			taskIndex = from.taskIndex;
 		}
 		const target = record;
+		// A swarm loop is one unit: the writer owns the worktree, and both handles close together.
+		if (target.mode === "swarm") taskIndex = undefined;
 		const registry = readRegistry(this.deps.baseDir, sessionId);
 		const selected = target.tasks
 			.map((task, i) => ({ task, index: i + 1 }))

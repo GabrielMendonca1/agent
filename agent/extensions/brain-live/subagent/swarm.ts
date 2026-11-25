@@ -9,6 +9,8 @@
 
 import { createHash } from "node:crypto";
 import { spawnSync } from "node:child_process";
+import * as fs from "node:fs";
+import * as path from "node:path";
 import type { SingleResult, UsageStats } from "./runner.ts";
 
 export const SWARM_ENTRY_TYPE = "agent-swarm";
@@ -27,7 +29,7 @@ export const SWARM_ON_TEXT = [
 	"Swarm mode is active in this session. The `swarm` tool is deferred: load it with tool_search (query \"swarm\").",
 	"You have an autonomous mandate to pick the shape of delegated work:",
 	"- swarm loop: one writer implements and one reviewer reviews in rounds until approval; use it for implementation that needs an independent review.",
-	"- swarm board: 2+ coupled agents working in parallel on one shared objective (not available yet; use parallel subagent tasks meanwhile).",
+	"- swarm board: 2+ coupled agents working in parallel on one shared objective, coordinating through an append-only board (claims, decisions, blockers, done).",
 	"- plain subagent: one-shot recon, reading, a single review, or independent parallel tasks.",
 	"You choose the decomposition, the roles, maxRounds and maxUsd. Log each choice in one line (mode, roles, caps, why).",
 	"A swarm job is a normal subagent job: read it with subagent status/result/trace/list, stop it with cancel, and close it with integrate/discard or continue a handle.",
@@ -45,7 +47,8 @@ export const VERDICT_CONTRACT = [
 	"Approve only when no blocking finding remains. A reply without that line counts as not approved.",
 ].join("\n");
 
-export type SwarmOutcome = "approved" | "ambiguous" | "stalled" | "max_rounds" | "max_usd" | "quota" | "failed";
+/** Loop outcomes, plus "done" for a board whose tasks all finished. */
+export type SwarmOutcome = "approved" | "ambiguous" | "stalled" | "max_rounds" | "max_usd" | "quota" | "failed" | "done";
 export type SwarmVerdict = "APPROVE" | "REQUEST_CHANGES";
 
 export interface SwarmRound {
@@ -57,9 +60,12 @@ export interface SwarmRound {
 	costUsd: number;
 }
 
-/** Persisted on JobRecord.swarm; board (part 2) adds its own fields under kind "board". */
+/**
+ * Persisted on JobRecord.swarm. Loop: mode "swarm", rounds and verdicts. Board: mode "parallel"
+ * (the regular fan-out), maxUsd checked as tasks finish, and the board file.
+ */
 export interface SwarmRecord {
-	kind: "loop";
+	kind: "loop" | "board";
 	isolate: boolean;
 	maxRounds: number;
 	maxUsd: number;
@@ -69,6 +75,8 @@ export interface SwarmRecord {
 	/** Checkout HEAD before the first writer turn (the worktree base when isolated). */
 	baseSha?: string;
 	lastVerdict?: string;
+	/** Board: the shared append-only board.jsonl. */
+	boardPath?: string;
 }
 
 const VERDICT_LINE = /^\s*(?:\*\*)?VERDICT:\s*(APPROVE|REQUEST_CHANGES)(?:\*\*)?\s*$/i;
@@ -256,4 +264,173 @@ export async function runSwarmLoop(deps: LoopDeps): Promise<LoopResult> {
 		if (!verdict) return finish("ambiguous", "reviewer reply has no VERDICT line");
 		pendingFindings = lastReview;
 	}
+}
+
+// ---------------------------------------------------------------------------
+// Board: one append-only JSONL per board job, shared by its children through the
+// child-only `board` tool (child-board.ts). No chat: entries have no addressee and
+// nobody is notified; children read with `since` when they need to.
+
+export const BOARD_KINDS = ["claim", "decision", "note", "blocker", "done"] as const;
+export type BoardKind = (typeof BOARD_KINDS)[number];
+export const BOARD_TEXT_MAX = 400;
+export const BOARD_REFS_MAX = 8;
+export const BOARD_REF_MAX = 160;
+export const BOARD_MAX_ENTRIES = 100;
+export const BOARD_MAX_BYTES = 64 * 1024;
+export const BOARD_LOCK_STALE_MS = 10_000;
+export const BOARD_SUMMARY_CAP = 2 * 1024;
+export const BOARD_MIN_USD = 0.1;
+export const BOARD_MAX_USD = 100;
+export const BOARD_DEFAULT_USD = 15;
+export const BOARD_PATH_ENV = "AGENT_BOARD_PATH";
+export const BOARD_HANDLE_ENV = "AGENT_BOARD_HANDLE";
+
+export interface BoardEntry {
+	seq: number;
+	ts: number;
+	handle: string;
+	kind: BoardKind;
+	text: string;
+	refs?: string[];
+}
+
+/** <baseDir>/<sessionId>/<jobId>/board.jsonl (the job record stays at <jobId>.json). */
+export function boardPath(baseDir: string, sessionId: string, jobId: string): string {
+	return path.join(baseDir, sessionId, jobId, "board.jsonl");
+}
+
+export function createBoard(file: string): void {
+	fs.mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 });
+	fs.writeFileSync(file, "", { flag: "wx", mode: 0o600 });
+}
+
+export function readBoard(file: string): BoardEntry[] {
+	let raw: string;
+	try {
+		raw = fs.readFileSync(file, "utf-8");
+	} catch {
+		return [];
+	}
+	const entries: BoardEntry[] = [];
+	for (const line of raw.split("\n")) {
+		if (!line.trim()) continue;
+		try {
+			const entry = JSON.parse(line) as BoardEntry;
+			if (Number.isInteger(entry.seq) && typeof entry.text === "string") entries.push(entry);
+		} catch {
+			/* a torn line never blocks reading */
+		}
+	}
+	return entries;
+}
+
+const sleep = (ms: number) => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+
+function pidAlive(pid: number): boolean {
+	try {
+		process.kill(pid, 0);
+		return true;
+	} catch (error) {
+		return (error as NodeJS.ErrnoException).code === "EPERM";
+	}
+}
+
+/** Short O_EXCL lock next to the board; a dead owner or a lock older than 10 s is taken over. */
+function withBoardLock<T>(file: string, body: () => T): T {
+	const lock = `${file}.lock`;
+	const deadline = Date.now() + 5_000;
+	for (;;) {
+		try {
+			fs.writeFileSync(lock, JSON.stringify({ pid: process.pid, at: Date.now() }), { flag: "wx", mode: 0o600 });
+			break;
+		} catch (error) {
+			if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+		}
+		let stale = false;
+		try {
+			const held = JSON.parse(fs.readFileSync(lock, "utf-8")) as { pid?: number; at?: number };
+			stale = (typeof held.pid === "number" && !pidAlive(held.pid)) || Date.now() - fs.statSync(lock).mtimeMs > BOARD_LOCK_STALE_MS;
+		} catch {
+			// Unreadable: an owner may be between create and write; only age frees it.
+			try { stale = Date.now() - fs.statSync(lock).mtimeMs > BOARD_LOCK_STALE_MS; } catch { /* gone: retry */ }
+		}
+		if (stale) {
+			try { fs.unlinkSync(lock); } catch { /* another process took it over first */ }
+			continue;
+		}
+		if (Date.now() > deadline) throw new Error("Board is busy; try again.");
+		sleep(10);
+	}
+	try {
+		return body();
+	} finally {
+		try { fs.unlinkSync(lock); } catch { /* already gone */ }
+	}
+}
+
+/** Validated append; seq is the last seq + 1 under the lock. Errors are model-facing. */
+export function postBoard(file: string, input: { handle: string; kind: unknown; text: unknown; refs?: unknown }): { ok: true; entry: BoardEntry } | { ok: false; error: string } {
+	const kind = typeof input.kind === "string" ? input.kind.trim().toLowerCase() : "";
+	if (!(BOARD_KINDS as readonly string[]).includes(kind)) return { ok: false, error: `kind must be one of ${BOARD_KINDS.join(", ")}.` };
+	const text = typeof input.text === "string" ? input.text.trim() : "";
+	if (!text) return { ok: false, error: "text is required." };
+	if (text.length > BOARD_TEXT_MAX) return { ok: false, error: `text has ${text.length} characters; the limit is ${BOARD_TEXT_MAX}. Post a shorter entry.` };
+	let refs: string[] | undefined;
+	if (input.refs !== undefined) {
+		if (!Array.isArray(input.refs) || input.refs.some((ref) => typeof ref !== "string")) return { ok: false, error: "refs must be a list of strings." };
+		refs = (input.refs as string[]).map((ref) => ref.trim()).filter(Boolean);
+		if (refs.length > BOARD_REFS_MAX) return { ok: false, error: `refs has ${refs.length} items; the limit is ${BOARD_REFS_MAX}.` };
+		const long = refs.find((ref) => ref.length > BOARD_REF_MAX);
+		if (long) return { ok: false, error: `each ref is limited to ${BOARD_REF_MAX} characters.` };
+		if (refs.length === 0) refs = undefined;
+	}
+	if (!fs.existsSync(file)) return { ok: false, error: "The board of this job no longer exists." };
+	return withBoardLock(file, () => {
+		const entries = readBoard(file);
+		if (entries.length >= BOARD_MAX_ENTRIES) return { ok: false as const, error: `The board is full (${BOARD_MAX_ENTRIES} entries); reading still works.` };
+		const entry: BoardEntry = { seq: (entries.at(-1)?.seq ?? 0) + 1, ts: Date.now(), handle: input.handle, kind: kind as BoardKind, text, ...(refs ? { refs } : {}) };
+		const line = `${JSON.stringify(entry)}\n`;
+		if (fs.statSync(file).size + Buffer.byteLength(line) > BOARD_MAX_BYTES) return { ok: false as const, error: `The board is full (${BOARD_MAX_BYTES / 1024} KiB); reading still works.` };
+		fs.appendFileSync(file, line, { mode: 0o600 });
+		return { ok: true as const, entry };
+	});
+}
+
+export function formatBoardEntry(entry: BoardEntry): string {
+	return `#${entry.seq} [${entry.handle} · ${entry.kind}] ${entry.text}${entry.refs?.length ? ` (refs: ${entry.refs.join(", ")})` : ""}`;
+}
+
+/** Final result section: compact entries up to ~2 KiB, then the path of the full file. */
+export function boardSummary(file: string): string {
+	const entries = readBoard(file);
+	const lines: string[] = [];
+	let bytes = 0;
+	for (const entry of entries) {
+		const line = formatBoardEntry(entry).replace(/\s+/g, " ");
+		bytes += Buffer.byteLength(line) + 1;
+		if (bytes > BOARD_SUMMARY_CAP) {
+			lines.push(`[${entries.length - lines.length} more entries in the file]`);
+			break;
+		}
+		lines.push(line);
+	}
+	return [`### board (${entries.length} entries)`, ...(lines.length ? lines : ["(empty)"]), `full board: ${file}`].join("\n");
+}
+
+/** First line of the objective (or of the task) for the sibling list. */
+function objectiveLine(task: string): string {
+	const match = /## Objective\n([^\n]+)/.exec(task);
+	const line = (match?.[1] ?? task.split("\n").find((l) => l.trim()) ?? "").replace(/\s+/g, " ").trim();
+	return line.length > 120 ? `${line.slice(0, 117)}...` : line;
+}
+
+/** The 4-line block prepended to each board task message; the role system prompt stays untouched. */
+export function boardBlock(own: string, siblings: Array<{ handle: string; task: string }>): string {
+	return [
+		`Swarm board: you are ${own}. Siblings working in parallel: ${siblings.map((s) => `${s.handle} (${objectiveLine(s.task)})`).join("; ")}.`,
+		"Use the `board` tool to post a claim before you take a file or contract, a decision when you fix a shared choice, a blocker when you are stuck, and done when you finish.",
+		"Before you touch a shared contract (API, schema, shared file), read the board with since = the last seq you saw.",
+		"The board is not a chat: no messages to siblings, no questions and answers; post only facts others need.",
+	].join("\n");
 }
