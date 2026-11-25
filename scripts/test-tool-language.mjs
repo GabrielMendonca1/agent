@@ -186,7 +186,11 @@ try {
   sent.forEach((text, i) => check(`command prompt ${['notes', 'rules init'][i]}`, text));
   const { slotBlock } = await jiti.import(join(repo, 'agent/extensions/agent/peers/mesh.ts'));
   const peer = { short: 'abc123', project: 'demo', branch: 'main', status: 'idle', note: 'note', at: Date.now() };
-  check('peers slot', slotBlock([peer, { ...peer, short: 'self01', self: true }], Date.now(), 0)?.block);
+  const now = Date.now();
+  const slot = slotBlock([peer, { ...peer, short: 'old123', at: now - 3 * 3600_000 }, { ...peer, short: 'self01', self: true }], now)?.block;
+  assert.match(slot, /^abc123 .* now$/m, 'par recente aparece no slot');
+  assert.match(slot, /^old123 .* 3h$/m, 'par antigo aparece no slot');
+  check('peers slot', slot);
   const guard = await jiti.import(join(repo, 'agent/core/loop-guard.mjs'));
   for (const name of ['NUDGE', 'CYCLE_NUDGE', 'STOP', 'CYCLE_STOP']) check(`loop guard ${name}`, guard[name]);
   console.log('ok seções injetadas, slot de peers e loop guard');
