@@ -23,6 +23,8 @@ export interface ChildSkills {
 	paths: string[];
 	/** Names the child advertises (AGENT_CHILD_SKILLS / PI_AUTOMATIC_SKILLS). */
 	advertised: string[];
+	/** Same-name skills the chosen path shadows (path → other locations); launch checks only. */
+	shadows?: Record<string, string[]>;
 }
 
 export type SkillResolution = { ok: true; skills?: ChildSkills } | { ok: false; error: string };
@@ -30,6 +32,8 @@ export type SkillResolution = { ok: true; skills?: ChildSkills } | { ok: false; 
 export interface CatalogSkill {
 	name: string;
 	filePath: string;
+	/** Other locations of the same name that lost the collision. */
+	others?: string[];
 }
 
 /**
@@ -48,7 +52,13 @@ export async function skillCatalog(cwd: string): Promise<CatalogSkill[]> {
 		noContextFiles: true,
 	});
 	await loader.reload();
-	return loader.getSkills().skills.map((skill) => ({ name: skill.name, filePath: skill.filePath }));
+	const { skills, diagnostics } = loader.getSkills();
+	const losers = new Map<string, string[]>();
+	for (const d of diagnostics as Array<{ type?: string; collision?: { name?: string; loserPath?: string } }>) {
+		const name = d.collision?.name;
+		if (d.type === "collision" && name && d.collision?.loserPath) losers.set(name, [...(losers.get(name) ?? []), d.collision.loserPath]);
+	}
+	return skills.map((skill) => ({ name: skill.name, filePath: skill.filePath, ...(losers.has(skill.name) ? { others: losers.get(skill.name) } : {}) }));
 }
 
 export const runnerSkillHooks = { catalog: skillCatalog };
@@ -84,7 +94,16 @@ export async function resolveChildSkills(
 		return { ok: false, error: `Could not load the skill catalog: ${error instanceof Error ? error.message : String(error)}` };
 	}
 	const byName = new Map<string, string>();
-	for (const skill of catalog) if (!byName.has(skill.name)) byName.set(skill.name, skill.filePath);
+	const others = new Map<string, string[]>();
+	for (const skill of catalog) {
+		const extra = byName.has(skill.name) ? [skill.filePath, ...(skill.others ?? [])] : skill.others ?? [];
+		if (!byName.has(skill.name)) byName.set(skill.name, skill.filePath);
+		if (extra.length) others.set(skill.name, [...(others.get(skill.name) ?? []), ...extra]);
+	}
+	const withShadows = (set: ChildSkills, names: string[]): ChildSkills => {
+		const shadows = Object.fromEntries(names.filter((name) => others.has(name)).map((name) => [byName.get(name)!, others.get(name)!]));
+		return Object.keys(shadows).length ? { ...set, shadows } : set;
+	};
 	const available = () => [...byName.keys()].sort().join(", ") || "none";
 	const roleUnknown = (role.skills ?? []).filter((name) => !byName.has(name));
 	if (roleUnknown.length) return { ok: false, error: `Agent "${role.name}" lists unknown skill(s): ${roleUnknown.join(", ")}. Available skills: ${available()}.` };
@@ -92,9 +111,9 @@ export async function resolveChildSkills(
 	if (unknown.length) return { ok: false, error: `Unknown skill(s) for agent "${role.name}": ${unknown.join(", ")}. Available skills: ${available()}.` };
 	if (role.skills !== undefined) {
 		const names = [...new Set([...role.skills, ...extras])];
-		return { ok: true, skills: { only: true, paths: names.map((name) => byName.get(name)!), advertised: names } };
+		return { ok: true, skills: withShadows({ only: true, paths: names.map((name) => byName.get(name)!), advertised: names }, names) };
 	}
-	return { ok: true, skills: { only: false, paths: extras.map((name) => byName.get(name)!), advertised: [...new Set([...automaticSkillNames(), ...extras])] } };
+	return { ok: true, skills: withShadows({ only: false, paths: extras.map((name) => byName.get(name)!), advertised: [...new Set([...automaticSkillNames(), ...extras])] }, extras) };
 }
 
 /** argv for the snapshot; nothing for the full catalog. */
@@ -123,8 +142,8 @@ export function rootForms(root: string, cwd?: string): string[] {
 		const realCwd = realOr(cwd);
 		if (realCwd) forms.add(realCwd);
 		if (real && realCwd) {
-			const rel = path.relative(real, realCwd);
-			if (!rel.startsWith("..") && !path.isAbsolute(rel)) {
+			if (within(real, realCwd)) {
+				const rel = path.relative(real, realCwd);
 				const candidate = path.resolve(cwd, ...(rel ? rel.split(path.sep).map(() => "..") : []));
 				if (realOr(candidate) === real) forms.add(candidate);
 			}
@@ -140,5 +159,11 @@ export function rootForms(root: string, cwd?: string): string[] {
  */
 export function isProjectSkill(file: string, roots: string[]): boolean {
 	const candidates = [path.resolve(file), realOr(file), realOr(path.dirname(file))].filter((p): p is string => Boolean(p));
-	return candidates.some((candidate) => roots.some((root) => candidate === root || candidate.startsWith(root + path.sep)));
+	return candidates.some((candidate) => roots.some((root) => within(root, candidate)));
+}
+
+/** Directory boundary via path.relative: /repo contains /repo/x, never /repo-2. */
+export function within(root: string, file: string): boolean {
+	const rel = path.relative(root, file);
+	return rel === "" || (rel !== ".." && !rel.startsWith(".." + path.sep) && !path.isAbsolute(rel));
 }

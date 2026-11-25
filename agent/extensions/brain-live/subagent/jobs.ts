@@ -686,7 +686,7 @@ export class SubagentJobManager {
 		for (const [root, group] of plannedIsolation(spec, spec.agents)) {
 			for (const { task, index } of group) {
 				for (const file of task.resolvedSkills?.paths ?? []) {
-					const error = worktreeSkillError(file, root, path.resolve(task.cwd ?? spec.cwd));
+					const error = worktreeSkillError(file, root, path.resolve(task.cwd ?? spec.cwd), task.resolvedSkills?.shadows?.[file]);
 					if (error) return { ok: false, error: `Task ${index + 1} (${task.agent}): ${error}` };
 				}
 			}

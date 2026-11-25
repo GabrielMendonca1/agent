@@ -56,8 +56,12 @@ export function plannedIsolation(record: Pick<JobRecord, "mode" | "tasks" | "cwd
  * path or resolved target inside the repository) are refused outright. Personal, company and
  * bundled skills keep their absolute path.
  */
-export function worktreeSkillError(file: string, root: string, cwd?: string): string | undefined {
-	if (!isProjectSkill(file, rootForms(root, cwd))) return undefined;
+export function worktreeSkillError(file: string, root: string, cwd?: string, shadowed: string[] = []): string | undefined {
+	const roots = rootForms(root, cwd);
+	if (!isProjectSkill(file, roots)) return undefined;
+	// Same name elsewhere: the isolated writer must never get the project copy; refuse, naming both.
+	const outside = shadowed.filter((other) => !isProjectSkill(other, roots));
+	if (outside.length) return `skill "${skillLabel(file)}" resolves to the project copy ${file}, which shadows ${outside.join(", ")}; isolated writers never get project skills. Rename or remove one copy, or run the task in place.`;
 	return `skill "${skillLabel(file)}" is a project skill; isolated writers only get personal, company and bundled skills. Run the task in place to use it.`;
 }
 

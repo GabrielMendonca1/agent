@@ -394,6 +394,12 @@ try {
       const gitTop = spawnSync('git', ['-C', alias, 'rev-parse', '--show-toplevel'], { encoding: 'utf8' }).stdout.trim();
       assert.equal(wt.worktreeSkillError(join(alias, '.pi/skills/aliased/SKILL.md'), gitTop, alias), refusal('aliased'), 'cwd alias to a subdirectory');
       rmSync(join(personalDir, 'intorepo')); rmSync(join(personalDir, 'pointer'), { recursive: true });
+      // Directory boundary, not string prefix: a sibling /repo-2 is not inside /repo (lexical and real).
+      const sibling = join(`${src}-2`, '.pi/skills/sib/SKILL.md');
+      mkdirSync(dirname(sibling), { recursive: true });
+      writeFileSync(sibling, '---\nname: sib\ndescription: x\n---\n');
+      assert.equal(err(sibling), undefined, 'sibling repo-2 is outside repo');
+      assert.equal(wt.worktreeSkillError(realpathSync(sibling), realpathSync(src), src), undefined, 'sibling, real paths');
 
       const writer = { name: 'writer', description: 'w', tools: ['read', 'edit'], model: 'anthropic/claude-sonnet-4-5', systemPrompt: 'x', source: 'user', filePath: '' };
       const set = (...paths) => ({ only: true, paths, advertised: paths.map(() => 'x') });
@@ -410,6 +416,25 @@ try {
         assert.equal(outcome.ok, false);
         assert.equal(outcome.error, `Task 2 (writer): ${refusal(name)}`);
       }
+      // Shadowing: a requested name whose winner is the project copy while a personal copy exists is
+      // refused, naming both; with the personal copy winning, the isolated writer gets it.
+      const personalDup = join(process.env.PI_CODING_AGENT_DIR, 'skills/dup/SKILL.md');
+      mkdirSync(dirname(personalDup), { recursive: true });
+      writeFileSync(personalDup, '---\nname: dup\ndescription: x\n---\n');
+      const skillsMod = await jiti.import(join(repo, 'agent/extensions/brain-live/subagent/skills.ts'));
+      const catalogBefore = skillsMod.runnerSkillHooks.catalog;
+      try {
+        skillsMod.runnerSkillHooks.catalog = async () => [{ name: 'dup', filePath: committed, others: [personalDup] }];
+        const shadowed = await skillsMod.resolveChildSkills({ name: 'writer', skills: [] }, ['dup'], src);
+        assert.deepEqual(shadowed.skills.shadows, { [committed]: [personalDup] });
+        const outcome = manager.launch({ ...spec([]), tasks: [{ agent: 'writer', task: 'a', resolvedSkills: set(global) }, { agent: 'writer', task: 'b', resolvedSkills: shadowed.skills }] });
+        assert.equal(outcome.ok, false);
+        assert.equal(outcome.error, `Task 2 (writer): skill "committed" resolves to the project copy ${committed}, which shadows ${personalDup}; isolated writers never get project skills. Rename or remove one copy, or run the task in place.`);
+        skillsMod.runnerSkillHooks.catalog = async () => [{ name: 'dup', filePath: personalDup, others: [committed] }];
+        const personalWins = await skillsMod.resolveChildSkills({ name: 'writer', skills: [] }, ['dup'], src);
+        assert.deepEqual(personalWins.skills.paths, [personalDup]);
+        assert.equal(wt.worktreeSkillError(personalDup, src, src, personalWins.skills.shadows[personalDup]), undefined, 'personal winner is fine');
+      } finally { skillsMod.runnerSkillHooks.catalog = catalogBefore; rmSync(dirname(personalDup), { recursive: true }); }
       assert.ok(!existsSync(join(baseDir, 'skills')) || readdirSync(join(baseDir, 'skills')).length === 0, 'no job record');
       assert.ok(!existsSync(worktreesDir) || readdirSync(worktreesDir).length === 0, 'no worktree left behind');
     }
