@@ -1,3 +1,4 @@
+import { realpathSync } from "node:fs";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { spawnSync } from "node:child_process";
@@ -54,7 +55,7 @@ export function isolateWriters(record: JobRecord, agents: AgentConfig[], persist
 			const branch = `agent/${name}`;
 			fs.mkdirSync(path.dirname(worktree), { recursive: true });
 			git(root, ["worktree", "add", "-b", branch, worktree, baseSha]);
-			Object.assign(task, { worktree, branch, sourceCwd: cwd, sourceBranch, baseSha, cwd: path.join(worktree, path.relative(root, cwd)) });
+			Object.assign(task, { worktree, branch, sourceCwd: cwd, sourceBranch, baseSha, cwd: path.join(worktree, path.relative(root, realpathSync(cwd))) });
 			// Persiste antes dos links: falhas posteriores não perdem a referência durável.
 			persist();
 			for (const entry of findManifest(root)?.link ?? []) {

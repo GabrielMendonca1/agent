@@ -105,11 +105,12 @@ try {
     assert.equal(runner.failureOf({ ...base, stopReason: 'aborted' }), undefined, 'cancel/timeout never reads as quota');
     assert.equal(runner.failureOf({ ...base, providerError: undefined, errorMessage: 'quota', finalText: 'the rate limit is 429' }), undefined, 'model prose and runner messages are not classified');
     assert.equal(runner.failureOf({ ...base, exitCode: 0, stopReason: 'stop' }), undefined);
-    // Soft deadline: start + timeout - max(10%, 3 min), never before start.
+    // Soft deadline: start + timeout - min(max(10%, 3 min), timeout/2).
     assert.equal(jobs.softDeadlineMs(1000, 3600), 1000 + 3600_000 - 360_000);
     assert.equal(jobs.softDeadlineMs(1000, 1200), 1000 + 1200_000 - 180_000);
-    assert.equal(jobs.softDeadlineMs(1000, 60), 1000);
-    checks++; console.log('ok cota classificada pelo erro do provedor (429/529/usage limit/RESOURCE_EXHAUSTED/capacity); soft deadline com margem 10%/3 min');
+    assert.equal(jobs.softDeadlineMs(1000, 60), 1000 + 30_000);
+    assert.equal(jobs.softDeadlineMs(1000, 300), 1000 + 150_000);
+    checks++; console.log('ok cota classificada pelo erro do provedor (429/529/usage limit/RESOURCE_EXHAUSTED/capacity); soft deadline com margem 10%/3 min, no máximo metade do timeout');
   }
 
   let captured;

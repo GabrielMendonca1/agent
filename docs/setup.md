@@ -438,7 +438,7 @@ O resultado e o uso disponível ficam no registro do job; não há sessão JSONL
 
 #### Soft-timeout e commit WIP
 
-- Cada filho do Pi carrega `subagent/child-soft-deadline.ts`. O runner passa `AGENT_CHILD_SOFT_DEADLINE_MS`, um instante absoluto: início do job + timeout − margem. A margem é 10 % do timeout, com mínimo de 3 min, e o prazo nunca fica antes do início. Com timeout de até 200 s, então, o aviso sai já no primeiro turno.
+- Cada filho do Pi carrega `subagent/child-soft-deadline.ts`. O runner passa `AGENT_CHILD_SOFT_DEADLINE_MS`, um instante absoluto: início do job + timeout − margem. A margem é 10 % do timeout, com mínimo de 3 min, limitada à metade do timeout: com timeout de até 6 min, o aviso sai na metade do tempo.
 - Passado o prazo, a extensão manda uma vez `Time is almost up: commit what works and summarize what is left.` como steer (`sendUserMessage`, `deliverAs: "steer"`). O `pi -p` não tem stdin interativo; o loop do agente entrega a mensagem antes da próxima chamada ao modelo, depois das tools em curso. Não há patch no Pi.
 - No timeout duro, o runner mata a árvore do filho (SIGTERM, depois SIGKILL nos descendentes, incluindo processos que eles criaram depois da foto) e espera todos saírem, até 5 s. Só então, e só no worktree do job, roda `git status --porcelain`. Se houver mudanças, faz `git add -A` (sem os links do manifesto) e `git commit --no-verify -m "WIP(agent): timeout <jobId>"`.
 - O sha vai para `wipCommit` na tarefa e no handle, e numa linha do resultado. O job termina `timeout`, e o handle fica `waiting`: `continue` retoma sobre o commit WIP. Se o commit falhar, o motivo fica em `wipError`.

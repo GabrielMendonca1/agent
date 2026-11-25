@@ -73,7 +73,7 @@ export default function (pi) {
         const text = m => Array.isArray(m.content) ? m.content.map(p => p.text || '').join('') : String(m.content);
         appendFileSync(process.env.FG_STALL, JSON.stringify({ n, t: Date.now(), cwd: process.cwd(), model: model.id,
           users: context.messages.filter(m => m.role === 'user').map(text) }) + '\\n');
-        if (n === 0) content = [{ type: 'toolCall', id: 'stall-0', name: 'bash', arguments: { command: 'printf dirty > dirty.txt; sleep 1' } }];
+        if (n === 0) content = [{ type: 'toolCall', id: 'stall-0', name: 'bash', arguments: { command: 'printf dirty > dirty.txt; sleep ' + (process.env.FG_STALL_FIRST ?? '1') } }];
         else if (n === 1) content = [{ type: 'toolCall', id: 'stall-1', name: 'bash', arguments: { command: 'echo $$ >> ' + process.env.FG_STALL + '.pids; while true; do date >> ticks.txt; sleep 0.05; done' } }];
         if (content) stopReason = 'toolUse';
         else content = [{ type: 'text', text: 'RETOMADO-' + n }];
@@ -895,6 +895,8 @@ try {
     const { SOFT_TIMEOUT_MESSAGE } = await jiti.import(join(repo, 'agent/extensions/brain-live/subagent/child-soft-deadline.ts'));
     const stallLog = join(root, 'stall.log');
     process.env.FG_STALL = stallLog;
+    // The first step outlasts the half-time soft deadline (5 s), so the steer lands on the next model call.
+    process.env.FG_STALL_FIRST = '6';
     const repoFor = (name) => {
       const dir = realpathSync(mkdtempSync(join(root, name)));
       const g = (...args) => assert.equal(spawnSync('git', ['-C', dir, '-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.invalid', ...args]).status, 0, args.join(' '));
@@ -977,6 +979,7 @@ try {
     assert.equal(mgr.handles('stall').find(h => h.handle === 'stall-a').lifecycle, 'waiting');
     await mgr.shutdown();
     delete process.env.FG_STALL;
+    delete process.env.FG_STALL_FIRST;
     console.log(`ok timeout: soft warning before the deadline, child tree gone before WIP commit ${job.tasks[0].wipCommit.slice(0, 12)}, in-place writer without commit, handle waiting, continue resumes`);
   }
 

@@ -176,7 +176,8 @@ export function recoveryNotes(record: JobRecord): string {
 /** Absolute epoch ms of the soft-timeout steer: start + timeout - margin, never before start. */
 export function softDeadlineMs(startMs: number, timeoutSeconds: number): number {
 	const timeoutMs = timeoutSeconds * 1000;
-	const margin = Math.max(timeoutMs * 0.1, SOFT_TIMEOUT_MIN_MARGIN_MS);
+	// Short timeouts warn at half time instead of on the first turn.
+	const margin = Math.min(Math.max(timeoutMs * 0.1, SOFT_TIMEOUT_MIN_MARGIN_MS), timeoutMs / 2);
 	return Math.max(startMs, startMs + timeoutMs - margin);
 }
 
