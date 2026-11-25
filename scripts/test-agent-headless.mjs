@@ -125,6 +125,11 @@ try {
 	}
 	assert.ok(fullRun.tools.includes('tool_search'), `perfil completo deveria ter tool_search para as tools deferred: ${fullRun.tools}`);
 	assert.ok(!fullRun.tools.some((t) => /^peers_|^megamind_(?!read$)/.test(t)), `peers/megamind deveriam estar deferred: ${fullRun.tools}`);
+	// Decisão f (docs/harness-spec.md): plan declarada só com steps; todo fica deferred, fora do schema.
+	const planTool = fullRun.payloadTools.find((t) => t.name === 'plan');
+	assert.ok(planTool, `perfil completo sem plan declarada: ${fullRun.tools}`);
+	assert.deepEqual(Object.keys(planTool.input_schema?.properties ?? {}), ['steps'], 'plan só com steps');
+	assert.ok(!fullRun.tools.includes('todo'), `todo deveria estar deferred: ${fullRun.tools}`);
 	ok(`tools headless: ${enabled.tools.join(', ')}`);
 
 	assert.equal(enabled.system, disabled.system, 'mesma política entre processos');
