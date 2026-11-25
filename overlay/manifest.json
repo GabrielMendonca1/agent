@@ -20,7 +20,7 @@
 		{
 			"name": "garime-frame",
 			"path": "overlay/garime-frame.patch",
-			"sha256": "2a26f9efa54665a8124f118f4de1a25a543fb509cb52f7408e01d13c45317d3d",
+			"sha256": "6a9143bc869a8b764be4c781250a59107325f514eda2143e7fd3a45947720bb4",
 			"tests": [
 				"packages/coding-agent/test/garime-frame.test.ts",
 				"packages/coding-agent/test/interactive-tui.test.ts"
