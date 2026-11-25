@@ -130,10 +130,10 @@ try {
 	assert.ok(planTool, `perfil completo sem plan declarada: ${fullRun.tools}`);
 	assert.deepEqual(Object.keys(planTool.input_schema?.properties ?? {}), ['steps'], 'plan só com steps');
 	assert.ok(!fullRun.tools.includes('todo'), `todo deveria estar deferred: ${fullRun.tools}`);
-	// Swarm (item 5): deferred, fora do schema e do prompt inicial nos dois perfis.
+	// Swarm (item 5): deferred, fora do schema e do prompt inicial nos dois perfis; board é só dos filhos.
 	for (const r of [fullRun, enabled]) {
-		assert.ok(!r.tools.includes('swarm'), `swarm deveria estar deferred: ${r.tools}`);
-		assert.doesNotMatch(r.system, /\bswarm\b/i, 'prompt inicial cita swarm');
+		assert.ok(!r.tools.includes('swarm') && !r.tools.includes('board'), `swarm deveria estar deferred e board só nos filhos: ${r.tools}`);
+		assert.doesNotMatch(r.system, /\bswarm\b|\bboard\b/i, 'prompt inicial cita swarm/board');
 	}
 	ok(`tools headless: ${enabled.tools.join(', ')}`);
 

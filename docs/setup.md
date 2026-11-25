@@ -484,7 +484,7 @@ Opt-in por sessão. Desligado, não custa nada: a tool `swarm` é `deferred`, fo
 ### Ligar e desligar
 
 - `/swarm` alterna; `/swarm on`, `/swarm off` e `/swarm status` são explícitos. Toda sessão começa desligada; o estado é a última entrada `agent-swarm` do branch atual, então sobrevive a resume e segue o `/tree`.
-- Ligar grava `agent-swarm {enabled:true}`, mostra `swarm` no rodapé e anexa uma mensagem oculta (`agent-swarm-mode`) com o playbook em inglês: achar a tool `swarm` pelo `tool_search`, escolher entre loop, board (ainda indisponível) e subagent simples, registrar a escolha numa linha, nunca integrar sem revisar o resultado final, sem chat livre e sem chamar `swarm` depois que o usuário desligar.
+- Ligar grava `agent-swarm {enabled:true}`, mostra `swarm` no rodapé e anexa uma mensagem oculta (`agent-swarm-mode`) com o playbook em inglês: achar a tool `swarm` pelo `tool_search`, escolher entre loop, board e subagent simples, registrar a escolha numa linha, nunca integrar sem revisar o resultado final, sem chat livre e sem chamar `swarm` depois que o usuário desligar.
 - Desligar grava `enabled:false` e limpa o rodapé. Jobs de swarm em andamento terminam; chamadas novas falham com `Swarm is off in this session. Ask the user to enable it with /swarm.`
 - O `/swarm` nunca muda o system prompt nem chama `setActiveTools`: o cache de prompt da sessão continua. A tool entra pelo `tool_search`, na camada de tools carregadas que só acrescenta.
 - Headless (`agent -p`): `AGENT_SWARM=1` liga a sessão que ainda não tem entrada `agent-swarm`.
@@ -499,10 +499,22 @@ Opt-in por sessão. Desligado, não custa nada: a tool `swarm` é `deferred`, fo
 - Veredito fail-closed: só a última linha `VERDICT:` vale. `APPROVE` termina em `approved`; sem a linha, `ambiguous`; erro do revisor, `failed` (ou `quota`). Silêncio nunca aprova.
 - Rodadas 2+: antes de cada uma, os tetos (`max_rounds`, `max_usd`). O escritor retoma o próprio JSONL (lock de sessão, como o `continue`) e recebe só os achados, a rodada e o orçamento restante; se não mudar nada, `stalled`. O revisor retoma o próprio JSONL e recebe só o delta (`anterior..novo`, gate, nota curta do escritor) e o contrato. Os dois mantêm o cache de prompt quente.
 - Erro, cota ou timeout do escritor terminam em `failed`/`quota`; no timeout o worktree ganha o commit WIP de sempre.
-- O job é um job comum do `subagent` (modo `swarm`, tarefa 1 escritor, tarefa 2 revisor, `JobRecord.swarm` com rodadas e desfecho): `status`, `result`, `trace`, `list`, `cancel`, `integrate`, `discard` e `continue` funcionam igual. Só `approved` termina `completed`; os outros desfechos terminam `failed`, com o motivo no resultado. No fim, os dois handles ficam `waiting`.
+- O job é um job comum do `subagent` (modo `swarm`, tarefa 1 escritor, tarefa 2 revisor, `JobRecord.swarm` com rodadas e desfecho): `status`, `result`, `trace`, `list`, `cancel`, `integrate`, `discard` e `continue` funcionam igual. Só `approved` termina `completed`; os outros desfechos terminam `failed`, com o motivo no resultado. No fim, os dois handles ficam `waiting`. `integrate` e `discard` tratam o loop como uma unidade: com ou sem `taskIndex`, agem no worktree do escritor e fecham os dois handles.
 - O resultado abre com `swarm loop · outcome: X · rounds: N/M · cost: $X.XX`, uma tabela por rodada (sha do escritor, gate, veredito, custo), os handles, o resumo do worktree e do gate, e a última resposta do revisor (até 4 KiB).
 - Revise o diff final antes do `integrate`. O merge continua explícito.
-- Board (2+ agentes acoplados em paralelo) ainda não existe; o schema só aceita `mode: "loop"`.
+
+### Board
+
+`swarm({ mode: "board", tasks: [ … ], maxUsd?, cwd?, agentScope?, timeoutSeconds? })`: 2 a 32 tarefas acopladas em paralelo, com os mesmos itens de `tasks` do `subagent` (`agent`, `brief`, `task`, `cwd`, `model`, `skills`, `name`).
+
+- Execução: o leque paralelo de sempre (job `parallel` com `JobRecord.swarm.kind = "board"`). Dois ou mais escritores do mesmo repositório ganham worktrees próprios, com a mesma recusa de skills de projeto. O system prompt do papel não muda, então o cache entre irmãos continua.
+- Cada mensagem de tarefa começa com um bloco de 4 linhas: o próprio handle, os irmãos com o objetivo de cada um em uma linha, e a regra: usar o board para claim, decision, blocker e done, ler com `since` antes de mexer num contrato compartilhado, sem chat.
+- Arquivo: `<perfil>/subagent-jobs/<sessionId>/<jobId>/board.jsonl`, modo 0600, criado no launch. Linha: `{seq, ts, handle, kind, text, refs?}`; `kind` é `claim`, `decision`, `note`, `blocker` ou `done`. O `seq` é estritamente crescente: cada append roda sob um lock curto O_EXCL em `board.jsonl.lock` (assumido se o dono morreu ou o lock tem mais de 10 s).
+- Limites: `text` aparado, não vazio, até 400 caracteres; `refs` até 8 itens de até 160 caracteres; o arquivo aceita até 100 entradas e 64 KiB. Post acima do limite volta com erro claro; leitura sempre funciona. Não há destinatário, resposta nem notificação entre filhos.
+- Tool `board` só nos filhos do board (`subagent/child-board.ts`, carregada com `-e` quando a invocação tem `board`; env `AGENT_BOARD_PATH` e `AGENT_BOARD_HANDLE`, removidas do bash pelo `userCommandEnv`). `post` (kind, text, refs) responde `Posted #seq (kind).`; `read` (since, kind) devolve só as entradas com `seq > since`, uma por linha (`#3 [worker-1 · decision] … (refs: …)`), ou `No new board entries since #N.`. O `board` fica no snapshot da invocação, então um `continue` do handle mantém a tool.
+- Teto de custo: `maxUsd` 0.1..100 (padrão 15), somado sobre as tarefas que já terminaram. Ao atingir, o job é abortado: tarefas pendentes não começam, as que rodam param, e os worktrees ganham o commit WIP. O desfecho fica `max_usd` e o job termina `failed`.
+- Resultado: `swarm board · outcome: done|failed|max_usd · tasks: N · cost: $X.XX`, o resultado paralelo de sempre (worktrees, saídas, gate) e `### board (N entradas)` compacto (até ~2 KiB) com o caminho do arquivo completo.
+- Agentes no runner agy não entram em board (sem a tool `board`).
 
 ## Dependências pessoais / degradação
 
