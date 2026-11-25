@@ -378,6 +378,15 @@ Os papéis Pi rodam em outro processo `pi -p`, com contexto próprio. Só o resu
 A escolha fica em `agyModels.gemini` no `agent-models.json` do perfil. O painel usa um catálogo estático, sem consultar o CLI nem cadastrar um provider no Pi. O job passa o ID nativo e o esforço efetivo ao `agy`: por exemplo, Carbon com `xhigh` aparece como `xhigh → high` e vira `--model gemini-4-carbon-high --effort high`. Famílias sem sufixo no catálogo (Orchestrator) mantêm o ID fixo e recebem o thinking via `--effort`.
 O resultado e o uso disponível ficam no registro do job; não há sessão JSONL do Pi nem `trace` para esse runner.
 
+### checks nos filhos
+
+- O papel recebe a tool `checks` quando lista `checks` em `tools:`; o runner carrega a extensão com `-e`, como `skim` e web. Os papéis padrão `worker` e `reviewer` a listam. Nome desconhecido em `--tools` é ignorado pelo Pi, então um perfil que liste `checks` sem a extensão não quebra.
+- `worker` (papel com `edit`/`write`): `gate`, `run`, `baseline`, `list` e `last`. Sem `tags` nem `only`, usa `tags: "fast"`; o gate completo roda no `integrate`. O `cwd` do filho já é o worktree.
+- `reviewer` (papel sem `edit`/`write`, marcado com `AGENT_CHECKS_READONLY=1`): só `list` e `last`. `gate`, `run` e `baseline` são recusados, porque o comando vem de `.pi/checks.json`, controlado pelo projeto, e rodaria fora do sandbox do bash.
+- `last` devolve a última rodada de `gate`/`run` daquele checkout. A rodada é gravada com HEAD e uma impressão digital do working tree (`git status`, `git diff HEAD` e conteúdo dos não rastreados). Se algo divergiu, a resposta é `stale` e diz o quê, em vez do resultado. Funciona dentro do sandbox só leitura: só lê.
+- No fim de um job, cada tarefa de papel escritor com `checks` ganha no resultado a linha `gate: N/M green, new failures: […] (fresh|stale…)`, ou `gate: not run in this job`.
+- A baseline serializa `git worktree add`/`remove`/`prune` por repositório (`<git-common-dir>/pi-checks.lock`); o cache é gravado com tmp+rename.
+
 ### Custo dos filhos
 
 - `AGENT_CHILD_TOOL_OUTPUT_MAX` (padrão 8000 caracteres; `0` desliga): saída de `bash`/`read`/`grep`/`find`/`ls` maior que isso chega ao filho como cabeça (~6k) + cauda (~2k) e uma linha com o total omitido e o arquivo com a saída completa (`$TMPDIR/agent-child-output/<sessão>/`); com `skim` no papel, a linha sugere `skim path=<arquivo>`. A chamada de `bash` feita pelo próprio `skim` não é cortada. Motivo: saídas acima de 10k caracteres nos filhos custaram ~US$ 327 no 1º envio e ~US$ 390 em leitura de cache nos turnos seguintes em 30 dias. `read` com `limit` ≤ 200 linhas não é cortado. Os papéis pedem `rg -n` e trechos de até ~150 linhas.
