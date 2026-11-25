@@ -227,7 +227,7 @@ Teste rápido isolado: `node scripts/test-prepare-promote.mjs` (fixtures, stubs 
 
 `agent overlay-rollback` verifica o target de `previous` pelo mesmo contrato: patches, markers, digest e execução do binário. `--force` permite um target degradado e registra `degraded`, `degradedReasons` e o algoritmo no `active.json`.
 
-Depois da ativação, somente releases não referenciadas são coletadas; `current`, `previous`, releases com recibo de preparo e a órfã mais recente permanecem. Bundles superseded também são removidos para impedir que lifecycle antigo reassuma o store. `--no-prune` desativa essa coleta.
+Depois da ativação, somente releases não referenciadas são coletadas; `current`, `previous`, releases com recibo de preparo e a órfã mais recente permanecem. Também fica toda release em uso por um processo vivo — caminho no argv ou no ambiente (`ps eww`), ou arquivo aberto/cwd abaixo dela (`lsof`), inclusive por um symlink em `releases/` que resolve para ela — com a linha `Keeping release X: in use by process N`; ela sai numa coleta posterior, depois que o processo termina. Um symlink em `releases/` é só desligado quando nada o usa, nunca seguido até o alvo. Sem inspeção de processos (Windows, `ps` indisponível), os diretórios seguem só a regra acima e os symlinks ficam. Bundles superseded também são removidos para impedir que lifecycle antigo reassuma o store. `--no-prune` desativa essa coleta.
 
 ### Estado e limpeza do store — `overlay-status`, `overlay-gc`
 

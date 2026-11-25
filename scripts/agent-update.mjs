@@ -1901,8 +1901,15 @@ function allocateReleaseDir(releasesDir, releaseId) {
  * Releases nobody points at are the only ones that may be collected, and only past the retention
  * floor: `current` and `previous` are always kept, so rollback always has a working target and a
  * live session never loses the tree it is running from.
+ *
+ * `processes` (snapshot de `liveProcesses`) protege também a release que um processo vivo usa por
+ * argumento, ambiente ou arquivo aberto, inclusive por um symlink em `releases/` que resolve para
+ * ela; essas voltam em `busy` e não contam na retenção. Um symlink em `releases/` nunca conta na
+ * retenção e só entra em `doomed` (para ser desligado, nunca seguido) quando a inspeção de
+ * processos funcionou e nada o usa. Sem inspeção (`undefined`), symlinks ficam e diretórios seguem
+ * a regra antiga.
  */
-function planOrphanReleases(store, activeRelease, keepExtra = [], retention = orphanReleaseRetention, preparedProtects = () => true) {
+function planOrphanReleases(store, activeRelease, keepExtra = [], retention = orphanReleaseRetention, preparedProtects = () => true, processes = undefined) {
 	const releasesDir = join(store, "releases");
 	const kept = new Set(
 		[activeRelease, linkTarget(join(store, "current")), linkTarget(join(store, "previous"))].filter(Boolean).map(resolvedPath),
@@ -1911,19 +1918,56 @@ function planOrphanReleases(store, activeRelease, keepExtra = [], retention = or
 	// pacote instalado): a release que contém o caminho em uso também está em uso.
 	const keptInside = keepExtra.filter(Boolean).map(resolvedPath);
 	const inUse = (dir) => kept.has(dir) || keptInside.some((path) => path === dir || path.startsWith(`${dir}${isWindows ? "\\" : "/"}`));
-	const orphans = readdirSync(releasesDir, { withFileTypes: true })
-		.filter((entry) => entry.isDirectory() && !entry.name.startsWith("."))
-		.map((entry) => join(releasesDir, entry.name))
-		.filter((dir) => !inUse(resolvedPath(dir)) && !(linkExists(join(store, "prepared", `${basename(dir)}.json`)) && preparedProtects(basename(dir))))
-		.map((dir) => ({ dir, mtimeMs: statSync(dir).mtimeMs }))
-		.sort((a, b) => b.mtimeMs - a.mtimeMs);
-	return { kept: orphans.slice(0, retention).map((orphan) => orphan.dir), doomed: orphans.slice(retention).map((orphan) => orphan.dir) };
+	const entries = readdirSync(releasesDir, { withFileTypes: true })
+		.filter((entry) => (entry.isDirectory() || entry.isSymbolicLink()) && !entry.name.startsWith("."))
+		.map((entry) => ({ dir: join(releasesDir, entry.name), link: entry.isSymbolicLink() }));
+	const links = entries.filter((entry) => entry.link).map((entry) => ({ dir: entry.dir, canonical: resolvedPath(entry.dir) }));
+	// Um processo que entrou pela release via symlink só mostra o caminho do link: todo nome em
+	// `releases/` que resolve para a mesma árvore conta como uso dela.
+	const holder = (dir) => {
+		const canonical = resolvedPath(dir);
+		const aliases = new Set([dir, canonical, ...links.filter((link) => link.canonical === canonical).map((link) => link.dir)]);
+		return processes?.find((proc) => [...aliases].some((path) => processUsesPath(proc, path)));
+	};
+	const busy = [];
+	const orphans = [];
+	const doomedLinks = [];
+	for (const { dir, link } of entries) {
+		if (inUse(resolvedPath(dir))) continue;
+		if (linkExists(join(store, "prepared", `${basename(dir)}.json`)) && preparedProtects(basename(dir))) continue;
+		const proc = holder(dir);
+		if (proc) busy.push({ dir, pid: proc.pid });
+		else if (link) {
+			if (processes !== undefined) doomedLinks.push(dir);
+		} else orphans.push({ dir, mtimeMs: statSync(dir).mtimeMs });
+	}
+	orphans.sort((a, b) => b.mtimeMs - a.mtimeMs);
+	return {
+		kept: orphans.slice(0, retention).map((orphan) => orphan.dir),
+		busy,
+		doomed: [...doomedLinks, ...orphans.slice(retention).map((orphan) => orphan.dir)],
+	};
 }
 
-function collectOrphanReleases(store, activeRelease, keepExtra = [], retention = orphanReleaseRetention) {
-	for (const dir of planOrphanReleases(store, activeRelease, keepExtra, retention).doomed) {
-		console.log(`Collecting orphan release ${basename(dir)}`);
-		rmSync(dir, { recursive: true, force: true });
+/** Apaga uma release do store; um symlink é só desligado, nunca seguido até o alvo. */
+function removeReleaseEntry(path) {
+	let stat;
+	try {
+		stat = lstatSync(path);
+	} catch {
+		return;
+	}
+	if (stat.isSymbolicLink()) removeLink(path);
+	else rmSync(path, { recursive: true, force: true });
+}
+
+function collectOrphanReleases(store, activeRelease, keepExtra = [], retention = orphanReleaseRetention, { getProcesses = liveProcesses } = {}) {
+	const plan = planOrphanReleases(store, activeRelease, keepExtra, retention, () => true, getProcesses());
+	for (const { dir, pid } of plan.busy) console.log(`Keeping release ${basename(dir)}: in use by process ${pid}`);
+	for (const dir of plan.doomed) {
+		const link = lstatSync(dir, { throwIfNoEntry: false })?.isSymbolicLink();
+		console.log(link ? `Removing orphan release link ${basename(dir)}` : `Collecting orphan release ${basename(dir)}`);
+		removeReleaseEntry(dir);
 	}
 }
 
@@ -2426,11 +2470,41 @@ function liveProcesses() {
 		env: { ...process.env, LC_ALL: "C.UTF-8" },
 	});
 	if (result.status !== 0 || !result.stdout?.trim()) return undefined;
+	const files = openFilesByPid();
 	const processes = result.stdout.split("\n").flatMap((line) => {
 		const match = line.match(/^\s*(\d+)\s+(.+)$/);
-		return match ? [{ pid: Number(match[1]), command: match[2] }] : [];
+		return match ? [{ pid: Number(match[1]), command: match[2], files: files.get(Number(match[1])) ?? [] }] : [];
 	});
 	return processes.length ? processes : undefined;
+}
+
+/**
+ * Arquivos abertos, cwd e mapeamentos (`txt`, ex.: addon nativo) por PID, via `lsof`. Cobre o
+ * processo cujo argv/ambiente não cita a release mas que roda de dentro dela. Melhor esforço: sem
+ * `lsof` sobra só o `ps`.
+ */
+function openFilesByPid() {
+	const byPid = new Map();
+	const result = spawnSync("lsof", ["-n", "-P", "-w", "-F", "pn"], {
+		encoding: "utf8", maxBuffer: 256 * 1024 * 1024, timeout: 15000,
+		env: { ...process.env, LC_ALL: "C.UTF-8" },
+	});
+	if (result.error || !result.stdout) return byPid;
+	let files;
+	for (const line of result.stdout.split("\n")) {
+		if (line.startsWith("p")) {
+			const pid = Number(line.slice(1));
+			files = byPid.get(pid) ?? new Set();
+			byPid.set(pid, files);
+		} else if (files && line.startsWith("n/")) files.add(line.slice(1).replace(/ \(deleted\)$/, ""));
+	}
+	return new Map([...byPid].map(([pid, set]) => [pid, [...set]]));
+}
+
+/** O processo cita `path` no comando/ambiente ou tem algo aberto em `path` ou abaixo dele. */
+function processUsesPath(proc, path) {
+	if (commandUsesPath(proc.command, path)) return true;
+	return (proc.files ?? []).some((file) => file === path || file.startsWith(`${path}${sep}`));
 }
 
 function commandUsesPath(command, path) {
@@ -2463,7 +2537,7 @@ function planOverlayGc(store, keep = 1, { sizeReports = true, getProcesses = liv
 	const processes = getProcesses();
 	const unavailable = "process inspection unavailable: cannot prove unused";
 	const reason = (proc) => proc ? `in use by running process ${proc.pid}` : unavailable;
-	const using = (dir) => processes?.find((proc) => [dir, resolvedPath(dir)].some((path) => commandUsesPath(proc.command, path)));
+	const using = (dir) => processes?.find((proc) => [dir, resolvedPath(dir)].some((path) => processUsesPath(proc, path)));
 	const livePaths = new Map();
 	const livePiRoots = [];
 	const processCandidates = [];
@@ -2509,8 +2583,12 @@ function planOverlayGc(store, keep = 1, { sizeReports = true, getProcesses = liv
 		// mudou desde o prepare, o CAS recusa a promoção e a release preparada está superada.
 		const current = readCurrentTarget(store);
 		const promotable = (id) => readJsonFile(join(store, "prepared", `${id}.json`))?.currentAtPrepare === current;
-		for (const dir of planOrphanReleases(store, active?.releaseDir, [agentPiRoot, ...livePiRoots.map(({ path }) => path)], keep, promotable).doomed) {
-			add("release", dir, "delete", "orphan release");
+		const plan = planOrphanReleases(store, active?.releaseDir, [agentPiRoot, ...livePiRoots.map(({ path }) => path)], keep, promotable, processes);
+		for (const { dir, pid } of plan.busy) {
+			if (!items.some((item) => item.path === dir)) add("release", dir, "report", `in use by running process ${pid}`);
+		}
+		for (const dir of plan.doomed) {
+			add("release", dir, "delete", lstatSync(dir, { throwIfNoEntry: false })?.isSymbolicLink() ? "orphan release link" : "orphan release");
 			const receipt = join(store, "prepared", `${basename(dir)}.json`);
 			if (existsSync(receipt)) add("prepared receipt", receipt, "delete", "superseded: current changed since prepare");
 		}
@@ -2630,8 +2708,12 @@ function overlayGc(options) {
 	}
 	for (const item of deletes) {
 		// Defesa em profundidade: o plano só produz caminhos do store, mas apagar fora dele é irreversível.
-		if (!resolvedPath(resolve(item.path)).startsWith(root)) fail(`Refusing to delete ${item.path}: outside ${store}`);
-		rmSync(item.path, { recursive: true, force: true });
+		// Um symlink é só desligado: vale onde ele está, não para onde aponta.
+		const isLink = lstatSync(item.path, { throwIfNoEntry: false })?.isSymbolicLink();
+		const where = isLink ? join(resolvedPath(dirname(resolve(item.path))), basename(item.path)) : resolvedPath(resolve(item.path));
+		if (!where.startsWith(root)) fail(`Refusing to delete ${item.path}: outside ${store}`);
+		if (isLink) removeLink(item.path);
+		else rmSync(item.path, { recursive: true, force: true });
 	}
 	console.log(`Reclaimed ${formatSize(total)} in ${deletes.length} item(s).`);
 }
