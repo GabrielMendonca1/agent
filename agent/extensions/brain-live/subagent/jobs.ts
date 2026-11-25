@@ -18,7 +18,7 @@ import { type ModelRegistry, type ModelRuntime, resolveCliModel } from "@earendi
 import { commitWip, gateSummary, gcWorktrees, isolateWriters, manageWorktrees, worktreeSummary } from "./worktrees.ts";
 import { getRoleModelChoices, isGoogleApiModel, resolveGeminiPreference, resolveModelRef, resolveRoleModel } from "../lib/tiers.ts";
 import type { AgentConfig, AgentScope } from "./agents.ts";
-import type { ChildSkills } from "./skills.ts";
+import { type ChildSkills, mapSkillsToWorktree } from "./skills.ts";
 import {
 	type DurableRunState,
 	MAX_RESUMES,
@@ -430,6 +430,11 @@ export function jobDir(baseDir: string, sessionId: string): string {
 export function jobPath(baseDir: string, sessionId: string, jobId: string): string {
 	if (!isSafeId(jobId)) throw new Error(`Unsafe job id: ${String(jobId)}`);
 	return path.join(jobDir(baseDir, sessionId), `${jobId}.json`);
+}
+
+/** Copies of source-only project skills for isolated writers: `<jobDir>/<jobId>.skills/<task>/`. */
+export function skillSnapshotDir(baseDir: string, record: Pick<JobRecord, "sessionId" | "jobId">): string {
+	return path.join(jobDir(baseDir, record.sessionId), `${record.jobId}.skills`);
 }
 
 export function writeRecord(baseDir: string, record: JobRecord): string {
@@ -1065,6 +1070,15 @@ export class SubagentJobManager {
 		try {
 			spec = { ...spec, tasks: job.record.tasks };
 			isolateWriters(job.record, spec.agents, () => writeRecord(this.deps.baseDir, job.record));
+			// Isolated writers read project skills from their worktree, or from a launch-time
+			// snapshot when the skill exists only in the source checkout. Continue reuses the result.
+			let mapped = false;
+			job.record.tasks.forEach((task, index) => {
+				if (!task.worktree || !task.sourceCwd || !task.resolvedSkills || task.invocation) return;
+				task.resolvedSkills = mapSkillsToWorktree(task.resolvedSkills, task.sourceCwd, task.worktree, path.join(skillSnapshotDir(this.deps.baseDir, job.record), String(index + 1)));
+				mapped = true;
+			});
+			if (mapped) writeRecord(this.deps.baseDir, job.record);
 			if (spec.mode === "chain") {
 				let previousOutput = "";
 				for (let i = 0; i < spec.tasks.length; i++) {
@@ -1225,6 +1239,7 @@ export class SubagentJobManager {
 		for (const record of records) {
 			if (gcWorktrees(record, this.now(), () => this.persist(record))) {
 				fs.unlinkSync(jobPath(this.deps.baseDir, sessionId, record.jobId));
+				fs.rmSync(skillSnapshotDir(this.deps.baseDir, record), { recursive: true, force: true });
 			} else this.persist(record);
 		}
 		return listRecords(this.deps.baseDir, sessionId);
