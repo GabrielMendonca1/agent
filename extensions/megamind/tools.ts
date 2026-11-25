@@ -483,7 +483,7 @@ export function registerMegamindTools(pi: ExtensionAPI, deps: ToolDeps): void {
       if (CLOSING_STATUS.includes(status) && !result.trim()) {
         return toolError(`megamind_reply: \`result\` is required for ${CLOSING_STATUS.join("/")}`);
       }
-      if (looksSecret(result)) return toolError(`megamind_reply: o resultado ${SECRET_MSG}`);
+      if (looksSecret(result)) return toolError(`megamind_reply: the result ${SECRET_MSG}`);
       try {
         const core = await deps.core();
         await core.reply(current.session_id, { id, status, ...(result ? { result } : {}) }, signal);

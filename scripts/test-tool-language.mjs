@@ -244,7 +244,7 @@ try {
   const present = new Map();
   megamindTools.registerMegamindTools(fakePi(present, {}, new Map(), []), { presence: () => ({ session_id: 'abcdef123456' }), core: async () => { throw new Error('offline'); }, now: Date.now });
   check('megamind no presence', (await tools.get('megamind_send').execute('t', { to: '@ana', body: 'x' }, undefined, undefined, { cwd: sandbox })).content[0].text);
-  for (const [name, params] of [['megamind_send', {}], ['megamind_send', { to: '@ana' }], ['megamind_ask', { to: '@ana' }], ['megamind_reply', {}], ['megamind_reply', { id: 'r1', status: 'bogus' }], ['megamind_fetch', {}]]) {
+  for (const [name, params] of [['megamind_send', {}], ['megamind_send', { to: '@ana' }], ['megamind_ask', { to: '@ana' }], ['megamind_reply', {}], ['megamind_reply', { id: 'r1', status: 'bogus' }], ['megamind_reply', { id: 'r1', status: 'done', result: 'token sk-ant-api03-' + 'a'.repeat(40) }], ['megamind_send', { to: '@ana', body: 'token sk-ant-api03-' + 'a'.repeat(40) }], ['megamind_fetch', {}]]) {
     const out = await (present.get(name) ?? tools.get(name)).execute('t', params, undefined, undefined, { cwd: sandbox });
     check(`${name} ${JSON.stringify(params)}`, out?.content?.map(part => part.text ?? '').join('\n'));
   }
