@@ -97,6 +97,161 @@ index 2c789bf5b66e904758d732c5da24761bc4f9d8a3..9ce3dec6c1acf94146bcd72e7ee78722
  
  		// Top border
  		this.addChild(new DynamicBorder(borderColor));
+diff --git a/packages/coding-agent/src/modes/interactive/components/compaction-summary-message.ts b/packages/coding-agent/src/modes/interactive/components/compaction-summary-message.ts
+index 8b6ebb22430d823e403759682789ad6a31fa2c28..cff2f01e4d419c74b504975b7d9852b7832c0722 100644
+--- a/packages/coding-agent/src/modes/interactive/components/compaction-summary-message.ts
++++ b/packages/coding-agent/src/modes/interactive/components/compaction-summary-message.ts
+@@ -1,14 +1,55 @@
+-import { Box, Container, Markdown, type MarkdownTheme, MouseRegion, Spacer, Text } from "@earendil-works/pi-tui";
++import {
++	Box,
++	Container,
++	Markdown,
++	type MarkdownTheme,
++	MouseRegion,
++	Spacer,
++	truncateToWidth,
++	visibleWidth,
++	wrapTextWithAnsi,
++} from "@earendil-works/pi-tui";
++import { estimateTokens } from "../../../core/compaction/index.ts";
+ import type { MarkdownTransformer } from "../../../core/extensions/types.ts";
+ import type { CompactionSummaryMessage } from "../../../core/messages.ts";
+ import { getMarkdownTheme, theme } from "../theme/theme.ts";
+-import { keyText } from "./keybinding-hints.ts";
++import { formatTokens } from "./footer.ts";
+ import { createMarkdownTransform } from "./markdown-transform.ts";
+ 
+-/**
+- * Component that renders a compaction message with collapsed/expanded state.
+- * Uses same background color as custom messages for visual consistency.
+- */
++export interface CompactionDisplayMetrics {
++	messagesCompacted?: number;
++	tokensAfter?: number;
++	elapsedMs?: number;
++}
++
++function renderDivider(width: number, metrics: string[]): string[] {
++	const title = "Conversation compacted";
++	const center = (text: string) => " ".repeat(Math.max(0, Math.floor((width - visibleWidth(text)) / 2))) + text;
++	const ruleWidth = width - visibleWidth(title) - 2;
++	const lines = [
++		ruleWidth >= 2
++			? theme.fg("dim", "─".repeat(Math.floor(ruleWidth / 2))) +
++				` ${theme.fg("muted", title)} ` +
++				theme.fg("dim", "─".repeat(Math.ceil(ruleWidth / 2)))
++			: theme.fg("muted", center(truncateToWidth(title, width, "…"))),
++	];
++	if (width < 12) return lines;
++	let row = "";
++	for (const metric of metrics) {
++		const combined = row ? `${row} · ${metric}` : metric;
++		if (visibleWidth(combined) <= width) {
++			row = combined;
++		} else {
++			if (row) lines.push(theme.fg("dim", center(row)));
++			const wrapped = wrapTextWithAnsi(metric, width);
++			row = wrapped.pop() ?? "";
++			lines.push(...wrapped.map((line) => theme.fg("dim", center(line))));
++		}
++	}
++	if (row) lines.push(theme.fg("dim", center(row)));
++	return lines;
++}
++
+ export class CompactionSummaryMessageComponent extends Box {
+ 	private expanded = false;
+ 	private message: CompactionSummaryMessage;
+@@ -16,6 +57,9 @@ export class CompactionSummaryMessageComponent extends Box {
+ 	private markdownTransformers: readonly MarkdownTransformer[];
+ 	private messageId?: string;
+ 	private timestamp?: string;
++	private outputPad: number;
++	private renderedPad: number;
++	private readonly metrics: CompactionDisplayMetrics;
+ 
+ 	constructor(
+ 		message: CompactionSummaryMessage,
+@@ -24,8 +68,13 @@ export class CompactionSummaryMessageComponent extends Box {
+ 		markdownTransformers: readonly MarkdownTransformer[] = [],
+ 		messageId?: string,
+ 		timestamp?: string,
++		metrics: CompactionDisplayMetrics = {},
+ 	) {
+-		super(outputPad, 1, (t) => theme.bg("customMessageBg", t));
++		super(outputPad, 0);
++		this.outputPad = outputPad;
++		this.renderedPad = outputPad;
++		this.metrics = metrics;
++
+ 		this.message = message;
+ 		this.markdownTheme = markdownTheme;
+ 		this.markdownTransformers = markdownTransformers;
+@@ -40,7 +89,17 @@ export class CompactionSummaryMessageComponent extends Box {
+ 	}
+ 
+ 	setOutputPad(outputPad: number): void {
+-		this.setPaddingX(outputPad);
++		this.outputPad = outputPad;
++	}
++
++	override render(width: number): string[] {
++		if (width < 1) return [];
++		const padding = Math.min(this.outputPad, Math.floor((width - 1) / 2));
++		if (padding !== this.renderedPad) {
++			this.renderedPad = padding;
++			this.setPaddingX(padding);
++		}
++		return super.render(width);
+ 	}
+ 
+ 	override invalidate(): void {
+@@ -52,13 +111,22 @@ export class CompactionSummaryMessageComponent extends Box {
+ 		this.clear();
+ 		const content = new Container();
+ 
+-		const tokenStr = this.message.tokensBefore.toLocaleString();
+-		const label = theme.fg("customMessageLabel", `\x1b[1m[compaction]\x1b[22m`);
+-		content.addChild(new Text(label, 0, 0));
+-		content.addChild(new Spacer(1));
++		const metrics: string[] = [];
++		const { messagesCompacted, tokensAfter, elapsedMs } = this.metrics;
++		if (messagesCompacted !== undefined && messagesCompacted > 0) {
++			metrics.push(`${messagesCompacted} ${messagesCompacted === 1 ? "message" : "messages"} compacted`);
++		}
++		const before = `~${formatTokens(this.message.tokensBefore)}`;
++		const after = tokensAfter === undefined ? "" : ` → ~${formatTokens(tokensAfter)}`;
++		metrics.push(`context ${before}${after} tokens (~${formatTokens(estimateTokens(this.message))} summary)`);
++		if (elapsedMs !== undefined) {
++			metrics.push(elapsedMs < 1000 ? "took <1s" : `took ${Math.round(elapsedMs / 1000)}s`);
++		}
++		content.addChild({ render: (width) => renderDivider(width, metrics), invalidate() {} });
+ 
+ 		if (this.expanded) {
+-			const header = `**Compacted from ${tokenStr} tokens**\n\n`;
++			content.addChild(new Spacer(1));
++			const header = `**Compacted from ${this.message.tokensBefore.toLocaleString()} tokens**\n\n`;
+ 			const transform = createMarkdownTransform(
+ 				"summary",
+ 				() => false,
+@@ -77,16 +145,6 @@ export class CompactionSummaryMessageComponent extends Box {
+ 					{ transform: (markdown, width) => header + transform(markdown, width) },
+ 				),
+ 			);
+-		} else {
+-			content.addChild(
+-				new Text(
+-					theme.fg("customMessageText", `Compacted from ${tokenStr} tokens (`) +
+-						theme.fg("dim", keyText("app.tools.expand")) +
+-						theme.fg("customMessageText", " to expand)"),
+-					0,
+-					0,
+-				),
+-			);
+ 		}
+ 
+ 		this.addChild(
 diff --git a/packages/coding-agent/src/modes/interactive/components/custom-entry.ts b/packages/coding-agent/src/modes/interactive/components/custom-entry.ts
 index 81d381ee94066682c74deeadda55791f4ed7b18e..ae08a864aa5fccb93a48fa662cd0c2574b8c0a25 100644
 --- a/packages/coding-agent/src/modes/interactive/components/custom-entry.ts
@@ -346,10 +501,39 @@ index 6d691b426503fe51c36dc0aee3ca68c7d99bc812..74d3d5eda5a119e272c65d4c61e4f8b7
  		// Always create all shell variants. contentBox is used for default renderer-based composition.
  		// selfRenderContainer is used when the tool renders its own framing.
 diff --git a/packages/coding-agent/src/modes/interactive/interactive-mode.ts b/packages/coding-agent/src/modes/interactive/interactive-mode.ts
-index d8e2390c44392bca796a04901cf5600b74e37b45..33d2af8a2fcb29baf84fbfd02074e3459f56de14 100644
+index d8e2390c44392bca796a04901cf5600b74e37b45..b57d12eecebf1446ce6fc61c30bba44b6e31c524 100644
 --- a/packages/coding-agent/src/modes/interactive/interactive-mode.ts
 +++ b/packages/coding-agent/src/modes/interactive/interactive-mode.ts
-@@ -159,6 +159,13 @@ import { ExtensionEditorComponent } from "./components/extension-editor.ts";
+@@ -77,6 +77,7 @@ import {
+ 	detectCacheMiss,
+ } from "../../core/cache-stats.ts";
+ import { formatCacheWarmingStatus, formatCacheWarmingUsage } from "../../core/cache-warmer.ts";
++import { estimateProjectedContextTokens } from "../../core/compaction/index.ts";
+ import { findExtensionStackMatches, recordCrash, takeUnnotifiedCrash } from "../../core/crash-log.ts";
+ import { DEFAULT_THINKING_LEVEL, THINKING_LEVEL_OPTIONS } from "../../core/defaults.ts";
+ import type {
+@@ -116,6 +117,8 @@ import {
+ 	MissingSessionCwdError,
+ } from "../../core/session-cwd.ts";
+ import {
++	buildSessionProjection,
++	type CompactionEntry,
+ 	type SessionEntry,
+ 	SessionManager,
+ 	sessionEntryToContextMessages,
+@@ -148,7 +151,10 @@ import { ArminComponent } from "./components/armin.ts";
+ import { AssistantMessageComponent } from "./components/assistant-message.ts";
+ import { BashExecutionComponent } from "./components/bash-execution.ts";
+ import { BranchSummaryMessageComponent } from "./components/branch-summary-message.ts";
+-import { CompactionSummaryMessageComponent } from "./components/compaction-summary-message.ts";
++import {
++	type CompactionDisplayMetrics,
++	CompactionSummaryMessageComponent,
++} from "./components/compaction-summary-message.ts";
+ import { CustomEditor } from "./components/custom-editor.ts";
+ import { CustomEntryComponent } from "./components/custom-entry.ts";
+ import { CustomMessageComponent } from "./components/custom-message.ts";
+@@ -159,6 +165,13 @@ import { ExtensionEditorComponent } from "./components/extension-editor.ts";
  import { ExtensionInputComponent } from "./components/extension-input.ts";
  import { ExtensionSelectorComponent } from "./components/extension-selector.ts";
  import { FooterComponent, formatTokens } from "./components/footer.ts";
@@ -363,7 +547,15 @@ index d8e2390c44392bca796a04901cf5600b74e37b45..33d2af8a2fcb29baf84fbfd02074e345
  import { formatKeyText, keyDisplayText, keyHint, keyText, rawKeyHint } from "./components/keybinding-hints.ts";
  import { LoginDialogComponent } from "./components/login-dialog.ts";
  import { createMarkdownTransform } from "./components/markdown-transform.ts";
-@@ -665,6 +672,8 @@ export class InteractiveMode {
+@@ -557,6 +570,7 @@ export class InteractiveMode {
+ 	private pendingBashComponents: BashExecutionComponent[] = [];
+ 
+ 	// Auto-compaction state
++	private compactionStartedAt?: number;
+ 	private autoCompactionEscapeHandler?: () => void;
+ 
+ 	// Auto-retry state
+@@ -665,6 +679,8 @@ export class InteractiveMode {
  		this.documentContainer.addChild(this.headerContainer);
  		this.documentContainer.addChild(this.loadedResourcesContainer);
  		this.documentContainer.addChild(this.chatContainer);
@@ -372,7 +564,7 @@ index d8e2390c44392bca796a04901cf5600b74e37b45..33d2af8a2fcb29baf84fbfd02074e345
  		this.pendingMessagesContainer = new Container();
  		this.statusContainer = new Container();
  		this.widgetContainerAbove = new Container();
-@@ -1018,7 +1027,8 @@ export class InteractiveMode {
+@@ -1018,7 +1034,8 @@ export class InteractiveMode {
  			scrollbarThumbStyle: (text) => theme.fg("scrollbarThumb", text),
  		});
  		this.transcriptScrollView = viewport.transcript;
@@ -382,7 +574,7 @@ index d8e2390c44392bca796a04901cf5600b74e37b45..33d2af8a2fcb29baf84fbfd02074e345
  		this.mountInteractiveTui(this.renderer, [
  			this.documentContainer,
  			this.pendingMessagesContainer,
-@@ -2630,7 +2640,8 @@ export class InteractiveMode {
+@@ -2630,7 +2647,8 @@ export class InteractiveMode {
  	 */
  	private renderWidgets(): void {
  		if (!this.widgetContainerAbove || !this.widgetContainerBelow) return;
@@ -392,7 +584,106 @@ index d8e2390c44392bca796a04901cf5600b74e37b45..33d2af8a2fcb29baf84fbfd02074e345
  		this.renderWidgetContainer(this.widgetContainerBelow, this.extensionWidgetsBelow, false, false);
  		this.ui.requestRender();
  	}
-@@ -4047,7 +4058,8 @@ export class InteractiveMode {
+@@ -3594,16 +3612,7 @@ export class InteractiveMode {
+ 					const entriesAfterCompaction = new Set(branch.slice(compactionIndex + 1).map((entry) => entry.id));
+ 					const retainedEntries = entries.slice(1);
+ 					this.renderSessionEntries(retainedEntries.filter((entry) => !entriesAfterCompaction.has(entry.id)));
+-					this.addMessageToChat(
+-						createCompactionSummaryMessage(event.entry.summary, event.entry.tokensBefore, event.entry.timestamp),
+-					);
+-					if (event.entry.usage) {
+-						this.addCompactionCostNotice({
+-							type: "compaction_cost",
+-							kind: "compaction",
+-							usage: event.entry.usage,
+-						});
+-					}
++					this.addCompactionToChat(event.entry);
+ 					this.renderSessionEntries(retainedEntries.filter((entry) => entriesAfterCompaction.has(entry.id)));
+ 					for (const entryId of entriesAfterCompaction) this.entriesRenderedByBoundaryCompaction.add(entryId);
+ 					this.footer.invalidate();
+@@ -3798,6 +3807,7 @@ export class InteractiveMode {
+ 				break;
+ 
+ 			case "compaction_start": {
++				this.compactionStartedAt = performance.now();
+ 				if (this.settingsManager.getShowTerminalProgress()) {
+ 					this.ui.terminal.setProgress(true);
+ 				}
+@@ -3818,6 +3828,9 @@ export class InteractiveMode {
+ 			}
+ 
+ 			case "compaction_end": {
++				const elapsedMs =
++					this.compactionStartedAt === undefined ? undefined : performance.now() - this.compactionStartedAt;
++				this.compactionStartedAt = undefined;
+ 				if (this.settingsManager.getShowTerminalProgress()) {
+ 					this.ui.terminal.setProgress(false);
+ 				}
+@@ -3840,20 +3853,7 @@ export class InteractiveMode {
+ 					this.chatContainer.clear();
+ 					// The latest compaction is prepended for model context; append it below at its chronological position.
+ 					this.renderSessionEntries(entries.slice(1));
+-					this.addMessageToChat(
+-						createCompactionSummaryMessage(
+-							event.result.summary,
+-							event.result.tokensBefore,
+-							new Date().toISOString(),
+-						),
+-					);
+-					if (event.result.usage) {
+-						this.addCompactionCostNotice({
+-							type: "compaction_cost",
+-							kind: "compaction",
+-							usage: event.result.usage,
+-						});
+-					}
++					this.addCompactionToChat(entries[0], elapsedMs);
+ 					this.footer.invalidate();
+ 				} else if (event.errorMessage) {
+ 					if (event.reason === "manual") {
+@@ -4005,9 +4005,39 @@ export class InteractiveMode {
+ 		this.chatContainer.addChild(component);
+ 	}
+ 
++	private addCompactionToChat(entry: CompactionEntry, elapsedMs?: number): void {
++		this.addMessageToChat(createCompactionSummaryMessage(entry.summary, entry.tokensBefore, entry.timestamp), {
++			messageId: entry.id,
++			timestamp: entry.timestamp,
++			compactionElapsedMs: elapsedMs,
++		});
++		if (entry.usage) {
++			this.addCompactionCostNotice({ type: "compaction_cost", kind: "compaction", usage: entry.usage });
++		}
++	}
++
++	private getCompactionDisplayMetrics(entryId: string | undefined, elapsedMs?: number): CompactionDisplayMetrics {
++		const entry = entryId ? this.sessionManager.getEntry(entryId) : undefined;
++		if (entry?.type !== "compaction") return { elapsedMs };
++		// Work at this boundary, not at the current leaf (which may contain later messages and usage).
++		const branch = this.sessionManager.getBranch(entry.id);
++		const after = buildSessionProjection(branch);
++		const before = buildSessionProjection(branch.slice(0, -1));
++		const firstKept = before.entries.findIndex(({ sourceEntry }) => sourceEntry.id === entry.firstKeptEntryId);
++		const messagesCompacted =
++			firstKept < 0
++				? undefined
++				: before.entries.slice(0, firstKept).reduce((total, item) => {
++						// A prior compaction checkpoint and the system prompt are not conversation messages.
++						if (item.sourceEntry.type === "compaction") return total;
++						return total + item.messages.filter((message) => message.role !== "system").length;
++					}, 0);
++		return { messagesCompacted, tokensAfter: estimateProjectedContextTokens(after, branch).tokens, elapsedMs };
++	}
++
+ 	private addMessageToChat(
+ 		message: AgentMessage,
+-		options?: { populateHistory?: boolean; messageId?: string; timestamp?: string },
++		options?: { populateHistory?: boolean; messageId?: string; timestamp?: string; compactionElapsedMs?: number },
+ 	): void {
+ 		switch (message.role) {
+ 			case "bashExecution": {
+@@ -4047,7 +4077,8 @@ export class InteractiveMode {
  				break;
  			}
  			case "compactionSummary": {
@@ -402,7 +693,14 @@ index d8e2390c44392bca796a04901cf5600b74e37b45..33d2af8a2fcb29baf84fbfd02074e345
  				const component = new CompactionSummaryMessageComponent(
  					message,
  					this.getMarkdownThemeWithSettings(),
-@@ -4061,7 +4073,8 @@ export class InteractiveMode {
+@@ -4055,13 +4086,15 @@ export class InteractiveMode {
+ 					this.getMarkdownTransformers(),
+ 					options?.messageId,
+ 					options?.timestamp,
++					this.getCompactionDisplayMetrics(options?.messageId, options?.compactionElapsedMs),
+ 				);
+ 				component.setExpanded(this.toolOutputExpanded);
+ 				this.chatContainer.addChild(component);
  				break;
  			}
  			case "branchSummary": {
@@ -412,7 +710,7 @@ index d8e2390c44392bca796a04901cf5600b74e37b45..33d2af8a2fcb29baf84fbfd02074e345
  				const component = new BranchSummaryMessageComponent(
  					message,
  					this.getMarkdownThemeWithSettings(),
-@@ -4080,7 +4093,10 @@ export class InteractiveMode {
+@@ -4080,7 +4113,10 @@ export class InteractiveMode {
  				const textContent = this.getUserMessageText(message);
  				if (textContent) {
  					if (this.chatContainer.children.length > 0) {
@@ -424,7 +722,7 @@ index d8e2390c44392bca796a04901cf5600b74e37b45..33d2af8a2fcb29baf84fbfd02074e345
  					}
  					const skillBlock = parseSkillBlock(textContent);
  					if (skillBlock) {
-@@ -4097,7 +4113,8 @@ export class InteractiveMode {
+@@ -4097,7 +4133,8 @@ export class InteractiveMode {
  						this.chatContainer.addChild(component);
  						// Render user message separately if present
  						if (skillBlock.userMessage) {
