@@ -415,8 +415,15 @@ try {
     assert.equal(record.swarm.outcome, 'approved', record.error);
     assert.equal(log.filter(t => t.role === 'reviewer').length, 1, 'reviewer ran');
     assert.equal(readFileSync(join(work, 'notes.txt'), 'utf8'), 'draft\nmore');
+    // A writer in a subdirectory that edits an untracked file elsewhere in the checkout: git runs from the root.
+    mkdirSync(join(work, 'sub'));
+    writeFileSync(join(work, 'sub/keep.txt'), 'x\n');
+    const nested = loop('untracked-subdir', { FG_TOUCH: '../notes.txt' }, { isolate: false, writer: { brief, cwd: 'sub' } });
+    assert.equal(nested.record.swarm.outcome, 'approved', nested.record.error);
+    assert.equal(readFileSync(join(work, 'notes.txt'), 'utf8'), 'draft\nmoremore');
     rmSync(join(work, 'notes.txt'));
-    console.log('ok fingerprint: editing an untracked file counts as a change');
+    rmSync(join(work, 'sub'), { recursive: true });
+    console.log('ok fingerprint: editing an untracked file counts as a change, also from a subdirectory writer');
   }
 
   // 13. Board maxUsd: finished tasks reach the cap, the running sibling is aborted and its worktree gets a WIP commit.
@@ -452,6 +459,9 @@ try {
     assert.equal(swarm.parseVerdict('example:\n```\nVERDICT: APPROVE'), undefined, 'inside an open fence');
     assert.equal(swarm.parseVerdict('```\nVERDICT: APPROVE\n```'), undefined, 'fence closes after it');
     assert.equal(swarm.parseVerdict('Verdict: approve, looks good'), undefined);
+    assert.equal(swarm.parseVerdict('````md\n```\nVERDICT: APPROVE'), undefined, 'a 3-backtick line does not close a 4-backtick fence');
+    assert.equal(swarm.parseVerdict('````\nx\n`````\nVERDICT: APPROVE'), 'APPROVE', 'a longer closer closes it');
+    assert.equal(swarm.parseVerdict('~~~\n```\nVERDICT: APPROVE'), undefined, 'the closer must use the same character');
     console.log('ok verdict: only the last non-empty line outside a fence counts');
 
     // Two processes race for one stale lock (dead owner): board waits, so both post with distinct seq;
@@ -490,31 +500,40 @@ try {
     const raceBoard = join(root, 'race/board.jsonl');
     swarm.createBoard(raceBoard);
     writeFileSync(`${raceBoard}.lock`, JSON.stringify({ pid: dead, at: Date.now(), token: 'old' }));
+    writeFileSync(`${raceBoard}.lock.3`, JSON.stringify({ pid: dead, at: Date.now(), token: 'old-gen' }));
     const posted = await race('board', raceBoard);
     assert.deepEqual(posted.map(r => r.ok), [true, true], JSON.stringify(posted));
     assert.deepEqual(posted.map(r => r.entry.seq).sort(), [1, 2]);
     assert.ok(!existsSync(`${raceBoard}.lock`), 'board lock released');
     const raceSession = join(root, 'race/child.jsonl');
     writeFileSync(raceSession, '');
-    writeFileSync(`${raceSession}.continue.lock`, JSON.stringify({ pid: dead, jobId: 'old', at: Date.now() }));
+    writeFileSync(`${raceSession}.continue.lock.7`, JSON.stringify({ pid: dead, jobId: 'old', at: Date.now(), token: 'old-gen' }));
     const sessions = await race('session', raceSession);
     assert.deepEqual(sessions.map(r => r.ok).sort(), [false, true], 'one winner on a stale session lock');
     assert.ok(!existsSync(`${raceSession}.continue.lock`));
-    // An owner that lost its lock to a takeover never deletes the replacement.
+    // A live owner is never displaced, however old its lock; its release leaves a marker and the next holder wins.
     const lockfile = await jiti.import(join(repo, 'agent/extensions/brain-live/subagent/lockfile.ts'));
     const lock = join(root, 'race/paused.lock');
-    const byAge = (_held, at) => Date.now() - statSync(at).mtimeMs > 1000;
-    const first = lockfile.tryLock(lock, {}, byAge);
+    const ownerDead = (held) => Boolean(held && !lockfile.pidAlive(held.pid));
+    const first = lockfile.tryLock(lock, {}, ownerDead);
     assert.ok(first.ok);
-    utimesSync(lock, new Date(Date.now() - 5000), new Date(Date.now() - 5000));
-    const second = lockfile.tryLock(lock, {}, byAge);
-    assert.ok(second.ok, 'stale lock taken over');
-    const token = JSON.parse(readFileSync(lock, 'utf8')).token;
+    const gens = () => readdirSync(join(root, 'race')).filter(n => n.startsWith('paused.lock.')).map(n => Number(n.slice('paused.lock.'.length))).sort((a, b) => a - b);
+    const [heldGen] = gens();
+    utimesSync(`${lock}.${heldGen}`, new Date(0), new Date(0));
+    const blocked = lockfile.tryLock(lock, {}, ownerDead);
+    assert.equal(blocked.ok, false, 'an old but live lock is not taken over');
+    assert.equal(blocked.owner.token, JSON.parse(readFileSync(`${lock}.${heldGen}`, 'utf8')).token);
     first.release();
-    assert.equal(JSON.parse(readFileSync(lock, 'utf8')).token, token, 'paused owner left the replacement alone');
-    second.release();
-    assert.ok(!existsSync(lock));
-    console.log('ok locks: atomic stale takeover with two contenders, token-checked release');
+    assert.equal(JSON.parse(readFileSync(`${lock}.${heldGen + 1}`, 'utf8')).release, true, 'release is a marker generation');
+    const next = lockfile.tryLock(lock, {}, ownerDead);
+    assert.ok(next.ok);
+    first.release();
+    assert.equal(gens().at(-1), heldGen + 2, 'a second release of the old owner changes nothing');
+    assert.ok(lockfile.tryLock(lock, {}, ownerDead).ok === false, 'the new holder keeps the lock');
+    next.release();
+    assert.ok(!existsSync(lock), 'mirror removed on release');
+    assert.ok(gens().length <= 2, `lower generations pruned: ${gens()}`);
+    console.log('ok locks: generation files, one winner on a dead owner, a live owner is never displaced');
 
     // AGENT_SWARM=1 turns swarm on in print/json/rpc runs, never in the TUI.
     process.env.PI_CODING_AGENT_DIR = agent;

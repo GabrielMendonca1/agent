@@ -187,7 +187,7 @@ export function sessionLockPath(sessionFile: string): string {
 /**
  * O_EXCL lock next to the child JSONL: one writer per session at a time (continue, swarm
  * rounds, integrate/discard), also across parent processes. A lock whose owner process is
- * gone is taken over atomically (lockfile.ts); an unreadable lock counts as held.
+ * gone is taken over (generation-numbered lock, lockfile.ts); a live owner is never displaced.
  */
 export function acquireSessionLock(sessionFile: string, jobId: string): { ok: true; release: () => void } | { ok: false; owner?: LockOwner } {
 	const attempt = tryLock(sessionLockPath(sessionFile), { identity: readProcessIdentity(process.pid), jobId }, (held) => {

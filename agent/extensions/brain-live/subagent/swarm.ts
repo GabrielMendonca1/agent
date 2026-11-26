@@ -91,8 +91,17 @@ export function parseVerdict(text: string | undefined): SwarmVerdict | undefined
 	let last = lines.length - 1;
 	while (last >= 0 && !lines[last].trim()) last--;
 	if (last < 0) return undefined;
-	const fences = lines.slice(0, last).filter((line) => /^\s*(```|~~~)/.test(line)).length;
-	if (fences % 2 === 1) return undefined;
+	// CommonMark fences: the closer uses the opener's character, is at least as long, and has no info string.
+	let fence: { char: string; length: number } | undefined;
+	for (const line of lines.slice(0, last)) {
+		const match = /^ {0,3}(`{3,}|~{3,})(.*)$/.exec(line);
+		if (!match) continue;
+		const [char, length, rest] = [match[1][0], match[1].length, match[2]];
+		if (!fence) {
+			if (!(char === "`" && rest.includes("`"))) fence = { char, length };
+		} else if (char === fence.char && length >= fence.length && !rest.trim()) fence = undefined;
+	}
+	if (fence) return undefined;
 	const match = VERDICT_LINE.exec(lines[last]);
 	return match ? (match[1].toUpperCase() as SwarmVerdict) : undefined;
 }
@@ -115,6 +124,10 @@ export function headSha(cwd: string): string | undefined {
  * equal fingerprints mean the writer changed nothing, even when it only edited an untracked file.
  */
 export function fingerprint(cwd: string): string | undefined {
+	// From the repository root: a writer in a subdirectory may change files anywhere in the checkout.
+	const root = git(cwd, ["rev-parse", "--show-toplevel"]);
+	if (root === undefined) return undefined;
+	cwd = root;
 	const head = git(cwd, ["rev-parse", "HEAD"]);
 	const status = git(cwd, ["status", "--porcelain", "--untracked-files=all"]);
 	const diff = git(cwd, ["diff", "HEAD", "--binary"]);
@@ -300,7 +313,6 @@ export const BOARD_REFS_MAX = 8;
 export const BOARD_REF_MAX = 160;
 export const BOARD_MAX_ENTRIES = 100;
 export const BOARD_MAX_BYTES = 64 * 1024;
-export const BOARD_LOCK_STALE_MS = 10_000;
 export const BOARD_SUMMARY_CAP = 2 * 1024;
 export const BOARD_MIN_USD = 0.1;
 export const BOARD_MAX_USD = 100;
@@ -347,13 +359,10 @@ export function readBoard(file: string): BoardEntry[] {
 	return entries;
 }
 
-/** Board lock: stale when its owner process is gone or it is older than 10 s. */
+/** Board lock: held for milliseconds; only a dead owner is taken over (lockfile.ts). */
 function withBoardLock<T>(file: string, body: () => T): T {
 	const lock = `${file}.lock`;
-	const attempt = waitLock(lock, {}, (held, at) => {
-		if (held && typeof held.pid === "number" && !pidAlive(held.pid)) return true;
-		try { return Date.now() - fs.statSync(at).mtimeMs > BOARD_LOCK_STALE_MS; } catch { return false; }
-	}, 5_000);
+	const attempt = waitLock(lock, {}, (held) => Boolean(held && typeof held.pid === "number" && !pidAlive(held.pid)), 5_000);
 	if (!attempt.ok) throw new Error("Board is busy; try again.");
 	try {
 		return body();

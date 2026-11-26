@@ -1439,6 +1439,16 @@ export class SubagentJobManager {
 		const lock = acquireSessionLock(entry.sessionFile, spec.jobId);
 		if (!lock.ok)
 			return { ok: false, error: `Another continue is already writing to ${entry.sessionFile}${lock.owner ? ` (job ${lock.owner.jobId}, pid ${lock.owner.pid})` : ""}. Wait for it to finish.` };
+		// Re-read under the lock: an integrate/discard or another continue may have changed the handle meanwhile.
+		const fresh = readRegistry(this.deps.baseDir, spec.sessionId).handles[entry.handle];
+		const changed = !fresh ? "is gone"
+			: fresh.lifecycle === "closed" ? `is closed (${fresh.closedReason ?? "closed"})`
+				: fresh.lastJobId !== entry.lastJobId || fresh.lifecycle !== entry.lifecycle || fresh.sessionFile !== entry.sessionFile ? `changed (now ${fresh.lifecycle} in job ${fresh.lastJobId})`
+					: fresh.worktree && !fs.existsSync(fresh.worktree) ? `lost its worktree ${fresh.worktree}` : undefined;
+		if (changed) {
+			lock.release();
+			return { ok: false, error: `Handle ${entry.handle} ${changed} while the continue was starting. Check it with action "list" and try again.` };
+		}
 
 		const warnings: string[] = [];
 		if (invocation.roleSha && fileSha(invocation.roleFile) !== invocation.roleSha)
@@ -1560,16 +1570,18 @@ export class SubagentJobManager {
 			.filter(({ index }) => taskIndex === undefined || taskIndex === index)
 			.map(({ task, index }) => task.handle ?? Object.values(registry.handles).find((h) => h.jobId === target.jobId && h.taskIndex === index)?.handle)
 			.filter((handle): handle is string => Boolean(handle));
-		// Hold the session lock of every handle of the job (also across parent processes) from the
-		// busy check through gate and merge/remove: a continue or swarm round cannot start meanwhile,
-		// and a running one makes this refuse.
+		// Hold the session locks of the selected handles (all of them for a swarm loop), also across
+		// parent processes, from the busy check through gate and merge/remove: a continue or swarm round
+		// cannot start meanwhile, and a running one makes this refuse.
 		const busyHandles = () => selected.filter((handle) => registry.handles[handle]?.lifecycle === "running" && this.active.has(registry.handles[handle].lastJobId));
 		// In-process continue jobs get the specific message; the locks below also cover other processes.
 		if (busyHandles().length > 0) throw new Error(`Handle(s) ${busyHandles().join(", ")} still running a continue job; wait for it before ${action}.`);
 		const releases: Array<() => void> = [];
 		try {
+			// Plain jobs lock the selected tasks; a swarm loop (shared checkout) selected all of them above.
 			for (const [index, task] of target.tasks.entries()) {
 				const handle = task.handle ?? Object.values(registry.handles).find((h) => h.jobId === target.jobId && h.taskIndex === index + 1)?.handle;
+				if (taskIndex !== undefined && taskIndex !== index + 1) continue;
 				const sessionFile = (handle ? registry.handles[handle]?.sessionFile : undefined) ?? task.sessionFile;
 				if (!sessionFile || !fs.existsSync(sessionFile)) continue;
 				const lock = acquireSessionLock(sessionFile, `${action}-${target.jobId}`);
