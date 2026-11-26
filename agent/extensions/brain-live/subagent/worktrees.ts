@@ -7,6 +7,7 @@ import { findManifest, gate, lastRun, lastRunLine } from "../checks/runner.ts";
 import type { AgentConfig } from "./agents.ts";
 import type { JobRecord, JobTaskSpec } from "./jobs.ts";
 import { isProjectSkill, rootForms, skillLabel } from "./skills.ts";
+import { repoKey, tryRepoIntegrateLock, unregisterWorkspace, withRepoIntegrateLock } from "./workspace.ts";
 
 function git(cwd: string, args: string[]): string {
 	const r = spawnSync("git", ["-C", cwd, ...args], { encoding: "utf8", maxBuffer: 16 * 1024 * 1024 });
@@ -21,26 +22,19 @@ function currentBranch(cwd: string): string | null {
 	return r.stdout.trim();
 }
 
-function verifyDestination(t: JobTaskSpec): void {
-	if (!t.sourceBranch) throw new Error("No recorded source branch (detached HEAD or legacy record); refusing integrate.");
-	if (currentBranch(t.sourceCwd!) !== t.sourceBranch) throw new Error(`Source branch changed; expected ${t.sourceBranch}; refusing integrate.`);
+export interface IsolationOptions {
+	isolate?: boolean;
+	hasOtherActiveWriter?: (cwd: string, excludeId?: string) => boolean;
+	excludeId?: string;
 }
 
-function verifyMerged(t: JobTaskSpec): void {
-	if (!t.sourceBranch) throw new Error("No recorded destination branch; refusing cleanup without discard.");
-	git(t.sourceCwd!, ["merge-base", "--is-ancestor", `refs/heads/${t.branch}`, `refs/heads/${t.sourceBranch}`]);
-}
-
-/** Chamadas síncronas serializam worktree add antes de qualquer filho nascer. */
-/**
- * Writer tasks isolateWriters moves into worktrees, by root: 2+ writers of one repository in
- * parallel, or the single writer (task 1) of a swarm loop launched with isolate.
- */
-export function plannedIsolation(record: Pick<JobRecord, "mode" | "tasks" | "cwd" | "swarm">, agents: AgentConfig[]): Map<string, { task: JobTaskSpec; index: number; cwd: string }[]> {
+/** Writer tasks grouped by checkout root. Existing callers retain the local-only policy. */
+export function plannedIsolation(record: Pick<JobRecord, "mode" | "tasks" | "cwd" | "swarm">, agents: AgentConfig[], options?: IsolationOptions): Map<string, { task: JobTaskSpec; index: number; cwd: string }[]> {
 	const groups = new Map<string, { task: JobTaskSpec; index: number; cwd: string }[]>();
+	if (options?.isolate === false) return groups;
 	if (record.mode === "swarm") {
 		const writer = record.tasks[0];
-		if (!record.swarm?.isolate || !writer) return groups;
+		if (!(options?.isolate ?? record.swarm?.isolate) || !writer) return groups;
 		const cwd = path.resolve(writer.cwd ?? record.cwd);
 		let root: string;
 		// Fail closed: isolation was requested, so a failed lookup refuses instead of running in place.
@@ -48,19 +42,38 @@ export function plannedIsolation(record: Pick<JobRecord, "mode" | "tasks" | "cwd
 		groups.set(root, [{ task: writer, index: 0, cwd }]);
 		return groups;
 	}
-	if (record.mode !== "parallel") return groups;
+	if (record.mode !== "parallel" && !(record.mode === "single" && options)) return groups;
 	record.tasks.forEach((task, index) => {
 		const agent = agents.find((a) => a.name === task.agent)!;
 		// Lista ausente/vazia usa as ferramentas padrão, que incluem edição.
 		if (agent.tools?.length && !agent.tools.some((t) => t === "edit" || t === "write")) return;
 		const cwd = path.resolve(task.cwd ?? record.cwd);
 		let root: string;
-		try { root = git(cwd, ["rev-parse", "--show-toplevel"]); } catch { return; }
+		try { root = git(cwd, ["rev-parse", "--show-toplevel"]); }
+		catch (error) {
+			if (options?.isolate === true) throw new Error(`Isolation needs a git repository at ${cwd}: ${String(error)}`);
+			return;
+		}
 		const group = groups.get(root) ?? [];
 		group.push({ task, index, cwd });
 		groups.set(root, group);
 	});
-	for (const [root, group] of groups) if (group.length < 2) groups.delete(root);
+	if (options?.isolate === true) return groups;
+	const repoByRoot = new Map<string, string>();
+	const writerCounts = new Map<string, number>();
+	for (const [root, group] of groups) {
+		const key = options ? repoKey(root) : root;
+		repoByRoot.set(root, key);
+		writerCounts.set(key, (writerCounts.get(key) ?? 0) + group.length);
+	}
+	const activeByRepo = new Map<string, boolean>();
+	for (const root of groups.keys()) {
+		const key = repoByRoot.get(root)!;
+		if (writerCounts.get(key)! >= 2) continue;
+		const active = activeByRepo.get(key) ?? options?.hasOtherActiveWriter?.(root, options.excludeId) ?? false;
+		activeByRepo.set(key, active);
+		if (!active) groups.delete(root);
+	}
 	return groups;
 }
 
@@ -78,8 +91,8 @@ export function worktreeSkillError(file: string, root: string, cwd?: string, sha
 	return `skill "${skillLabel(file)}" is a project skill; isolated writers only get personal, company and bundled skills. Run the task in place to use it.`;
 }
 
-export function isolateWriters(record: JobRecord, agents: AgentConfig[], persist: () => void): void {
-	for (const [root, group] of plannedIsolation(record, agents)) {
+export function isolateWriters(record: JobRecord, agents: AgentConfig[], persist: () => void, options?: IsolationOptions): void {
+	for (const [root, group] of plannedIsolation(record, agents, options)) {
 		const baseSha = git(root, ["rev-parse", "HEAD"]);
 		const sourceBranch = currentBranch(root);
 		for (const { task, index, cwd } of group) {
@@ -152,94 +165,200 @@ export function gateSummary(record: JobRecord, agents: AgentConfig[]): string {
 	}).join("\n");
 }
 
-function remove(t: JobTaskSpec, force: boolean, discard: boolean, persist: () => void): void {
-	const branchExists = git(t.sourceCwd!, ["branch", "--list", t.branch!]) !== "";
-	// Não usa HEAD: a origem pode estar em outro branch ao retomar a limpeza.
-	if (!discard && branchExists) verifyMerged(t);
-	if (fs.existsSync(t.worktree!)) {
-		git(t.sourceCwd!, ["worktree", "remove", ...(force ? ["--force"] : []), t.worktree!]);
-	} else git(t.sourceCwd!, ["worktree", "prune"]);
-	t.worktreePathRemoved = true;
-	persist();
-	// A ancestralidade no destino registrado já foi confirmada acima; -d depende de HEAD.
-	if (branchExists) git(t.sourceCwd!, ["branch", "-D", t.branch!]);
-	// Mantém os metadados históricos; apenas o recurso deixa de estar ativo.
-	t.worktreeRemoved = true;
-	persist();
+export interface WorktreeBranch {
+	worktree: string;
+	branch: string;
+	sourceCwd: string;
+	sourceBranch?: string | null;
+	handle?: string;
+	worktreePathRemoved?: boolean;
+	worktreeRemoved?: boolean;
 }
 
-async function manageSelectedWorktrees(record: JobRecord, action: "integrate" | "discard", index: number | undefined, force: boolean, persist: () => void): Promise<string> {
-	if (record.status === "running" || record.runs?.some((r) => !r.done)) throw new Error("Job still running or has unresolved children.");
-	if (index !== undefined && (!Number.isInteger(index) || index < 1 || index > record.tasks.length)) throw new Error("taskIndex must be a 1-based task index.");
-	const messages: string[] = [];
-	for (const [i, t] of record.tasks.entries()) {
-		if ((index !== undefined && index !== i + 1) || !t.worktree || t.worktreeRemoved) continue;
-		const exists = fs.existsSync(t.worktree);
-		const dirty = exists ? git(t.worktree, ["status", "--porcelain"]) : "";
-		if (dirty && (action === "integrate" || !force)) throw new Error(`Task ${i + 1} has uncommitted changes:\n${dirty}`);
-		if (action === "integrate") {
-			verifyDestination(t);
-			if (!exists) {
-				remove(t, false, false, persist);
-				messages.push(`Task ${i + 1}: integrate cleanup complete (${t.branch}).`);
-				continue;
-			}
-			if (fs.existsSync(path.join(git(t.sourceCwd!, ["rev-parse", "--absolute-git-dir"]), "MERGE_HEAD"))) throw new Error("Source has a merge in progress.");
-			if (git(t.sourceCwd!, ["status", "--porcelain"])) throw new Error(`Source ${t.sourceCwd} is dirty; refusing merge.`);
+interface WorktreeManagementOptions {
+	persist?: () => void;
+	workspaceId?: string;
+	label?: string;
+}
+
+function assertBranchTarget(t: JobTaskSpec | WorktreeBranch): asserts t is WorktreeBranch {
+	if (!t.sourceCwd || !t.branch || !t.worktree) throw new Error("Missing worktree branch or checkout metadata.");
+}
+
+function verifyTarget(t: WorktreeBranch): void {
+	git(t.sourceCwd, ["check-ref-format", `refs/heads/${t.branch}`]);
+	if (t.sourceBranch === t.branch || currentBranch(t.sourceCwd) === t.branch) {
+		throw new Error("Worktree branch is the source checkout's branch; refusing worktree management.");
+	}
+	if (fs.existsSync(t.worktree)) {
+		const root = (cwd: string) => realpathSync(git(cwd, ["rev-parse", "--show-toplevel"]));
+		const worktree = realpathSync(t.worktree);
+		if (root(t.sourceCwd) === worktree || root(t.worktree) !== worktree || repoKey(t.sourceCwd) !== repoKey(t.worktree)) {
+			throw new Error("Worktree must be a separate checkout of the source repository.");
+		}
+	}
+}
+
+function verifyDestination(t: WorktreeBranch): void {
+	if (!t.sourceBranch) throw new Error("No recorded source branch (detached HEAD or legacy record); refusing integrate.");
+	if (currentBranch(t.sourceCwd) !== t.sourceBranch) throw new Error(`Source branch changed; expected ${t.sourceBranch}; refusing integrate.`);
+}
+
+function remove(t: WorktreeBranch, force: boolean, discard: boolean, options: WorktreeManagementOptions): void {
+	const branchExists = git(t.sourceCwd, ["branch", "--list", "--", t.branch]) !== "";
+	// Do not use HEAD: the source checkout may have switched branches during cleanup.
+	if (!discard && branchExists) {
+		if (!t.sourceBranch) throw new Error("No recorded destination branch; refusing cleanup without discard.");
+		git(t.sourceCwd, ["merge-base", "--is-ancestor", `refs/heads/${t.branch}`, `refs/heads/${t.sourceBranch}`]);
+	}
+	if (fs.existsSync(t.worktree)) {
+		git(t.sourceCwd, ["worktree", "remove", ...(force ? ["--force"] : []), "--", t.worktree]);
+	} else git(t.sourceCwd, ["worktree", "prune"]);
+	t.worktreePathRemoved = true;
+	options.persist?.();
+	if (branchExists) git(t.sourceCwd, ["branch", "-D", "--", t.branch]);
+	if (options.workspaceId) unregisterWorkspace(t.sourceCwd, options.workspaceId);
+	t.worktreeRemoved = true;
+	options.persist?.();
+}
+
+const head = (cwd: string) => git(cwd, ["rev-parse", "HEAD"]);
+const merging = (cwd: string) => fs.existsSync(path.join(git(cwd, ["rev-parse", "--absolute-git-dir"]), "MERGE_HEAD"));
+
+function requireClean(cwd: string, label: string): void {
+	if (merging(cwd)) throw new Error(`${label} has a merge in progress.`);
+	const dirty = git(cwd, ["status", "--porcelain", "--untracked-files=normal"]);
+	if (dirty) throw new Error(`${label} is dirty and has uncommitted changes:\n${dirty}`);
+}
+
+function isAncestor(cwd: string, ancestor: string, descendant: string): boolean {
+	const r = spawnSync("git", ["-C", cwd, "merge-base", "--is-ancestor", ancestor, descendant], { encoding: "utf8" });
+	if (r.status === 0 || r.status === 1) return r.status === 0;
+	throw new Error(r.stderr?.trim() || r.error?.message || "Cannot verify Git ancestry.");
+}
+
+function merge(cwd: string, sha: string, before: string, label: string, hint = ""): void {
+	try { git(cwd, ["-c", "rerere.enabled=false", "merge", "--no-ff", "--no-edit", "--no-autostash", "--no-overwrite-ignore", sha]); }
+	catch (error) {
+		let conflicts: string[] = [];
+		let recovery = "";
+		try {
+			// Read conflicts before abort, but still abort if reading them fails.
+			try { conflicts = git(cwd, ["diff", "--name-only", "--diff-filter=U", "-z"]).split("\0").filter(Boolean); }
+			finally { if (merging(cwd)) git(cwd, ["merge", "--abort"]); }
+			if (head(cwd) !== before || git(cwd, ["status", "--porcelain"])) throw new Error(`Checkout did not return to clean HEAD ${before}.`);
+		} catch (failure) { recovery = `\nCould not confirm merge rollback: ${String(failure)}`; }
+		const files = conflicts.map((file) => /[\r\n\t]/.test(file) ? JSON.stringify(file) : file);
+		throw new Error(`${label}; conflicts: ${files.join(", ") || "(none)"}\n${String(error)}${recovery}${conflicts.length && hint ? `\n${hint}` : ""}`);
+	}
+}
+
+export async function integrateWorktreeBranch(t: WorktreeBranch, options: WorktreeManagementOptions = {}): Promise<{ gateMessage?: string; cleanupOnly?: boolean }> {
+	return withRepoIntegrateLock(t.sourceCwd, async () => {
+		verifyDestination(t);
+		verifyTarget(t);
+		if (!fs.existsSync(t.worktree)) {
+			remove(t, false, false, options);
+			return { cleanupOnly: true };
+		}
+		const label = options.label ?? `Worktree ${t.worktree}`;
+		const source = `Source ${t.sourceCwd}`;
+		requireClean(t.worktree, label);
+		requireClean(t.sourceCwd, source);
+		const preMergeSha = head(t.worktree);
+		const sourceHead = head(t.sourceCwd);
+		if (currentBranch(t.worktree) !== t.branch) throw new Error(`${label} is not on ${t.branch}; refusing merge.`);
+		const synced = !isAncestor(t.worktree, sourceHead, preMergeSha);
+		if (synced) {
+			const writer = t.handle ? `Resume the writer (${t.handle}) with subagent continue` : options.label ? "Resume the writer with subagent continue" : "Resume work in the worktree";
+			merge(t.worktree, sourceHead, preMergeSha, `Merge preview failed for ${t.branch}`, `${writer} to merge ${t.sourceBranch} in ${t.worktree}, resolve the conflicts, and retry integrate.`);
+		}
+		const checkedHead = head(t.worktree);
+		let gateMessage: string;
+		try {
 			const manifest = findManifest(t.worktree);
 			if (manifest) {
 				const result = await gate(manifest, { cwd: t.worktree });
-				if (!result.ok) throw new Error(`Task ${i + 1}: checks gate failed: ${result.verdict}`);
-				messages.push(`Task ${i + 1}: checks gate passed (${result.results.length} checks).`);
-			} else messages.push(`Task ${i + 1}: no checks manifest; orchestrator must run checks after integrate.`);
-			// O gate pode ter alterado arquivos; revalida ambos antes do merge.
-			if (git(t.sourceCwd!, ["status", "--porcelain"]) || git(t.worktree, ["status", "--porcelain"])) throw new Error("Source or worktree became dirty during checks; refusing merge.");
-			if (git(t.worktree, ["rev-parse", "HEAD"]) !== git(t.sourceCwd!, ["rev-parse", t.branch!])) throw new Error("Worktree HEAD differs from its branch; refusing merge.");
-			verifyDestination(t);
-			try { git(t.sourceCwd!, ["merge", "--no-ff", "--no-edit", t.branch!]); }
-			catch (error) {
-				const conflicts = git(t.sourceCwd!, ["diff", "--name-only", "--diff-filter=U"]);
-				// Só aborta um merge criado por esta chamada.
-				let abortError = "";
-				if (fs.existsSync(path.join(git(t.sourceCwd!, ["rev-parse", "--absolute-git-dir"]), "MERGE_HEAD"))) {
-					try { git(t.sourceCwd!, ["merge", "--abort"]); }
-					catch (failure) { abortError = `\nmerge --abort failed: ${String(failure)}`; }
+				if (!result.ok) {
+					const failures = result.results.filter((r) => !r.ok).map((r) => {
+						const summary = r.tail.trim().replace(/\s+/g, " ").slice(-240);
+						return `- ${r.name}: ${r.timedOut ? "timed out" : `exit ${r.code ?? "unknown"}`}${summary ? ` — ${summary}` : ""}`;
+					});
+					throw new Error(`${label}: checks gate failed: ${result.verdict}\n${failures.join("\n")}`);
 				}
-				throw new Error(`Merge failed for ${t.branch}; conflicts: ${conflicts || "(none)"}\n${String(error)}${abortError}`);
+				gateMessage = `checks gate passed (${result.results.length} checks).`;
+			} else gateMessage = "no checks manifest; orchestrator must run checks after integrate.";
+			verifyDestination(t);
+			requireClean(t.sourceCwd, source);
+			requireClean(t.worktree, label);
+			if (head(t.sourceCwd) !== sourceHead) throw new Error("Source HEAD changed during checks; retry integrate.");
+			if (currentBranch(t.worktree) !== t.branch || head(t.worktree) !== checkedHead) throw new Error("Worktree HEAD changed during checks; refusing merge.");
+			if (!isAncestor(t.worktree, sourceHead, checkedHead)) throw new Error("Worktree no longer includes the source HEAD; refusing merge.");
+		} catch (error) {
+			if (synced) {
+				try {
+					if (currentBranch(t.worktree) !== t.branch || head(t.worktree) !== checkedHead || merging(t.worktree)) {
+						throw new Error("Worktree branch, HEAD, or merge state changed during checks.");
+					}
+					git(t.worktree, ["reset", "--hard", preMergeSha]);
+				} catch (failure) { throw new Error(`${String(error)}\nCould not roll back sync: ${String(failure)}`); }
 			}
+			throw error;
 		}
-		remove(t, action === "discard" && force, action === "discard", persist);
-		messages.push(`Task ${i + 1}: ${action} complete (${t.branch}).`);
-	}
-	return messages.join("\n") || "No active isolated worktrees selected.";
+		merge(t.sourceCwd, checkedHead, sourceHead, `Merge failed for ${t.branch}`);
+		remove(t, false, false, options);
+		return { gateMessage };
+	}, { branch: t.branch });
 }
 
-/** GC após 30 dias: só apaga recursos limpos e já integrados; preserva o resto. */
+export async function discardWorktreeBranch(t: WorktreeBranch, force = false, options: WorktreeManagementOptions = {}): Promise<void> {
+	return withRepoIntegrateLock(t.sourceCwd, () => {
+		verifyTarget(t);
+		if (fs.existsSync(t.worktree) && !force) requireClean(t.worktree, options.label ?? `Worktree ${t.worktree}`);
+		remove(t, force, true, options);
+	}, { branch: t.branch });
+}
+
+/** GC after 30 days: remove only clean, integrated resources and never wait for a lock. */
 export function gcWorktrees(record: JobRecord, now: number, persist: () => void = () => {}): boolean {
 	if (record.status === "running" || !record.finishedAt || now - record.finishedAt < 30 * 86400000 || record.runs?.some((r) => !r.done)) return false;
-	for (const t of record.tasks) {
+	for (const [i, t] of record.tasks.entries()) {
 		if (!t.worktree || t.worktreeRemoved) continue;
 		try {
-			if (managementLocks.has(git(t.sourceCwd!, ["rev-parse", "--path-format=absolute", "--git-common-dir"]))) return false;
-			if (fs.existsSync(t.worktree)) {
-				if (git(t.worktree, ["status", "--porcelain"])) return false;
-				if (!t.sourceBranch) return false;
-				// Um HEAD destacado pode conter commits que o branch antigo não contém.
-				git(t.sourceCwd!, ["merge-base", "--is-ancestor", git(t.worktree, ["rev-parse", "HEAD"]), `refs/heads/${t.sourceBranch}`]);
-			}
-			remove(t, false, false, persist);
+			assertBranchTarget(t);
+			if (!tryRepoIntegrateLock(t.sourceCwd, t.branch, () => {
+				verifyTarget(t);
+				if (fs.existsSync(t.worktree)) {
+					requireClean(t.worktree, `Worktree ${t.worktree}`);
+					if (!t.sourceBranch) throw new Error("No recorded destination branch.");
+					// Detached HEAD may contain commits not reachable from the recorded branch.
+					git(t.sourceCwd, ["merge-base", "--is-ancestor", head(t.worktree), `refs/heads/${t.sourceBranch}`]);
+				}
+				remove(t, false, false, { persist, workspaceId: `${record.jobId}:${i + 1}` });
+			})) return false;
 		} catch { return false; }
 	}
 	return true;
 }
 
-const managementLocks = new Set<string>();
-
-/** Não permite duas ações concorrentes no mesmo repositório durante o gate. */
 export async function manageWorktrees(record: JobRecord, action: "integrate" | "discard", index: number | undefined, force: boolean, persist: () => void): Promise<string> {
-	const roots = [...new Set(record.tasks.filter((t) => t.sourceCwd && !t.worktreeRemoved).map((t) => git(t.sourceCwd!, ["rev-parse", "--path-format=absolute", "--git-common-dir"])))];
-	if (roots.some((root) => managementLocks.has(root))) throw new Error("Worktree management already in progress for this repository.");
-	for (const root of roots) managementLocks.add(root);
-	try { return await manageSelectedWorktrees(record, action, index, force, persist); }
-	finally { for (const root of roots) managementLocks.delete(root); }
+	if (record.status === "running" || record.runs?.some((r) => !r.done)) throw new Error("Job still running or has unresolved children.");
+	if (index !== undefined && (!Number.isInteger(index) || index < 1 || index > record.tasks.length)) throw new Error("taskIndex must be a 1-based task index.");
+	const messages: string[] = [];
+	for (const [i, t] of record.tasks.entries()) {
+		if ((index !== undefined && index !== i + 1) || !t.worktree || t.worktreeRemoved) continue;
+		assertBranchTarget(t);
+		const label = `Task ${i + 1}`;
+		const options = { persist, label, workspaceId: `${record.jobId}:${i + 1}` };
+		if (action === "integrate") {
+			const { gateMessage, cleanupOnly } = await integrateWorktreeBranch(t, options);
+			if (gateMessage) messages.push(`${label}: ${gateMessage}`);
+			if (cleanupOnly) {
+				messages.push(`${label}: integrate cleanup complete (${t.branch}).`);
+				continue;
+			}
+		} else await discardWorktreeBranch(t, force, options);
+		messages.push(`${label}: ${action} complete (${t.branch}).`);
+	}
+	return messages.join("\n") || "No active isolated worktrees selected.";
 }
