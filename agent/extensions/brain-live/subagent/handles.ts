@@ -18,6 +18,7 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import type { ChildSkills } from "./skills.ts";
 import { ownerMayBeAlive, readProcessIdentity, type ProcessIdentity } from "./process-owner.ts";
+import { tryLock } from "./lockfile.ts";
 
 /** Everything needed to rebuild the child argv byte for byte on `continue`. */
 export interface ChildInvocation {
@@ -48,6 +49,8 @@ export interface ChildInvocation {
 	sourceCwd?: string;
 	/** Role can edit/write: a continue without worktree captures a writer checkpoint. */
 	writes: boolean;
+	/** Swarm board member: board file and own handle (child-board.ts; env AGENT_BOARD_PATH/HANDLE). */
+	board?: { path: string; handle: string };
 }
 
 export type HandleLifecycle = "running" | "waiting" | "closed";
@@ -182,45 +185,14 @@ export function sessionLockPath(sessionFile: string): string {
 }
 
 /**
- * O_EXCL lock next to the child JSONL: one continue per session at a time, also
- * across parent processes. A lock whose owner process is gone is taken over.
+ * O_EXCL lock next to the child JSONL: one writer per session at a time (continue, swarm
+ * rounds, integrate/discard), also across parent processes. A lock whose owner process is
+ * gone is taken over (generation-numbered lock, lockfile.ts); a live owner is never displaced.
  */
 export function acquireSessionLock(sessionFile: string, jobId: string): { ok: true; release: () => void } | { ok: false; owner?: LockOwner } {
-	const file = sessionLockPath(sessionFile);
-	const owner: LockOwner = { pid: process.pid, identity: readProcessIdentity(process.pid), jobId, at: Date.now() };
-	for (let attempt = 0; attempt < 2; attempt++) {
-		try {
-			fs.writeFileSync(file, JSON.stringify(owner), { flag: "wx", mode: 0o600 });
-			let released = false;
-			return {
-				ok: true,
-				release: () => {
-					if (released) return;
-					released = true;
-					try {
-						const current = JSON.parse(fs.readFileSync(file, "utf-8")) as LockOwner;
-						if (current.pid === owner.pid && current.jobId === owner.jobId) fs.unlinkSync(file);
-					} catch {
-						/* already gone */
-					}
-				},
-			};
-		} catch (error) {
-			if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
-		}
-		let held: LockOwner | undefined;
-		try {
-			held = JSON.parse(fs.readFileSync(file, "utf-8")) as LockOwner;
-		} catch {
-			held = undefined;
-		}
-		// Unreadable lock: a writer may be between create and write; treat as held.
-		if (!held || ownerMayBeAlive(held.pid, held.identity)) return { ok: false, owner: held };
-		try {
-			fs.unlinkSync(file);
-		} catch {
-			/* someone else took it over first; retry decides */
-		}
-	}
-	return { ok: false };
+	const attempt = tryLock(sessionLockPath(sessionFile), { identity: readProcessIdentity(process.pid), jobId }, (held) => {
+		const owner = held as unknown as LockOwner | undefined;
+		return Boolean(owner && typeof owner.pid === "number" && !ownerMayBeAlive(owner.pid, owner.identity));
+	});
+	return attempt.ok ? attempt : { ok: false, owner: attempt.owner as unknown as LockOwner | undefined };
 }

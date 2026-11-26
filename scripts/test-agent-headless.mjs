@@ -130,6 +130,11 @@ try {
 	assert.ok(planTool, `perfil completo sem plan declarada: ${fullRun.tools}`);
 	assert.deepEqual(Object.keys(planTool.input_schema?.properties ?? {}), ['steps'], 'plan só com steps');
 	assert.ok(!fullRun.tools.includes('todo'), `todo deveria estar deferred: ${fullRun.tools}`);
+	// Swarm (item 5): deferred, fora do schema e do prompt inicial nos dois perfis; board é só dos filhos.
+	for (const r of [fullRun, enabled]) {
+		assert.ok(!r.tools.includes('swarm') && !r.tools.includes('board'), `swarm deveria estar deferred e board só nos filhos: ${r.tools}`);
+		assert.doesNotMatch(r.system, /\bswarm\b|\bboard\b/i, 'prompt inicial cita swarm/board');
+	}
 	ok(`tools headless: ${enabled.tools.join(', ')}`);
 
 	assert.equal(enabled.system, disabled.system, 'mesma política entre processos');
@@ -148,6 +153,8 @@ try {
 	// 8994 B antes da action trace; teto de +600 B porque o schema entra em toda requisição.
 	assert.ok(subagentBytes <= 8994 + 600, `schema de subagent cresceu demais: ${subagentBytes} B`);
 	assert.ok(subagentBytes <= 9400, `subagent schema over the 9,400 B budget: ${subagentBytes} B`);
+	// Swarm (item 5) vive na tool deferred `swarm`: o schema de subagent não cresce (6956 B medidos antes do item 5).
+	assert.ok(subagentBytes <= 6956, `subagent schema grew past 6956 B: ${subagentBytes} B`);
 	ok(`política de autoridade e diretriz de orquestrador, sem modos nem inferência extra; schema subagent ${subagentBytes} B`);
 	assert.ok(enabled.bytes < fullRun.bytes, `headless (${enabled.bytes}) não é menor que o completo (${fullRun.bytes})`);
 	ok(`prompt: completo ${fullRun.bytes} B, headless ${enabled.bytes} B; schemas: completo ${fullRun.toolBytes} B, headless ${enabled.toolBytes} B`);

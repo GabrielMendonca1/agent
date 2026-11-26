@@ -241,6 +241,8 @@ Os blocos de mensagem, pedido e resposta de `peers` e `megamind` também estão 
 
 ## 5. Camada Swarm opcional (só desenho; implementar depois do item 2)
 
+**Estado:** implementado (partes 1 e 2) — gate `/swarm` por sessão, tool `swarm` deferred, loop escritor ↔ revisor com retomada das duas sessões e board append-only com a tool `board` nos filhos (docs/setup.md, seção Swarm; check `subagent-swarm`). Fork de sessão e watchdog de stall ficaram fora.
+
 **Princípio:** o `launch` simples continua sendo o caminho para tarefas pequenas. O Swarm é opt-in (`swarm: { … }` no launch) e só existe quando 2+ agentes colaboram na mesma meta. Ficam como estão: worktree isolado por writer, `integrate`/`discard` explícitos e sandbox somente leitura.
 
 **Primitivos**
@@ -267,6 +269,6 @@ Os blocos de mensagem, pedido e resposta de `peers` e `megamind` também estão 
 | 3 | `plan`/`todo` + inglês para o modelo | pequeno–médio | baixo | 0 |
 | 4 | Handoff por branch/HEAD + `skills:` por papel | pequeno | baixo | — |
 | H | Hotfix: sessão viva presa ao próprio build (Pi + extensões) | pequeno–médio | médio | — |
-| 5 | Swarm opcional: board, loop reviewer↔worker, fork, watchdog | médio–grande | médio | 2 |
+| 5 | Swarm opcional: board, loop reviewer↔worker, fork, watchdog (feito: gate, loop e board; fork e watchdog fora) | médio–grande | médio | 2 |
 
 Todos os itens seguem a regra do repo: nenhum teste permanente fora do gate. As guardas novas entram como `scripts/test-*.mjs` em `.pi/checks.json`.

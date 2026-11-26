@@ -158,6 +158,36 @@ try {
   assert.equal(tools.get('todo').exposure, 'deferred', 'todo é deferred');
   console.log('ok plan só steps; todo deferred');
 
+  // Swarm (item 5): tool deferred (schema já checado acima) e os textos que o modelo lê.
+  assert.equal(tools.get('swarm')?.exposure, 'deferred', 'swarm é deferred');
+  const swarm = await jiti.import(join(repo, 'agent/extensions/brain-live/subagent/swarm.ts'));
+  // O texto oculto vem do próprio comando /swarm on.
+  const sentBefore = sent.length;
+  await commands.get('swarm').handler('on', { hasUI: false, ui: { notify() {}, setStatus() {} } });
+  const hidden = sent.splice(sentBefore);
+  assert.deepEqual(hidden, [swarm.SWARM_ON_TEXT], '/swarm on envia só o playbook');
+  check('swarm /swarm on message', hidden[0]);
+  check('swarm off error', swarm.SWARM_OFF_ERROR);
+  check('swarm verdict contract', swarm.VERDICT_CONTRACT);
+  // board: tool só do filho; registrada apenas com AGENT_BOARD_PATH/HANDLE (env de fixture).
+  const boardTools = new Map();
+  const { default: childBoard } = await jiti.import(join(repo, 'agent/extensions/brain-live/subagent/child-board.ts'));
+  childBoard(fakePi(boardTools, {}, new Map(), []));
+  assert.equal(boardTools.size, 0, 'board sem env não registra nada');
+  const boardFile = join(sandbox, 'board/board.jsonl');
+  swarm.createBoard(boardFile);
+  process.env.AGENT_BOARD_PATH = boardFile;
+  process.env.AGENT_BOARD_HANDLE = 'worker-1';
+  try { childBoard(fakePi(boardTools, {}, new Map(), [])); } finally { delete process.env.AGENT_BOARD_PATH; delete process.env.AGENT_BOARD_HANDLE; }
+  const board = boardTools.get('board');
+  assert.ok(board, 'board registrada com o env');
+  checkTool('child-board', board);
+  const run = async (params) => (await board.execute('t', params)).content[0].text;
+  for (const params of [{ action: 'read' }, { action: 'post', kind: 'claim', text: 'x'.repeat(401) }, { action: 'post', kind: 'claim', text: 'own src/a.ts', refs: ['src/a.ts'] }, { action: 'read' }, { action: 'read', since: 1 }, { action: 'post', kind: 'chat', text: 'hi' }, { action: 'post', kind: 'note' }])
+    check(`board ${JSON.stringify(params).slice(0, 60)}`, await run(params));
+  check('swarm board block', swarm.boardBlock('worker-1', [{ handle: 'worker-2', task: '## Objective\nbuild the parser' }]));
+  console.log('ok swarm deferred, board do filho e textos do /swarm em inglês');
+
   // Política, notas e categorias, direto dos módulos.
   const policy = await jiti.import(join(repo, 'agent/core/policy.mjs'));
   for (const [name, text] of Object.entries(policy.policySections())) check(`policy ${name}`, text);

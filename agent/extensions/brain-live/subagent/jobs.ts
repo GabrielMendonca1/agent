@@ -19,6 +19,8 @@ import { commitWip, gateSummary, gcWorktrees, isolateWriters, manageWorktrees, p
 import { getRoleModelChoices, isGoogleApiModel, resolveGeminiPreference, resolveModelRef, resolveRoleModel } from "../lib/tiers.ts";
 import type { AgentConfig, AgentScope } from "./agents.ts";
 import type { ChildSkills } from "./skills.ts";
+import { releaseAll } from "./lockfile.ts";
+import { boardBlock, boardPath, boardSummary, createBoard, runSwarmLoop, type SwarmRecord } from "./swarm.ts";
 import {
 	type DurableRunState,
 	MAX_RESUMES,
@@ -116,7 +118,8 @@ export const NOTIFY_SUMMARY_CAP = 4 * 1024;
 const LEGACY_TASK_SNAPSHOT_CAP = 2000;
 
 export type JobStatus = "running" | "completed" | "failed" | "cancelled" | "timeout" | "interrupted";
-export type JobMode = "single" | "parallel" | "chain";
+/** "swarm": a swarm loop job (task 1 writer, task 2 reviewer); JobRecord.swarm holds its rounds. */
+export type JobMode = "single" | "parallel" | "chain" | "swarm";
 
 export interface JobTaskSpec {
 	agent: string;
@@ -163,6 +166,10 @@ export interface JobTaskSpec {
 	/** Hard timeout: sha of `WIP(agent): timeout <jobId>` in the job worktree. */
 	wipCommit?: string;
 	wipError?: string;
+	/** Swarm board member: board file and own handle (reaches the child invocation). */
+	board?: { path: string; handle: string };
+	/** Launch planned a worktree for this writer: it never runs in the source checkout without one. */
+	isolate?: boolean;
 }
 
 /** Soft timeout margin: 10% of the job timeout, at least 3 minutes, at most half the timeout. */
@@ -366,6 +373,8 @@ export interface JobRecord {
 	resumes?: number;
 	/** `continue` job: the launch task whose child session this job resumed. */
 	continuesFrom?: { jobId: string; taskIndex: number; handle: string };
+	/** Swarm job: caps, rounds and outcome (mode "swarm" only). */
+	swarm?: SwarmRecord;
 }
 
 export interface ContinueSpec {
@@ -405,6 +414,8 @@ export interface LaunchSpec {
 	modelRegistry?: DispatchModelRegistry;
 	cwd: string;
 	timeoutSeconds: number;
+	/** Mode "swarm": initial swarm state (caps, isolate). */
+	swarm?: SwarmRecord;
 }
 
 export interface JobManagerDeps {
@@ -587,6 +598,8 @@ interface ActiveJob {
 	releaseLock?: () => void;
 	/** AGENT_CHILD_SOFT_DEADLINE_MS for this job's children. */
 	softDeadlineMs?: number;
+	/** Swarm board: maxUsd reached by finished tasks; the job was aborted. */
+	budgetStopped?: boolean;
 }
 
 export type LaunchOutcome = { ok: true; record: JobRecord; resultPath: string } | { ok: false; error: string };
@@ -666,6 +679,7 @@ export class SubagentJobManager {
 			return { ok: false, error: `Too many parallel tasks (${spec.tasks.length}). Max is ${MAX_PARALLEL_TASKS}.` };
 		}
 		if (spec.mode === "single" && spec.tasks.length > 1) return { ok: false, error: "Single mode takes exactly one task." };
+		if (spec.mode === "swarm" && (spec.tasks.length !== 2 || !spec.swarm)) return { ok: false, error: "Swarm loop takes exactly one writer and one reviewer." };
 
 		// Unknown agents are rejected before anything is launched: no phantom jobs.
 		const known = new Set(spec.agents.map((a) => a.name));
@@ -683,7 +697,14 @@ export class SubagentJobManager {
 
 		// Writers headed for a worktree get no project skills (only personal, company and bundled ones).
 		// Refused here, before any record, worktree or child exists.
-		for (const [root, group] of plannedIsolation(spec, spec.agents)) {
+		let planned: ReturnType<typeof plannedIsolation>;
+		try {
+			planned = plannedIsolation(spec, spec.agents);
+		} catch (error) {
+			return { ok: false, error: error instanceof Error ? error.message : String(error) };
+		}
+		const isolatedIndexes = new Set([...planned.values()].flatMap((group) => group.map(({ index }) => index)));
+		for (const [root, group] of planned) {
 			for (const { task, index } of group) {
 				for (const file of task.resolvedSkills?.paths ?? []) {
 					const error = worktreeSkillError(file, root, path.resolve(task.cwd ?? spec.cwd), task.resolvedSkills?.shadows?.[file]);
@@ -702,9 +723,10 @@ export class SubagentJobManager {
 			mode: spec.mode,
 			status: "running",
 			agents: spec.tasks.map((t) => t.agent),
-			tasks: spec.tasks.map((t) => ({
+			tasks: spec.tasks.map((t, index) => ({
 				agent: t.agent,
 				task: t.task,
+				...(isolatedIndexes.has(index) ? { isolate: true } : {}),
 				cwd: t.cwd,
 				model: t.model,
 				thinking: t.thinking,
@@ -719,7 +741,21 @@ export class SubagentJobManager {
 			sessionGeneration: spec.sessionGeneration,
 			parentPid: process.pid,
 			parentIdentity: readProcessIdentity(process.pid),
+			...(spec.swarm ? { swarm: structuredClone(spec.swarm) } : {}),
 		};
+
+		// Swarm board: the shared file exists before any child; removed again if the launch fails.
+		let board: string | undefined;
+		if (record.swarm?.kind === "board" && record.tasks.length >= 2) {
+			board = boardPath(this.deps.baseDir, spec.sessionId, jobId);
+			try {
+				createBoard(board);
+			} catch (error) {
+				return { ok: false, error: `Could not create the swarm board: ${error instanceof Error ? error.message : String(error)}` };
+			}
+			record.swarm.boardPath = board;
+		}
+		const dropBoard = () => { if (board) fs.rmSync(path.dirname(board), { recursive: true, force: true }); };
 
 		// Handles are reserved with the record: names are unique per parent session.
 		try {
@@ -731,7 +767,15 @@ export class SubagentJobManager {
 			});
 			record.tasks.forEach((task, index) => { task.handle = handles[index]; });
 		} catch (error) {
+			dropBoard();
 			return { ok: false, error: error instanceof Error ? error.message : String(error) };
+		}
+		if (board) {
+			const members = record.tasks.map((task) => ({ handle: task.handle!, task: task.task }));
+			for (const task of record.tasks) {
+				task.board = { path: board, handle: task.handle! };
+				task.task = `${boardBlock(task.handle!, members.filter((m) => m.handle !== task.handle))}\n\n${task.task}`;
+			}
 		}
 
 		// Persist the launch before acknowledging it, so a crash right after the
@@ -850,6 +894,10 @@ export class SubagentJobManager {
 			signal: AbortSignal;
 			makeDetails: (results: SingleResult[]) => SubagentDetails;
 			onFirstToken?: () => void;
+			/** Swarm rounds 2+: continue this task's own child session. */
+			resume?: { invocation: ChildInvocation; sessionFile: string };
+			/** Swarm rounds 2+: usage of the earlier rounds, added to this run's. */
+			carryUsage?: UsageStats;
 		},
 	): Promise<SingleResult> {
 		const { slot, task, signal, makeDetails, onFirstToken } = opts;
@@ -858,9 +906,9 @@ export class SubagentJobManager {
 		const prev = prefetchState.get(key);
 		prefetchState.set(key, { inflight: prev?.inflight ?? false, until: Date.now() + cacheTtlSeconds() * 1000 * 0.9 });
 		// A continue job rebuilds the launch argv over the same child session.
-		const resume = job.record.continuesFrom && task.invocation && task.sessionFile
+		const resume = opts.resume ?? (job.record.continuesFrom && task.invocation && task.sessionFile
 			? { invocation: task.invocation, sessionFile: task.sessionFile }
-			: undefined;
+			: undefined);
 		const common = {
 			defaultCwd: spec.cwd,
 			dispatchDefaults: spec.dispatchDefaults,
@@ -872,6 +920,7 @@ export class SubagentJobManager {
 			roleModel: task.model && task.thinking ? { model: task.model, thinking: task.thinking } : undefined,
 			skills: task.skills,
 			resolvedSkills: task.resolvedSkills,
+			board: task.board,
 			step: opts.step,
 			signal,
 			makeDetails,
@@ -886,8 +935,9 @@ export class SubagentJobManager {
 		try {
 			result = await runSingleAgent({ ...common, task: taskText, parentSession: spec.dispatchDefaults.parentSession });
 			result = await this.quotaFallback(job, spec, task, result, common);
+			if (opts.carryUsage) for (const key of ["input", "output", "cacheRead", "cacheWrite", "cost", "turns"] as const) result.usage[key] += opts.carryUsage[key];
 			// The child and its process tree are gone here (runChild waits): safe to commit.
-			if (job.timedOut && result.stopReason === "aborted") this.commitTimeoutWip(job, task);
+			if ((job.timedOut || job.budgetStopped) && result.stopReason === "aborted") this.commitTimeoutWip(job, task);
 		} catch (e) {
 			job.thrown.set(slot, e instanceof Error ? e.message : String(e));
 			this.settleTask(job, slot);
@@ -896,8 +946,20 @@ export class SubagentJobManager {
 		}
 		job.returned.set(slot, result);
 		this.settleTask(job, slot);
+		this.boardBudget(job);
 		this.persist(job.record);
 		return result;
+	}
+
+	/** Swarm board: once finished tasks cost maxUsd, stop the rest (pending never start, running abort). */
+	private boardBudget(job: ActiveJob): void {
+		const swarm = job.record.swarm;
+		if (swarm?.kind !== "board") return;
+		swarm.spentUsd = [...job.returned.values()].reduce((sum, result) => sum + (result.usage.cost || 0), 0);
+		if (swarm.spentUsd < swarm.maxUsd || job.controller.signal.aborted) return;
+		job.budgetStopped = true;
+		swarm.outcome = "max_usd";
+		job.controller.abort();
 	}
 
 	/**
@@ -1060,6 +1122,38 @@ export class SubagentJobManager {
 		return { usage, sessionFiles };
 	}
 
+	/**
+	 * One swarm turn of task `slot`. Round 1 starts the child; later rounds resume its own
+	 * session JSONL under the session lock, so only the delta is sent and the cache stays warm.
+	 */
+	private async runSwarmTurn(job: ActiveJob, spec: LaunchSpec, slot: 0 | 1, text: string, resume: boolean, makeDetails: (results: SingleResult[]) => SubagentDetails): Promise<SingleResult> {
+		const task = job.record.tasks[slot];
+		const previous = job.returned.get(slot);
+		const refuse = (message: string): SingleResult => ({
+			agent: task.agent, agentSource: "unknown", task: text, exitCode: 1, finalText: "", stderr: message, errorMessage: message, stopReason: "error",
+			usage: previous ? { ...previous.usage } : emptyUsage(),
+		});
+		let release: (() => void) | undefined;
+		let session: { invocation: ChildInvocation; sessionFile: string } | undefined;
+		if (resume) {
+			if (task.invocation?.runner !== "pi" || !task.sessionFile || !fs.existsSync(task.sessionFile))
+				return refuse(`no child session to resume for ${task.handle ?? task.agent}`);
+			const lock = acquireSessionLock(task.sessionFile, job.record.jobId);
+			if (!lock.ok) return refuse(`session ${task.sessionFile} is locked by ${lock.owner ? `job ${lock.owner.jobId}` : "another job"}`);
+			release = lock.release;
+			session = { invocation: task.invocation, sessionFile: task.sessionFile };
+		}
+		let result: SingleResult;
+		try {
+			result = await this.runTask(job, spec, { slot, task, taskText: text, signal: job.controller.signal, makeDetails, resume: session, carryUsage: previous?.usage });
+		} finally {
+			// A lock that cannot be released fails the loop instead of being swallowed.
+			const errors = releaseAll(release ? [release] : []);
+			if (errors.length) throw new Error(`Session lock not released: ${errors.join("; ")}`);
+		}
+		return result;
+	}
+
 	private async run(job: ActiveJob, spec: LaunchSpec): Promise<void> {
 		const signal = job.controller.signal;
 		const makeDetails =
@@ -1071,12 +1165,37 @@ export class SubagentJobManager {
 				results,
 			});
 		let output = "";
+		let swarmTail = "";
 		let error: string | undefined;
 
 		try {
 			spec = { ...spec, tasks: job.record.tasks };
 			isolateWriters(job.record, spec.agents, () => writeRecord(this.deps.baseDir, job.record));
-			if (spec.mode === "chain") {
+			// Fail closed: a writer planned for a worktree that did not get one never runs in the source checkout.
+			const unisolated = job.record.tasks.flatMap((t, i) => (t.isolate || (i === 0 && spec.mode === "swarm" && job.record.swarm?.isolate)) && !t.worktree ? [`task ${i + 1} (${t.agent})`] : []);
+			if (unisolated.length > 0) throw new Error(`Isolation was planned for ${unisolated.join(", ")} but no worktree was created; refusing to run in the source checkout.`);
+			if (spec.mode === "swarm" && job.record.swarm) {
+				const [writer, reviewer] = spec.tasks;
+				// The reviewer reads the writer's checkout: its worktree when isolated.
+				reviewer.cwd = writer.cwd ?? spec.cwd;
+				this.persist(job.record);
+				const loop = await runSwarmLoop({
+					swarm: job.record.swarm,
+					writerTask: writer.task,
+					reviewerTask: reviewer.task,
+					cwd: path.resolve(spec.cwd, writer.cwd ?? "."),
+					isolated: Boolean(job.record.swarm.isolate),
+					signal,
+					run: (slot, text, resume) => this.runSwarmTurn(job, spec, slot, text, resume, makeDetails("swarm")),
+					failed: isFailedResult,
+					gate: () => gateSummary({ ...job.record, tasks: [writer] }, spec.agents) || undefined,
+					persist: () => this.persist(job.record),
+					summaryCap: NOTIFY_SUMMARY_CAP,
+				});
+				output = `${loop.head}\nhandles: writer ${writer.handle ?? "-"}, reviewer ${reviewer.handle ?? "-"} (continue either with subagent action continue)`;
+				swarmTail = loop.tail;
+				error = loop.error;
+			} else if (spec.mode === "chain") {
 				let previousOutput = "";
 				for (let i = 0; i < spec.tasks.length; i++) {
 					// An aborted job never starts another chain step.
@@ -1161,6 +1280,10 @@ export class SubagentJobManager {
 			}
 		} catch (e) {
 			error = e instanceof Error ? e.message : String(e);
+			if (job.record.swarm && !job.record.swarm.outcome) {
+				job.record.swarm.outcome = "failed";
+				output = `swarm loop · outcome: failed · rounds: ${job.record.swarm.rounds.length}/${job.record.swarm.maxRounds} · cost: $${job.record.swarm.spentUsd.toFixed(2)}`;
+			}
 		} finally {
 			if (job.timer) clearTimeout(job.timer);
 			// Aquecimento pendente (esperando slot/memória ou em voo) morre com o job, e o
@@ -1174,11 +1297,21 @@ export class SubagentJobManager {
 
 		const { usage, sessionFiles } = this.settleTasks(job, error);
 		const isolated = worktreeSummary(this.worktreeView(job.record));
-		if (isolated) output = `${isolated}\n\n${output}`;
+		// A swarm result opens with its own compact block; worktree and gate follow it.
+		if (isolated) output = job.record.swarm ? `${output}\n\n${isolated}` : `${isolated}\n\n${output}`;
 		const recovery = recoveryNotes(job.record);
 		if (recovery) output = `${output}\n\n${recovery}`;
 		const gates = gateSummary(job.record, spec.agents);
 		if (gates) output = `${output}\n\n${gates}`;
+		if (swarmTail) output = `${output}\n\n${swarmTail}`;
+		const board = job.record.swarm?.kind === "board" ? job.record.swarm : undefined;
+		if (board) {
+			if (job.budgetStopped) error = `Swarm board stopped: finished tasks cost $${board.spentUsd.toFixed(2)} of $${board.maxUsd.toFixed(2)}.${error ? ` ${error}` : ""}`;
+			board.outcome ??= error || job.cancelRequested || job.timedOut ? "failed" : "done";
+			board.spentUsd = usage.cost;
+			output = `swarm board · outcome: ${board.outcome} · tasks: ${job.record.tasks.length} · cost: $${usage.cost.toFixed(2)}\n\n${output}`;
+			if (board.boardPath) output = `${output}\n\n${boardSummary(board.boardPath)}`;
+		}
 		const outputBytes = Buffer.byteLength(output, "utf-8");
 		if (outputBytes > MAX_STORED_RESULT_BYTES) {
 			// Never silently shrink a result: report the overflow instead.
@@ -1217,7 +1350,11 @@ export class SubagentJobManager {
 		// Só remover a fonte de recuperação depois que o resultado está seguro no registro.
 		if (persisted && !heldSession) removeJobRunDir(this.deps.baseDir, finished.sessionId, finished.jobId);
 		this.settleHandles(finished);
-		job.releaseLock?.();
+		const lockErrors = releaseAll(job.releaseLock ? [job.releaseLock] : []);
+		if (lockErrors.length) {
+			finished.error = [finished.error, `Session lock not released: ${lockErrors.join("; ")}`].filter(Boolean).join(" ");
+			this.persist(finished);
+		}
 		try {
 			this.deps.onComplete(finished);
 		} catch {
@@ -1236,6 +1373,7 @@ export class SubagentJobManager {
 		for (const record of records) {
 			if (gcWorktrees(record, this.now(), () => this.persist(record))) {
 				fs.unlinkSync(jobPath(this.deps.baseDir, sessionId, record.jobId));
+				if (record.swarm?.boardPath) fs.rmSync(path.dirname(record.swarm.boardPath), { recursive: true, force: true });
 			} else this.persist(record);
 		}
 		return listRecords(this.deps.baseDir, sessionId);
@@ -1310,6 +1448,16 @@ export class SubagentJobManager {
 		const lock = acquireSessionLock(entry.sessionFile, spec.jobId);
 		if (!lock.ok)
 			return { ok: false, error: `Another continue is already writing to ${entry.sessionFile}${lock.owner ? ` (job ${lock.owner.jobId}, pid ${lock.owner.pid})` : ""}. Wait for it to finish.` };
+		// Re-read under the lock: an integrate/discard or another continue may have changed the handle meanwhile.
+		const fresh = readRegistry(this.deps.baseDir, spec.sessionId).handles[entry.handle];
+		const changed = !fresh ? "is gone"
+			: fresh.lifecycle === "closed" ? `is closed (${fresh.closedReason ?? "closed"})`
+				: fresh.lastJobId !== entry.lastJobId || fresh.lifecycle !== entry.lifecycle || fresh.sessionFile !== entry.sessionFile ? `changed (now ${fresh.lifecycle} in job ${fresh.lastJobId})`
+					: fresh.worktree && !fs.existsSync(fresh.worktree) ? `lost its worktree ${fresh.worktree}` : undefined;
+		if (changed) {
+			const errors = releaseAll([lock.release]);
+			return { ok: false, error: `Handle ${entry.handle} ${changed} while the continue was starting. Check it with action "list" and try again.${errors.length ? ` Session lock not released: ${errors.join("; ")}` : ""}` };
+		}
 
 		const warnings: string[] = [];
 		if (invocation.roleSha && fileSha(invocation.roleFile) !== invocation.roleSha)
@@ -1361,8 +1509,8 @@ export class SubagentJobManager {
 				live.updatedAt = now;
 			});
 		} catch (error) {
-			lock.release();
-			return { ok: false, error: `Could not persist the continue job: ${error instanceof Error ? error.message : String(error)}` };
+			const errors = releaseAll([lock.release]);
+			return { ok: false, error: `Could not persist the continue job: ${error instanceof Error ? error.message : String(error)}${errors.length ? ` Session lock not released: ${errors.join("; ")}` : ""}` };
 		}
 		this.start(record, {
 			jobId: record.jobId,
@@ -1423,16 +1571,42 @@ export class SubagentJobManager {
 			taskIndex = from.taskIndex;
 		}
 		const target = record;
+		// A swarm loop is one unit: the writer owns the worktree, and both handles close together.
+		if (target.mode === "swarm") taskIndex = undefined;
 		const registry = readRegistry(this.deps.baseDir, sessionId);
 		const selected = target.tasks
 			.map((task, i) => ({ task, index: i + 1 }))
 			.filter(({ index }) => taskIndex === undefined || taskIndex === index)
 			.map(({ task, index }) => task.handle ?? Object.values(registry.handles).find((h) => h.jobId === target.jobId && h.taskIndex === index)?.handle)
 			.filter((handle): handle is string => Boolean(handle));
-		const busy = selected.filter((handle) => registry.handles[handle]?.lifecycle === "running" && this.active.has(registry.handles[handle].lastJobId));
-		if (busy.length > 0) throw new Error(`Handle(s) ${busy.join(", ")} still running a continue job; wait for it before ${action}.`);
-		const text = await manageWorktrees(target, action, taskIndex, force, () => writeRecord(this.deps.baseDir, target));
-		this.closeHandles(sessionId, selected, action === "integrate" ? "integrated" : "discarded");
+		// Hold the session locks of the selected handles (all of them for a swarm loop), also across
+		// parent processes, from the busy check through gate and merge/remove: a continue or swarm round
+		// cannot start meanwhile, and a running one makes this refuse.
+		const busyHandles = () => selected.filter((handle) => registry.handles[handle]?.lifecycle === "running" && this.active.has(registry.handles[handle].lastJobId));
+		// In-process continue jobs get the specific message; the locks below also cover other processes.
+		if (busyHandles().length > 0) throw new Error(`Handle(s) ${busyHandles().join(", ")} still running a continue job; wait for it before ${action}.`);
+		const releases: Array<() => void> = [];
+		let text: string | undefined;
+		try {
+			// Plain jobs lock the selected tasks; a swarm loop (shared checkout) selected all of them above.
+			for (const [index, task] of target.tasks.entries()) {
+				const handle = task.handle ?? Object.values(registry.handles).find((h) => h.jobId === target.jobId && h.taskIndex === index + 1)?.handle;
+				if (taskIndex !== undefined && taskIndex !== index + 1) continue;
+				const sessionFile = (handle ? registry.handles[handle]?.sessionFile : undefined) ?? task.sessionFile;
+				if (!sessionFile || !fs.existsSync(sessionFile)) continue;
+				const lock = acquireSessionLock(sessionFile, `${action}-${target.jobId}`);
+				if (!lock.ok)
+					throw new Error(`Handle ${handle ?? `task ${index + 1}`} is busy: its session is locked by ${lock.owner?.jobId ? `job ${lock.owner.jobId}` : "another job"}${lock.owner?.pid ? ` (pid ${lock.owner.pid})` : ""}. Wait for it to finish, then ${action}.`);
+				releases.push(lock.release);
+			}
+			const busy = busyHandles();
+			if (busy.length > 0) throw new Error(`Handle(s) ${busy.join(", ")} still running a continue job; wait for it before ${action}.`);
+			text = await manageWorktrees(target, action, taskIndex, force, () => writeRecord(this.deps.baseDir, target));
+			this.closeHandles(sessionId, selected, action === "integrate" ? "integrated" : "discarded");
+		} finally {
+			const errors = releaseAll(releases);
+			if (errors.length) throw new Error(`${text ? `${text}\n` : ""}Session lock(s) not released: ${errors.join("; ")}`);
+		}
 		return text;
 	}
 

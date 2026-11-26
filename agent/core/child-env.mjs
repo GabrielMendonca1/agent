@@ -39,7 +39,7 @@ export function userCommandEnv(env = process.env) {
   // Invalid policy snapshots fail visibly, never restore the unsafe inherited env.
   restoreSkillPolicyEnvironment(copy);
   for (const key of Object.keys(copy)) {
-    if (key.startsWith('AGENT_JUICE_') || ['AGENT_SKILLS_BEFORE', 'AGENT_RUNTIME_ENABLED', 'AGENT_PI_ROOT', 'AGENT_ARTIFACT', 'AGENT_ARTIFACT_ROOT', 'AGENT_CHILD', 'AGENT_CHILD_SKILLS', 'AGENT_CACHE_PREFETCH'].includes(key)) delete copy[key];
+    if (key.startsWith('AGENT_JUICE_') || ['AGENT_SKILLS_BEFORE', 'AGENT_RUNTIME_ENABLED', 'AGENT_PI_ROOT', 'AGENT_ARTIFACT', 'AGENT_ARTIFACT_ROOT', 'AGENT_CHILD', 'AGENT_CHILD_SKILLS', 'AGENT_CACHE_PREFETCH', 'AGENT_BOARD_PATH', 'AGENT_BOARD_HANDLE'].includes(key)) delete copy[key];
   }
   return copy;
 }

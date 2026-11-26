@@ -6,7 +6,7 @@ import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { homedir, tmpdir } from 'node:os';
-import { dirname, join, resolve } from 'node:path';
+import { basename, dirname, join, resolve } from 'node:path';
 import { createRequire } from 'node:module';
 import { fileURLToPath } from 'node:url';
 import { startFakeAnthropic } from './lib/fake-anthropic.mjs';
@@ -770,7 +770,14 @@ try {
     const first = cont('alpha', 'cont-1');
     assert.ok(first.ok, first.error);
     assert.match(first.warnings.join(' '), /Role file of cwriter changed since launch; continuing with the launch snapshot/);
-    assert.ok(existsSync(sessionLockPath(alpha.sessionFile)), 'lock next to the JSONL while the continue runs');
+    // Generation-numbered lock (lockfile.ts): the state is the highest `<lock>.<N>`, a holder or a release marker.
+    const lockTop = () => {
+      const lock = sessionLockPath(alpha.sessionFile);
+      const prefix = `${basename(lock)}.`;
+      const n = Math.max(0, ...readdirSync(dirname(lock)).filter(f => f.startsWith(prefix) && /^\d+$/.test(f.slice(prefix.length))).map(f => Number(f.slice(prefix.length))));
+      return n ? { n, file: `${lock}.${n}`, ...JSON.parse(readFileSync(`${lock}.${n}`, 'utf8')) } : undefined;
+    };
+    assert.equal(lockTop()?.jobId, 'cont-1', 'lock next to the JSONL while the continue runs');
     assert.match(cont('alpha', 'cont-x').error, /^Handle alpha is still running in job cont-1\./);
     await assert.rejects(mgr.manage('cont', launched.record.jobId, 'discard', 1, true), /still running a continue job/);
     await waitUntil(() => done.length === 2);
@@ -779,7 +786,8 @@ try {
     assert.deepEqual(contRecord.continuesFrom, { jobId: launched.record.jobId, taskIndex: 1, handle: 'alpha' });
     assert.equal(contRecord.tasks[0].sessionFile, alpha.sessionFile);
     assert.match(contRecord.result, /### isolated task 1\nworktree: /, 'continue result shows the launch worktree');
-    assert.ok(!existsSync(sessionLockPath(alpha.sessionFile)), 'lock released at the end');
+    assert.equal(lockTop().release, true, 'lock released at the end');
+    assert.ok(!existsSync(sessionLockPath(alpha.sessionFile)), 'no legacy single-file lock is written');
     const turns = readFileSync(childLog, 'utf8').trim().split('\n').map(JSON.parse);
     const last = turns.at(-1);
     assert.equal(realpathSync(last.cwd), realpathSync(alpha.worktree), 'continue runs in the same worktree');
@@ -789,9 +797,9 @@ try {
     assert.equal(mgr.handles('cont')[0].lifecycle, 'waiting');
 
     // Lock: a live owner refuses; a dead owner is taken over.
-    writeFileSync(sessionLockPath(alpha.sessionFile), JSON.stringify({ pid: process.pid, jobId: 'other', at: Date.now() }));
+    writeFileSync(`${sessionLockPath(alpha.sessionFile)}.${lockTop().n + 1}`, JSON.stringify({ pid: process.pid, jobId: 'other', at: Date.now(), token: 't-other' }));
     assert.match(cont('alpha', 'cont-2').error, /^Another continue is already writing to \S+ \(job other, pid \d+\)\. Wait for it to finish\.$/);
-    writeFileSync(sessionLockPath(alpha.sessionFile), JSON.stringify({ pid: 2 ** 22 + 12345, jobId: 'dead', at: Date.now() }));
+    writeFileSync(`${sessionLockPath(alpha.sessionFile)}.${lockTop().n + 1}`, JSON.stringify({ pid: 2 ** 22 + 12345, jobId: 'dead', at: Date.now(), token: 't-dead' }));
     const takeover = cont('alpha', 'cont-3', 'TERCEIRO tarefa-a');
     assert.ok(takeover.ok, takeover.error);
     await waitUntil(() => done.length === 3);
