@@ -138,6 +138,11 @@
       "tags": ["integration", "slow"]
     },
     {
+      "name": "workspace-concurrency",
+      "cmd": "node scripts/test-workspace-concurrency.mjs",
+      "tags": ["integration", "agent"]
+    },
+    {
       "name": "subagent-swarm",
       "cmd": "node scripts/test-subagent-swarm.mjs",
       "tags": ["integration", "agent"]

@@ -1,7 +1,6 @@
 import { fileURLToPath } from 'node:url';
 import { restoreSkillPolicyEnvironment } from './skill-policy.mjs';
 
-const SESSION_WORKTREE_KEYS = new Set(['AGENT_WORKTREE_SESSION', 'AGENT_WORKTREE_SOURCE', 'AGENT_WORKTREE_BRANCH', 'AGENT_WORKTREE_NAME']);
 
 const PRELOAD = /(^|[\\/])agent[\\/](?:core|juice)[\\/]runtime\.mjs$/;
 const isPreload = (value) => {
@@ -41,7 +40,7 @@ export function userCommandEnv(env = process.env) {
   // Invalid policy snapshots fail visibly, never restore the unsafe inherited env.
   restoreSkillPolicyEnvironment(copy);
   for (const key of Object.keys(copy)) {
-    if (key.startsWith('AGENT_JUICE_') || SESSION_WORKTREE_KEYS.has(key) || ['AGENT_SKILLS_BEFORE', 'AGENT_RUNTIME_ENABLED', 'AGENT_PI_ROOT', 'AGENT_ARTIFACT', 'AGENT_ARTIFACT_ROOT', 'AGENT_CHILD', 'AGENT_CHILD_SKILLS', 'AGENT_CACHE_PREFETCH', 'AGENT_BOARD_PATH', 'AGENT_BOARD_HANDLE'].includes(key)) delete copy[key];
+    if (key.startsWith('AGENT_JUICE_') || key.startsWith('AGENT_WORKTREE_') || ['AGENT_SKILLS_BEFORE', 'AGENT_RUNTIME_ENABLED', 'AGENT_PI_ROOT', 'AGENT_ARTIFACT', 'AGENT_ARTIFACT_ROOT', 'AGENT_CHILD', 'AGENT_CHILD_SKILLS', 'AGENT_CACHE_PREFETCH', 'AGENT_BOARD_PATH', 'AGENT_BOARD_HANDLE'].includes(key)) delete copy[key];
   }
   return copy;
 }
@@ -71,7 +70,7 @@ export function subagentEnv(env = process.env) {
   if (copy.AGENT_SKILLS_BEFORE === undefined && copy.AGENT_JUICE_SKILLS_BEFORE !== undefined) copy.AGENT_SKILLS_BEFORE = copy.AGENT_JUICE_SKILLS_BEFORE;
   for (const key of Object.keys(copy)) {
     // A child uses its own cwd to determine the branch to integrate into.
-    if (key.startsWith('AGENT_JUICE_') || SESSION_WORKTREE_KEYS.has(key)) delete copy[key];
+    if (key.startsWith('AGENT_JUICE_') || key.startsWith('AGENT_WORKTREE_')) delete copy[key];
   }
   return copy;
 }
