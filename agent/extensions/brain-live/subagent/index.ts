@@ -413,11 +413,14 @@ export default function (pi: ExtensionAPI) {
 		showSwarm(ctx);
 		if (enabled) pi.sendMessage({ customType: SWARM_MESSAGE_TYPE, display: false, content: SWARM_ON_TEXT }, { triggerTurn: false });
 	};
-	/** Headless runs (`agent -p`) start on with AGENT_SWARM=1 when the session has no saved choice. */
+	/**
+	 * Non-interactive runs (print, json, rpc) start on with AGENT_SWARM=1 when the session has no
+	 * saved choice. The TUI ignores the variable: there the user turns swarm on with /swarm.
+	 */
 	const restoreSwarm = (ctx: ExtensionContext, boot: boolean) => {
 		const saved = savedSwarm(ctx);
 		swarmEnabled = saved ?? false;
-		if (saved === undefined && boot && process.env.AGENT_SWARM === "1" && !isChild()) setSwarm(ctx, true);
+		if (saved === undefined && boot && process.env.AGENT_SWARM === "1" && ctx.mode !== "tui" && !isChild()) setSwarm(ctx, true);
 		else showSwarm(ctx);
 	};
 

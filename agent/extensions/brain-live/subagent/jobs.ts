@@ -167,6 +167,8 @@ export interface JobTaskSpec {
 	wipError?: string;
 	/** Swarm board member: board file and own handle (reaches the child invocation). */
 	board?: { path: string; handle: string };
+	/** Launch planned a worktree for this writer: it never runs in the source checkout without one. */
+	isolate?: boolean;
 }
 
 /** Soft timeout margin: 10% of the job timeout, at least 3 minutes, at most half the timeout. */
@@ -694,7 +696,14 @@ export class SubagentJobManager {
 
 		// Writers headed for a worktree get no project skills (only personal, company and bundled ones).
 		// Refused here, before any record, worktree or child exists.
-		for (const [root, group] of plannedIsolation(spec, spec.agents)) {
+		let planned: ReturnType<typeof plannedIsolation>;
+		try {
+			planned = plannedIsolation(spec, spec.agents);
+		} catch (error) {
+			return { ok: false, error: error instanceof Error ? error.message : String(error) };
+		}
+		const isolatedIndexes = new Set([...planned.values()].flatMap((group) => group.map(({ index }) => index)));
+		for (const [root, group] of planned) {
 			for (const { task, index } of group) {
 				for (const file of task.resolvedSkills?.paths ?? []) {
 					const error = worktreeSkillError(file, root, path.resolve(task.cwd ?? spec.cwd), task.resolvedSkills?.shadows?.[file]);
@@ -713,9 +722,10 @@ export class SubagentJobManager {
 			mode: spec.mode,
 			status: "running",
 			agents: spec.tasks.map((t) => t.agent),
-			tasks: spec.tasks.map((t) => ({
+			tasks: spec.tasks.map((t, index) => ({
 				agent: t.agent,
 				task: t.task,
+				...(isolatedIndexes.has(index) ? { isolate: true } : {}),
 				cwd: t.cwd,
 				model: t.model,
 				thinking: t.thinking,
@@ -1156,6 +1166,9 @@ export class SubagentJobManager {
 		try {
 			spec = { ...spec, tasks: job.record.tasks };
 			isolateWriters(job.record, spec.agents, () => writeRecord(this.deps.baseDir, job.record));
+			// Fail closed: a writer planned for a worktree that did not get one never runs in the source checkout.
+			const unisolated = job.record.tasks.flatMap((t, i) => (t.isolate || (i === 0 && spec.mode === "swarm" && job.record.swarm?.isolate)) && !t.worktree ? [`task ${i + 1} (${t.agent})`] : []);
+			if (unisolated.length > 0) throw new Error(`Isolation was planned for ${unisolated.join(", ")} but no worktree was created; refusing to run in the source checkout.`);
 			if (spec.mode === "swarm" && job.record.swarm) {
 				const [writer, reviewer] = spec.tasks;
 				// The reviewer reads the writer's checkout: its worktree when isolated.
@@ -1166,7 +1179,7 @@ export class SubagentJobManager {
 					writerTask: writer.task,
 					reviewerTask: reviewer.task,
 					cwd: path.resolve(spec.cwd, writer.cwd ?? "."),
-					isolated: Boolean(writer.worktree),
+					isolated: Boolean(job.record.swarm.isolate),
 					signal,
 					run: (slot, text, resume) => this.runSwarmTurn(job, spec, slot, text, resume, makeDetails("swarm")),
 					failed: isFailedResult,
@@ -1547,11 +1560,28 @@ export class SubagentJobManager {
 			.filter(({ index }) => taskIndex === undefined || taskIndex === index)
 			.map(({ task, index }) => task.handle ?? Object.values(registry.handles).find((h) => h.jobId === target.jobId && h.taskIndex === index)?.handle)
 			.filter((handle): handle is string => Boolean(handle));
-		const busy = selected.filter((handle) => registry.handles[handle]?.lifecycle === "running" && this.active.has(registry.handles[handle].lastJobId));
-		if (busy.length > 0) throw new Error(`Handle(s) ${busy.join(", ")} still running a continue job; wait for it before ${action}.`);
-		const text = await manageWorktrees(target, action, taskIndex, force, () => writeRecord(this.deps.baseDir, target));
-		this.closeHandles(sessionId, selected, action === "integrate" ? "integrated" : "discarded");
-		return text;
+		// Hold the session lock of every handle of the job (also across parent processes) from the
+		// busy check through gate and merge/remove: a continue or swarm round cannot start meanwhile,
+		// and a running one makes this refuse.
+		const releases: Array<() => void> = [];
+		try {
+			for (const [index, task] of target.tasks.entries()) {
+				const handle = task.handle ?? Object.values(registry.handles).find((h) => h.jobId === target.jobId && h.taskIndex === index + 1)?.handle;
+				const sessionFile = (handle ? registry.handles[handle]?.sessionFile : undefined) ?? task.sessionFile;
+				if (!sessionFile || !fs.existsSync(sessionFile)) continue;
+				const lock = acquireSessionLock(sessionFile, `${action}-${target.jobId}`);
+				if (!lock.ok)
+					throw new Error(`Handle ${handle ?? `task ${index + 1}`} is busy: its session is locked by ${lock.owner?.jobId ? `job ${lock.owner.jobId}` : "another job"}${lock.owner?.pid ? ` (pid ${lock.owner.pid})` : ""}. Wait for it to finish, then ${action}.`);
+				releases.push(lock.release);
+			}
+			const busy = selected.filter((handle) => registry.handles[handle]?.lifecycle === "running" && this.active.has(registry.handles[handle].lastJobId));
+			if (busy.length > 0) throw new Error(`Handle(s) ${busy.join(", ")} still running a continue job; wait for it before ${action}.`);
+			const text = await manageWorktrees(target, action, taskIndex, force, () => writeRecord(this.deps.baseDir, target));
+			this.closeHandles(sessionId, selected, action === "integrate" ? "integrated" : "discarded");
+			return text;
+		} finally {
+			for (const release of releases) release();
+		}
 	}
 
 	/** Idempotent: returns promptly, terminal state lands when the child exits. */

@@ -11,6 +11,7 @@ import { createHash } from "node:crypto";
 import { spawnSync } from "node:child_process";
 import * as fs from "node:fs";
 import * as path from "node:path";
+import { pidAlive, waitLock } from "./lockfile.ts";
 import type { SingleResult, UsageStats } from "./runner.ts";
 
 export const SWARM_ENTRY_TYPE = "agent-swarm";
@@ -43,7 +44,7 @@ export const SWARM_ON_TEXT = [
 export const VERDICT_CONTRACT = [
 	"## Verdict contract",
 	"List each finding with path:line and evidence first.",
-	"End the reply with one final line that is exactly `VERDICT: APPROVE` or `VERDICT: REQUEST_CHANGES`.",
+	"End the reply with one final line, outside any code block, that is exactly `VERDICT: APPROVE` or `VERDICT: REQUEST_CHANGES`; nothing may follow it.",
 	"Approve only when no blocking finding remains. A reply without that line counts as not approved.",
 ].join("\n");
 
@@ -81,14 +82,19 @@ export interface SwarmRecord {
 
 const VERDICT_LINE = /^\s*(?:\*\*)?VERDICT:\s*(APPROVE|REQUEST_CHANGES)(?:\*\*)?\s*$/i;
 
-/** Last isolated verdict line of the reviewer reply; undefined when there is none. */
+/**
+ * The verdict is the last non-empty line of the reviewer reply, outside any code fence.
+ * A verdict quoted earlier, followed by more text, or inside a fence is ambiguous (undefined).
+ */
 export function parseVerdict(text: string | undefined): SwarmVerdict | undefined {
 	const lines = (text ?? "").split(/\r?\n/);
-	for (let i = lines.length - 1; i >= 0; i--) {
-		const match = VERDICT_LINE.exec(lines[i]);
-		if (match) return match[1].toUpperCase() as SwarmVerdict;
-	}
-	return undefined;
+	let last = lines.length - 1;
+	while (last >= 0 && !lines[last].trim()) last--;
+	if (last < 0) return undefined;
+	const fences = lines.slice(0, last).filter((line) => /^\s*(```|~~~)/.test(line)).length;
+	if (fences % 2 === 1) return undefined;
+	const match = VERDICT_LINE.exec(lines[last]);
+	return match ? (match[1].toUpperCase() as SwarmVerdict) : undefined;
 }
 
 function git(cwd: string, args: string[]): string | undefined {
@@ -104,13 +110,29 @@ export function headSha(cwd: string): string | undefined {
 	return git(cwd, ["rev-parse", "HEAD"]);
 }
 
-/** HEAD + porcelain status + diff hash: equal fingerprints mean the writer changed nothing. */
+/**
+ * HEAD + porcelain status + diff of tracked files + names and contents of untracked files:
+ * equal fingerprints mean the writer changed nothing, even when it only edited an untracked file.
+ */
 export function fingerprint(cwd: string): string | undefined {
 	const head = git(cwd, ["rev-parse", "HEAD"]);
 	const status = git(cwd, ["status", "--porcelain", "--untracked-files=all"]);
 	const diff = git(cwd, ["diff", "HEAD", "--binary"]);
-	if (head === undefined || status === undefined || diff === undefined) return undefined;
-	return createHash("sha256").update(`${head}\0${status}\0${diff}`).digest("hex");
+	const untracked = git(cwd, ["ls-files", "--others", "--exclude-standard", "-z"]);
+	if (head === undefined || status === undefined || diff === undefined || untracked === undefined) return undefined;
+	const hash = createHash("sha256").update(`${head}\0${status}\0${diff}\0`);
+	for (const name of untracked.split("\0").filter(Boolean).sort()) {
+		hash.update(`${name}\0`);
+		try {
+			const file = path.join(cwd, name);
+			const stat = fs.lstatSync(file);
+			hash.update(stat.isSymbolicLink() ? `link:${fs.readlinkSync(file)}` : stat.isFile() ? fs.readFileSync(file) : `type:${stat.mode}`);
+		} catch {
+			hash.update("missing");
+		}
+		hash.update("\0");
+	}
+	return hash.digest("hex");
 }
 
 function cap(text: string, bytes: number): string {
@@ -325,47 +347,18 @@ export function readBoard(file: string): BoardEntry[] {
 	return entries;
 }
 
-const sleep = (ms: number) => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
-
-function pidAlive(pid: number): boolean {
-	try {
-		process.kill(pid, 0);
-		return true;
-	} catch (error) {
-		return (error as NodeJS.ErrnoException).code === "EPERM";
-	}
-}
-
-/** Short O_EXCL lock next to the board; a dead owner or a lock older than 10 s is taken over. */
+/** Board lock: stale when its owner process is gone or it is older than 10 s. */
 function withBoardLock<T>(file: string, body: () => T): T {
 	const lock = `${file}.lock`;
-	const deadline = Date.now() + 5_000;
-	for (;;) {
-		try {
-			fs.writeFileSync(lock, JSON.stringify({ pid: process.pid, at: Date.now() }), { flag: "wx", mode: 0o600 });
-			break;
-		} catch (error) {
-			if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
-		}
-		let stale = false;
-		try {
-			const held = JSON.parse(fs.readFileSync(lock, "utf-8")) as { pid?: number; at?: number };
-			stale = (typeof held.pid === "number" && !pidAlive(held.pid)) || Date.now() - fs.statSync(lock).mtimeMs > BOARD_LOCK_STALE_MS;
-		} catch {
-			// Unreadable: an owner may be between create and write; only age frees it.
-			try { stale = Date.now() - fs.statSync(lock).mtimeMs > BOARD_LOCK_STALE_MS; } catch { /* gone: retry */ }
-		}
-		if (stale) {
-			try { fs.unlinkSync(lock); } catch { /* another process took it over first */ }
-			continue;
-		}
-		if (Date.now() > deadline) throw new Error("Board is busy; try again.");
-		sleep(10);
-	}
+	const attempt = waitLock(lock, {}, (held, at) => {
+		if (held && typeof held.pid === "number" && !pidAlive(held.pid)) return true;
+		try { return Date.now() - fs.statSync(at).mtimeMs > BOARD_LOCK_STALE_MS; } catch { return false; }
+	}, 5_000);
+	if (!attempt.ok) throw new Error("Board is busy; try again.");
 	try {
 		return body();
 	} finally {
-		try { fs.unlinkSync(lock); } catch { /* already gone */ }
+		attempt.release();
 	}
 }
 

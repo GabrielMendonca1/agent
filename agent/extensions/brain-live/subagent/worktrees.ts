@@ -42,7 +42,10 @@ export function plannedIsolation(record: Pick<JobRecord, "mode" | "tasks" | "cwd
 		const writer = record.tasks[0];
 		if (!record.swarm?.isolate || !writer) return groups;
 		const cwd = path.resolve(writer.cwd ?? record.cwd);
-		try { groups.set(git(cwd, ["rev-parse", "--show-toplevel"]), [{ task: writer, index: 0, cwd }]); } catch { /* not a repository: the launch refuses isolate */ }
+		let root: string;
+		// Fail closed: isolation was requested, so a failed lookup refuses instead of running in place.
+		try { root = git(cwd, ["rev-parse", "--show-toplevel"]); } catch (error) { throw new Error(`Swarm isolate needs a git repository at ${cwd}: ${error instanceof Error ? error.message : String(error)}`); }
+		groups.set(root, [{ task: writer, index: 0, cwd }]);
 		return groups;
 	}
 	if (record.mode !== "parallel") return groups;

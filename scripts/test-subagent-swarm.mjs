@@ -6,8 +6,8 @@ import './lib/hermetic-test-env.mjs';
 // (isolated worktree, warm resumes on the same JSONL, stalled, caps, ambiguous verdict,
 // project skill refused before any worktree).
 import assert from 'node:assert/strict';
-import { spawnSync } from 'node:child_process';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { spawn, spawnSync } from 'node:child_process';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, statSync, utimesSync, writeFileSync } from 'node:fs';
 import { homedir, tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -25,6 +25,7 @@ const agent = join(home, '.pi/agent');
 mkdirSync(join(agent, 'agents'), { recursive: true });
 writeFileSync(join(agent, 'agents/worker.md'), '---\nname: worker\ndescription: fixture writer\ntools: read, edit, bash\nbrief_required: [objective, context, scope, done_when, stop_if]\n---\nfixture\n');
 writeFileSync(join(agent, 'agents/reviewer.md'), '---\nname: reviewer\ndescription: fixture reviewer\ntools: read, bash\nbrief_required: [objective, context, scope]\n---\nfixture\n');
+writeFileSync(join(agent, 'agents/builder.md'), '---\nname: builder\ndescription: second writer role (no shared prefix with worker)\ntools: read, edit, bash\n---\nfixture\n');
 writeFileSync(join(agent, 'agents/mutator.md'), '---\nname: mutator\ndescription: fixture that edits\ntools: read, edit\n---\nfixture\n');
 writeFileSync(join(agent, 'settings.json'), JSON.stringify({ packages: [], extensions: [], skills: [], enableSkillCommands: false, defaultTools: ['+tool_search'], retry: { enabled: false }, quietStartup: true }));
 writeFileSync(join(agent, 'auth.json'), '{}');
@@ -50,7 +51,8 @@ export default function (pi) {
       if (!process.env.AGENT_CHILD) {
         if (process.env.FG_DUMP) appendFileSync(process.env.FG_DUMP, JSON.stringify({ n, tools, system, messages: context.messages.map(m => [m.role, text(m)]) }) + '\\n');
         const script = JSON.parse(process.env.FG_SCRIPT || '[]');
-        const step = script[n];
+        // FG_RELATIVE: steps count from the last user message (a resumed session already has turns).
+        const step = script[process.env.FG_RELATIVE ? context.messages.slice(context.messages.findLastIndex(m => m.role === 'user')).filter(m => m.role === 'assistant').length : n];
         const all = context.messages.map(text).join('\\n');
         const job = /Launched swarm (?:loop|board) job (\\S+),/.exec(all)?.[1] ?? '';
         const member = /Members: (\\S+) \\(/.exec(all)?.[1] ?? '';
@@ -73,7 +75,13 @@ export default function (pi) {
              { action: 'read', since: seen },
              { action: 'post', kind: 'done', text: me + ' finished' }]
           : [{ action: 'read', kind: 'done' }];
-        if (step < plan.length) {
+        const slow = text(context.messages.find(m => m.role === 'user')).includes('## Objective\\nboard part slow');
+        // The fast member waits once so its slow sibling is already running when the cap hits.
+        if (!slow && process.env.FG_FAST_WAIT && step === 0) await new Promise(r => setTimeout(r, Number(process.env.FG_FAST_WAIT)));
+        if (slow && turn === 1 && step === 0) {
+          content = [{ type: 'toolCall', id: 'slow', name: 'bash', arguments: { command: 'printf dirty > slow.txt; sleep 40' } }];
+          stopReason = 'toolUse';
+        } else if (step < plan.length) {
           content = [{ type: 'toolCall', id: 'b-' + turn + '-' + step, name: 'board', arguments: plan[step] }];
           stopReason = 'toolUse';
         } else content = [{ type: 'text', text: 'BOARD-DONE-' + me + '-' + turn }];
@@ -85,7 +93,7 @@ export default function (pi) {
         if (role === 'writer') {
           const noop = (process.env.FG_NOOP || '').split(',').includes(String(turn));
           if (last.role === 'user' && !noop) {
-            content = [{ type: 'toolCall', id: 'w-' + turn, name: 'bash', arguments: { command: 'f=swarm-' + turn + '-' + process.pid + '.txt; printf r' + turn + ' > $f && git add $f && git -c user.name=Fixture -c user.email=fixture@example.invalid commit -qm swarm-round-' + turn } }];
+            content = [{ type: 'toolCall', id: 'w-' + turn, name: 'bash', arguments: { command: process.env.FG_TOUCH ? 'printf more >> ' + process.env.FG_TOUCH : 'f=swarm-' + turn + '-' + process.pid + '.txt; printf r' + turn + ' > $f && git add $f && git -c user.name=Fixture -c user.email=fixture@example.invalid commit -qm swarm-round-' + turn } }];
             stopReason = 'toolUse';
           } else content = [{ type: 'text', text: 'WRITER-DONE-' + turn }];
         } else {
@@ -324,7 +332,8 @@ try {
   // the result ends with the board, and a continue keeps the board tool.
   {
     const log = join(root, 'board.log');
-    const members = ['a', 'b'].map((x) => ({ agent: 'worker', brief: { ...brief, objective: `board part ${x}` } }));
+    // Different roles: no shared cache prefix, so both start at once (no staggered fan-out) and post concurrently.
+    const members = [['a', 'worker'], ['b', 'builder']].map(([x, role]) => ({ agent: role, brief: { ...brief, objective: `board part ${x}` } }));
     const events = runPi({ AGENT_SWARM: '1', FG_LOG: log, FG_SCRIPT: JSON.stringify([search, { tool: 'swarm', args: { mode: 'board', tasks: members } }, { text: 'waiting' },
       { tool: 'subagent', args: { action: 'continue', handle: '$MEMBER', message: 'check the done entries' } }, { text: 'waiting again' }, { text: 'end' }]) });
     const [launch] = toolResults(events, 'swarm');
@@ -397,6 +406,152 @@ try {
     assert.equal(cleaned.AGENT_BOARD_HANDLE, undefined);
     assert.equal(cleaned.KEEP, '1');
     console.log('ok board caps: 400 chars, refs, 100 entries, 64 KiB, read after full; userCommandEnv strips AGENT_BOARD_*');
+  }
+
+  // 12. Fingerprint sees untracked contents: an in-place writer that only edits an existing untracked file is not stalled.
+  {
+    writeFileSync(join(work, 'notes.txt'), 'draft\n');
+    const { record, log } = loop('untracked', { FG_TOUCH: 'notes.txt' }, { isolate: false });
+    assert.equal(record.swarm.outcome, 'approved', record.error);
+    assert.equal(log.filter(t => t.role === 'reviewer').length, 1, 'reviewer ran');
+    assert.equal(readFileSync(join(work, 'notes.txt'), 'utf8'), 'draft\nmore');
+    rmSync(join(work, 'notes.txt'));
+    console.log('ok fingerprint: editing an untracked file counts as a change');
+  }
+
+  // 13. Board maxUsd: finished tasks reach the cap, the running sibling is aborted and its worktree gets a WIP commit.
+  {
+    const members = [{ agent: 'worker', brief: { ...brief, objective: 'board part fast' } }, { agent: 'builder', brief: { ...brief, objective: 'board part slow' } }];
+    const events = runPi({ AGENT_SWARM: '1', FG_COST: '0.2', FG_FAST_WAIT: '1500', FG_SCRIPT: JSON.stringify([search, { tool: 'swarm', args: { mode: 'board', tasks: members, maxUsd: 0.5 } }, { text: 'waiting' }]) });
+    const jobId = /Launched swarm board job (\S+),/.exec(resultText(toolResults(events, 'swarm')[0]))[1];
+    const record = readJob(jobId);
+    assert.equal(record.swarm.outcome, 'max_usd');
+    assert.equal(record.status, 'failed');
+    assert.match(record.error, /^Swarm board stopped: finished tasks cost \$\d+\.\d\d of \$0\.50\./);
+    const slow = record.tasks.find(t => t.task.includes('## Objective\nboard part slow'));
+    assert.ok(slow.wipCommit, `slow member got a WIP commit: ${JSON.stringify({ ...slow, task: undefined, resolvedSkills: undefined, invocation: undefined })} ${record.error}`);
+    const show = spawnSync('git', ['-C', slow.worktree, 'show', '--stat', '--format=%s', 'HEAD'], { encoding: 'utf8' });
+    assert.match(show.stdout, /^WIP\(agent\): timeout /);
+    assert.match(show.stdout, /slow\.txt/);
+    const delivered = events.find(e => e.type === 'message_end' && e.message.customType === 'subagent-result').message;
+    assert.match(delivered.content, /swarm board · outcome: max_usd/);
+    console.log('ok board maxUsd: job aborted at the cap, running member committed as WIP');
+  }
+
+  // 14. Verdict parser, locks and AGENT_SWARM outside the TUI, in-process.
+  {
+    const { createJiti } = createRequire(join(piRoot, 'package.json'))('jiti');
+    const piRequire = createRequire(join(piRoot, 'package.json'));
+    const alias = { '@earendil-works/pi-coding-agent': join(piRoot, 'dist/index.js'), typebox: piRequire.resolve('typebox') };
+    for (const dep of ['@earendil-works/pi-ai', '@earendil-works/pi-tui']) alias[dep] = join(piRoot, 'node_modules', dep);
+    const jiti = createJiti(import.meta.url, { fsCache: false, alias });
+    const swarm = await jiti.import(join(repo, 'agent/extensions/brain-live/subagent/swarm.ts'));
+    assert.equal(swarm.parseVerdict('findings\nVERDICT: APPROVE\n\n'), 'APPROVE');
+    assert.equal(swarm.parseVerdict('a.ts:1 bug\n**VERDICT: REQUEST_CHANGES**'), 'REQUEST_CHANGES');
+    assert.equal(swarm.parseVerdict('The writer said:\n> VERDICT: APPROVE\nVERDICT: APPROVE\na.ts:3 still broken'), undefined, 'APPROVE followed by findings');
+    assert.equal(swarm.parseVerdict('example:\n```\nVERDICT: APPROVE'), undefined, 'inside an open fence');
+    assert.equal(swarm.parseVerdict('```\nVERDICT: APPROVE\n```'), undefined, 'fence closes after it');
+    assert.equal(swarm.parseVerdict('Verdict: approve, looks good'), undefined);
+    console.log('ok verdict: only the last non-empty line outside a fence counts');
+
+    // Two processes race for one stale lock (dead owner): board waits, so both post with distinct seq;
+    // the session lock does not wait, so exactly one wins.
+    const dead = spawnSync(process.execPath, ['-e', '']).pid;
+    const racer = join(root, 'racer.mjs');
+    writeFileSync(racer, `
+      import { createRequire } from 'node:module';
+      const [kind, file, out] = process.argv.slice(2);
+      const { createJiti } = createRequire(${JSON.stringify(join(piRoot, 'package.json'))})('jiti');
+      const jiti = createJiti(import.meta.url, { fsCache: false });
+      const start = Number(process.env.START);
+      while (Date.now() < start) {}
+      const { appendFileSync } = await import('node:fs');
+      if (kind === 'board') {
+        const swarm = await jiti.import(${JSON.stringify(join(repo, 'agent/extensions/brain-live/subagent/swarm.ts'))});
+        const r = swarm.postBoard(file, { handle: 'p' + process.pid, kind: 'note', text: 'race' });
+        appendFileSync(out, JSON.stringify(r) + '\\n');
+      } else {
+        const { acquireSessionLock } = await jiti.import(${JSON.stringify(join(repo, 'agent/extensions/brain-live/subagent/handles.ts'))});
+        const r = acquireSessionLock(file, 'race-' + process.pid);
+        appendFileSync(out, JSON.stringify({ ok: r.ok }) + '\\n');
+        await new Promise((ok) => setTimeout(ok, 500));
+        if (r.ok) r.release();
+      }`);
+    const race = async (kind, file) => {
+      const out = join(root, `race-${kind}.log`);
+      const start = String(Date.now() + 1500);
+      const runs = [0, 1].map(() => new Promise((done) => {
+        const child = spawn(process.execPath, [racer, kind, file, out], { env: { ...process.env, START: start }, stdio: 'inherit' });
+        child.on('close', done);
+      }));
+      await Promise.all(runs);
+      return readFileSync(out, 'utf8').trim().split('\n').map(l => JSON.parse(l));
+    };
+    const raceBoard = join(root, 'race/board.jsonl');
+    swarm.createBoard(raceBoard);
+    writeFileSync(`${raceBoard}.lock`, JSON.stringify({ pid: dead, at: Date.now(), token: 'old' }));
+    const posted = await race('board', raceBoard);
+    assert.deepEqual(posted.map(r => r.ok), [true, true], JSON.stringify(posted));
+    assert.deepEqual(posted.map(r => r.entry.seq).sort(), [1, 2]);
+    assert.ok(!existsSync(`${raceBoard}.lock`), 'board lock released');
+    const raceSession = join(root, 'race/child.jsonl');
+    writeFileSync(raceSession, '');
+    writeFileSync(`${raceSession}.continue.lock`, JSON.stringify({ pid: dead, jobId: 'old', at: Date.now() }));
+    const sessions = await race('session', raceSession);
+    assert.deepEqual(sessions.map(r => r.ok).sort(), [false, true], 'one winner on a stale session lock');
+    assert.ok(!existsSync(`${raceSession}.continue.lock`));
+    // An owner that lost its lock to a takeover never deletes the replacement.
+    const lockfile = await jiti.import(join(repo, 'agent/extensions/brain-live/subagent/lockfile.ts'));
+    const lock = join(root, 'race/paused.lock');
+    const byAge = (_held, at) => Date.now() - statSync(at).mtimeMs > 1000;
+    const first = lockfile.tryLock(lock, {}, byAge);
+    assert.ok(first.ok);
+    utimesSync(lock, new Date(Date.now() - 5000), new Date(Date.now() - 5000));
+    const second = lockfile.tryLock(lock, {}, byAge);
+    assert.ok(second.ok, 'stale lock taken over');
+    const token = JSON.parse(readFileSync(lock, 'utf8')).token;
+    first.release();
+    assert.equal(JSON.parse(readFileSync(lock, 'utf8')).token, token, 'paused owner left the replacement alone');
+    second.release();
+    assert.ok(!existsSync(lock));
+    console.log('ok locks: atomic stale takeover with two contenders, token-checked release');
+
+    // AGENT_SWARM=1 turns swarm on in print/json/rpc runs, never in the TUI.
+    process.env.PI_CODING_AGENT_DIR = agent;
+    process.env.AGENT_SWARM = '1';
+    const factory = (await jiti.import(join(repo, 'agent/extensions/brain-live/subagent/index.ts'))).default;
+    const boot = async (mode) => {
+      const handlers = {}; const entries = [];
+      const noop = () => {};
+      const fakePi = new Proxy({ on: (name, h) => { (handlers[name] ??= []).push(h); }, appendEntry: (type, data) => entries.push([type, data]), events: { on: noop, emit: noop } }, { get: (t, k) => (k in t ? t[k] : noop) });
+      factory(fakePi);
+      const ctx = { mode, hasUI: mode === 'tui', cwd: work, ui: { setStatus: noop, notify: noop }, sessionManager: { getSessionId: () => `boot-${mode}`, getBranch: () => [], getSessionFile: () => undefined, getLeafId: () => null } };
+      for (const h of handlers.session_start) await h({}, ctx);
+      for (const h of handlers.session_shutdown ?? []) await h({}, ctx);
+      return entries.filter(([type]) => type === 'agent-swarm');
+    };
+    assert.deepEqual(await boot('tui'), [], 'TUI ignores AGENT_SWARM');
+    for (const mode of ['print', 'json', 'rpc']) assert.deepEqual(await boot(mode), [['agent-swarm', { enabled: true }]], `${mode} honors AGENT_SWARM`);
+    delete process.env.AGENT_SWARM;
+    console.log('ok AGENT_SWARM: honored in print/json/rpc, ignored in the TUI');
+
+    // integrate holds every handle's session lock: a held lock (continue elsewhere) makes it refuse.
+    const session = join(root, 'locked.jsonl');
+    const launched = runPi({ AGENT_SWARM: '1', FG_SCRIPT: JSON.stringify([search, swarmCall(), { text: 'waiting' }]) }, { session });
+    const lockedJob = readJob(/Launched swarm loop job (\S+),/.exec(resultText(toolResults(launched, 'swarm')[0]))[1]);
+    const { acquireSessionLock } = await jiti.import(join(repo, 'agent/extensions/brain-live/subagent/handles.ts'));
+    const held = acquireSessionLock(lockedJob.tasks[1].sessionFile, 'other-continue');
+    assert.ok(held.ok);
+    const refused = runPi({ FG_RELATIVE: '1', FG_SCRIPT: JSON.stringify([{ tool: 'subagent', args: { action: 'integrate', jobId: '$JOB' } }]) }, { session });
+    const integrateResult = toolResults(refused, 'subagent').at(-1);
+    assert.equal(integrateResult.isError, true);
+    assert.match(resultText(integrateResult), /Handle reviewer-\d+ is busy: its session is locked by job other-continue \(pid \d+\)\. Wait for it to finish, then integrate\./);
+    assert.ok(existsSync(lockedJob.tasks[0].worktree), 'nothing merged or removed');
+    held.release();
+    const registry = JSON.parse(readFileSync(join(jobsDir, lockedJob.sessionId, 'handles', 'registry.json'), 'utf8'));
+    for (const task of lockedJob.tasks) assert.equal(registry.handles[task.handle].lifecycle, 'waiting');
+    assert.ok(!existsSync(`${lockedJob.tasks[0].sessionFile}.continue.lock`), 'manage released the locks it took');
+    console.log('ok manage: integrate refuses while a handle session is locked, and releases its own locks');
   }
 } finally {
   rmSync(root, { recursive: true, force: true });
