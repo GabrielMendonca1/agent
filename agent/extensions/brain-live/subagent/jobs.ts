@@ -1582,7 +1582,7 @@ export class SubagentJobManager {
 		// Hold the session locks of the selected handles (all of them for a swarm loop), also across
 		// parent processes, from the busy check through gate and merge/remove: a continue or swarm round
 		// cannot start meanwhile, and a running one makes this refuse.
-		const busyHandles = () => selected.filter((handle) => registry.handles[handle]?.lifecycle === "running" && this.active.has(registry.handles[handle].lastJobId));
+		const busyHandles = (reg = registry) => selected.filter((handle) => reg.handles[handle]?.lifecycle === "running" && this.active.has(reg.handles[handle].lastJobId));
 		// In-process continue jobs get the specific message; the locks below also cover other processes.
 		if (busyHandles().length > 0) throw new Error(`Handle(s) ${busyHandles().join(", ")} still running a continue job; wait for it before ${action}.`);
 		const releases: Array<() => void> = [];
@@ -1599,7 +1599,8 @@ export class SubagentJobManager {
 					throw new Error(`Handle ${handle ?? `task ${index + 1}`} is busy: its session is locked by ${lock.owner?.jobId ? `job ${lock.owner.jobId}` : "another job"}${lock.owner?.pid ? ` (pid ${lock.owner.pid})` : ""}. Wait for it to finish, then ${action}.`);
 				releases.push(lock.release);
 			}
-			const busy = busyHandles();
+			// Re-read under the locks, as continue does.
+			const busy = busyHandles(readRegistry(this.deps.baseDir, sessionId));
 			if (busy.length > 0) throw new Error(`Handle(s) ${busy.join(", ")} still running a continue job; wait for it before ${action}.`);
 			text = await manageWorktrees(target, action, taskIndex, force, () => writeRecord(this.deps.baseDir, target));
 			this.closeHandles(sessionId, selected, action === "integrate" ? "integrated" : "discarded");

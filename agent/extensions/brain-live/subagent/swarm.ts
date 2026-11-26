@@ -141,7 +141,7 @@ export function fingerprint(cwd: string): string | undefined {
 		try {
 			const file = path.join(cwd, name);
 			const stat = fs.lstatSync(file);
-			hash.update(stat.isSymbolicLink() ? `link:${fs.readlinkSync(file)}` : stat.isFile() ? fs.readFileSync(file) : `type:${stat.mode}`);
+			hash.update(stat.isSymbolicLink() ? `link:${fs.readlinkSync(file)}` : stat.isFile() ? (stat.size > 8 * 1024 * 1024 ? `large:${stat.size}:${stat.mtimeMs}` : fs.readFileSync(file)) : `type:${stat.mode}`);
 		} catch {
 			hash.update("missing");
 		}
