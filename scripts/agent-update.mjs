@@ -636,7 +636,7 @@ function digestFileContents(relative, full) {
 	return readFileSync(full);
 }
 
-function digestTree(root, algorithm = digestAlgorithm) {
+function digestTree(root, algorithm = digestAlgorithm, modeIgnore = 0) {
 	const hash = createHash("sha256");
 	const walk = (directory, prefix) => {
 		const entries = readdirSync(directory, { withFileTypes: true }).sort((a, b) => (a.name < b.name ? -1 : 1));
@@ -645,7 +645,7 @@ function digestTree(root, algorithm = digestAlgorithm) {
 			if ((algorithm >= 3 || algorithm === receiptDigestAlgorithm) && ignoredTreeEntries.has(entry.name)) continue;
 			const relative = prefix === "" ? entry.name : `${prefix}/${entry.name}`;
 			const full = join(directory, entry.name);
-			if (algorithm === receiptDigestAlgorithm) hash.update(`M ${lstatSync(full).mode}\0`);
+			if (algorithm === receiptDigestAlgorithm) hash.update(`M ${lstatSync(full).mode & ~modeIgnore}\0`);
 			if (entry.isSymbolicLink()) {
 				hash.update(`L ${relative}\0${readlinkSync(full)}\0`);
 			} else if (entry.isDirectory()) {
@@ -2339,7 +2339,10 @@ async function installArtifact(options) {
 	if (lstatSync(releases).isSymbolicLink() || realpathSync(releases) !== releases) fail("Unsafe releases directory");
 	const release = join(releases, artifact.releaseId);
 	if (linkExists(release)) {
-		if (lstatSync(release).isSymbolicLink() || sha256(join(release, releaseMetadataFile)) !== sha256(join(source, releaseMetadataFile)) || digestTree(release, 0) !== digestTree(source, 0)) fail("Existing release ID has different content");
+		// install.sh uses umask 077, unlike a normal `agent update`. Reuse the same
+		// bytes across both without changing permissions or ignoring write/owner bits.
+		const portableDigest = (dir) => digestTree(dir, receiptDigestAlgorithm, 0o055);
+		if (lstatSync(release).isSymbolicLink() || sha256(join(release, releaseMetadataFile)) !== sha256(join(source, releaseMetadataFile)) || portableDigest(release) !== portableDigest(source)) fail("Existing release ID has different content");
 	} else {
 		const stage = join(releases, `.artifact-${process.pid}`);
 		try { cpSync(source, stage, { recursive: true, verbatimSymlinks: true }); assertContainedTree(stage); renameSync(stage, release); }

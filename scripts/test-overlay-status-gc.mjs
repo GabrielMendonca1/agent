@@ -400,6 +400,26 @@ teste("gc só desliga symlink órfão em releases/, inclusive apontando para for
 	assert.ok(existe(store, "releases", "orf-novo", "f.txt"));
 });
 
+teste("gc real remove órfãs sem tocar no Node portátil, inclusive por alias", () => {
+	const { store } = novoStore();
+	const node = join(store, "node");
+	const version = dir(join(node, "v24.22.3"), -40);
+	const current = join(node, "current");
+	const alias = join(store, "releases", "node-alias");
+	link(version, current);
+	link(version, alias);
+	const getProcesses = () => [];
+	const plan = planOverlayGc(store, 0, { getProcesses });
+	for (const path of [node, alias]) {
+		assert.equal(plan.find((item) => item.path === path)?.action, "report");
+	}
+	overlayGc({ store, keep: 0, getProcesses });
+	assert.ok(!existe(store, "releases", "orf-velho"), "gc realmente removeu itens");
+	assert.equal(realpathSync(current), version);
+	assert.equal(realpathSync(alias), version);
+	assert.equal(readFileSync(join(current, "f.txt"), "utf8"), "x".repeat(100));
+});
+
 teste("gc conserva releases e reporta em uso se a inspeção de processos falhar", () => {
 	const { store } = novoStore();
 	const out = roda(["--gc", "--keep", "0", "--store", store], { PATH: "" });
