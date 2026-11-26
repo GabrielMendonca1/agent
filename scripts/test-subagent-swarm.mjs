@@ -553,16 +553,32 @@ try {
     const overDead = lockfile.tryLock(legacyLock, {}, ownerDead);
     assert.ok(overDead.ok, 'dead legacy owner ignored');
     assert.equal(JSON.parse(readFileSync(legacyLock, 'utf8')).pid, dead, 'legacy file untouched');
-    // A release that cannot write its marker throws and keeps the lock held; a retry succeeds.
-    chmodSync(join(root, 'race'), 0o500);
-    try {
-      assert.throws(() => overDead.release(), /Could not release lock .*legacy\.lock\.\d+/);
-    } finally {
-      chmodSync(join(root, 'race'), 0o700);
-    }
-    assert.equal(lockfile.tryLock(legacyLock, {}, ownerDead).ok, false, 'still held after a failed release');
-    overDead.release();
-    assert.equal(top(legacyLock).release, true, 'retry released it');
+    // A release that cannot write its marker throws, keeps the lock held and stays pending: the next
+    // acquire in this process (or the 5 s timer) releases it without another explicit call.
+    const failRelease = (held) => {
+      chmodSync(join(root, 'race'), 0o500);
+      try {
+        assert.throws(() => held.release(), /Could not release lock .*\.lock\.\d+: .*retrying in the background/);
+      } finally {
+        chmodSync(join(root, 'race'), 0o700);
+      }
+    };
+    failRelease(overDead);
+    assert.equal(lockfile.pendingReleases(), 1);
+    assert.equal(top(legacyLock).release, undefined, 'still held after a failed release');
+    const other = lockfile.tryLock(join(root, 'race/other.lock'), {}, ownerDead);
+    assert.ok(other.ok);
+    assert.equal(top(legacyLock).release, true, 'the next acquire retried the pending release');
+    assert.equal(lockfile.pendingReleases(), 0);
+    failRelease(other);
+    await new Promise((done) => setTimeout(done, 5600));
+    assert.equal(top(join(root, 'race/other.lock')).release, true, 'the 5 s timer retried the pending release');
+    assert.equal(lockfile.pendingReleases(), 0);
+    // Generation files appear complete (temp + fsync + link); an unparseable one fails closed.
+    assert.deepEqual(readdirSync(join(root, 'race')).filter((f) => f.includes('.tmp-')), [], 'no temp files left');
+    const corrupt = join(root, 'race/corrupt.lock');
+    writeFileSync(`${corrupt}.4`, '{"pid":');
+    assert.throws(() => lockfile.tryLock(corrupt, {}, ownerDead), /Lock file .*corrupt\.lock\.4 is corrupt .*refusing to take it over/);
     assert.ok(gens().length <= 2, `lower generations pruned: ${gens()}`);
     console.log('ok locks: generation files, one winner on a dead owner, a live owner is never displaced');
 
