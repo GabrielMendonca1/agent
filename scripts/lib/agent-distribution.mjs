@@ -1,14 +1,22 @@
 #!/usr/bin/env node
-// Standalone bootstrap: builtins only. Downloaded code is trusted ONLY through the private gh channel.
-import { createHash } from 'node:crypto';
-import { cpSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, readlinkSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
+// Standalone bootstrap: builtins only. Remote artifacts require an Ed25519 signature.
+import { createHash, createPrivateKey, createPublicKey, sign, verify } from 'node:crypto';
+import { createWriteStream, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, readlinkSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
 import { homedir, tmpdir } from 'node:os';
 import { basename, dirname, join, posix, resolve } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
+import { Readable, Transform } from 'node:stream';
+import { pipeline } from 'node:stream/promises';
 import { gzipSync, gunzipSync } from 'node:zlib';
 export const schema = 1;
 export const nodeMin = '22.19.0';
+// Provision the official SPKI PEM before publication. Empty means remote access fails closed.
+export const RELEASE_PUBLIC_KEY_PEM = '';
+export const defaultReleaseRepo = 'GabrielMendonca1/agent';
+export const validReleaseTag = value => typeof value === 'string' && /^[\w.+-]{1,200}$/.test(value) && value !== '.' && value !== '..';
+export const validReleaseRepo = value => typeof value === 'string' && /^[\w.-]+\/[\w.-]+$/.test(value) && value.split('/').every(part => part !== '.' && part !== '..');
+export const validAssetId = value => typeof value === 'string' && /^[A-Za-z0-9][A-Za-z0-9._+-]{0,199}$/.test(value) && !value.includes('..');
 export const hash = data => createHash('sha256').update(data).digest('hex');
 const fail = message => { throw new Error(`Distribution: ${message}`); };
 export function requireNode() {
@@ -61,7 +69,7 @@ export function validateDirectory(root) {
  if (!lstatSync(root).isDirectory() || lstatSync(root).isSymbolicLink() || !lstatSync(join(root, "artifact.json")).isFile() || lstatSync(join(root, "artifact.json")).isSymbolicLink()) fail("artifact root/manifest must be real directory/regular file");
  const m = JSON.parse(readFileSync(join(root, 'artifact.json'), 'utf8'));
  if (m.schema !== schema || m.runtimeContract !== 3 || m.profileDefault !== '~/.agent' || m.node?.kind !== 'external' || m.node.min !== nodeMin) fail('unsupported artifact contract');
- if (!/^[A-Za-z0-9][A-Za-z0-9._+-]{0,199}$/.test(m.releaseId) || m.releaseId.includes('..')) fail('invalid release ID');
+ if (!validAssetId(m.releaseId)) fail('invalid release ID');
  if (!/^[a-f0-9]{40,64}$/.test(m.sourceCommit)) fail('invalid source commit');
  if (!Array.isArray(m.platforms) || !m.platforms.some(p => p.os === process.platform && p.arch === process.arch)) fail('artifact platform/architecture mismatch');
  const actual = inventory(root);
@@ -125,38 +133,137 @@ export function extractArchive(archive, destination) {
  for (const e of entries.filter(e=>e.type==='link')) { const p=join(destination,e.path); mkdirSync(dirname(p),{recursive:true}); createArtifactLink(e.target,p); }
  return validateDirectory(destination);
 }
+function ed25519Key(pem, isPrivate = false) {
+ if (!pem) fail(`no Ed25519 release ${isPrivate ? 'private' : 'public'} key configured`);
+ let key;
+ try { key = (isPrivate ? createPrivateKey : createPublicKey)(pem); }
+ catch { fail(`invalid Ed25519 ${isPrivate ? 'private' : 'public'} key`); }
+ if (key.asymmetricKeyType !== 'ed25519') fail('release key must be Ed25519');
+ return key;
+}
+// The detached signature is canonical base64 of the 64 raw signature bytes.
+export function signManifest(sumsPath, privateKeyPem) {
+ return sign(null, readFileSync(sumsPath), ed25519Key(privateKeyPem, true)).toString('base64');
+}
+export function verifyManifestSignature(sumsPath, sigPath, publicKeyPem) {
+ const key = ed25519Key(publicKeyPem);
+ const encoded = readFileSync(sigPath, 'utf8').trim();
+ if (!/^[A-Za-z0-9+/]{86}==$/.test(encoded)) fail('invalid manifest signature encoding');
+ const signature = Buffer.from(encoded, 'base64');
+ if (signature.toString('base64') !== encoded || !verify(null, readFileSync(sumsPath), key, signature)) fail('invalid manifest signature');
+}
+function verifyFileHash(file) {
+ const sums = readFileSync(join(dirname(file),'SHA256SUMS'),'utf8').split(/\r?\n/);
+ const matches = sums.map(line=>/^([a-f0-9]{64})  ([A-Za-z0-9._+-]+)$/.exec(line)).filter(m=>m?.[2]===basename(file));
+ if (matches.length !== 1 || hash(readFileSync(file)) !== matches[0][1]) fail(`${basename(file)} SHA256SUMS mismatch`);
+}
 export function verifyArchiveHash(archive) {
- const sums = readFileSync(join(dirname(archive),'SHA256SUMS'),'utf8').split(/\r?\n/);
- const matches = sums.map(line=>/^([a-f0-9]{64})  ([A-Za-z0-9._+-]+)$/.exec(line)).filter(m=>m?.[2]===basename(archive));
- if (matches.length !== 1 || hash(readFileSync(archive)) !== matches[0][1]) fail('archive SHA256SUMS mismatch');
+ verifyFileHash(archive);
 }
-export function downloadArtifact(destination, tag = '') {
+function loopback(url) {
+ return url.hostname === '127.0.0.1' || url.hostname === 'localhost';
+}
+export function normalizeReleaseBaseUrl(value) {
+ let url;
+ try { url = new URL(value); }
+ catch { fail('invalid release base URL'); }
+ if (!/^https?:\/\//i.test(value) || /[?#\s\\]/.test(value) || url.username || url.password ||
+     (url.protocol !== 'https:' && !(url.protocol === 'http:' && loopback(url)))) fail('invalid release base URL (HTTPS required except on loopback)');
+ return url.href.replace(/\/+$/, '');
+}
+async function downloadFile(url, path, limit, token) {
+ const initial = new URL(url);
+ const signal = AbortSignal.timeout(5 * 60_000);
+ for (let redirects = 0; ; redirects++) {
+  const name = basename(path);
+  let response;
+  try {
+   response = await fetch(url, { redirect: 'manual', signal, headers: token ? { Authorization: `Bearer ${token}` } : {} });
+  } catch { fail(`cannot download ${name}`); }
+  if ([301, 302, 303, 307, 308].includes(response.status)) {
+   await response.body?.cancel();
+   const location = response.headers.get('location');
+   let next;
+   try { if (location) next = new URL(location, url); } catch {}
+   if (redirects >= 5 || !next || next.username || next.password ||
+       (next.protocol !== 'https:' && !(initial.protocol === 'http:' && next.origin === initial.origin && new URL(url).protocol === 'http:'))) fail(`unsafe download redirect for ${name}`);
+   if (next.origin !== new URL(url).origin) token = undefined;
+   url = next.href;
+   continue;
+  }
+  if (response.status !== 200 || !response.body || Number(response.headers.get('content-length')) > limit) {
+   await response.body?.cancel();
+   fail(`download rejected for ${name} (HTTP ${response.status} or size limit)`);
+  }
+  let size = 0;
+  const cap = new Transform({ transform(chunk, encoding, callback) {
+   size += chunk.length;
+   if (size > limit) callback(new Error('response exceeds size limit'));
+   else callback(null, chunk);
+  } });
+  try {
+   await pipeline(Readable.fromWeb(response.body), cap, createWriteStream(path, { flags: 'wx', mode: 0o600 }), { signal });
+  } catch { fail(`cannot write ${name} (download interrupted or size limit exceeded)`); }
+  return;
+ }
+}
+function readLatest(path, repo, tag) {
+ let manifest;
+ try { manifest = JSON.parse(readFileSync(path, 'utf8')); }
+ catch { fail('invalid latest.json'); }
+ if (manifest?.schema !== schema || manifest.repo !== repo || !validReleaseTag(manifest.tag) || (tag && tag !== manifest.tag)) fail('invalid latest.json release identity');
+ return manifest;
+}
+export async function downloadArtifact(destination, tag = '') {
  requireNode();
- const repo = process.env.AGENT_RELEASE_REPO || 'GabrielMendonca1/agent';
- if (!/^[\w.-]+\/[\w.-]+$/.test(repo) || (tag && !/^[\w.+-]+$/.test(tag))) fail('invalid private repository or release tag');
- const view=spawnSync('gh',['release','view',...(tag ? [tag] : []),'-R',repo,'--json','tagName','--jq','.tagName'],{encoding:'utf8',env:{...process.env,GH_HOST:'github.com'}});
- if (view.error || view.status !== 0) fail('cannot resolve private release tag');
- tag=view.stdout.trim();
- if (!/^[\w.+-]+$/.test(tag)) fail('invalid resolved release tag');
- const asset = `agent-*-${process.platform}-${process.arch}.tar.gz`;
- const args = ['release','download',...(tag ? [tag] : []),'-R',repo,'-p',asset,'-p','SHA256SUMS','-D',destination];
- const result=spawnSync('gh',args,{stdio:'inherit',env:{...process.env,GH_HOST:'github.com'}});
- if (result.error || result.status !== 0) fail('authenticated private release download failed (gh access required)');
- const archives = readdirSync(destination).filter(n=>n.endsWith(`-${process.platform}-${process.arch}.tar.gz`));
- if (archives.length !== 1) fail('expected exactly one platform artifact');
- return { archive: join(destination,archives[0]), tag, repo };
+ const repo = process.env.AGENT_RELEASE_REPO || defaultReleaseRepo;
+ if (!validReleaseRepo(repo) || (tag !== '' && !validReleaseTag(tag))) fail('invalid repository or release tag');
+ const baseUrl = process.env.AGENT_RELEASE_BASE_URL === undefined ? undefined : normalizeReleaseBaseUrl(process.env.AGENT_RELEASE_BASE_URL);
+ const publicKey = process.env.AGENT_RELEASE_PUBLIC_KEY ?? RELEASE_PUBLIC_KEY_PEM;
+ ed25519Key(publicKey); // Do not start network I/O without a configured trust root.
+ const token = process.env.AGENT_RELEASE_TOKEN || process.env.GITHUB_TOKEN;
+ const github = `https://github.com/${repo}/releases`;
+ // Phase 2 URL contract: custom base/latest.json, custom base/<tag>/<file>;
+ // GitHub releases/latest/download/latest.json, releases/download/<tag>/<file>.
+ // Publish byte-identical latest.json at discovery and at the tag. Its hash is in the signed sums.
+ const releaseUrl = value => baseUrl ? `${baseUrl}/${encodeURIComponent(value)}` : `${github}/download/${encodeURIComponent(value)}`;
+ const fetchFile = (root, name, limit) => downloadFile(`${root}/${name}`, join(destination, name), limit, token);
+ const latest = join(destination, 'latest.json');
+ if (!tag) {
+  await fetchFile(baseUrl ?? `${github}/latest/download`, 'latest.json', 64 * 1024);
+  tag = readLatest(latest, repo).tag;
+ } else {
+  await fetchFile(releaseUrl(tag), 'latest.json', 64 * 1024);
+ }
+ const root = releaseUrl(tag);
+ await fetchFile(root, 'SHA256SUMS', 1024 * 1024);
+ await fetchFile(root, 'SHA256SUMS.sig', 1024);
+ verifyManifestSignature(join(destination, 'SHA256SUMS'), join(destination, 'SHA256SUMS.sig'), publicKey);
+ // Authenticate the manifest itself before using its asset mapping or claiming its release identity.
+ verifyFileHash(latest);
+ const platform = `${process.platform}-${process.arch}`;
+ const asset = readLatest(latest, repo, tag).assets?.[platform];
+ if (!validAssetId(asset?.assetId) || asset.file !== `agent-${asset.assetId}-${platform}.tar.gz`) fail('invalid or missing platform artifact in latest.json');
+ await fetchFile(root, asset.file, 512 * 1024 ** 2);
+ const archive = join(destination, asset.file);
+ verifyArchiveHash(archive);
+ return { archive, tag, repo, assetId: asset.assetId, ...(baseUrl ? { baseUrl } : {}) };
 }
-export function bootstrap(archive, args = []) {
+export function bootstrap(archive, args = [], expectedAssetId) {
  requireNode(); verifyArchiveHash(archive);
  const temporary=mkdtempSync(join(tmpdir(),'agent-bootstrap-'));
  try {
-  const root=join(temporary,'payload'); extractArchive(archive,root);
+  const root=join(temporary,'payload');
+  const artifact = extractArchive(archive,root);
+  if (expectedAssetId !== undefined && artifact.releaseId !== expectedAssetId) fail('artifact release ID does not match latest.json');
   const result=spawnSync(process.execPath,[join(root,'bundle/scripts/agent-update.mjs'),'--install-artifact',root,...args],{stdio:'inherit'});
   if (result.error) throw result.error;
   return result.status ?? 1;
  } finally { rmSync(temporary,{recursive:true,force:true}); }
 }
 // Shared native installer. Legacy archive invocation remains supported for v0.1.0.
+// The Phase 1 shell installer still assigns the offline return value to exitCode.
+// Keep that branch synchronous; callers can await either branch.
 export function install(args = []) {
  requireNode();
  let tag = process.env.AGENT_VERSION || '';
@@ -166,23 +273,24 @@ export function install(args = []) {
   else forwarded.push(args[i]);
  }
  process.env.PI_CODING_AGENT_DIR ||= join(process.env.USERPROFILE || homedir(), '.agent');
+ if (process.env.AGENT_RELEASE_DIR) {
+  const dir = resolve(process.env.AGENT_RELEASE_DIR);
+  const archives = readdirSync(dir).filter(n => n.startsWith('agent-') && n.endsWith(`-${process.platform}-${process.arch}.tar.gz`));
+  if (archives.length !== 1) fail('expected exactly one platform artifact');
+  return bootstrap(join(dir, archives[0]), forwarded);
+ }
+ return installRemote(tag, forwarded);
+}
+async function installRemote(tag, args) {
  const temporary = mkdtempSync(join(tmpdir(), 'agent-install-'));
  try {
-  let downloaded;
-  if (process.env.AGENT_RELEASE_DIR) {
-   const dir = resolve(process.env.AGENT_RELEASE_DIR);
-   const archives = readdirSync(dir).filter(n => n.startsWith('agent-') && n.endsWith(`-${process.platform}-${process.arch}.tar.gz`));
-   if (archives.length !== 1) fail('expected exactly one platform artifact');
-   downloaded = { archive: join(dir, archives[0]) };
-  } else {
-   const auth = spawnSync('gh', ['auth', 'status'], { stdio: 'ignore', env: { ...process.env, GH_HOST: 'github.com' } });
-   if (auth.error || auth.status !== 0) fail('authenticated GitHub CLI (gh) required');
-   downloaded = downloadArtifact(temporary, tag);
-  }
-  return bootstrap(downloaded.archive, [...(downloaded.tag ? ['--release-tag', downloaded.tag, '--release-repo', downloaded.repo] : []), ...forwarded]);
+  const { archive, tag: resolvedTag, repo, assetId, baseUrl } = await downloadArtifact(temporary, tag);
+  const identity = ['--release-tag', resolvedTag, '--release-repo', repo];
+  if (baseUrl) identity.push('--release-base-url', baseUrl);
+  return bootstrap(archive, [...args, ...identity], assetId);
  } finally { rmSync(temporary, { recursive: true, force: true }); }
 }
 if (process.argv[1] && realpathSync(resolve(process.argv[1])) === realpathSync(fileURLToPath(import.meta.url))) {
- try { process.exitCode = process.argv[2] === 'install' ? install(process.argv.slice(3)) : bootstrap(resolve(process.argv[2] ?? ''),process.argv.slice(3)); }
+ try { process.exitCode = process.argv[2] === 'install' ? await install(process.argv.slice(3)) : bootstrap(resolve(process.argv[2] ?? ''),process.argv.slice(3)); }
  catch(error) { console.error(error.message); process.exitCode=1; }
 }

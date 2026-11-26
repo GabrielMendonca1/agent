@@ -1,40 +1,112 @@
 #!/usr/bin/env node
 import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
+import { generateKeyPairSync } from 'node:crypto';
 import { tmpdir } from 'node:os';
 import { basename, join, resolve } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { digestTree, installOverlayBundle, requireVerified, assertContainedTree } from './agent-update.mjs';
-import { hash, inventory, nodeMin, packArchive, requireNode, validateDirectory } from './lib/agent-distribution.mjs';
+import { defaultReleaseRepo, hash, inventory, nodeMin, packArchive, requireNode, schema, signManifest, validAssetId, validReleaseRepo, validReleaseTag, validateDirectory } from './lib/agent-distribution.mjs';
 const repo = resolve(fileURLToPath(new URL('..', import.meta.url)));
 const args = process.argv.slice(2);
-let release, merge = [], out = resolve('dist');
+let release, merge = [], out = resolve('dist'), tag, keyPath, keygen, pubPath, privPath;
+let buildOption = false;
 for (let i=0;i<args.length;i++) {
- if (args[i]==='--merge') { while (args[i+1] && !args[i+1].startsWith('--')) merge.push(resolve(args[++i])); }
- else if (args[i]==='--release') release=realpathSync(resolve(args[++i]));
- else if (args[i]==='--out') out=resolve(args[++i]);
- else throw new Error(`Unknown distribution option: ${args[i]}`);
+ const option = args[i];
+ const value = () => {
+  const next = args[++i];
+  if (!next || next.startsWith('--')) throw new Error(`${option} requires a value`);
+  return next;
+ };
+ if (option === '--keygen') keygen = true;
+ else if (option === '--out-pub') pubPath = resolve(value());
+ else if (option === '--out-priv') privPath = resolve(value());
+ else {
+  buildOption = true;
+  if (option === '--merge') {
+   merge.push(resolve(value()));
+   while (args[i+1] && !args[i+1].startsWith('--')) merge.push(resolve(value()));
+  } else if (option === '--release') release = realpathSync(resolve(value()));
+  else if (option === '--out') out = resolve(value());
+  else if (option === '--tag') tag = value();
+  else if (option === '--sign-key') keyPath = resolve(value());
+  else throw new Error(`Unknown distribution option: ${option}`);
+ }
 }
 requireNode();
+if (keygen) {
+ if (buildOption) throw new Error('--keygen cannot be combined with build or merge options');
+ const dir = !pubPath || !privPath ? mkdtempSync(join(tmpdir(), 'agent-release-keys-')) : undefined;
+ pubPath ??= join(dir, 'release-public.pem');
+ privPath ??= join(dir, 'release-private.pem');
+ const { publicKey, privateKey } = generateKeyPairSync('ed25519', {
+  publicKeyEncoding: { type: 'spki', format: 'pem' }, privateKeyEncoding: { type: 'pkcs8', format: 'pem' },
+ });
+ writeFileSync(pubPath, publicKey, { flag: 'wx', mode: 0o644 });
+ try { writeFileSync(privPath, privateKey, { flag: 'wx', mode: 0o600 }); }
+ catch (error) { rmSync(pubPath); throw error; }
+ console.log(`Public key: ${pubPath}\nPrivate key: ${privPath}`);
+ process.exit(0);
+}
+if (pubPath || privPath) throw new Error('--out-pub and --out-priv require --keygen');
+tag ??= process.env.AGENT_RELEASE_TAG;
+const keyEnv = keyPath ? undefined : process.env.AGENT_SIGNING_PRIVATE_KEY;
+const releaseRepo = process.env.AGENT_RELEASE_REPO || defaultReleaseRepo;
+const signed = tag !== undefined || keyPath !== undefined || keyEnv !== undefined;
+if (signed && (!validReleaseTag(tag) || !(keyPath || keyEnv) || !validReleaseRepo(releaseRepo))) {
+ throw new Error('Signing requires a valid release tag, repo and Ed25519 private key');
+}
 const installers = ['install.sh', 'install.ps1', 'agent-distribution.mjs'];
-function writeSums() {
- const names = readdirSync(out).filter(n => /^agent-.*\.tar\.gz$/.test(n) || installers.includes(n)).sort();
- writeFileSync(join(out, 'SHA256SUMS'), names.map(n => `${hash(readFileSync(join(out,n)))}  ${n}\n`).join(''));
+const isAsset = n => /^agent-.*\.tar\.gz$/.test(n) || installers.includes(n);
+function writeRelease(verifiedNames) {
+ const names = readdirSync(out).filter(isAsset).sort();
+ if (signed && names.some(n => !verifiedNames.has(n))) throw new Error('Signing requires an output directory without unrelated assets');
+ const lines = names.map(n => `${hash(readFileSync(join(out,n)))}  ${n}\n`);
+ const sumsPath = join(out, 'SHA256SUMS');
+ const sigPath = join(out, 'SHA256SUMS.sig');
+ const latestPath = join(out, 'latest.json');
+ let latest;
+ if (signed) {
+  const assets = Object.create(null);
+  for (const file of names.filter(n => !installers.includes(n))) {
+   const match = /^agent-(.+)-([a-z0-9]+-[a-z0-9]+)\.tar\.gz$/.exec(file);
+   if (!match || !validAssetId(match[1])) throw new Error(`Invalid release asset name: ${file}`);
+   const [, assetId, platform] = match;
+   if (assets[platform]) throw new Error(`Multiple release assets for ${platform}`);
+   assets[platform] = { file, assetId };
+  }
+  if (!Object.keys(assets).length) throw new Error('No platform assets to sign');
+  latest = `${JSON.stringify({ schema, tag, repo: releaseRepo, publishedAt: new Date().toISOString(), assets }, null, 2)}\n`;
+  lines.push(`${hash(latest)}  latest.json\n`);
+ }
+ // Never leave an old detached signature or discovery manifest after regenerating sums.
+ rmSync(sigPath, { force: true });
+ rmSync(latestPath, { force: true });
+ writeFileSync(sumsPath, lines.join(''));
+ if (signed) {
+  const key = keyPath ? readFileSync(keyPath) : keyEnv.includes('-----BEGIN ') ? keyEnv : Buffer.from(keyEnv, 'base64');
+  const signature = signManifest(sumsPath, key);
+  writeFileSync(sigPath, `${signature}\n`);
+  writeFileSync(latestPath, latest);
+ }
 }
 if (merge.length) {
  if (release) throw new Error('--merge cannot be combined with --release');
  mkdirSync(out, { recursive: true });
+ const validated = new Set();
  for (const dir of merge) {
-  const sums = readFileSync(join(dir, 'SHA256SUMS'), 'utf8');
-  for (const name of readdirSync(dir).filter(n => /^agent-.*\.tar\.gz$/.test(n) || installers.includes(n))) {
+  const sums = readFileSync(join(dir, 'SHA256SUMS'), 'utf8').split(/\r?\n/);
+  for (const name of readdirSync(dir).filter(isAsset)) {
    const bytes = readFileSync(join(dir, name)), digest = hash(bytes);
-   if (!sums.split(/\r?\n/).includes(`${digest}  ${name}`)) throw new Error(`Invalid input checksum: ${name}`);
+   const entries = sums.filter(line => line.slice(64, 66) === '  ' && line.slice(66) === name);
+   if (entries.length !== 1 || entries[0] !== `${digest}  ${name}`) throw new Error(`Invalid input checksum: ${name}`);
    if (existsSync(join(out,name)) && hash(readFileSync(join(out,name))) !== digest) throw new Error(`Conflicting release asset: ${name}`);
-   cpSync(join(dir,name),join(out,name));
+   if (realpathSync(out) !== realpathSync(dir)) writeFileSync(join(out,name), bytes);
+   validated.add(name);
   }
  }
  for (const name of installers) if (!existsSync(join(out,name))) throw new Error(`Missing release asset: ${name}`);
- writeSums();
+ writeRelease(validated);
  console.log(`Merged distribution at ${out}; no release published.`);
  process.exit(0);
 }
@@ -85,6 +157,6 @@ try {
  const name=`agent-${artifact.releaseId}-${process.platform}-${process.arch}.tar.gz`;
  packArchive(stage,join(out,name));
  for (const name of installers) cpSync(join(repo, name === 'agent-distribution.mjs' ? `scripts/lib/${name}` : `scripts/${name}`),join(out,name));
- writeSums();
+ writeRelease(new Set([name, ...installers]));
  console.log(`Distribution staged at ${out}; no release published. Platform declaration is build-host only; run release checks before publishing.`);
 } finally { rmSync(temp,{recursive:true,force:true}); }
