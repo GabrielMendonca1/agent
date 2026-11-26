@@ -204,13 +204,16 @@ function verifyDestination(t: WorktreeBranch): void {
 	if (currentBranch(t.sourceCwd) !== t.sourceBranch) throw new Error(`Source branch changed; expected ${t.sourceBranch}; refusing integrate.`);
 }
 
-function remove(t: WorktreeBranch, force: boolean, discard: boolean, options: WorktreeManagementOptions): string | undefined {
+function remove(t: WorktreeBranch, force: boolean, discard: boolean, options: WorktreeManagementOptions, integratedTip?: string): string | undefined {
 	const ref = `refs/heads/${t.branch}`;
-	const resolved = spawnSync("git", ["-C", t.sourceCwd, "rev-parse", "--verify", "--quiet", ref], { encoding: "utf8" });
-	if (resolved.status !== 0 && resolved.status !== 1) throw new Error(resolved.stderr?.trim() || resolved.error?.message || `Cannot resolve ${ref}.`);
-	const tip = resolved.status === 0 ? resolved.stdout.trim() : undefined;
+	let tip = integratedTip;
+	if (tip === undefined) {
+		const resolved = spawnSync("git", ["-C", t.sourceCwd, "rev-parse", "--verify", "--quiet", ref], { encoding: "utf8" });
+		if (resolved.status !== 0 && resolved.status !== 1) throw new Error(resolved.stderr?.trim() || resolved.error?.message || `Cannot resolve ${ref}.`);
+		if (resolved.status === 0) tip = resolved.stdout.trim();
+	}
 	const exists = fs.existsSync(t.worktree);
-	if (!discard && (tip || exists)) {
+	if (integratedTip === undefined && !discard && (tip || exists)) {
 		if (!t.sourceBranch) throw new Error("No recorded destination branch; refusing cleanup without discard.");
 		// Check immutable commits against the recorded branch, not the source checkout's HEAD.
 		const destination = `refs/heads/${t.sourceBranch}`;
@@ -218,6 +221,9 @@ function remove(t: WorktreeBranch, force: boolean, discard: boolean, options: Wo
 		if (exists) git(t.sourceCwd, ["merge-base", "--is-ancestor", head(t.worktree), destination]);
 	}
 	if (exists) {
+		if (integratedTip !== undefined && git(t.sourceCwd, ["rev-parse", "--verify", ref]) !== integratedTip) {
+			throw new Error("Writer committed after integration; resume it and integrate again.");
+		}
 		git(t.sourceCwd, ["worktree", "remove", ...(force ? ["--force"] : []), "--", t.worktree]);
 	} else git(t.sourceCwd, ["worktree", "prune"]);
 	t.worktreePathRemoved = true;
@@ -300,16 +306,24 @@ function rollbackSync(t: WorktreeBranch, checkedHead: string, preMergeSha: strin
 }
 
 function publishCheckedTree(t: WorktreeBranch, sourceHead: string, checkedHead: string): void {
-	if (sourceHead === checkedHead) return;
 	const cwd = t.sourceCwd;
+	const ref = `refs/heads/${t.branch}`;
 	const tree = git(cwd, ["rev-parse", `${checkedHead}^{tree}`]);
-	const integration = git(cwd, ["commit-tree", tree, "-p", sourceHead, "-p", checkedHead, "-m", `Merge branch '${t.branch}'`]);
-	verifyDestination(t);
-	if (head(cwd) !== sourceHead) throw new Error("Source HEAD changed before publication; retry integrate.");
-	// No merge strategy is allowed to recalculate the tested tree. A divergent
-	// commit before Git starts is rejected by --ff-only; Git checks the old ref
-	// value when it publishes the fast-forward.
-	git(cwd, ["-c", `branch.${t.sourceBranch}.mergeOptions=`, "merge", "--ff-only", "--no-autostash", "--no-overwrite-ignore", integration]);
+	if (git(cwd, ["rev-parse", "--verify", ref]) !== checkedHead) {
+		throw new Error("Writer branch changed after checks; retry integrate.");
+	}
+	try {
+		git(cwd, ["-c", `branch.${t.sourceBranch}.mergeOptions=`, "merge", "--no-ff", "--no-edit", "--no-autostash", "--no-overwrite-ignore", ref]);
+		if (merging(cwd) || !isAncestor(cwd, checkedHead, head(cwd)) || git(cwd, ["rev-parse", "HEAD^{tree}"]) !== tree) {
+			throw new Error("Merge did not commit the checked tree.");
+		}
+	} catch (error) {
+		const message = `Merge failed for ${t.branch}: ${String(error)}`;
+		try {
+			git(cwd, merging(cwd) ? ["merge", "--abort"] : ["reset", "--hard", sourceHead]);
+		} catch (failure) { throw new Error(`${message}\nCould not restore the source checkout: ${String(failure)}`); }
+		throw new Error(message);
+	}
 }
 
 export async function integrateWorktreeBranch(t: WorktreeBranch, options: WorktreeManagementOptions = {}): Promise<{ gateMessage?: string; cleanupOnly?: boolean; cleanupWarning?: string }> {
@@ -360,7 +374,7 @@ export async function integrateWorktreeBranch(t: WorktreeBranch, options: Worktr
 			throw error;
 		}
 		publishCheckedTree(t, sourceHead, checkedHead);
-		try { return { gateMessage, cleanupWarning: remove(t, false, false, options) }; }
+		try { return { gateMessage, cleanupWarning: remove(t, false, false, options, checkedHead) }; }
 		catch (error) { throw new Error(`${t.branch} was integrated into ${t.sourceBranch}; worktree cleanup is pending. ${String(error)}`); }
 	}, { branch: t.branch });
 }
