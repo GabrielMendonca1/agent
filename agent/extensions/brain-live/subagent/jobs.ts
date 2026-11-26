@@ -16,7 +16,7 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import { type ModelRegistry, type ModelRuntime, resolveCliModel } from "@earendil-works/pi-coding-agent";
 import { commitWip, gateSummary, gcWorktrees, isolateWriters, manageWorktrees, plannedIsolation, worktreeSkillError, worktreeSummary } from "./worktrees.ts";
-import { getRoleModelChoices, isGoogleApiModel, resolveGeminiPreference, resolveModelRef, resolveRoleModel } from "../lib/tiers.ts";
+import { getRoleModelChoices, isGoogleApiModel, resolveGeminiPreference, resolveModelRef, resolveRoleModel, type RoleModelChoice } from "../lib/tiers.ts";
 import type { AgentConfig, AgentScope } from "./agents.ts";
 import type { ChildSkills } from "./skills.ts";
 import { releaseAll } from "./lockfile.ts";
@@ -241,7 +241,13 @@ function piModelFilter(registry?: DispatchModelRegistry): typeof isGoogleApiMode
 	};
 }
 
-export function resolveJobTaskModels(tasks: JobTaskSpec[], defaults?: DispatchDefaults, roleFiles?: readonly RoleFileConfig[], registry?: DispatchModelRegistry): { ok: true; tasks: JobTaskSpec[] } | { ok: false; error: string } {
+export function resolveJobTaskModels(
+	tasks: JobTaskSpec[],
+	defaults?: DispatchDefaults,
+	roleFiles?: readonly RoleFileConfig[],
+	registry?: DispatchModelRegistry,
+	swarmPresets?: readonly (RoleModelChoice | undefined)[],
+): { ok: true; tasks: JobTaskSpec[] } | { ok: false; error: string } {
 	const isBlocked = piModelFilter(registry);
 	const externalTask = (task: JobTaskSpec): JobTaskSpec | undefined => {
 		const role = roleFiles?.find((file) => file.name === task.agent);
@@ -259,6 +265,13 @@ export function resolveJobTaskModels(tasks: JobTaskSpec[], defaults?: DispatchDe
 	const checkPiModel = (model: string | undefined) => {
 		if (isBlocked(model)) throw new Error("Agent: Google API models are not available for Pi subagents. Choose another model in /models or use the gemini role via agy.");
 	};
+	const withSwarmPreset = (task: JobTaskSpec, i: number): JobTaskSpec | undefined => {
+		// Only user-configured presets may bypass role/slot allowlists, never a tool override.
+		const preset = task.model === undefined ? swarmPresets?.[i] : undefined;
+		if (!preset) return undefined;
+		checkPiModel(preset.model);
+		return { ...task, model: preset.model, thinking: preset.thinking };
+	};
 	const checkInheritedModel = (file?: RoleFileConfig) => {
 		checkPiModel(file?.model ? resolveModelRef(file.model).model : defaults?.model);
 	};
@@ -267,9 +280,9 @@ export function resolveJobTaskModels(tasks: JobTaskSpec[], defaults?: DispatchDe
 			const primary = defaults.model;
 			const configuredSupport = defaults.resources.supportModel;
 			const support = () => configuredSupport && !isBlocked(configuredSupport) ? configuredSupport : primary;
-			return { ok: true, tasks: tasks.map((task) => {
-				const external = externalTask(task);
-				if (external) return external;
+			return { ok: true, tasks: tasks.map((task, i) => {
+				const configured = externalTask(task) ?? withSwarmPreset(task, i);
+				if (configured) return configured;
 				checkPiModel(task.model);
 				if (!primary) throw new Error("Agent: parent model unavailable.");
 				// A config do papel que o usuário já tinha (`roleModels`: modelo + thinking por papel)
@@ -297,9 +310,9 @@ export function resolveJobTaskModels(tasks: JobTaskSpec[], defaults?: DispatchDe
 		}
 		return {
 			ok: true,
-			tasks: tasks.map((task) => {
-				const external = externalTask(task);
-				if (external) return external;
+			tasks: tasks.map((task, i) => {
+				const configured = externalTask(task) ?? withSwarmPreset(task, i);
+				if (configured) return configured;
 				checkPiModel(task.model);
 				const selected = resolveRoleModel(task.agent, task.model, { isBlocked });
 				if (selected) return { ...task, model: selected.model, thinking: selected.thinking };
@@ -414,8 +427,10 @@ export interface LaunchSpec {
 	modelRegistry?: DispatchModelRegistry;
 	cwd: string;
 	timeoutSeconds: number;
-	/** Mode "swarm": initial swarm state (caps, isolate). */
+	/** Initial loop or board state (caps, isolate). */
 	swarm?: SwarmRecord;
+	/** Only for swarm: user-configured model/thinking preferences, indexed by task. */
+	swarmPresets?: readonly (RoleModelChoice | undefined)[];
 }
 
 export interface JobManagerDeps {
@@ -691,7 +706,7 @@ export class SubagentJobManager {
 
 		// Resolve every preference / explicit selection before creating a record or
 		// scheduling work. `thinking` comes only from the authorized pair.
-		const resolvedTasks = resolveJobTaskModels(spec.tasks, spec.dispatchDefaults, spec.agents, spec.modelRegistry);
+		const resolvedTasks = resolveJobTaskModels(spec.tasks, spec.dispatchDefaults, spec.agents, spec.modelRegistry, spec.swarm ? spec.swarmPresets : undefined);
 		if (!resolvedTasks.ok) return resolvedTasks;
 		spec = { ...spec, tasks: resolvedTasks.tasks };
 
@@ -954,7 +969,7 @@ export class SubagentJobManager {
 	/** Swarm board: once finished tasks cost maxUsd, stop the rest (pending never start, running abort). */
 	private boardBudget(job: ActiveJob): void {
 		const swarm = job.record.swarm;
-		if (swarm?.kind !== "board") return;
+		if (swarm?.kind !== "board" || swarm.maxUsd === undefined) return;
 		swarm.spentUsd = [...job.returned.values()].reduce((sum, result) => sum + (result.usage.cost || 0), 0);
 		if (swarm.spentUsd < swarm.maxUsd || job.controller.signal.aborted) return;
 		job.budgetStopped = true;
@@ -1306,7 +1321,7 @@ export class SubagentJobManager {
 		if (swarmTail) output = `${output}\n\n${swarmTail}`;
 		const board = job.record.swarm?.kind === "board" ? job.record.swarm : undefined;
 		if (board) {
-			if (job.budgetStopped) error = `Swarm board stopped: finished tasks cost $${board.spentUsd.toFixed(2)} of $${board.maxUsd.toFixed(2)}.${error ? ` ${error}` : ""}`;
+			if (job.budgetStopped && board.maxUsd !== undefined) error = `Swarm board stopped: finished tasks cost $${board.spentUsd.toFixed(2)} of $${board.maxUsd.toFixed(2)}.${error ? ` ${error}` : ""}`;
 			board.outcome ??= error || job.cancelRequested || job.timedOut ? "failed" : "done";
 			board.spentUsd = usage.cost;
 			output = `swarm board · outcome: ${board.outcome} · tasks: ${job.record.tasks.length} · cost: $${usage.cost.toFixed(2)}\n\n${output}`;

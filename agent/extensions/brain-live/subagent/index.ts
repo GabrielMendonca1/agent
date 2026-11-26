@@ -28,7 +28,7 @@ import {
 import { type Component, Container, Markdown, Spacer, Text, truncateToWidth } from "@earendil-works/pi-tui";
 import { type Static, Type } from "typebox";
 import { lastUser } from "../lib/checkpoint-store.ts";
-import { formatRoleModelChoices, getRoleModelChoices, resolveGeminiPreference } from "../lib/tiers.ts";
+import { formatRoleModelChoices, getRoleModelChoices, getSwarmModel, resolveGeminiPreference } from "../lib/tiers.ts";
 import { getAgentPreferences, isChild } from "../../../core/client.mjs";
 import { NO_DELEGATE_ENV } from "../../../core/child-env.mjs";
 import { parseWorkflow, readWorkflow } from "../../../core/workflow.mjs";
@@ -56,15 +56,10 @@ import {
 } from "./jobs.ts";
 import { taskStatusLines, traceJob } from "./trace.ts";
 import {
-	BOARD_DEFAULT_USD,
-	BOARD_MAX_USD,
-	BOARD_MIN_USD,
 	isGitRepo,
 	SWARM_DEFAULT_ROUNDS,
-	SWARM_DEFAULT_USD,
 	SWARM_ENTRY_TYPE,
 	SWARM_MAX_ROUNDS,
-	SWARM_MAX_USD,
 	SWARM_MESSAGE_TYPE,
 	SWARM_MIN_USD,
 	SWARM_OFF_ERROR,
@@ -309,7 +304,7 @@ const SwarmParams = Type.Object({
 	isolate: Type.Optional(Type.Boolean({ description: "Run the writer in its own git worktree (default true inside a git repository); the reviewer reads the same worktree" })),
 	maxRounds: Type.Optional(Type.Integer({ minimum: 1, maximum: SWARM_MAX_ROUNDS, description: `Writer+reviewer rounds, 1..${SWARM_MAX_ROUNDS} (default ${SWARM_DEFAULT_ROUNDS})` })),
 	tasks: Type.Optional(Type.Array(TaskItem, { description: `board: 2..${MAX_PARALLEL_TASKS} parallel tasks, same items as subagent tasks` })),
-	maxUsd: Type.Optional(Type.Number({ minimum: SWARM_MIN_USD, maximum: BOARD_MAX_USD, description: `Cost cap in USD. loop: checked before each new round, ${SWARM_MIN_USD}..${SWARM_MAX_USD} (default ${SWARM_DEFAULT_USD}); board: checked as tasks finish, ${BOARD_MIN_USD}..${BOARD_MAX_USD} (default ${BOARD_DEFAULT_USD})` })),
+	maxUsd: Type.Optional(Type.Number({ minimum: SWARM_MIN_USD, description: "Optional cost cap in USD; unlimited when omitted." })),
 	cwd: Type.Optional(Type.String({ description: "Working directory (default: session cwd)" })),
 	agentScope: Type.Optional(AgentScopeSchema),
 	confirmProjectAgents: Type.Optional(Type.Boolean({ description: "Confirm project-local agents", default: true })),
@@ -1399,9 +1394,9 @@ export default function (pi: ExtensionAPI) {
 
 		const maxRounds = params.maxRounds ?? SWARM_DEFAULT_ROUNDS;
 		if (!Number.isInteger(maxRounds) || maxRounds < 1 || maxRounds > SWARM_MAX_ROUNDS) return fail(`maxRounds must be an integer 1..${SWARM_MAX_ROUNDS}.`);
-		const [minUsd, topUsd] = mode === "board" ? [BOARD_MIN_USD, BOARD_MAX_USD] : [SWARM_MIN_USD, SWARM_MAX_USD];
-		const maxUsd = params.maxUsd ?? (mode === "board" ? BOARD_DEFAULT_USD : SWARM_DEFAULT_USD);
-		if (!Number.isFinite(maxUsd) || maxUsd < minUsd || maxUsd > topUsd) return fail(`maxUsd must be ${minUsd}..${topUsd} for mode ${mode}.`);
+		const maxUsd = params.maxUsd;
+		if (maxUsd !== undefined && (!Number.isFinite(maxUsd) || maxUsd < SWARM_MIN_USD)) return fail(`maxUsd must be a finite number of at least ${SWARM_MIN_USD}.`);
+		const costCap = maxUsd === undefined ? "no cost cap" : `$${maxUsd.toFixed(2)}`;
 		const timeout = validateTimeoutSeconds(params.timeoutSeconds);
 		if (!timeout.ok) return fail(timeout.error);
 
@@ -1456,7 +1451,7 @@ export default function (pi: ExtensionAPI) {
 			const taken = [...names.filter((name, i) => names.indexOf(name) !== i), ...takenHandles(baseDir, sessionId, names)];
 			if (taken.length > 0) return fail(`Handle name(s) already used: ${[...new Set(taken)].join(", ")}. Pick another name or omit it.`);
 			const jobCwd = path.resolve(ctx.cwd, params.cwd ?? ".");
-			let tasks: JobTaskSpec[] = items.map((item) => ({
+			const tasks: JobTaskSpec[] = items.map((item) => ({
 				agent: item.agent,
 				task: composeTaskText(item, roleOf(item)),
 				cwd: item.cwd ? path.resolve(jobCwd, item.cwd) : undefined,
@@ -1475,9 +1470,10 @@ export default function (pi: ExtensionAPI) {
 				if (t.model || role?.model || role?.thinking || getRoleModelChoices(t.agent) !== undefined) continue;
 				t.slot = recipe.steps.find((st) => st.role === t.agent)?.slot ?? (t.agent === "scout" ? "apoio" : "principal");
 			}
-			const selected = resolveJobTaskModels(tasks, dispatchDefaults, agents, ctx.modelRegistry);
+			const preset = tasks.some((task) => task.model === undefined) ? getSwarmModel("board") : undefined;
+			const swarmPresets = tasks.map((task) => task.model === undefined ? preset : undefined);
+			const selected = resolveJobTaskModels(tasks, dispatchDefaults, agents, ctx.modelRegistry, swarmPresets);
 			if (!selected.ok) return fail(selected.error);
-			tasks = selected.tasks;
 			if (!(await confirmed(items.map(roleOf)))) return { content: [{ type: "text" as const, text: "Canceled: project-local agents not approved." }], details: controlDetails() };
 			if (signal?.aborted) return fail("Swarm aborted before launch.");
 			if (!swarmEnabled) return fail(SWARM_OFF_ERROR);
@@ -1496,7 +1492,7 @@ export default function (pi: ExtensionAPI) {
 			const outcome = mgr.launch({
 				jobId, sessionId, sessionGeneration, anchorEntryId, mode: "parallel", tasks, agents, agentScope,
 				projectAgentsDir: discovery.projectAgentsDir, dispatchDefaults, modelRegistry: ctx.modelRegistry,
-				cwd: jobCwd, timeoutSeconds: timeout.value, swarm,
+				cwd: jobCwd, timeoutSeconds: timeout.value, swarm, swarmPresets,
 			});
 			if (!outcome.ok) return fail(`${outcome.error} Nothing was launched.`);
 			if (outcome.record.status === "running") lifecycleStarted(outcome.record.jobId);
@@ -1509,7 +1505,7 @@ export default function (pi: ExtensionAPI) {
 						`Launched swarm board job ${outcome.record.jobId}, status running.`,
 						`Members: ${outcome.record.tasks.map((t) => `${t.handle} (${t.agent}=${t.model ?? "default"})`).join(", ")}.`,
 						`Board: ${outcome.record.swarm?.boardPath}.${isolated ? ` ${isolated} writer(s) isolated in their own worktrees.` : ""}`,
-						`Cap: $${maxUsd.toFixed(2)} over finished tasks; timeout ${timeout.value}s. Result file: ${outcome.resultPath}.`,
+						`Limits: ${costCap}${maxUsd === undefined ? "" : " over finished tasks"}; timeout ${timeout.value}s. Result file: ${outcome.resultPath}.`,
 						"The result arrives as a subagent-result message; manage the job with the subagent tool (status/result/trace/cancel/integrate/discard/continue). Do not poll in a loop.",
 					].join(" "),
 				}],
@@ -1561,7 +1557,7 @@ export default function (pi: ExtensionAPI) {
 		const isolate = params.isolate ?? isGitRepo(writerCwd);
 		if (isolate && !isGitRepo(writerCwd)) return fail(`isolate needs a git repository; ${writerCwd} is not one. Pass isolate:false to run in place.`);
 
-		let tasks: JobTaskSpec[] = [
+		const tasks: JobTaskSpec[] = [
 			{ agent: writerRole.name, task: composeTaskText({ agent: writerRole.name, task: writerIn.task, brief: writerBrief }, writerRole), cwd: writerCwd, model: writerIn.model, name: writerIn.name,
 				...(requestedSkills(writerIn.skills).length ? { skills: requestedSkills(writerIn.skills) } : {}) },
 			{ agent: reviewerRole.name, task: composeTaskText({ agent: reviewerRole.name, task: reviewerIn.task, brief: reviewerBrief }, reviewerRole), cwd: writerCwd, model: reviewerIn.model, name: reviewerIn.name,
@@ -1578,9 +1574,9 @@ export default function (pi: ExtensionAPI) {
 			if (t.model || role?.model || role?.thinking || getRoleModelChoices(t.agent) !== undefined) continue;
 			t.slot = recipe.steps.find((st) => st.role === t.agent)?.slot ?? "principal";
 		}
-		const selected = resolveJobTaskModels(tasks, dispatchDefaults, agents, ctx.modelRegistry);
+		const swarmPresets = (["writer", "reviewer"] as const).map((slot, i) => tasks[i].model === undefined ? getSwarmModel(slot) : undefined);
+		const selected = resolveJobTaskModels(tasks, dispatchDefaults, agents, ctx.modelRegistry, swarmPresets);
 		if (!selected.ok) return fail(selected.error);
-		tasks = selected.tasks;
 
 		if (!(await confirmed([writerRole, reviewerRole]))) return { content: [{ type: "text" as const, text: "Canceled: project-local agents not approved." }], details: controlDetails() };
 		if (signal?.aborted) return fail("Swarm aborted before launch.");
@@ -1602,7 +1598,7 @@ export default function (pi: ExtensionAPI) {
 		const outcome = mgr.launch({
 			jobId, sessionId, sessionGeneration, anchorEntryId, mode: "swarm", tasks, agents, agentScope,
 			projectAgentsDir: discovery.projectAgentsDir, dispatchDefaults, modelRegistry: ctx.modelRegistry,
-			cwd: jobCwd, timeoutSeconds: timeout.value, swarm,
+			cwd: jobCwd, timeoutSeconds: timeout.value, swarm, swarmPresets,
 		});
 		if (!outcome.ok) return fail(`${outcome.error} Nothing was launched.`);
 		if (outcome.record.status === "running") lifecycleStarted(outcome.record.jobId);
@@ -1615,7 +1611,7 @@ export default function (pi: ExtensionAPI) {
 					`Launched swarm loop job ${outcome.record.jobId}, status running.`,
 					`Writer ${writer.handle} (${writer.agent}=${writer.model ?? "default"}), reviewer ${reviewer.handle} (${reviewer.agent}=${reviewer.model ?? "default"}).`,
 					`${isolate ? "Writer isolated in its own worktree; the reviewer reads it." : `Writer works in place in ${writerCwd}.`}`,
-					`Caps: ${maxRounds} round(s), $${maxUsd.toFixed(2)}; timeout ${timeout.value}s. Result file: ${outcome.resultPath}.`,
+					`Caps: ${maxRounds} round(s), ${costCap}; timeout ${timeout.value}s. Result file: ${outcome.resultPath}.`,
 					"The result arrives as a subagent-result message; manage the job with the subagent tool (status/result/trace/cancel/integrate/discard). Do not poll in a loop.",
 				].join(" "),
 			}],
@@ -1628,10 +1624,10 @@ export default function (pi: ExtensionAPI) {
 		label: "Swarm",
 		exposure: "deferred",
 		description: [
-			"Swarm loop (only while the user has /swarm on): a writer implements the brief, then a read-only reviewer reviews the change; on REQUEST_CHANGES both resume their own sessions with only the findings or the delta, until the reviewer approves or a cap (maxRounds, maxUsd, timeout) stops the loop.",
+			"Swarm loop (only while the user has /swarm on): a writer implements the brief, then a read-only reviewer reviews the change; on REQUEST_CHANGES both resume their own sessions with only the findings or the delta, until the reviewer approves or a cap (maxRounds, optional maxUsd, timeout) stops the loop.",
 			"The writer runs in its own git worktree by default and the reviewer reads that worktree. A turn where the writer changes nothing ends the loop as stalled; a reviewer reply without a final `VERDICT: APPROVE` line never counts as approval.",
 			"ASYNC: returns a jobId at once; one subagent-result message arrives at the end with outcome, rounds, cost, the last verdict, handles and the worktree. The job is a normal subagent job: use the subagent tool for status/result/trace/list/cancel/integrate/discard/continue.",
-			"Board: 2+ tasks (same items as subagent tasks) run in parallel, writers of one repository in their own worktrees; each child gets a `board` tool to post claim, decision, blocker, done and note entries and to read new ones. No chat between children. maxUsd stops the job once finished tasks reach it; the result ends with the board.",
+			"Board: 2+ tasks (same items as subagent tasks) run in parallel, writers of one repository in their own worktrees; each child gets a `board` tool to post claim, decision, blocker, done and note entries and to read new ones. No chat between children. If set, maxUsd stops the job once finished tasks reach it; the result ends with the board.",
 			"Review the final diff yourself before integrate.",
 		].join(" "),
 		parameters: SwarmParams,
