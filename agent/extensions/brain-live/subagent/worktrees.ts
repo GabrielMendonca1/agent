@@ -91,8 +91,8 @@ export function worktreeSkillError(file: string, root: string, cwd?: string, sha
 	return `skill "${skillLabel(file)}" is a project skill; isolated writers only get personal, company and bundled skills. Run the task in place to use it.`;
 }
 
-export function isolateWriters(record: JobRecord, agents: AgentConfig[], persist: () => void, options?: IsolationOptions): void {
-	for (const [root, group] of plannedIsolation(record, agents, options)) {
+export function isolateWriters(record: JobRecord, agents: AgentConfig[], persist: () => void, options?: IsolationOptions, plan = plannedIsolation(record, agents, options)): void {
+	for (const [root, group] of plan) {
 		const baseSha = git(root, ["rev-parse", "HEAD"]);
 		const sourceBranch = currentBranch(root);
 		for (const { task, index, cwd } of group) {

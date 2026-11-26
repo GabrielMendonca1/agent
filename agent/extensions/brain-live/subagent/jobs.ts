@@ -12,10 +12,12 @@
  * as soon as it starts; that file is the full audit trail (see trace.ts).
  */
 
+import { spawnSync } from "node:child_process";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { type ModelRegistry, type ModelRuntime, resolveCliModel } from "@earendil-works/pi-coding-agent";
 import { commitWip, gateSummary, gcWorktrees, isolateWriters, manageWorktrees, plannedIsolation, worktreeSkillError, worktreeSummary } from "./worktrees.ts";
+import { hasOtherActiveWriter, registerWorkspace, unregisterWorkspace } from "./workspace.ts";
 import { getRoleModelChoices, isGoogleApiModel, resolveGeminiPreference, resolveModelRef, resolveRoleModel, type RoleModelChoice } from "../lib/tiers.ts";
 import type { AgentConfig, AgentScope } from "./agents.ts";
 import type { ChildSkills } from "./skills.ts";
@@ -423,6 +425,8 @@ export interface LaunchSpec {
 	sessionGeneration: number;
 	anchorEntryId?: string | null;
 	mode: JobMode;
+	/** Run single/parallel writers in worktrees; omit for automatic isolation. */
+	isolate?: boolean;
 	tasks: JobTaskSpec[];
 	agents: AgentConfig[];
 	agentScope: AgentScope;
@@ -598,6 +602,46 @@ export function validateTimeoutSeconds(value: number | undefined): { ok: true; v
 	return { ok: true, value };
 }
 
+type IsolationPlan = ReturnType<typeof plannedIsolation>;
+type WriterRegistrations = Map<number, string>;
+
+const writerId = (record: JobRecord, index: number) => `${record.jobId}:${index + 1}`;
+
+/** Register before checking for other writers, so concurrent launches cannot both miss each other. */
+function registerJobWriters(record: JobRecord, agents: AgentConfig[], registrations: WriterRegistrations): void {
+	for (const [index, task] of record.tasks.entries()) {
+		if (record.mode === "swarm" && index !== 0) continue;
+		const tools = agents.find((a) => a.name === task.agent)?.tools;
+		if (!(task.invocation?.writes ?? (!tools?.length || tools.some((tool) => tool === "edit" || tool === "write")))) continue;
+		const registered = registrations.get(index);
+		if (registered && !task.worktree) continue;
+		const cwd = path.resolve(task.cwd ?? record.cwd);
+		const root = task.worktree ?? gitWorkspaceValue(cwd, ["rev-parse", "--show-toplevel"]);
+		if (!root) continue;
+		const source = registered ?? task.invocation?.sourceCwd ?? root;
+		registerWorkspace(source, {
+			id: writerId(record, index),
+			kind: "job",
+			pid: process.pid,
+			identity: record.parentIdentity,
+			branch: task.branch ?? gitWorkspaceValue(root, ["symbolic-ref", "--quiet", "--short", "HEAD"]) ?? "(detached)",
+			worktree: root,
+			sourceBranch: task.sourceBranch ?? undefined,
+			startedAt: record.createdAt,
+		});
+		registrations.set(index, source);
+	}
+}
+
+function gitWorkspaceValue(cwd: string, args: string[]): string | undefined {
+	const result = spawnSync("git", ["-C", cwd, ...args], { encoding: "utf8" });
+	return result.status === 0 ? result.stdout.replace(/\r?\n$/, "") : undefined;
+}
+
+function releaseJobWriters(record: JobRecord, registrations: WriterRegistrations): string[] {
+	return releaseAll([...registrations].map(([index, cwd]) => () => unregisterWorkspace(cwd, writerId(record, index))));
+}
+
 interface ActiveJob {
 	record: JobRecord;
 	controller: AbortController;
@@ -714,24 +758,6 @@ export class SubagentJobManager {
 		if (!resolvedTasks.ok) return resolvedTasks;
 		spec = { ...spec, tasks: resolvedTasks.tasks };
 
-		// Writers headed for a worktree get no project skills (only personal, company and bundled ones).
-		// Refused here, before any record, worktree or child exists.
-		let planned: ReturnType<typeof plannedIsolation>;
-		try {
-			planned = plannedIsolation(spec, spec.agents);
-		} catch (error) {
-			return { ok: false, error: error instanceof Error ? error.message : String(error) };
-		}
-		const isolatedIndexes = new Set([...planned.values()].flatMap((group) => group.map(({ index }) => index)));
-		for (const [root, group] of planned) {
-			for (const { task, index } of group) {
-				for (const file of task.resolvedSkills?.paths ?? []) {
-					const error = worktreeSkillError(file, root, path.resolve(task.cwd ?? spec.cwd), task.resolvedSkills?.shadows?.[file]);
-					if (error) return { ok: false, error: `Task ${index + 1} (${task.agent}): ${error}` };
-				}
-			}
-		}
-
 		const jobId = spec.jobId && isSafeId(spec.jobId) ? spec.jobId : this.reserveJobId();
 		if (!isSafeId(spec.sessionId)) return { ok: false, error: "Unsafe session id; refusing to persist a job." };
 		if (this.active.has(jobId)) return { ok: false, error: `Job ${jobId} already exists.` };
@@ -742,10 +768,9 @@ export class SubagentJobManager {
 			mode: spec.mode,
 			status: "running",
 			agents: spec.tasks.map((t) => t.agent),
-			tasks: spec.tasks.map((t, index) => ({
+			tasks: spec.tasks.map((t) => ({
 				agent: t.agent,
 				task: t.task,
-				...(isolatedIndexes.has(index) ? { isolate: true } : {}),
 				cwd: t.cwd,
 				model: t.model,
 				thinking: t.thinking,
@@ -763,6 +788,35 @@ export class SubagentJobManager {
 			...(spec.swarm ? { swarm: structuredClone(spec.swarm) } : {}),
 		};
 
+		const registrations: WriterRegistrations = new Map();
+		try {
+			registerJobWriters(record, spec.agents, registrations);
+			return this.prepareLaunch(record, spec, registrations);
+		} catch (error) {
+			const cleanup = releaseJobWriters(record, registrations);
+			return { ok: false, error: `${error instanceof Error ? error.message : String(error)}${cleanup.length ? ` Workspace entries not removed: ${cleanup.join("; ")}` : ""}` };
+		}
+	}
+
+	private prepareLaunch(record: JobRecord, spec: LaunchSpec, registrations: WriterRegistrations): LaunchOutcome {
+		const { jobId } = record;
+		const idByRoot = new Map([...registrations].map(([index, root]) => [root, writerId(record, index)]));
+		const plan = plannedIsolation(record, spec.agents, {
+			isolate: spec.isolate,
+			// A group with two or more writers in the same repo is already isolated.
+			hasOtherActiveWriter: (root) => hasOtherActiveWriter(root, idByRoot.get(root)),
+		});
+		// Validate the exact plan before persisting any record or making a worktree.
+		for (const [root, group] of plan) {
+			for (const { task, index, cwd } of group) {
+				for (const file of task.resolvedSkills?.paths ?? []) {
+					const error = worktreeSkillError(file, root, cwd, task.resolvedSkills?.shadows?.[file]);
+					if (error) throw new Error(`Task ${index + 1} (${task.agent}): ${error}`);
+				}
+				task.isolate = true;
+			}
+		}
+
 		// Swarm board: the shared file exists before any child; removed again if the launch fails.
 		let board: string | undefined;
 		if (record.swarm?.kind === "board" && record.tasks.length >= 2) {
@@ -770,7 +824,7 @@ export class SubagentJobManager {
 			try {
 				createBoard(board);
 			} catch (error) {
-				return { ok: false, error: `Could not create the swarm board: ${error instanceof Error ? error.message : String(error)}` };
+				throw new Error(`Could not create the swarm board: ${error instanceof Error ? error.message : String(error)}`);
 			}
 			record.swarm.boardPath = board;
 		}
@@ -787,7 +841,7 @@ export class SubagentJobManager {
 			record.tasks.forEach((task, index) => { task.handle = handles[index]; });
 		} catch (error) {
 			dropBoard();
-			return { ok: false, error: error instanceof Error ? error.message : String(error) };
+			throw error;
 		}
 		if (board) {
 			const members = record.tasks.map((task) => ({ handle: task.handle!, task: task.task }));
@@ -800,12 +854,12 @@ export class SubagentJobManager {
 		// Persist the launch before acknowledging it, so a crash right after the
 		// ack still leaves a record that restore() can mark interrupted.
 		const resultPath = writeRecord(this.deps.baseDir, record);
-		this.start(record, spec);
+		this.start(record, spec, undefined, plan, registrations);
 		return { ok: true, record, resultPath };
 	}
 
 	/** Shared lifecycle for a fresh dispatch and a restored job. */
-	private start(record: JobRecord, spec: LaunchSpec, releaseLock?: () => void): void {
+	private start(record: JobRecord, spec: LaunchSpec, releaseLock?: () => void, plan?: IsolationPlan, registrations: WriterRegistrations = new Map()): void {
 		const controller = new AbortController();
 		const job: ActiveJob = {
 			record,
@@ -827,7 +881,7 @@ export class SubagentJobManager {
 			job.timer.unref?.();
 		}
 		this.active.set(record.jobId, job);
-		job.done = this.run(job, spec);
+		job.done = this.run(job, spec, plan, registrations);
 	}
 
 	private persist(record: JobRecord): void {
@@ -1173,7 +1227,7 @@ export class SubagentJobManager {
 		return result;
 	}
 
-	private async run(job: ActiveJob, spec: LaunchSpec): Promise<void> {
+	private async run(job: ActiveJob, spec: LaunchSpec, plan: IsolationPlan | undefined, registrations: WriterRegistrations): Promise<void> {
 		const signal = job.controller.signal;
 		const makeDetails =
 			(mode: JobMode) =>
@@ -1189,7 +1243,9 @@ export class SubagentJobManager {
 
 		try {
 			spec = { ...spec, tasks: job.record.tasks };
-			isolateWriters(job.record, spec.agents, () => writeRecord(this.deps.baseDir, job.record));
+			if (plan) isolateWriters(job.record, spec.agents, () => writeRecord(this.deps.baseDir, job.record), undefined, plan);
+			// Update the provisional entries to their actual worktrees, or register a continued writer.
+			registerJobWriters(job.record, spec.agents, registrations);
 			// Fail closed: a writer planned for a worktree that did not get one never runs in the source checkout.
 			const unisolated = job.record.tasks.flatMap((t, i) => (t.isolate || (i === 0 && spec.mode === "swarm" && job.record.swarm?.isolate)) && !t.worktree ? [`task ${i + 1} (${t.agent})`] : []);
 			if (unisolated.length > 0) throw new Error(`Isolation was planned for ${unisolated.join(", ")} but no worktree was created; refusing to run in the source checkout.`);
@@ -1311,6 +1367,8 @@ export class SubagentJobManager {
 				job.warm.controller.abort();
 				await Promise.allSettled([...job.warm.pending]);
 			}
+			const cleanup = releaseJobWriters(job.record, registrations);
+			if (cleanup.length) error = [error, `Workspace entries not removed: ${cleanup.join("; ")}`].filter(Boolean).join(" ");
 			this.active.delete(job.record.jobId);
 		}
 
