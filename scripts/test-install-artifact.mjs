@@ -191,10 +191,12 @@ try {
    let body;
    if (req.method==='GET' && !rest.length) {
     if (prefix==='node' && name===PORTABLE_NODE_VERSION && asset===target.file) body=nodeBytes;
-    if (prefix==='release' && name==='latest.json' && !asset) body=latest.get(name);
-    if (prefix==='release' && asset) {
-     const files=name===tagA?assetsA:name===tagB?assetsB:undefined;
-     body=overrides.has(asset)?overrides.get(asset):files?.get(asset);
+    if (prefix==='release' || prefix==='alternate') {
+     if (name==='latest.json' && !asset) body=latest.get(name);
+     if (asset) {
+      const files=name===tagA?assetsA:name===tagB?assetsB:undefined;
+      body=overrides.has(asset)?overrides.get(asset):files?.get(asset);
+     }
     }
    }
    if (body===undefined) res.writeHead(404).end();
@@ -349,10 +351,25 @@ try {
     const modesAndContentsA=snapshotTree(installed(idA)),modesAndContentsB=snapshotTree(installed(idB));
     assert.equal(lstatSync(installed(idA)).mode & 0o777,0o700);
     assert.equal(lstatSync(installed(idB)).mode & 0o777,0o755);
-    await call(remoteLauncher,['update'],undefined,{...ambient,AGENT_VERSION:tagA});
+    const noBase={...ambient,AGENT_RELEASE_BASE_URL:undefined};
+    await call(remoteLauncher,['update'],undefined,{...noBase,AGENT_VERSION:tagA});
     assertAnonymous(`/release/${tagA}/${basename(archive(outA))}`);
     await assertActive(idA);
     assert.deepEqual(snapshotTree(installed(idA)),modesAndContentsA);
+
+    const saved=load(activePath);
+    json(activePath,{...saved,release:{...saved.release,baseUrl:'http://example.invalid/release'}});
+    try {
+     await call(remoteLauncher,['update'],/invalid release base URL.*HTTPS required/,noBase);
+     assert.deepEqual(requests,[]);
+     assert.equal(load(activePath).release.baseUrl,'http://example.invalid/release');
+    } finally {json(activePath,saved);}
+
+    const alternate=`${origin}/alternate`;
+    await call(remoteLauncher,['update'],undefined,{...ambient,AGENT_RELEASE_BASE_URL:alternate});
+    assertAnonymous(`/alternate/${tagB}/${basename(archive(outB))}`);
+    assert.ok(paths().every(path=>path.startsWith('/alternate/')));
+    await assertActive({...idB,baseUrl:alternate});
     await call('bash',[installer,'--tag',tagB],undefined,ambient);
     assertAnonymous(`/release/${tagB}/${basename(archive(outB))}`);
     await assertActive(idB);

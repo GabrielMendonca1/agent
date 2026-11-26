@@ -2,22 +2,15 @@
 
 ## Instalação por artefato
 
-Estado da distribuição antes da primeira publicação assinada:
+A chave pública oficial ainda não está provisionada. Sem uma chave configurada, a instalação remota é recusada. Veja [como provisionar a chave](#provisionar-a-chave-de-assinatura-mantenedor). Para instalar offline, use `AGENT_RELEASE_DIR` ou `--install-artifact <arquivo>`: esses modos conferem SHA-256 contra `SHA256SUMS`, sem verificar a assinatura Ed25519.
 
-| Parte | Estado |
-|---|---|
-| Canal HTTPS, `latest.json` e verificação Ed25519 (Fase 1, `f0707d8`/`5d4a596`) | Integrado. Download remoto exige chave pública configurada; sem ela falha fechado. |
-| Chave pública oficial | **Não provisionada**: `RELEASE_PUBLIC_KEY_PEM` está vazio em `scripts/lib/agent-distribution.mjs`, `scripts/install.sh` e `scripts/install.ps1`. Instalação remota falha fechado. Procedimento: [Provisionar a chave](#provisionar-a-chave-de-assinatura-mantenedor). |
-| `install.sh` / `install.ps1` sem `gh`, Node 24 portátil em `<store>/node`, wrappers (Fase 2A) | Integrado (`42d4263`). Windows nativo não foi executado nesta integração. |
-| CI de 5 plataformas, smoke Linux e Windows, publicação com assinatura (Fase 2B, `9a501b9`) | Integrado no workflow. Não executado no GitHub. Nenhuma release publicada. |
-| Verificação local | `agent-distribution` exercita instalação assinada, Node portátil, falhas antes da ativação e rollback com servidor de loopback. |
-| Instalação offline (`AGENT_RELEASE_DIR`, `--install-artifact <arquivo>`) | Implementado. Confere só SHA-256 contra `SHA256SUMS`, sem Ed25519. |
+A v0.1.0 contém somente darwin-arm64 e não traz `latest.json` nem `SHA256SUMS.sig`, então não é instalável pelo canal HTTPS assinado. A primeira release assinada ainda não foi publicada.
 
-A v0.1.0 contém somente darwin-arm64. Releases publicadas antes da Fase 1 não trazem `latest.json` nem `SHA256SUMS.sig`, então não são instaláveis pelo canal HTTPS assinado. Esta mudança não publica release nem gera chave.
+Nota: a instalação no Windows nativo e o workflow no GitHub Actions ainda não foram validados.
 
 Pré-requisitos: Bash em macOS/Linux, ou PowerShell em Windows x64. Node não é exigido na máquina: o instalador provê o Node 24 portátil em `<store>/node` (seção Node portátil). O canal HTTPS não usa `gh`; repositório privado exige `AGENT_RELEASE_TOKEN`. Em Windows x64 nativo, também instale **Git for Windows** (Git Bash é usado pelo shell do Pi). Em macOS/Linux, não precisa de Git; nenhuma plataforma precisa de npm, clone ou build na máquina do consumidor. Não use WSL para instalar o pacote win32-x64.
 
-Com uma release publicada e assinada e a chave oficial provisionada (ver Estado), instale em uma linha (repositório público, sem token):
+Com uma release publicada e assinada e a chave oficial provisionada, instale em uma linha (repositório público, sem token):
 
 ```sh
 curl -fsSL https://github.com/GabrielMendonca1/agent/releases/latest/download/install.sh | bash
@@ -92,7 +85,7 @@ Sem `gh`, o instalador, `agent update` e `--install-artifact latest|<tag>` leem 
 
 - Padrão (público, sem token): `https://github.com/<repo>/releases/latest/download/latest.json`; com `AGENT_VERSION=<tag>`, `https://github.com/<repo>/releases/download/<tag>/<arquivo>`. `<repo>` é `AGENT_RELEASE_REPO` (padrão `GabrielMendonca1/agent`).
 - Repositório privado: defina `AGENT_RELEASE_TOKEN` (ou `GITHUB_TOKEN`). Com token, a descoberta usa a API de releases do GitHub e os assets são baixados pela API. O token vai só em `Authorization: Bearer` e é descartado em redirect para outra origem.
-- Origem própria: `AGENT_RELEASE_BASE_URL=https://host/caminho` (CDN, R2, servidor interno). Espera `<base>/latest.json` e `<base>/<tag>/<arquivo>`. Só HTTPS; `http://127.0.0.1` e `localhost` servem apenas a testes. Com base própria, `GITHUB_TOKEN` não é enviado; `AGENT_RELEASE_TOKEN`, se definido, é enviado à base.
+- Origem própria: `AGENT_RELEASE_BASE_URL=https://host/caminho` (CDN, R2, servidor interno). Espera `<base>/latest.json` e `<base>/<tag>/<arquivo>`. Só HTTPS; `http://127.0.0.1` e `localhost` servem apenas a testes. Ao atualizar, o Agent reutiliza a base gravada na instalação ativa se `AGENT_RELEASE_BASE_URL` não estiver definida. Com base própria, `GITHUB_TOKEN` não é enviado; `AGENT_RELEASE_TOKEN`, se definido, é enviado à base.
 - `AGENT_RELEASE_PUBLIC_KEY` substitui a chave pública embutida. Uso restrito a testes e canais privados explícitos: quem controla essa variável escolhe em quem confiar.
 - O token não é gravado em `active.json` nem em `release-identities.json`, e não deve aparecer em logs ou no stdout.
 
@@ -204,7 +197,7 @@ node scripts/agent-dist.mjs --keygen \
 
 2. Guardar a privada no cofre de segredos do mantenedor, com backup. Não colar em chat, issue, log, commit ou worktree. Remover a cópia de trabalho depois de configurar o segredo de CI.
 
-3. Publicar a pública por PR: substituir `RELEASE_PUBLIC_KEY_PEM` em `scripts/lib/agent-distribution.mjs` pelo conteúdo de `release-public.pem` (SPKI PEM). Replicar o mesmo valor em `install.sh` e `install.ps1`. Não há check automático que compare as três cópias: revise manualmente. Nos bootstraps a constante é JS entre aspas simples; PEM multilinha precisa de crase ou escapes `\n`.
+3. Publicar a pública por PR: substituir `RELEASE_PUBLIC_KEY_PEM` em `scripts/lib/agent-distribution.mjs` pelo conteúdo de `release-public.pem` (SPKI PEM). Replicar o mesmo valor em `install.sh` e `install.ps1`. Antes de publicar, o workflow verifica se as três cópias contêm a chave pública correspondente ao segredo de assinatura. Nos bootstraps a constante é JS entre aspas simples; PEM multilinha precisa de crase ou escapes `\n`.
 
 4. Configurar o segredo de CI `AGENT_RELEASE_SIGNING_KEY` com o conteúdo de `release-private.pem` (PEM literal ou base64 dele; `agent-dist.mjs` aceita os dois):
 
