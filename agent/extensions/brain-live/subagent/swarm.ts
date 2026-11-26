@@ -11,7 +11,7 @@ import { createHash } from "node:crypto";
 import { spawnSync } from "node:child_process";
 import * as fs from "node:fs";
 import * as path from "node:path";
-import { pidAlive, waitLock } from "./lockfile.ts";
+import { pidAlive, releaseAll, waitLock } from "./lockfile.ts";
 import type { SingleResult, UsageStats } from "./runner.ts";
 
 export const SWARM_ENTRY_TYPE = "agent-swarm";
@@ -44,7 +44,7 @@ export const SWARM_ON_TEXT = [
 export const VERDICT_CONTRACT = [
 	"## Verdict contract",
 	"List each finding with path:line and evidence first.",
-	"End the reply with one final line, outside any code block, that is exactly `VERDICT: APPROVE` or `VERDICT: REQUEST_CHANGES`; nothing may follow it.",
+	"End the reply with one final unindented line, outside any code block or list, that is exactly `VERDICT: APPROVE` or `VERDICT: REQUEST_CHANGES`; nothing may follow it.",
 	"Approve only when no blocking finding remains. A reply without that line counts as not approved.",
 ].join("\n");
 
@@ -80,7 +80,8 @@ export interface SwarmRecord {
 	boardPath?: string;
 }
 
-const VERDICT_LINE = /^\s*(?:\*\*)?VERDICT:\s*(APPROVE|REQUEST_CHANGES)(?:\*\*)?\s*$/i;
+/** Unindented on purpose: an indented verdict may sit inside a list or a code block. */
+const VERDICT_LINE = /^(?:\*\*)?VERDICT:\s*(APPROVE|REQUEST_CHANGES)(?:\*\*)?\s*$/i;
 
 /**
  * The verdict is the last non-empty line of the reviewer reply, outside any code fence.
@@ -91,10 +92,11 @@ export function parseVerdict(text: string | undefined): SwarmVerdict | undefined
 	let last = lines.length - 1;
 	while (last >= 0 && !lines[last].trim()) last--;
 	if (last < 0) return undefined;
-	// CommonMark fences: the closer uses the opener's character, is at least as long, and has no info string.
+	// Conservative CommonMark fences: recognized at any indentation; the closer uses the opener's
+	// character, is at least as long, and has no info string. An open fence makes the verdict ambiguous.
 	let fence: { char: string; length: number } | undefined;
 	for (const line of lines.slice(0, last)) {
-		const match = /^ {0,3}(`{3,}|~{3,})(.*)$/.exec(line);
+		const match = /^\s*(`{3,}|~{3,})(.*)$/.exec(line);
 		if (!match) continue;
 		const [char, length, rest] = [match[1][0], match[1].length, match[2]];
 		if (!fence) {
@@ -367,7 +369,8 @@ function withBoardLock<T>(file: string, body: () => T): T {
 	try {
 		return body();
 	} finally {
-		attempt.release();
+		const errors = releaseAll([attempt.release]);
+		if (errors.length) throw new Error(`Board lock not released: ${errors.join("; ")}`);
 	}
 }
 

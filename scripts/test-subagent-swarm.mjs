@@ -7,7 +7,7 @@ import './lib/hermetic-test-env.mjs';
 // project skill refused before any worktree).
 import assert from 'node:assert/strict';
 import { spawn, spawnSync } from 'node:child_process';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, statSync, utimesSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, statSync, utimesSync, writeFileSync, chmodSync } from 'node:fs';
 import { homedir, tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -462,6 +462,8 @@ try {
     assert.equal(swarm.parseVerdict('````md\n```\nVERDICT: APPROVE'), undefined, 'a 3-backtick line does not close a 4-backtick fence');
     assert.equal(swarm.parseVerdict('````\nx\n`````\nVERDICT: APPROVE'), 'APPROVE', 'a longer closer closes it');
     assert.equal(swarm.parseVerdict('~~~\n```\nVERDICT: APPROVE'), undefined, 'the closer must use the same character');
+    assert.equal(swarm.parseVerdict('- item\n    ```\n    VERDICT: APPROVE'), undefined, 'list item, indented fence, indented verdict');
+    assert.equal(swarm.parseVerdict('a.ts:1 fine\n  VERDICT: APPROVE'), undefined, 'an indented verdict never counts');
     console.log('ok verdict: only the last non-empty line outside a fence counts');
 
     // Two processes race for one stale lock (dead owner): board waits, so both post with distinct seq;
@@ -497,6 +499,12 @@ try {
       await Promise.all(runs);
       return readFileSync(out, 'utf8').trim().split('\n').map(l => JSON.parse(l));
     };
+    // Lock state = the highest `<lock>.<N>`; released means that file is a release marker.
+    const top = (lock) => {
+      const prefix = `${lock.split('/').at(-1)}.`;
+      const n = Math.max(0, ...readdirSync(dirname(lock)).filter(f => f.startsWith(prefix) && /^\d+$/.test(f.slice(prefix.length))).map(f => Number(f.slice(prefix.length))));
+      return n ? { n, ...JSON.parse(readFileSync(`${lock}.${n}`, 'utf8')) } : undefined;
+    };
     const raceBoard = join(root, 'race/board.jsonl');
     swarm.createBoard(raceBoard);
     writeFileSync(`${raceBoard}.lock`, JSON.stringify({ pid: dead, at: Date.now(), token: 'old' }));
@@ -504,13 +512,15 @@ try {
     const posted = await race('board', raceBoard);
     assert.deepEqual(posted.map(r => r.ok), [true, true], JSON.stringify(posted));
     assert.deepEqual(posted.map(r => r.entry.seq).sort(), [1, 2]);
-    assert.ok(!existsSync(`${raceBoard}.lock`), 'board lock released');
+    assert.equal(top(`${raceBoard}.lock`).release, true, 'board lock released');
+    assert.ok(existsSync(`${raceBoard}.lock`), 'the dead legacy file is only read, never removed');
     const raceSession = join(root, 'race/child.jsonl');
     writeFileSync(raceSession, '');
     writeFileSync(`${raceSession}.continue.lock.7`, JSON.stringify({ pid: dead, jobId: 'old', at: Date.now(), token: 'old-gen' }));
     const sessions = await race('session', raceSession);
     assert.deepEqual(sessions.map(r => r.ok).sort(), [false, true], 'one winner on a stale session lock');
-    assert.ok(!existsSync(`${raceSession}.continue.lock`));
+    assert.equal(top(`${raceSession}.continue.lock`).release, true);
+    assert.ok(!existsSync(`${raceSession}.continue.lock`), 'no legacy file is ever written');
     // A live owner is never displaced, however old its lock; its release leaves a marker and the next holder wins.
     const lockfile = await jiti.import(join(repo, 'agent/extensions/brain-live/subagent/lockfile.ts'));
     const lock = join(root, 'race/paused.lock');
@@ -531,7 +541,28 @@ try {
     assert.equal(gens().at(-1), heldGen + 2, 'a second release of the old owner changes nothing');
     assert.ok(lockfile.tryLock(lock, {}, ownerDead).ok === false, 'the new holder keeps the lock');
     next.release();
-    assert.ok(!existsSync(lock), 'mirror removed on release');
+    assert.equal(top(lock).release, true, 'release marker on top');
+    assert.ok(!existsSync(lock), 'no legacy file written');
+    // A live legacy single-file lock blocks (read only); a dead one is ignored; neither is touched.
+    const legacyLock = join(root, 'race/legacy.lock');
+    writeFileSync(legacyLock, JSON.stringify({ pid: process.pid, jobId: 'old-build', at: 1 }));
+    const legacyBlocked = lockfile.tryLock(legacyLock, {}, ownerDead);
+    assert.equal(legacyBlocked.ok, false);
+    assert.equal(legacyBlocked.owner.jobId, 'old-build');
+    writeFileSync(legacyLock, JSON.stringify({ pid: dead, jobId: 'old-build', at: 1 }));
+    const overDead = lockfile.tryLock(legacyLock, {}, ownerDead);
+    assert.ok(overDead.ok, 'dead legacy owner ignored');
+    assert.equal(JSON.parse(readFileSync(legacyLock, 'utf8')).pid, dead, 'legacy file untouched');
+    // A release that cannot write its marker throws and keeps the lock held; a retry succeeds.
+    chmodSync(join(root, 'race'), 0o500);
+    try {
+      assert.throws(() => overDead.release(), /Could not release lock .*legacy\.lock\.\d+/);
+    } finally {
+      chmodSync(join(root, 'race'), 0o700);
+    }
+    assert.equal(lockfile.tryLock(legacyLock, {}, ownerDead).ok, false, 'still held after a failed release');
+    overDead.release();
+    assert.equal(top(legacyLock).release, true, 'retry released it');
     assert.ok(gens().length <= 2, `lower generations pruned: ${gens()}`);
     console.log('ok locks: generation files, one winner on a dead owner, a live owner is never displaced');
 
@@ -569,7 +600,7 @@ try {
     held.release();
     const registry = JSON.parse(readFileSync(join(jobsDir, lockedJob.sessionId, 'handles', 'registry.json'), 'utf8'));
     for (const task of lockedJob.tasks) assert.equal(registry.handles[task.handle].lifecycle, 'waiting');
-    assert.ok(!existsSync(`${lockedJob.tasks[0].sessionFile}.continue.lock`), 'manage released the locks it took');
+    for (const task of lockedJob.tasks) assert.equal(top(`${task.sessionFile}.continue.lock`)?.release ?? true, true, `manage released ${task.handle}`);
     console.log('ok manage: integrate refuses while a handle session is locked, and releases its own locks');
   }
 } finally {

@@ -9,10 +9,9 @@
  *   A live owner is never displaced, however long it holds the lock.
  * - Release: only while the holder's file is still the highest, O_EXCL create `<N+1>` as a release
  *   marker. Files below the highest are deleted lazily.
- * - `<lock>` itself (the legacy single-file lock) is a mirror written by the holder and removed
- *   before release, so existence checks keep working. A `<lock>` that does not belong to the
- *   current holder (an older build, generation 0) counts as one more owner: held while its
- *   process is alive, ignored once it is dead.
+ * - Release creates the marker first and fails loudly (throws) when it cannot; the caller decides.
+ * - `<lock>` itself is the single-file lock of older builds. It is only read, never written or
+ *   deleted: a live owner blocks, a dead one is ignored. Mixed old/new processes are unsupported.
  */
 import { randomBytes } from "node:crypto";
 import * as fs from "node:fs";
@@ -73,9 +72,9 @@ function liveOwner(lock: string, isDead: DeadCheck): { n: number; owner?: LockBo
 		} else if (!body.release && !isDead(body, file)) return { n, owner: body, held: true };
 		// A release marker or a dead holder: free, unless a live legacy owner holds `<lock>`.
 	}
+	// Legacy single-file lock of an older build: read only. A live owner blocks; a dead one is ignored.
 	const legacy = readLock(lock);
-	const current = n > 0 ? readLock(genFile(lock, n)) : undefined;
-	if (legacy && !(current?.token && legacy.token === current.token) && !isDead(legacy, lock)) return { n, owner: legacy, held: true };
+	if (legacy && !isDead(legacy, lock)) return { n, owner: legacy, held: true };
 	return { n, held: false };
 }
 
@@ -103,28 +102,45 @@ export function tryLock(lock: string, data: Record<string, unknown>, isDead: Dea
 		}
 		// Valid only while ours is the highest: a contender that read an older state lost the O_EXCL race.
 		if (highest(lock) !== n) continue;
-		try { fs.writeFileSync(lock, JSON.stringify(body), { mode: 0o600 }); } catch { /* the mirror is advisory */ }
 		prune(lock, n);
 		let released = false;
 		return {
 			ok: true,
+			/** Throws when the marker cannot be written; the lock stays held, so the caller may retry. */
 			release: () => {
 				if (released) return;
-				released = true;
-				if (highest(lock) !== n) return; // never touch a newer generation
-				if (readLock(lock)?.token === body.token) {
-					try { fs.unlinkSync(lock); } catch { /* gone */ }
-				}
 				try {
+					// O_EXCL on N+1 is the check: it fails if anyone moved past this holder's generation.
 					fs.writeFileSync(genFile(lock, n + 1), JSON.stringify({ release: true, token: body.token, pid: process.pid, at: Date.now() }), { flag: "wx", mode: 0o600 });
-				} catch {
-					return;
+				} catch (error) {
+					const cause = (error as NodeJS.ErrnoException).code === "EEXIST" ? "a newer generation already exists" : error instanceof Error ? error.message : String(error);
+					throw new Error(`Could not release lock ${genFile(lock, n)}: ${cause}`);
 				}
+				released = true;
 				prune(lock, n + 1);
 			},
 		};
 	}
 	return { ok: false, owner: liveOwner(lock, isDead).owner };
+}
+
+/** Release each lock, retrying a failed release twice; returns the errors that remain. */
+export function releaseAll(releases: Array<() => void>): string[] {
+	const errors: string[] = [];
+	for (const release of releases) {
+		for (let attempt = 1; ; attempt++) {
+			try {
+				release();
+				break;
+			} catch (error) {
+				if (attempt >= 3) {
+					errors.push(error instanceof Error ? error.message : String(error));
+					break;
+				}
+			}
+		}
+	}
+	return errors;
 }
 
 const sleep = (ms: number) => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);

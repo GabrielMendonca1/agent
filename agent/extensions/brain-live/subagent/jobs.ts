@@ -19,6 +19,7 @@ import { commitWip, gateSummary, gcWorktrees, isolateWriters, manageWorktrees, p
 import { getRoleModelChoices, isGoogleApiModel, resolveGeminiPreference, resolveModelRef, resolveRoleModel } from "../lib/tiers.ts";
 import type { AgentConfig, AgentScope } from "./agents.ts";
 import type { ChildSkills } from "./skills.ts";
+import { releaseAll } from "./lockfile.ts";
 import { boardBlock, boardPath, boardSummary, createBoard, runSwarmLoop, type SwarmRecord } from "./swarm.ts";
 import {
 	type DurableRunState,
@@ -1142,11 +1143,15 @@ export class SubagentJobManager {
 			release = lock.release;
 			session = { invocation: task.invocation, sessionFile: task.sessionFile };
 		}
+		let result: SingleResult;
 		try {
-			return await this.runTask(job, spec, { slot, task, taskText: text, signal: job.controller.signal, makeDetails, resume: session, carryUsage: previous?.usage });
+			result = await this.runTask(job, spec, { slot, task, taskText: text, signal: job.controller.signal, makeDetails, resume: session, carryUsage: previous?.usage });
 		} finally {
-			release?.();
+			// A lock that cannot be released fails the loop instead of being swallowed.
+			const errors = releaseAll(release ? [release] : []);
+			if (errors.length) throw new Error(`Session lock not released: ${errors.join("; ")}`);
 		}
+		return result;
 	}
 
 	private async run(job: ActiveJob, spec: LaunchSpec): Promise<void> {
@@ -1345,7 +1350,11 @@ export class SubagentJobManager {
 		// Só remover a fonte de recuperação depois que o resultado está seguro no registro.
 		if (persisted && !heldSession) removeJobRunDir(this.deps.baseDir, finished.sessionId, finished.jobId);
 		this.settleHandles(finished);
-		job.releaseLock?.();
+		const lockErrors = releaseAll(job.releaseLock ? [job.releaseLock] : []);
+		if (lockErrors.length) {
+			finished.error = [finished.error, `Session lock not released: ${lockErrors.join("; ")}`].filter(Boolean).join(" ");
+			this.persist(finished);
+		}
 		try {
 			this.deps.onComplete(finished);
 		} catch {
@@ -1446,8 +1455,8 @@ export class SubagentJobManager {
 				: fresh.lastJobId !== entry.lastJobId || fresh.lifecycle !== entry.lifecycle || fresh.sessionFile !== entry.sessionFile ? `changed (now ${fresh.lifecycle} in job ${fresh.lastJobId})`
 					: fresh.worktree && !fs.existsSync(fresh.worktree) ? `lost its worktree ${fresh.worktree}` : undefined;
 		if (changed) {
-			lock.release();
-			return { ok: false, error: `Handle ${entry.handle} ${changed} while the continue was starting. Check it with action "list" and try again.` };
+			const errors = releaseAll([lock.release]);
+			return { ok: false, error: `Handle ${entry.handle} ${changed} while the continue was starting. Check it with action "list" and try again.${errors.length ? ` Session lock not released: ${errors.join("; ")}` : ""}` };
 		}
 
 		const warnings: string[] = [];
@@ -1500,8 +1509,8 @@ export class SubagentJobManager {
 				live.updatedAt = now;
 			});
 		} catch (error) {
-			lock.release();
-			return { ok: false, error: `Could not persist the continue job: ${error instanceof Error ? error.message : String(error)}` };
+			const errors = releaseAll([lock.release]);
+			return { ok: false, error: `Could not persist the continue job: ${error instanceof Error ? error.message : String(error)}${errors.length ? ` Session lock not released: ${errors.join("; ")}` : ""}` };
 		}
 		this.start(record, {
 			jobId: record.jobId,
@@ -1577,6 +1586,7 @@ export class SubagentJobManager {
 		// In-process continue jobs get the specific message; the locks below also cover other processes.
 		if (busyHandles().length > 0) throw new Error(`Handle(s) ${busyHandles().join(", ")} still running a continue job; wait for it before ${action}.`);
 		const releases: Array<() => void> = [];
+		let text: string | undefined;
 		try {
 			// Plain jobs lock the selected tasks; a swarm loop (shared checkout) selected all of them above.
 			for (const [index, task] of target.tasks.entries()) {
@@ -1591,12 +1601,13 @@ export class SubagentJobManager {
 			}
 			const busy = busyHandles();
 			if (busy.length > 0) throw new Error(`Handle(s) ${busy.join(", ")} still running a continue job; wait for it before ${action}.`);
-			const text = await manageWorktrees(target, action, taskIndex, force, () => writeRecord(this.deps.baseDir, target));
+			text = await manageWorktrees(target, action, taskIndex, force, () => writeRecord(this.deps.baseDir, target));
 			this.closeHandles(sessionId, selected, action === "integrate" ? "integrated" : "discarded");
-			return text;
 		} finally {
-			for (const release of releases) release();
+			const errors = releaseAll(releases);
+			if (errors.length) throw new Error(`${text ? `${text}\n` : ""}Session lock(s) not released: ${errors.join("; ")}`);
 		}
+		return text;
 	}
 
 	/** Idempotent: returns promptly, terminal state lands when the child exits. */
