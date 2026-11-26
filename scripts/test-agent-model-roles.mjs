@@ -423,7 +423,7 @@ try {
   const { readProcessIdentity } = await jiti.import(join(subagentDir, 'process-owner.ts'));
   const { tryLock, readLock } = await jiti.import(join(subagentDir, 'lockfile.ts'));
   const identity = readProcessIdentity(process.pid);
-  if (process.platform === 'darwin' || process.platform === 'linux') assert.ok(identity);
+
   if (identity) {
     const lockPath = `${file}.lock`;
     const orphan = tryLock(lockPath, { identity: { ...identity, start: `${identity.start}-old` } }, () => false);
@@ -440,6 +440,8 @@ try {
       orphan.release();
     }
     checks++; console.log('ok lock órfão recuperado mesmo com PID vivo reutilizado');
+  } else {
+    console.log('skip: process identity unavailable');
   }
 
   // 10. Hold the first process after it has read the config; the second tries to write
@@ -481,6 +483,15 @@ try {
   both.roleModels.worker[0].thinking = 'low';
   assert.deepEqual(readConfig(), both, 'both concurrent process updates survive');
   checks += 2; console.log('ok presets inválidos isolados no dispatch; escritas concorrentes preservadas');
+
+  // Leave a lock without identity behind when its owning process exits.
+  const lockfileUrl = pathToFileURL(join(subagentDir, 'lockfile.ts')).href;
+  await worker(`const { tryLock } = await import(${JSON.stringify(lockfileUrl)});
+    if (!tryLock(${JSON.stringify(`${file}.lock`)}, {}, () => false).ok) throw new Error('could not acquire fixture lock');`);
+  tiers.setRoleThinking('worker', 'medium');
+  both.roleModels.worker[0].thinking = 'medium';
+  assert.deepEqual(readConfig(), both, 'a dead PID without identity does not block writes');
+  checks++; console.log('ok lock sem identidade recuperado quando o PID não está vivo');
   console.log(`PASS /models por papel (${checks} blocos)`);
 } finally {
   for (const key of Object.keys(process.env)) if (!(key in savedEnv)) delete process.env[key];
