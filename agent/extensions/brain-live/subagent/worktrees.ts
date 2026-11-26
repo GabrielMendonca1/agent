@@ -7,7 +7,7 @@ import { findManifest, gate, lastRun, lastRunLine } from "../checks/runner.ts";
 import type { AgentConfig } from "./agents.ts";
 import type { JobRecord, JobTaskSpec } from "./jobs.ts";
 import { isProjectSkill, rootForms, skillLabel } from "./skills.ts";
-import { repoKey, tryRepoIntegrateLock, unregisterWorkspace, withRepoIntegrateLock } from "./workspace.ts";
+import { repoKey, tryRepoIntegrateLock, unregisterWorkspace, withRepoIntegrateLock, withUnsharedWorkspace } from "./workspace.ts";
 
 function git(cwd: string, args: string[]): string {
 	const r = spawnSync("git", ["-C", cwd, ...args], { encoding: "utf8", maxBuffer: 16 * 1024 * 1024 });
@@ -224,7 +224,9 @@ function remove(t: WorktreeBranch, force: boolean, discard: boolean, options: Wo
 		if (integratedTip !== undefined && git(t.sourceCwd, ["rev-parse", "--verify", ref]) !== integratedTip) {
 			throw new Error("Writer committed after integration; resume it and integrate again.");
 		}
-		git(t.sourceCwd, ["worktree", "remove", ...(force ? ["--force"] : []), "--", t.worktree]);
+		withUnsharedWorkspace(t.sourceCwd, t.worktree, options.workspaceId, () => {
+			git(t.sourceCwd, ["worktree", "remove", ...(force ? ["--force"] : []), "--", t.worktree]);
+		});
 	} else git(t.sourceCwd, ["worktree", "prune"]);
 	t.worktreePathRemoved = true;
 	options.persist?.();
@@ -340,6 +342,7 @@ export async function integrateWorktreeBranch(t: WorktreeBranch, options: Worktr
 		if (!fs.existsSync(t.worktree)) {
 			return { cleanupOnly: true, cleanupWarning: remove(t, false, false, options) };
 		}
+		withUnsharedWorkspace(t.sourceCwd, t.worktree, options.workspaceId, () => {});
 		const label = options.label ?? `Worktree ${t.worktree}`;
 		const source = `Source ${t.sourceCwd}`;
 		requireClean(t.worktree, label);

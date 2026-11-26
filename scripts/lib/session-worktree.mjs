@@ -12,6 +12,15 @@ function git(cwd, ...args) {
 const PI_SHORT_OPTIONS = /^-(?:[A-Za-z]|nbt|nt|xt|ne|ns|np|nc|na)$/;
 
 // Keep the slug grammar in sync with subagent/workspace.ts (the launcher is plain Node).
+// Pi options whose parser unconditionally takes the next token, even if it
+// looks like a flag. Options like --mode and --print reject a --worktree value.
+const PI_REQUIRED_VALUES = new Set([
+	"--provider", "--model", "--api-key", "--system-prompt", "--append-system-prompt",
+	"--name", "-n", "--session", "--session-id", "--fork", "--session-dir", "--models",
+	"--tools", "-t", "--exclude-tools", "-xt", "--thinking", "--export", "--extension", "-e",
+	"--skill", "--prompt-template", "--theme",
+]);
+
 export function extractWorktreeOption(args) {
 	let slug;
 	const forwarded = [];
@@ -23,6 +32,7 @@ export function extractWorktreeOption(args) {
 		}
 		if (arg !== "--worktree" && !arg.startsWith("--worktree=")) {
 			forwarded.push(arg);
+			if (PI_REQUIRED_VALUES.has(arg) && i + 1 < args.length) forwarded.push(args[++i]);
 			continue;
 		}
 		if (slug !== undefined) throw new Error("Specify --worktree only once.");

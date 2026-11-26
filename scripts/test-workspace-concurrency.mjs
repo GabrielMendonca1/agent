@@ -6,7 +6,7 @@ import { once } from 'node:events';
 import { existsSync, lstatSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync, readFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { homedir, tmpdir } from 'node:os';
-import { dirname, join, resolve } from 'node:path';
+import { delimiter, dirname, join, resolve } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
 import { subagentEnv, userCommandEnv } from '../agent/core/child-env.mjs';
@@ -74,7 +74,8 @@ async function main() {
   const root = realpathSync(mkdtempSync(join(tmpdir(), 'workspace-concurrency-')));
   // No ambient Git config, preload, provider keys, profile, or network transport.
   const env = {
-    PATH: process.env.PATH, HOME: root, USERPROFILE: root, TMPDIR: root, TEMP: root, TMP: root,
+    ...Object.fromEntries(Object.entries(process.env).filter(([key]) => /^(comspec|systemroot|pathext|windir)$/i.test(key))),
+    PATH: [dirname(process.execPath), process.env.PATH].filter(Boolean).join(delimiter), HOME: root, USERPROFILE: root, TMPDIR: root, TEMP: root, TMP: root,
     XDG_CONFIG_HOME: join(root, 'config'), XDG_CACHE_HOME: join(root, 'cache'), XDG_DATA_HOME: join(root, 'data'),
     PI_CODING_AGENT_DIR: join(root, 'profile'), PI_CHECKS_CACHE_DIR: join(root, 'checks-cache'),
     GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_GLOBAL: join(root, 'gitconfig'), GIT_ALLOW_PROTOCOL: '',
@@ -85,7 +86,9 @@ async function main() {
   const workers = new Set();
   let releaseGate = () => {};
   function start(...args) {
-    const cwd = args[0] === 'ui' ? args[1] : root;
+    // Windows prevents removal of a process's current directory. The Pi API
+    // still receives the session's real worktree as ctx.cwd.
+    const cwd = args[0] === 'ui' && process.platform !== 'win32' ? args[1] : root;
     const child = fork(script, ['--worker', ...args], { env, cwd, execArgv: [], stdio: ['ignore', 'inherit', 'inherit', 'ipc'] });
     const closed = once(child, 'close');
     workers.add({ child, closed });
@@ -119,13 +122,14 @@ async function main() {
     git(cwd, 'commit', '-qm', name);
     return head(cwd);
   }
-  function init(name, checks = [], link = []) {
+  function init(name, checks = [], link = [], checkScript) {
     const cwd = join(root, name);
     mkdirSync(join(cwd, '.pi'), { recursive: true });
     git(cwd, 'init', '-q', '-b', 'main');
     git(cwd, 'config', 'user.name', 'Workspace fixture');
     git(cwd, 'config', 'user.email', 'workspace@example.invalid');
     if (checks.length) writeFileSync(join(cwd, '.pi/checks.json'), JSON.stringify({ checks, link }));
+    if (checkScript) writeFileSync(join(cwd, '.pi/fixture.cjs'), checkScript);
     writeFileSync(join(cwd, '.gitignore'), '/deps\n');
     writeFileSync(join(cwd, 'shared.txt'), 'base\n');
     git(cwd, 'add', '.');
@@ -151,19 +155,19 @@ async function main() {
     const release = join(root, 'gate-release');
     rmSync(ready, { force: true });
     rmSync(release, { force: true });
-    const check = join(root, 'hold-gate.mjs');
-    writeFileSync(check, `import { existsSync, writeFileSync } from 'node:fs';
-import { setTimeout as delay } from 'node:timers/promises';
+    const script = `const { existsSync, writeFileSync } = require('node:fs');
+const { setTimeout: delay } = require('node:timers/promises');
+(async () => {
 if (existsSync('hold.txt') && !existsSync(${JSON.stringify(release)})) {
   writeFileSync(${JSON.stringify(ready)}, process.cwd());
   const deadline = Date.now() + 30000;
   while (existsSync(${JSON.stringify(root)}) && !existsSync(${JSON.stringify(release)}) && Date.now() < deadline) await delay(20);
   if (!existsSync(${JSON.stringify(release)})) process.exitCode = 1;
 }
-`);
+})();
+`;
     releaseGate = () => writeFileSync(release, '');
-    const quote = (s) => `'${s.replaceAll("'", "'\\''")}'`;
-    return { check: { name: 'hold-gate', cmd: `${quote(process.execPath)} ${quote(check)}`, timeoutMs: 35_000 },
+    return { check: { name: 'hold-gate', cmd: 'node .pi/fixture.cjs', timeoutMs: 35_000 }, script,
       async reached(worktree) {
         await until(() => existsSync(ready) && readFileSync(ready, 'utf8'), 'first integration reaches its gate');
         assert.equal(readFileSync(ready, 'utf8'), worktree);
@@ -221,7 +225,7 @@ console.log(JSON.stringify({ type: 'message_end', message: { role: 'assistant', 
 
     // 2. Start B only once A holds the production lock and is blocked in a real check.
     const gate = holdGate();
-    const serial = init('serial', [gate.check]);
+    const serial = init('serial', [gate.check], [], gate.script);
     const a = checkout(serial, 'serial-a');
     const b = checkout(serial, 'serial-b');
     const aSha = commit(a.worktree, 'hold.txt');
@@ -270,7 +274,13 @@ console.log(JSON.stringify({ type: 'message_end', message: { role: 'assistant', 
     console.log('ok conflicting preview aborts and names file and writer');
 
     // 4. Neither side fails alone: the real gate rejects only the clean preview.
-    const failing = init('failing', [{ name: 'combined-only', cmd: 'if test -f left.txt && test -f right.txt; then echo merged-only >&2; exit 1; fi' }]);
+    const failing = init('failing', [{ name: 'combined-only', cmd: 'node .pi/fixture.cjs' }], [], `
+const { existsSync } = require('node:fs');
+if (existsSync('left.txt') && existsSync('right.txt')) {
+  console.error('merged-only');
+  process.exitCode = 1;
+}
+`);
     const candidate = checkout(failing, 'failing-writer');
     const candidateSha = commit(candidate.worktree, 'right.txt');
     const sourceSha = commit(failing, 'left.txt');
@@ -288,7 +298,7 @@ console.log(JSON.stringify({ type: 'message_end', message: { role: 'assistant', 
 
     // 5. Run the actual launcher with a temporary store and a Pi CLI probe.
     const uiGate = holdGate();
-    const sessions = init('sessions', [uiGate.check], ['deps']);
+    const sessions = init('sessions', [uiGate.check], ['deps'], uiGate.script);
     mkdirSync(join(sessions, 'deps'));
     const store = join(root, 'store');
     const bin = join(store, 'current/bin');
@@ -302,8 +312,21 @@ console.log(JSON.stringify({ type: 'message_end', message: { role: 'assistant', 
     } else {
       writeFileSync(join(bin, 'pi'), '#!/usr/bin/env node\n' + cli, { mode: 0o755 });
     }
-    const launch = (slug) => spawnSync(process.execPath, [join(repo, 'scripts/agent-launch.mjs'), '--store', store,
-      '--', '--worktree', slug, '--version'], { cwd: sessions, env, encoding: 'utf8', timeout: 10_000 });
+    const launchArgs = (...args) => spawnSync(process.execPath, [join(repo, 'scripts/agent-launch.mjs'), '--store', store,
+      '--', ...args], { cwd: sessions, env, encoding: 'utf8', timeout: 10_000 });
+    const launch = (slug) => launchArgs('--worktree', slug, '--version');
+    for (const promptArgs of [
+      ['--system-prompt', '--worktree=example', '-p', 'hello'],
+      ['--append-system-prompt', '--worktree', '-p', 'hello'],
+      ['--', '--worktree=literal'],
+    ]) {
+      const plain = launchArgs(...promptArgs);
+      assert.equal(plain.status, 0, plain.stderr);
+      const probe = JSON.parse(plain.stdout);
+      assert.equal(realpathSync(probe.cwd), sessions);
+      assert.deepEqual(probe.args, promptArgs);
+      assert.deepEqual(probe.env, {});
+    }
     for (const slug of ['../x', '-bad', 'a/b']) {
       const bad = launch(slug);
       assert.equal(bad.status, 70, bad.stderr);
@@ -311,13 +334,13 @@ console.log(JSON.stringify({ type: 'message_end', message: { role: 'assistant', 
       assert.equal(bad.stdout, '');
     }
     assert.equal(git(sessions, 'worktree', 'list', '--porcelain').split(/^worktree /m).length, 2);
-    function session(slug) {
-      const launched = launch(slug);
+    function session(slug, piArgs = []) {
+      const launched = launchArgs(...piArgs, '--worktree', slug, '--version');
       assert.equal(launched.status, 0, launched.stderr);
       const probe = JSON.parse(launched.stdout);
       const checkout = join(env.PI_CODING_AGENT_DIR, 'agent/worktrees', `session-${slug}`);
       assert.equal(realpathSync(probe.cwd), checkout);
-      assert.deepEqual(probe.args, ['--version']);
+      assert.deepEqual(probe.args, [...piArgs, '--version']);
       assert.deepEqual(probe.env, { AGENT_WORKTREE_SESSION: checkout, AGENT_WORKTREE_SOURCE: sessions,
         AGENT_WORKTREE_BRANCH: 'main', AGENT_WORKTREE_NAME: `agent/session-${slug}` });
       assert.equal(git(checkout, 'branch', '--show-current'), `agent/session-${slug}`);
@@ -330,7 +353,7 @@ console.log(JSON.stringify({ type: 'message_end', message: { role: 'assistant', 
       }
       return probe;
     }
-    const publish = session('publish');
+    const publish = session('publish', ['--system-prompt', '--worktree=literal']);
     const drop = session('drop');
     console.log('ok launcher passes session cwd and env, links declared paths, and rejects invalid slugs');
 
@@ -379,6 +402,30 @@ console.log(JSON.stringify({ type: 'message_end', message: { role: 'assistant', 
     assert.deepEqual(listActiveWorkspaces(sessions), []);
     clean(sessions);
     console.log('ok /workspace status, claim, integrate, and discard under the repo lock');
+
+    // Register a second session on the same checkout after the first has begun
+    // waiting for the lock. A forced discard must preserve the late owner's edits.
+    const raceGate = holdGate();
+    const race = session('race');
+    const original = start('ui', race.cwd, JSON.stringify(race.env));
+    await original.read('ready');
+    const raceHolder = checkout(sessions, 'race-lock-holder');
+    await first.enter(raceHolder);
+    await raceGate.reached(raceHolder.worktree);
+    await original.enter('discard --force');
+    const reopened = session('race');
+    const late = start('ui', reopened.cwd, JSON.stringify(reopened.env));
+    await late.read('ready');
+    const edit = join(reopened.cwd, 'uncommitted.txt');
+    writeFileSync(edit, 'late owner edit');
+    releaseGate();
+    await first.result();
+    const refused = await original.result();
+    assert.equal(refused.shutdown, false);
+    assert.equal(refused.notices[0]?.level, 'error');
+    assert.match(refused.notices[0].text, /Another active workspace owner/);
+    assert.equal(readFileSync(edit, 'utf8'), 'late owner edit');
+    console.log('ok forced discard preserves a late session owner and its uncommitted edits');
   } finally {
     releaseGate();
     for (const { child } of workers) child.kill('SIGKILL');
