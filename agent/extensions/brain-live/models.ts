@@ -20,12 +20,13 @@ import { getSelectListTheme } from "@earendil-works/pi-coding-agent";
 import { Container, fuzzyFilter, Input, Key, matchesKey, type SelectItem, SelectList, Spacer, Text, truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
 import { getAgentPreferences, isChild, runtimeEnabled, setAgentPreferences } from "../../core/client.mjs";
 import { AGY_FAMILIES, AGY_THINKING, agyFamilyRef, DEFAULT_GEMINI_MODEL, getGeminiPreference, resolveAgyFamily, setGeminiPreference } from "./lib/tiers.ts";
-import { isGoogleApiModel, loadRoleModels, loadSwarmModels, loadTiers, MODELS_FILE, ROLE_NAMES, type RoleModelChoice, saveTiers, setRolePreference, setRoleThinking, setSwarmModel, setSwarmThinking, SWARM_SLOTS, type SwarmSlot, THINKING_LEVELS as THINKING, TIER_NAMES, type Tier, type TierName, type TiersFile } from "./lib/tiers.ts";
+import { isGoogleApiModel, loadRoleModels, loadSwarmModels, loadTiers, MODELS_FILE, ROLE_NAMES, type RoleModelChoice, setRolePreference, setRoleThinking, setSwarmModel, setSwarmThinking, SWARM_SLOTS, type SwarmSlot, THINKING_LEVELS as THINKING, TIER_NAMES, type Tier, type TierName, type TiersFile, updateTier } from "./lib/tiers.ts";
 import { type AgentConfig, discoverAgents } from "./subagent/agents.ts";
 
 const SWARM_INHERIT: Record<SwarmSlot, string> = { writer: "worker", reviewer: "reviewer", board: "papel da task" };
-const QUALITY = ["auto", "low", "medium", "high"];
-const SIZE = ["auto", "1024x1024", "1024x1536", "1536x1024"];
+const QUALITY = ["auto", "low", "medium", "high"] as const;
+const SIZE = ["auto", "1024x1024", "1024x1536", "1536x1024"] as const;
+const step = <T,>(levels: readonly T[], current: T, dir: 1 | -1): T => levels[(levels.indexOf(current) + dir + levels.length) % levels.length];
 
 type ThemeLike = { fg: (c: any, t: string) => string; bold: (t: string) => string };
 
@@ -192,6 +193,7 @@ export default function (pi: ExtensionAPI) {
 			let roleChoices: Record<string, RoleModelChoice[]> = {};
 			let swarmChoices: Partial<Record<SwarmSlot, RoleModelChoice>> = {};
 			let configError: string | undefined;
+			const invalidSwarmSlots = new Set<SwarmSlot>();
 			let resourcePrefs: { supportModel: string | null } | undefined;
 			let resourceError: string | undefined;
 			if (pilot) {
@@ -212,7 +214,7 @@ export default function (pi: ExtensionAPI) {
 			try {
 				const config = data ?? loadTiers();
 				roleChoices = loadRoleModels(config);
-				swarmChoices = loadSwarmModels(config);
+				swarmChoices = loadSwarmModels(config, invalidSwarmSlots);
 			} catch (err) {
 				configError = err instanceof Error ? err.message : String(err);
 			}
@@ -258,15 +260,11 @@ export default function (pi: ExtensionAPI) {
 			const swarmUnset = "";
 
 			await ctx.ui.custom((tui, theme, _kb, done) => {
-				const setTier = (name: TierName, patch: Partial<Tier>) => {
+				const setTier = (name: TierName, edit: (tier: Partial<Tier>) => Partial<Tier>) => {
 					if (!data) return;
 					try {
-						const latest = loadTiers();
-						latest.tiers[name] = { ...latest.tiers[name], ...patch };
-						saveTiers(latest);
-						data = latest;
-						roleChoices = loadRoleModels(latest);
-						swarmChoices = loadSwarmModels(latest);
+						data = updateTier(name, edit);
+						roleChoices = loadRoleModels(data);
 					} catch (err) {
 						ctx.ui.notify(`erro salvando tier: ${err instanceof Error ? err.message : String(err)}`, "error");
 					}
@@ -373,8 +371,7 @@ export default function (pi: ExtensionAPI) {
 							ctx.ui.notify(`${row.label}: escolha um modelo com Enter antes de mudar o thinking`, "warning");
 							return;
 						}
-						const cur = THINKING.indexOf(choice.thinking);
-						const next = THINKING[(cur + dir + THINKING.length) % THINKING.length];
+						const next = (thinking: string) => step(THINKING, thinking, dir);
 						try {
 							if (row.kind === "role") roleChoices = { ...roleChoices, [row.id]: setRoleThinking(row.id, next) };
 							else swarmChoices = setSwarmThinking(row.id, next);
@@ -392,16 +389,14 @@ export default function (pi: ExtensionAPI) {
 					// Tiers não aparecem no piloto.
 					if (row.kind !== "tier" || !data) return;
 					const name = row.id as TierName;
-					const list = name === "image" ? QUALITY : THINKING;
-					const field = name === "image" ? "quality" : "thinking";
-					const cur = list.indexOf((data!.tiers[name] as any)?.[field] ?? list[0]);
-					setTier(name, { [field]: list[(cur + dir + list.length) % list.length] } as Partial<Tier>);
+					setTier(name, (tier) => name === "image"
+						? { quality: step(QUALITY, tier.quality ?? QUALITY[0], dir) }
+						: { thinking: step(THINKING, tier.thinking ?? THINKING[0], dir) });
 				};
 				const cycleSize = () => {
 					const row = rows[cursor];
 					if (row.kind !== "tier" || row.id !== "image" || !data) return;
-					const cur = SIZE.indexOf(data.tiers.image.size ?? "auto");
-					setTier("image", { size: SIZE[(cur + 1) % SIZE.length] as Tier["size"] });
+					setTier("image", (tier) => ({ size: step(SIZE, tier.size ?? SIZE[0], 1) }));
 				};
 				const openPicker = () => {
 					const row = rows[cursor];
@@ -412,8 +407,9 @@ export default function (pi: ExtensionAPI) {
 						}, () => { picker = null; }, theme);
 						return;
 					}
-					if ((row.kind === "role" || row.kind === "swarm") && configError) {
-						ctx.ui.notify(`erro lendo ${MODELS_FILE}: ${configError}`, "error");
+					const rowError = row.kind === "swarm" || row.kind === "role" ? configError : undefined;
+					if (rowError) {
+						ctx.ui.notify(`erro lendo ${MODELS_FILE}: ${rowError}`, "error");
 						return;
 					}
 					if (row.kind === "swarm") {
@@ -423,8 +419,8 @@ export default function (pi: ExtensionAPI) {
 						];
 						picker = new ModelPicker(row.label, row.description, choices, row.model(), (model) => {
 							try {
-								const choice = model === swarmUnset ? null : { model, thinking: swarmChoices[row.id]?.thinking ?? "medium" };
-								swarmChoices = setSwarmModel(row.id, choice);
+								setSwarmModel(row.id, (current) => model === swarmUnset ? null : { model, thinking: current?.thinking ?? "medium" });
+								swarmChoices = loadSwarmModels(undefined, invalidSwarmSlots);
 							} catch (err) {
 								ctx.ui.notify(`erro salvando ${row.label}: ${err instanceof Error ? err.message : String(err)}`, "error");
 							}
@@ -462,7 +458,7 @@ export default function (pi: ExtensionAPI) {
 							(v) => {
 								// Enter aqui é a confirmação do usuário: grava só a preferência deste papel.
 								try {
-									roleChoices = { ...roleChoices, [row.id]: setRolePreference(row.id, v, allowedIds.has(v) ? undefined : newThinking) };
+									roleChoices = { ...roleChoices, [row.id]: setRolePreference(row.id, v, allowedIds.has(v) ? undefined : (current) => current?.thinking ?? "medium") };
 									const chosen = roleChoices[row.id][0];
 									ctx.ui.notify(`${row.id}: ${chosen.model} · thinking ${chosen.thinking}`, "info");
 								} catch (err) {
@@ -497,7 +493,7 @@ export default function (pi: ExtensionAPI) {
 									ctx.ui.notify(`erro salvando preferência: ${err instanceof Error ? err.message : String(err)}`, "error");
 								}
 							} else {
-								setTier(row.id as TierName, { model: v });
+								setTier(row.id as TierName, () => ({ model: v }));
 							}
 							picker = null;
 						},
@@ -523,7 +519,7 @@ export default function (pi: ExtensionAPI) {
 							? r.kind === "support"
 								? theme.fg("dim", "herdar principal · não configurado")
 								: r.kind === "swarm"
-									? theme.fg("dim", configError ? "config inválida" : `herda ${SWARM_INHERIT[r.id]}`)
+									? theme.fg("dim", configError || invalidSwarmSlots.has(r.id) ? "config inválida" : `herda ${SWARM_INHERIT[r.id]}`)
 									: theme.fg("dim", "—")
 							: r.kind === "tier" && r.id === "image"
 								? badge(theme, id, "GPT Image", sel) + theme.fg("dim", `  via ${prettyName(ctx, id)}`)

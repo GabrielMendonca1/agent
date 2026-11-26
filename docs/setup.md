@@ -2,22 +2,15 @@
 
 ## Instalação por artefato
 
-Estado da distribuição antes da primeira publicação assinada:
+A chave pública oficial ainda não está provisionada. Sem uma chave configurada, a instalação remota é recusada. Veja [como provisionar a chave](#provisionar-a-chave-de-assinatura-mantenedor). Para instalar offline, use `AGENT_RELEASE_DIR` ou `--install-artifact <arquivo>`: esses modos conferem SHA-256 contra `SHA256SUMS`, sem verificar a assinatura Ed25519.
 
-| Parte | Estado |
-|---|---|
-| Canal HTTPS, `latest.json` e verificação Ed25519 (Fase 1, `f0707d8`/`5d4a596`) | Integrado. Download remoto exige chave pública configurada; sem ela falha fechado. |
-| Chave pública oficial | **Não provisionada**: `RELEASE_PUBLIC_KEY_PEM` está vazio em `scripts/lib/agent-distribution.mjs`, `scripts/install.sh` e `scripts/install.ps1`. Instalação remota falha fechado. Procedimento: [Provisionar a chave](#provisionar-a-chave-de-assinatura-mantenedor). |
-| `install.sh` / `install.ps1` sem `gh`, Node 24 portátil em `<store>/node`, wrappers (Fase 2A) | Integrado (`42d4263`). Windows nativo não foi executado nesta integração. |
-| CI de 5 plataformas, smoke Linux e Windows, publicação com assinatura (Fase 2B, `9a501b9`) | Integrado no workflow. Não executado no GitHub. Nenhuma release publicada. |
-| Verificação local | `agent-distribution` exercita instalação assinada, Node portátil, falhas antes da ativação e rollback com servidor de loopback. |
-| Instalação offline (`AGENT_RELEASE_DIR`, `--install-artifact <arquivo>`) | Implementado. Confere só SHA-256 contra `SHA256SUMS`, sem Ed25519. |
+A v0.1.0 contém somente darwin-arm64 e não traz `latest.json` nem `SHA256SUMS.sig`, então não é instalável pelo canal HTTPS assinado. A primeira release assinada ainda não foi publicada.
 
-A v0.1.0 contém somente darwin-arm64. Releases publicadas antes da Fase 1 não trazem `latest.json` nem `SHA256SUMS.sig`, então não são instaláveis pelo canal HTTPS assinado. Esta mudança não publica release nem gera chave.
+Nota: a instalação no Windows nativo e o workflow no GitHub Actions ainda não foram validados.
 
 Pré-requisitos: Bash em macOS/Linux, ou PowerShell em Windows x64. Node não é exigido na máquina: o instalador provê o Node 24 portátil em `<store>/node` (seção Node portátil). O canal HTTPS não usa `gh`; repositório privado exige `AGENT_RELEASE_TOKEN`. Em Windows x64 nativo, também instale **Git for Windows** (Git Bash é usado pelo shell do Pi). Em macOS/Linux, não precisa de Git; nenhuma plataforma precisa de npm, clone ou build na máquina do consumidor. Não use WSL para instalar o pacote win32-x64.
 
-Com uma release publicada e assinada e a chave oficial provisionada (ver Estado), instale em uma linha (repositório público, sem token):
+Com uma release publicada e assinada e a chave oficial provisionada, instale em uma linha (repositório público, sem token):
 
 ```sh
 curl -fsSL https://github.com/GabrielMendonca1/agent/releases/latest/download/install.sh | bash
@@ -92,7 +85,7 @@ Sem `gh`, o instalador, `agent update` e `--install-artifact latest|<tag>` leem 
 
 - Padrão (público, sem token): `https://github.com/<repo>/releases/latest/download/latest.json`; com `AGENT_VERSION=<tag>`, `https://github.com/<repo>/releases/download/<tag>/<arquivo>`. `<repo>` é `AGENT_RELEASE_REPO` (padrão `GabrielMendonca1/agent`).
 - Repositório privado: defina `AGENT_RELEASE_TOKEN` (ou `GITHUB_TOKEN`). Com token, a descoberta usa a API de releases do GitHub e os assets são baixados pela API. O token vai só em `Authorization: Bearer` e é descartado em redirect para outra origem.
-- Origem própria: `AGENT_RELEASE_BASE_URL=https://host/caminho` (CDN, R2, servidor interno). Espera `<base>/latest.json` e `<base>/<tag>/<arquivo>`. Só HTTPS; `http://127.0.0.1` e `localhost` servem apenas a testes. Com base própria, `GITHUB_TOKEN` não é enviado; `AGENT_RELEASE_TOKEN`, se definido, é enviado à base.
+- Origem própria: `AGENT_RELEASE_BASE_URL=https://host/caminho` (CDN, R2, servidor interno). Espera `<base>/latest.json` e `<base>/<tag>/<arquivo>`. Só HTTPS; `http://127.0.0.1` e `localhost` servem apenas a testes. Ao atualizar sem `AGENT_RELEASE_BASE_URL`, o Agent reutiliza a base gravada na instalação ativa sem enviar tokens. Para autenticar no mirror, defina explicitamente `AGENT_RELEASE_BASE_URL` e `AGENT_RELEASE_TOKEN`. `GITHUB_TOKEN` nunca é enviado a um mirror.
 - `AGENT_RELEASE_PUBLIC_KEY` substitui a chave pública embutida. Uso restrito a testes e canais privados explícitos: quem controla essa variável escolhe em quem confiar.
 - O token não é gravado em `active.json` nem em `release-identities.json`, e não deve aparecer em logs ou no stdout.
 
@@ -142,7 +135,7 @@ No fim de `install.sh` e de `agent update`, o Agent confere o que falta. Em term
 
 ### Identidade instalada
 
-Instalações remotas registram em `<store>/active.json` o objeto opcional `release: { tag, assetId, repo }`. A tag é resolvida antes do download e usada explicitamente nele, mesmo para `latest`. `assetId` é o `releaseId` do manifesto: o `<id>` em `agent-<id>-<os>-<arch>.tar.gz`, não o ID numérico do GitHub nem o ID interno do runtime. O rollback restaura os valores do par anterior. Checkout, archive local e `AGENT_RELEASE_DIR` não declaram uma release remota. Com `AGENT_RELEASE_BASE_URL`, `release.repo` continua sendo `AGENT_RELEASE_REPO` (padrão `GabrielMendonca1/agent`), não a origem do mirror.
+Instalações remotas registram em `<store>/active.json` o objeto opcional `release: { tag, assetId, repo, baseUrl? }`. `baseUrl` só é gravado para mirrors e indica a origem usada no próximo update se `AGENT_RELEASE_BASE_URL` não estiver definida. A tag é resolvida antes do download e usada explicitamente nele, mesmo para `latest`. `assetId` é o `releaseId` do manifesto: o `<id>` em `agent-<id>-<os>-<arch>.tar.gz`, não o ID numérico do GitHub nem o ID interno do runtime. O rollback restaura os valores do par anterior. Checkout, archive local e `AGENT_RELEASE_DIR` não declaram uma release remota. Com `AGENT_RELEASE_BASE_URL`, `release.repo` continua sendo `AGENT_RELEASE_REPO` (padrão `GabrielMendonca1/agent`), não a origem do mirror.
 
 `agent overlay-status` mostra `Release: <tag> (assetId <id>, repo <owner/repo>)`, ou `Release: unknown (local install or unrecorded release)` quando não há identidade. A saída é textual; o app Megamind usa o JSON de `active.json`, comparando tag e nome do asset remoto sem depender de datas. Veja [o contrato de consumo](consumer-contract.md#identidade-da-release-instalada-megamind).
 
@@ -204,7 +197,7 @@ node scripts/agent-dist.mjs --keygen \
 
 2. Guardar a privada no cofre de segredos do mantenedor, com backup. Não colar em chat, issue, log, commit ou worktree. Remover a cópia de trabalho depois de configurar o segredo de CI.
 
-3. Publicar a pública por PR: substituir `RELEASE_PUBLIC_KEY_PEM` em `scripts/lib/agent-distribution.mjs` pelo conteúdo de `release-public.pem` (SPKI PEM). Replicar o mesmo valor em `install.sh` e `install.ps1`. Não há check automático que compare as três cópias: revise manualmente. Nos bootstraps a constante é JS entre aspas simples; PEM multilinha precisa de crase ou escapes `\n`.
+3. Publicar a pública por PR: substituir `RELEASE_PUBLIC_KEY_PEM` em `scripts/lib/agent-distribution.mjs` pelo conteúdo de `release-public.pem` (SPKI PEM). Replicar o mesmo valor em `install.sh` e `install.ps1`. Antes de publicar, o workflow verifica se as três cópias contêm a chave pública correspondente ao segredo de assinatura. Nos bootstraps a constante é JS entre aspas simples; PEM multilinha precisa de crase ou escapes `\n`.
 
 4. Configurar o segredo de CI `AGENT_RELEASE_SIGNING_KEY` com o conteúdo de `release-private.pem` (PEM literal ou base64 dele; `agent-dist.mjs` aceita os dois):
 
@@ -298,7 +291,7 @@ Requer Git, npm e Node >=22.19. `node scripts/agent-update.mjs --prepare` constr
 
 - As skills de integração `peers`, `megamind`, `tasks` e as de `agent/skills/system/` são automáticas. `design/` e `plan/` ficam sob demanda e geram uma linha curta por categoria no system prompt. A curadoria usa o formatter compartilhado entre os hosts.
 - `/skill` ou `/skill:` abre o catálogo agrupado por categoria.
-- `/models` separa slots de execução e escolhas por papel e preserva as escolhas pessoais. O picker de um papel lista primeiro os pares autorizados e depois todo modelo disponível; escolher um novo o autoriza naquele papel com o thinking da preferência atual. `Esc Esc` abre só a lista de fork. Falha de quota/503 não troca modelo silenciosamente: só papel somente leitura tenta, uma vez e registrando, o próximo modelo da sua lista (ver "Falha por cota").
+- `/models` separa slots de execução, escolhas por papel e presets do swarm. No papel, **Enter** abre o picker com os modelos autorizados primeiro; escolher um novo o autoriza com o thinking da preferência atual. **←/→** muda o thinking só do par ativo daquele papel, sem alterar a sessão nem os tiers. Se o papel ainda não tem modelo configurado, escolha um com **Enter** antes de usar as setas. `Esc Esc` abre só a lista de fork. Falha de quota/503 não troca modelo silenciosamente: só papel somente leitura tenta, uma vez e registrando, o próximo modelo da sua lista (ver "Falha por cota").
 - `read` é o nativo do Pi clássico: imagens, texto, offset/limit e cancelamento. O loadout controla quais papéis recebem `read`. Principal, scout e visual precisam de modelo capaz de receber imagens; anexos diretos continuam suportados.
 - `scout` não edita: tem `read, grep, find, ls, bash, skim, web_search, web_fetch`, com `bash` sob sandbox de escrita. Transcrição que exija `ffmpeg`, Whisper ou outro executável que grave arquivos deve ir para um papel com `edit`/`write` (worker). Não se promete leitura/transcrição nativa de qualquer formato binário.
 - JEV e cache observam compactação confirmada no branch para resetar sua época; pedido, cancelamento, queda de tokens ou erro não contam como compactação concluída. Nenhum evento sintético por correlação FIFO é usado.
@@ -612,15 +605,23 @@ Opt-in por sessão. Desligado, não custa nada: a tool `swarm` é `deferred`, fo
 - O `/swarm` nunca muda o system prompt nem chama `setActiveTools`: o cache de prompt da sessão continua. A tool entra pelo `tool_search`, na camada de tools carregadas que só acrescenta.
 - Execução não interativa (`agent -p`, `--mode json`, RPC): `AGENT_SWARM=1` liga a sessão que ainda não tem entrada `agent-swarm`. Na TUI a variável é ignorada; lá só o `/swarm` liga.
 
+### Modelos e custo
+
+No `/models`, as linhas `swarm writer`, `swarm reviewer` e `swarm board` guardam pares de modelo e thinking em `swarmModels` no `<perfil>/agent-models.json`. Use **Enter** para escolher um modelo de chat ou **Herdar padrão** para remover o preset. Use **←/→** para ajustar o thinking de um preset já configurado.
+
+Em cada chamada da tool, a ordem é: **`model` explícito** do escritor, revisor ou tarefa (sujeito às regras normais do papel) → **preset** do slot correspondente (modelo e thinking, sem precisar estar na lista `roleModels`) → **resolução normal do papel** (`roleModels`, frontmatter, slots). Sem preset, o loop usa os papéis do escritor e do revisor (`worker` e `reviewer` por padrão); o board usa o papel de cada tarefa. O modelo do preset precisa existir no catálogo do Pi; modelos Google API não são aceitos.
+
+Omitir `maxUsd` deixa ambos os modos sem corte por custo. Para definir um teto, passe um número finito de pelo menos `0.1` USD, sem máximo fixo. O custo continua sendo registrado quando não há teto; `timeoutSeconds` e `cancel` continuam disponíveis.
+
 ### Loop
 
 `swarm({ mode: "loop", writer: { brief, agent?, task?, cwd?, model?, skills?, name? }, reviewer?: { agent?, brief?, task?, model?, skills?, name? }, isolate?, maxRounds?, maxUsd?, cwd?, agentScope?, timeoutSeconds? })` devolve um `jobId` na hora, como o `launch`.
 
-- Padrões: escritor `worker`, revisor `reviewer`, `isolate` ligado dentro de um repositório git, `maxRounds` 3 (1..5), `maxUsd` 5 (0.1..50). Sem `reviewer.brief`, objective/context/scope/done_when vêm do brief do escritor.
-- Recusas antes de qualquer job ou worktree: swarm desligado; escritor sem `edit`/`write` ou no runner agy; revisor com `edit`/`write` ou no agy; brief incompleto pelo `brief_required` de cada papel; modelo fora da lista do papel; skill desconhecida; skill de projeto num escritor isolado; nome de handle repetido; `isolate` fora de um repositório.
+- Padrões: escritor `worker`, revisor `reviewer`, `isolate` ligado dentro de um repositório git, `maxRounds` 3 (1..5). Sem `reviewer.brief`, objective/context/scope/done_when vêm do brief do escritor.
+- Recusas antes de qualquer job ou worktree: swarm desligado; escritor sem `edit`/`write` ou no runner agy; revisor com `edit`/`write` ou no agy; brief incompleto pelo `brief_required` de cada papel; `model` explícito não autorizado ou preset com modelo que não existe no catálogo; skill desconhecida; skill de projeto num escritor isolado; nome de handle repetido; `isolate` fora de um repositório.
 - Rodada 1: o escritor roda (num worktree próprio quando isolado, o mesmo mecanismo de `integrate`/`discard`). Se ele não mudou nada (HEAD, `git status --porcelain`, diff dos arquivos rastreados e nomes e conteúdo dos não rastreados, de `git ls-files --others --exclude-standard`, todos iguais, medidos na raiz do repositório mesmo com o escritor num subdiretório), o loop para em `stalled` sem chamar o revisor. O revisor roda no mesmo checkout, recebe o intervalo `base..HEAD`, a linha do gate, o resumo do escritor e o contrato: achados com `path:line` e uma última linha isolada `VERDICT: APPROVE` ou `VERDICT: REQUEST_CHANGES`.
 - Veredito fail-closed: vale só se a última linha não vazia da resposta for `VERDICT: …` sem recuo (começando na coluna 0) e fora de bloco de código. Um veredito citado antes de mais texto, recuado (numa lista, por exemplo) ou dentro de um bloco de código aberto é `ambiguous`. Os blocos são reconhecidos com qualquer recuo; só fecha uma linha com o mesmo caractere (`` ` `` ou `~`), pelo menos o mesmo comprimento e sem info string. `APPROVE` termina em `approved`; sem a linha, `ambiguous`; erro do revisor, `failed` (ou `quota`). Silêncio nunca aprova.
-- Rodadas 2+: antes de cada uma, os tetos (`max_rounds`, `max_usd`). O escritor retoma o próprio JSONL (lock de sessão, como o `continue`) e recebe só os achados, a rodada e o orçamento restante; se não mudar nada, `stalled`. O revisor retoma o próprio JSONL e recebe só o delta (`anterior..novo`, gate, nota curta do escritor) e o contrato. Os dois mantêm o cache de prompt quente.
+- Rodadas 2+: antes de cada uma, o loop verifica `maxRounds` e, se definido, `maxUsd` (desfechos `max_rounds` e `max_usd`). O escritor retoma o próprio JSONL (lock de sessão, como o `continue`) e recebe só os achados, a rodada e, se houver teto de custo, o orçamento restante; se não mudar nada, `stalled`. O revisor retoma o próprio JSONL e recebe só o delta (`anterior..novo`, gate, nota curta do escritor) e o contrato. Os dois mantêm o cache de prompt quente.
 - Erro, cota ou timeout do escritor terminam em `failed`/`quota`; no timeout o worktree ganha o commit WIP de sempre.
 - O job é um job comum do `subagent` (modo `swarm`, tarefa 1 escritor, tarefa 2 revisor, `JobRecord.swarm` com rodadas e desfecho): `status`, `result`, `trace`, `list`, `cancel`, `integrate`, `discard` e `continue` funcionam igual. Só `approved` termina `completed`; os outros desfechos terminam `failed`, com o motivo no resultado. No fim, os dois handles ficam `waiting`. `integrate` e `discard` tratam o loop como uma unidade: com ou sem `taskIndex`, agem no worktree do escritor e fecham os dois handles.
 - O resultado abre com `swarm loop · outcome: X · rounds: N/M · cost: $X.XX`, uma tabela por rodada (sha do escritor, gate, veredito, custo), os handles, o resumo do worktree e do gate, e a última resposta do revisor (até 4 KiB).
@@ -635,7 +636,7 @@ Opt-in por sessão. Desligado, não custa nada: a tool `swarm` é `deferred`, fo
 - Arquivo: `<perfil>/subagent-jobs/<sessionId>/<jobId>/board.jsonl`, modo 0600, criado no launch. Linha: `{seq, ts, handle, kind, text, refs?}`; `kind` é `claim`, `decision`, `note`, `blocker` ou `done`. O `seq` é estritamente crescente: cada append roda sob o lock de gerações em `board.jsonl.lock` (só é assumido se o dono morreu; nunca por idade).
 - Limites: `text` aparado, não vazio, até 400 caracteres; `refs` até 8 itens de até 160 caracteres; o arquivo aceita até 100 entradas e 64 KiB. Post acima do limite volta com erro claro; leitura sempre funciona. Não há destinatário, resposta nem notificação entre filhos.
 - Tool `board` só nos filhos do board (`subagent/child-board.ts`, carregada com `-e` quando a invocação tem `board`; env `AGENT_BOARD_PATH` e `AGENT_BOARD_HANDLE`, removidas do bash pelo `userCommandEnv`). `post` (kind, text, refs) responde `Posted #seq (kind).`; `read` (since, kind) devolve só as entradas com `seq > since`, uma por linha (`#3 [worker-1 · decision] … (refs: …)`), ou `No new board entries since #N.`. O `board` fica no snapshot da invocação, então um `continue` do handle mantém a tool.
-- Teto de custo: `maxUsd` 0.1..100 (padrão 15), somado sobre as tarefas que já terminaram. Ao atingir, o job é abortado: tarefas pendentes não começam, as que rodam param, e os worktrees ganham o commit WIP. O desfecho fica `max_usd` e o job termina `failed`.
+- Se `maxUsd` foi definido, o board compara o teto ao custo das tarefas que já terminaram. Ao atingir o teto, o job é abortado: tarefas pendentes não começam, as que rodam param, e os worktrees ganham o commit WIP. O desfecho fica `max_usd` e o job termina `failed`.
 - Resultado: `swarm board · outcome: done|failed|max_usd · tasks: N · cost: $X.XX`, o resultado paralelo de sempre (worktrees, saídas, gate) e `### board (N entradas)` compacto (até ~2 KiB) com o caminho do arquivo completo.
 - Agentes no runner agy não entram em board (sem a tool `board`).
 - Limite de segurança: o board é uma ajuda de coordenação, não uma barreira contra filhos que editam. Escritores rodam sem sandbox, como o próprio usuário, e conseguem reescrever o `board.jsonl` pelo bash. A tool garante limites e `seq` para quem a usa honestamente; para auditoria vale o JSONL de cada filho (`trace`).
@@ -648,7 +649,7 @@ O código de `agent/` não depende de caminhos literais `/Users/biel` (só um ex
 |---|---|
 | vault-runtime | Somente com `AGENT_VAULT=1`. Sem opt-in mantém o prompt nativo e não depende de Vault. Nenhum dado pessoal é migrado. |
 | subagent | Papéis/modelos usam o perfil do Agent, não o Vault. Sem modelo de apoio configurado, papel sem config própria em `/models` e sem `model` no frontmatter herda o modelo principal. Allowlists e confirmações de agentes do projeto continuam aplicáveis; falhas de quota não trocam o modelo silenciosamente (papel somente leitura tenta uma vez o próximo modelo permitido e registra a troca). Gate Megamind explicitamente configurado continua falhando fechado. |
-| models | `/model` mantém o seletor nativo. `/models` usa `agent-models.json` no perfil para escolhas por papel; `agent-preferences.json` guarda preferências de recursos, não contabilidade. Nenhuma configuração pessoal é distribuída. |
+| models | `/model` mantém o seletor nativo. `/models` usa `agent-models.json` no perfil para escolhas por papel e presets do swarm; `agent-preferences.json` guarda preferências de recursos, não contabilidade. Nenhuma configuração pessoal é distribuída. |
 | generate-image | Execução exige configuração do modelo de imagem no perfil e autenticação própria. Falta deles vira erro da tool, não erro de startup. |
 | compaction | Usa geração, prompt e validação nativos do Pi, sem impor Luna ou executar aprendizado auxiliar. O cache-keeper mantém suas proteções de compactação. |
 | herdr-agent-state | Já inerte sem HERDR_ENV=1, socket e pane; erros de socket tratados. |

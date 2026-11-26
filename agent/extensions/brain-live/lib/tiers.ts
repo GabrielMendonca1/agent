@@ -12,6 +12,8 @@ import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "
 import { dirname, join } from "node:path";
 import { homedir } from "node:os";
 import { randomUUID } from "node:crypto";
+import { waitLock } from "../subagent/lockfile.ts";
+import { ownerMayBeAlive, readProcessIdentity, type ProcessIdentity } from "../subagent/process-owner.ts";
 
 export const TIER_NAMES = ["fast", "standard", "deep", "visual", "image"] as const;
 export type TierName = (typeof TIER_NAMES)[number];
@@ -125,16 +127,11 @@ export function loadTiers(): TiersFile {
 			}
 		}
 	}
-	if (parsed.swarmModels !== undefined) {
-		if (!parsed.swarmModels || typeof parsed.swarmModels !== "object" || Array.isArray(parsed.swarmModels)) {
-			throw new Error(`${MODELS_FILE}: field "swarmModels" must be an object`);
-		}
-		for (const [slot, choice] of Object.entries(parsed.swarmModels)) {
-			validateSwarmSlot(slot);
-			validateSwarmChoice(slot, choice);
-		}
-	}
 	return parsed as TiersFile;
+}
+
+function isSwarmSection(value: TiersFile["swarmModels"]): value is NonNullable<TiersFile["swarmModels"]> {
+	return !!value && typeof value === "object" && !Array.isArray(value);
 }
 
 function validateSwarmSlot(slot: string): void {
@@ -145,8 +142,12 @@ function validateThinking(thinking: string): void {
 	if (!THINKING_LEVELS.includes(thinking)) throw new Error(`thinking must be one of: ${THINKING_LEVELS.join(", ")}`);
 }
 
+function isSwarmChoice(choice: RoleModelChoice | undefined): choice is RoleModelChoice {
+	return !!choice && typeof choice.model === "string" && choice.model.includes("/") && THINKING_LEVELS.includes(choice.thinking);
+}
+
 function validateSwarmChoice(slot: string, choice: RoleModelChoice): void {
-	if (!choice || typeof choice.model !== "string" || !choice.model.includes("/") || !THINKING_LEVELS.includes(choice.thinking)) {
+	if (!isSwarmChoice(choice)) {
 		throw new Error(`${MODELS_FILE}: invalid option in swarmModels."${slot}" (provider/modelId and valid thinking are required)`);
 	}
 }
@@ -182,79 +183,116 @@ export function loadRoleModels(data = loadTiers()): Record<string, RoleModelChoi
  * Sem `addWithThinking`, só aceita modelo já autorizado. Com ele (escolha explícita
  * do usuário em /models), autoriza o modelo novo naquele papel com esse thinking.
  */
-export function setRolePreference(role: string, model: string, addWithThinking?: string): RoleModelChoice[] {
+export function setRolePreference(role: string, model: string, addWithThinking?: string | ((current: RoleModelChoice | undefined) => string)): RoleModelChoice[] {
 	if (isGoogleApiModel(model)) throw new Error("Gemini is available through the agy role, not the Pi API.");
-	const data = loadTiers();
-	const choices = data.roleModels && Object.hasOwn(data.roleModels, role) ? data.roleModels[role] : undefined;
-	if (addWithThinking && !choices?.some((choice) => choice.model === model)) {
-		if (!model.includes("/")) throw new Error(`model "${model}" must be provider/modelId`);
-		const next = [{ model, thinking: addWithThinking }, ...(choices ?? [])];
-		data.roleModels = { ...(data.roleModels ?? {}), [role]: next };
+	return withTiersLock(() => {
+		const data = loadTiers();
+		const choices = data.roleModels && Object.hasOwn(data.roleModels, role) ? data.roleModels[role] : undefined;
+		if (addWithThinking && !choices?.some((choice) => choice.model === model)) {
+			if (!model.includes("/")) throw new Error(`model "${model}" must be provider/modelId`);
+			const current = choices?.find((choice) => !isGoogleApiModel(choice.model));
+			const thinking = typeof addWithThinking === "function" ? addWithThinking(current) : addWithThinking;
+			const next = [{ model, thinking }, ...(choices ?? [])];
+			data.roleModels = { ...(data.roleModels ?? {}), [role]: next };
+			saveTiers(data);
+			return allowedRoleChoices(next);
+		}
+		const allowed = allowedRoleChoices(choices ?? []);
+		if (!choices || !allowed.length) throw new Error(`role "${role}" has no allowed models in ${MODELS_FILE}`);
+		const index = choices.findIndex((choice) => choice.model === model);
+		if (index < 0) {
+			throw new Error(`model "${model}" is not allowed for "${role}" (allowed: ${allowed.map((c) => c.model).join(", ")})`);
+		}
+		if (index === 0) return allowed;
+		const next = [choices[index], ...choices.filter((_, i) => i !== index)];
+		data.roleModels![role] = next;
 		saveTiers(data);
 		return allowedRoleChoices(next);
-	}
-	const allowed = allowedRoleChoices(choices ?? []);
-	if (!choices || !allowed.length) throw new Error(`role "${role}" has no allowed models in ${MODELS_FILE}`);
-	const index = choices.findIndex((choice) => choice.model === model);
-	if (index < 0) {
-		throw new Error(`model "${model}" is not allowed for "${role}" (allowed: ${allowed.map((c) => c.model).join(", ")})`);
-	}
-	if (index === 0) return allowed;
-	const next = [choices[index], ...choices.filter((_, i) => i !== index)];
-	data.roleModels![role] = next;
-	saveTiers(data);
-	return allowedRoleChoices(next);
+	});
 }
 
-export function setRoleThinking(role: string, thinking: string): RoleModelChoice[] {
-	validateThinking(thinking);
-	const data = loadTiers();
-	const choices = data.roleModels && Object.hasOwn(data.roleModels, role) ? data.roleModels[role] : undefined;
-	const active = choices?.find((choice) => !isGoogleApiModel(choice.model));
-	if (!choices || !active) throw new Error(`role "${role}" has no allowed models in ${MODELS_FILE}`);
-	active.thinking = thinking;
-	saveTiers(data);
-	return allowedRoleChoices(choices);
+export function setRoleThinking(role: string, thinking: string | ((current: string) => string)): RoleModelChoice[] {
+	return withTiersLock(() => {
+		const data = loadTiers();
+		const choices = data.roleModels && Object.hasOwn(data.roleModels, role) ? data.roleModels[role] : undefined;
+		const active = choices?.find((choice) => !isGoogleApiModel(choice.model));
+		if (!choices || !active) throw new Error(`role "${role}" has no allowed models in ${MODELS_FILE}`);
+		const next = typeof thinking === "function" ? thinking(active.thinking) : thinking;
+		validateThinking(next);
+		active.thinking = next;
+		saveTiers(data);
+		return allowedRoleChoices(choices);
+	});
 }
 
-export function loadSwarmModels(data = loadTiers()): Partial<Record<SwarmSlot, RoleModelChoice>> {
+/** Tolerant editor view; malformed entries are not used or rewritten implicitly. */
+export function loadSwarmModels(data = loadTiers(), invalid?: Set<SwarmSlot>): Partial<Record<SwarmSlot, RoleModelChoice>> {
 	const allowed: Partial<Record<SwarmSlot, RoleModelChoice>> = {};
+	invalid?.clear();
+	const section = data.swarmModels;
+	if (section === undefined) return allowed;
 	for (const slot of SWARM_SLOTS) {
-		const choice = data.swarmModels?.[slot];
-		if (choice && !isGoogleApiModel(choice.model)) allowed[slot] = choice;
+		if (!isSwarmSection(section)) {
+			invalid?.add(slot);
+			continue;
+		}
+		if (!Object.hasOwn(section, slot)) continue;
+		const choice = section[slot];
+		if (!isSwarmChoice(choice)) invalid?.add(slot);
+		else if (!isGoogleApiModel(choice.model)) allowed[slot] = choice;
 	}
 	return allowed;
 }
 
 export function getSwarmModel(slot: SwarmSlot): RoleModelChoice | undefined {
-	return loadSwarmModels()[slot];
+	validateSwarmSlot(slot);
+	const section = loadTiers().swarmModels;
+	if (section === undefined) return undefined;
+	if (!isSwarmSection(section)) throw new Error(`${MODELS_FILE}: field "swarmModels" must be an object`);
+	const choice = section[slot];
+	if (choice === undefined) return undefined;
+	validateSwarmChoice(slot, choice);
+	return isGoogleApiModel(choice.model) ? undefined : choice;
 }
 
-export function setSwarmModel(slot: SwarmSlot, choice: RoleModelChoice | null): Partial<Record<SwarmSlot, RoleModelChoice>> {
+export function setSwarmModel(slot: SwarmSlot, choice: RoleModelChoice | null | ((current: RoleModelChoice | undefined) => RoleModelChoice | null)): Partial<Record<SwarmSlot, RoleModelChoice>> {
 	validateSwarmSlot(slot);
-	const data = loadTiers();
-	if (choice === null) {
-		if (!data.swarmModels?.[slot]) return loadSwarmModels(data);
-		delete data.swarmModels[slot];
-		if (!Object.keys(data.swarmModels).length) delete data.swarmModels;
-	} else {
-		validateSwarmChoice(slot, choice);
-		if (isGoogleApiModel(choice.model)) throw new Error("Gemini is available through the agy role, not the Pi API.");
-		data.swarmModels = { ...data.swarmModels, [slot]: choice };
-	}
-	saveTiers(data);
-	return loadSwarmModels(data);
+	return withTiersLock(() => {
+		const data = loadTiers();
+		const current = loadSwarmModels(data);
+		const next = typeof choice === "function" ? choice(current[slot]) : choice;
+		const section = data.swarmModels;
+		if (next === null) {
+			if (section === undefined) return current;
+			if (!isSwarmSection(section)) {
+				delete data.swarmModels;
+			} else {
+				if (!Object.hasOwn(section, slot)) return current;
+				delete section[slot];
+				if (!Object.keys(section).length) delete data.swarmModels;
+			}
+		} else {
+			validateSwarmChoice(slot, next);
+			if (isGoogleApiModel(next.model)) throw new Error("Gemini is available through the agy role, not the Pi API.");
+			data.swarmModels = { ...(isSwarmSection(section) ? section : {}), [slot]: next };
+		}
+		saveTiers(data);
+		return loadSwarmModels(data);
+	});
 }
 
-export function setSwarmThinking(slot: SwarmSlot, thinking: string): Partial<Record<SwarmSlot, RoleModelChoice>> {
+export function setSwarmThinking(slot: SwarmSlot, thinking: string | ((current: string) => string)): Partial<Record<SwarmSlot, RoleModelChoice>> {
 	validateSwarmSlot(slot);
-	validateThinking(thinking);
-	const data = loadTiers();
-	const choice = loadSwarmModels(data)[slot];
-	if (!choice) throw new Error(`swarm ${slot} inherits its role model; choose a preset before changing thinking`);
-	choice.thinking = thinking;
-	saveTiers(data);
-	return loadSwarmModels(data);
+	return withTiersLock(() => {
+		const data = loadTiers();
+		const choice = loadSwarmModels(data)[slot];
+		if (!choice) throw new Error(`swarm ${slot} inherits its role model; choose a preset before changing thinking`);
+		const next = typeof thinking === "function" ? thinking(choice.thinking) : thinking;
+		validateThinking(next);
+		choice.thinking = next;
+		saveTiers(data);
+		return loadSwarmModels(data);
+	});
 }
 
 /** Resolve a preferência ou valida uma escolha explícita sem consultar quota/disponibilidade. */
@@ -286,9 +324,30 @@ export function formatRoleModelChoices(role: string): string | undefined {
 		.join(" OR ");
 }
 
-export function saveTiers(data: TiersFile): void {
-	// Troca atômica: uma leitura concorrente nunca vê o arquivo pela metade.
+// Every writer must hold this lock from loadTiers() through the atomic rename.
+function withTiersLock<T>(edit: () => T): T {
 	mkdirSync(dirname(MODELS_FILE), { recursive: true, mode: 0o700 });
+	const lock = waitLock(`${MODELS_FILE}.lock`, { identity: readProcessIdentity(process.pid) },
+		(held) => !ownerMayBeAlive(held.pid, held.identity as ProcessIdentity | undefined), 2_000);
+	if (!lock.ok) throw new Error(`${MODELS_FILE} is being edited by another process; try again`);
+	try {
+		return edit();
+	} finally {
+		lock.release();
+	}
+}
+
+export function updateTier(name: TierName, edit: (tier: Partial<Tier>) => Partial<Tier>): TiersFile {
+	return withTiersLock(() => {
+		const data = loadTiers();
+		data.tiers[name] = { ...data.tiers[name], ...edit(data.tiers[name] ?? {}) };
+		saveTiers(data);
+		return data;
+	});
+}
+
+function saveTiers(data: TiersFile): void {
+	// Troca atômica: uma leitura concorrente nunca vê o arquivo pela metade.
 	const temp = `${MODELS_FILE}.${randomUUID()}.tmp`;
 	writeFileSync(temp, `${JSON.stringify(data, null, 2)}\n`, "utf-8");
 	renameSync(temp, MODELS_FILE);
@@ -302,9 +361,11 @@ export function getGeminiPreference(data = loadTiers()): RoleModelChoice | undef
 
 export function setGeminiPreference(choice: RoleModelChoice): void {
 	resolveAgyFamily(choice);
-	const data = loadTiers();
-	data.agyModels = { ...data.agyModels, gemini: choice };
-	saveTiers(data);
+	return withTiersLock(() => {
+		const data = loadTiers();
+		data.agyModels = { ...data.agyModels, gemini: choice };
+		saveTiers(data);
+	});
 }
 
 /** Preferência salva > frontmatter nativo (se presente) > padrão do gemini. */

@@ -172,14 +172,41 @@ jobs:
           node scripts/agent-dist.mjs --merge hosts/agent-darwin-arm64 hosts/agent-darwin-x64 hosts/agent-linux-x64 hosts/agent-linux-arm64 hosts/agent-win32-x64 --out dist --tag "$RELEASE_TAG"
           test -s dist/SHA256SUMS.sig
           test -s dist/latest.json
-          node --input-type=module - <<'JS'
+          node --input-type=module <<'JS'
           import { createPublicKey } from 'node:crypto';
-          import { pathToFileURL } from 'node:url';
-          import { resolve } from 'node:path';
-          const { verifyManifestSignature } = await import(pathToFileURL(resolve('scripts/lib/agent-distribution.mjs')).href);
+          import { readFileSync } from 'node:fs';
+          import { runInNewContext } from 'node:vm';
+          import { RELEASE_PUBLIC_KEY_PEM, verifyManifestSignature } from './dist/agent-distribution.mjs';
           const raw = process.env.AGENT_SIGNING_PRIVATE_KEY;
           const pem = raw.includes('-----BEGIN ') ? raw : Buffer.from(raw, 'base64').toString('utf8');
-          const publicKeyPem = createPublicKey({ key: pem, format: 'pem' }).export({ type: 'spki', format: 'pem' });
+          const publicKey = createPublicKey({ key: pem, format: 'pem' });
+          const publicKeyPem = publicKey.export({ type: 'spki', format: 'pem' });
+          const spki = key => key.export({ type: 'spki', format: 'der' });
+
+          function embeddedInstallerKey(file) {
+            // Parse only the static JS string, not the enclosing shell or bootstrap.
+            const declaration = /^const RELEASE_PUBLIC_KEY_PEM[ \t]*=[ \t]*('(?:[^'\\\r\n]|\\.)*'|"(?:[^"\\\r\n]|\\.)*"|`(?:[^`\\$]|\\.)*`)[ \t]*;\r?$/gm;
+            const matches = [...readFileSync(file, 'utf8').matchAll(declaration)];
+            if (matches.length !== 1) throw new Error(`${file}: expected one RELEASE_PUBLIC_KEY_PEM string literal`);
+            return runInNewContext(matches[0][1]);
+          }
+
+          for (const [file, embedded] of [
+            ['dist/agent-distribution.mjs', () => RELEASE_PUBLIC_KEY_PEM],
+            ['dist/install.sh', () => embeddedInstallerKey('dist/install.sh')],
+            ['dist/install.ps1', () => embeddedInstallerKey('dist/install.ps1')],
+          ]) {
+            const value = embedded()?.trim();
+            if (!value) throw new Error(`${file}: RELEASE_PUBLIC_KEY_PEM is empty`);
+            let key;
+            try {
+              if (!value.startsWith('-----BEGIN PUBLIC KEY-----')) throw new Error();
+              key = createPublicKey(value);
+            } catch {
+              throw new Error(`${file}: RELEASE_PUBLIC_KEY_PEM is not a valid SPKI PEM public key`);
+            }
+            if (!spki(key).equals(spki(publicKey))) throw new Error(`${file}: RELEASE_PUBLIC_KEY_PEM does not match the signing key`);
+          }
           verifyManifestSignature('dist/SHA256SUMS', 'dist/SHA256SUMS.sig', publicKeyPem);
           JS
           test "$(find dist -maxdepth 1 -name 'agent-*.tar.gz' | wc -l)" -eq 5

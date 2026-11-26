@@ -5,7 +5,8 @@
 // gravar não toca sessão nem outros papéis, e config quebrada é dita em vez de escondida.
 // Loader real do Pi, registro de modelos falso, nenhuma chamada de modelo.
 import assert from 'node:assert/strict';
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { spawn } from 'node:child_process';
+import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { homedir, tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
@@ -55,6 +56,7 @@ const catalog = [
   { provider: 'test', id: 'luna', name: 'Luna 6', contextWindow: 400_000 },
   { provider: 'test', id: 'sol', name: 'Sol 6.1', contextWindow: 400_000 },
   { provider: 'test', id: 'flash', name: 'Flash 3.8', contextWindow: 1_000_000 },
+  { provider: 'test', id: 'google/gemini-test', name: 'Blocked Google Chat' },
   { provider: 'test', id: 'img', name: 'GPT Image', type: 'image' },
 ];
 
@@ -93,6 +95,12 @@ const goTo = name => {
   throw new Error(`linha "${name}" não encontrada:\n${screen()}`);
 };
 
+const assertWidths = () => {
+  for (const width of [40, 60, 80, 120]) {
+    for (const line of view.render(width)) assert.ok(plain(line).length <= width, `overflow em ${width}: ${plain(line)}`);
+  }
+};
+
 async function openPanel(extension) {
   notices.length = 0;
   const pending = extension.commands.get('models').handler('', ctx);
@@ -129,16 +137,11 @@ try {
   assert.ok(!/scout · worker|orquestrador · reviewer/.test(screen()), 'slots não se vendem como papéis');
   assert.ok(rowOf('Apoio').includes('fallback'), 'Apoio é fallback explícito');
   assert.equal(bytes(), before, 'abrir /models não grava');
-  for (const width of [40, 60, 80, 120]) {
-    for (const line of view.render(width)) assert.ok(plain(line).length <= width, `overflow em ${width}: ${plain(line)}`);
-  }
+  assertWidths();
   checks++; console.log('ok piloto mostra os cinco papéis com modelo/thinking/origem; slots sem rótulo enganoso');
 
   // 2. Papel: autorizados primeiro, depois os demais disponíveis; Esc não grava.
   goTo('scout');
-  type(KEY.left); type(KEY.right);
-  assert.equal(bytes(), before, '←→ em papel não grava (thinking vem do par)');
-  assert.equal(thinkingWrites, 0, '←→ em papel não mexe no thinking da sessão');
   type(KEY.enter);
   const picker = screen();
   assert.ok(picker.includes('Haiku 4.5') && picker.includes('Luna 6'), `picker lista os autorizados:\n${picker}`);
@@ -179,6 +182,27 @@ try {
   assert.deepEqual(merged.roleModels.planner[0], { model: 'test/astra', thinking: 'medium' }, 'escolha nova aplicada sobre o arquivo atual');
   checks++; console.log('ok gravação relê o arquivo: não clobbera edição concorrente');
 
+  // 4b. As setas editam somente o par ativo, pulando Google API e relendo o arquivo.
+  goTo('scout');
+  const edited = readConfig();
+  edited.roleModels.scout.reverse();
+  edited.roleModels.scout[0].thinking = 'xhigh';
+  edited.roleModels.scout.unshift({ model: 'test/google/gemini-test', thinking: 'low' });
+  edited.tiers.standard.thinking = 'low';
+  edited.roleModels.reviewer[0].thinking = 'off';
+  writeFixture(edited);
+  type(KEY.right);
+  const expected = structuredClone(edited);
+  expected.roleModels.scout[1].thinking = 'off';
+  assert.deepEqual(readConfig(), expected, '→ só muda o thinking do primeiro modelo permitido no arquivo atual');
+  assert.match(rowOf('scout'), /Haiku 4\.5.*off/);
+  type(KEY.left);
+  assert.deepEqual(readConfig(), edited, '← volta a xhigh sem tocar nas edições externas');
+  assert.equal(modelWrites, 0);
+  assert.equal(thinkingWrites, 0);
+  assert.equal(sessionThinking, 'medium');
+  checks++; console.log('ok setas editam só o thinking do papel ativo, preservando a sessão e edições concorrentes');
+
   // 5. Papel sem allowlist: picker com todos; escolher cria a allowlist do papel.
   const withoutScout = readConfig();
   delete withoutScout.roleModels.scout;
@@ -189,6 +213,10 @@ try {
   const noAllowlist = rowOf('scout');
   assert.ok(noAllowlist.includes('—') && noAllowlist.includes('frontmatter'), `papel sem allowlist aparece com a origem real: ${noAllowlist}`);
   goTo('scout');
+  type(KEY.left);
+  assert.equal(notices.at(-1).level, 'warning');
+  assert.match(notices.at(-1).text, /scout: escolha um modelo com Enter/);
+  assert.equal(bytes(), stable, '← sem allowlist não grava');
   type(KEY.enter);
   assert.ok(/Haiku 4\.5[\s\S]*Opus 5/.test(screen()) || /Opus 5[\s\S]*Haiku 4\.5/.test(screen()), `sem allowlist abre picker com todos:\n${screen()}`);
   type(KEY.esc);
@@ -210,6 +238,96 @@ try {
   assert.deepEqual(readConfig().roleModels.worker[0], { model: 'test/astra', thinking: withoutScout.roleModels.worker[0].thinking }, 'novo modelo autorizado na frente');
   assert.equal(readConfig().roleModels.worker.length, withoutScout.roleModels.worker.length + 1, 'nenhuma opção perdida');
   checks++; console.log('ok modelo novo no papel: autorizado com o thinking da preferência');
+
+  // 5c. Presets independentes: escolher, ajustar thinking e voltar à herança.
+  const swarmSlots = [['writer', 'worker'], ['reviewer', 'reviewer'], ['board', 'papel']];
+  for (const [slot, inherited] of swarmSlots) {
+    const label = `swarm ${slot}`;
+    const saved = bytes();
+    assert.ok(rowOf(label).includes(`herda ${inherited}`), screen());
+    goTo(label);
+    type(KEY.right);
+    assert.equal(notices.at(-1).level, 'warning');
+    assert.ok(notices.at(-1).text.includes(`${label}: escolha um modelo com Enter`));
+    assert.equal(bytes(), saved, '←/→ sem preset não grava');
+    type(KEY.enter);
+    assert.ok(screen().indexOf('Herdar padrão') < screen().indexOf('Haiku 4.5') && screen().includes('Herdar padrão'), screen());
+    assert.doesNotMatch(screen(), /Blocked Google Chat|GPT Image/);
+    for (const ch of 'astra') type(ch);
+    type(KEY.enter);
+    assert.deepEqual(readConfig().swarmModels?.[slot], { model: 'test/astra', thinking: 'medium' });
+    assert.ok(rowOf(label).includes('Astra 6'), screen());
+    const externalEdit = readConfig();
+    externalEdit.extraDoUsuario.latestSlot = slot;
+    externalEdit.swarmModels[slot] = { model: 'test/luna', thinking: 'xhigh' };
+    writeFixture(externalEdit);
+    type(KEY.right);
+    const changed = structuredClone(externalEdit);
+    changed.swarmModels[slot].thinking = 'off';
+    assert.deepEqual(readConfig(), changed, 'thinking do preset não sobrescreve a edição concorrente');
+    assert.match(rowOf(label), /Luna 6.*off/);
+    assertWidths();
+    type(KEY.left);
+    assert.deepEqual(readConfig(), externalEdit, '← volta a xhigh');
+    type(KEY.enter);
+    externalEdit.swarmModels[slot].thinking = 'low';
+    writeFixture(externalEdit);
+    for (const ch of 'haiku') type(ch);
+    type(KEY.enter);
+    externalEdit.swarmModels[slot].model = 'test/haiku';
+    assert.deepEqual(readConfig(), externalEdit, 'trocar o modelo no picker preserva o thinking mais recente');
+    type(KEY.enter);
+    for (const ch of 'herdar') type(ch);
+    for (let i = 0; i < catalog.length && !/^→ Herdar padrão/m.test(screen()); i++) type(KEY.up);
+    assert.match(screen(), /^→ Herdar padrão/m);
+
+    type(KEY.enter);
+    delete externalEdit.swarmModels;
+    assert.deepEqual(readConfig(), externalEdit, 'Herdar padrão só remove o preset');
+    assert.ok(rowOf(label).includes(`herda ${inherited}`), screen());
+  }
+  assert.equal(modelWrites, 0);
+  assert.equal(thinkingWrites, 0);
+  checks++; console.log('ok presets do swarm: herança, picker, thinking, remoção e larguras 40/60/80/120');
+
+  // 5d. Erro em presets não desabilita o editor de papéis.
+  type(KEY.esc); await done.pending;
+  const invalidPreset = readConfig();
+  invalidPreset.swarmModels = {
+    writer: { model: 'test/astra', thinking: 'turbo' },
+    reviewer: null,
+    board: { model: 'test/luna', thinking: 'low' },
+  };
+  writeFixture(invalidPreset);
+  done = await openPanel(extension);
+  assert.match(rowOf('swarm writer'), /config inválida/);
+  assert.match(rowOf('swarm reviewer'), /config inválida/);
+  assert.match(rowOf('swarm board'), /Luna 6.*low/);
+  goTo('scout');
+  type(KEY.right);
+  invalidPreset.roleModels.scout[0].thinking = 'high';
+  assert.deepEqual(readConfig(), invalidPreset, 'erro em presets não bloqueia nem é alterado por escrita de papel');
+  goTo('swarm board');
+  type(KEY.right);
+  invalidPreset.swarmModels.board.thinking = 'medium';
+  assert.deepEqual(readConfig(), invalidPreset, 'thinking em slot válido preserva entradas inválidas');
+  goTo('swarm writer');
+  type(KEY.enter);
+  for (const ch of 'astra') type(ch);
+  type(KEY.enter);
+  invalidPreset.swarmModels.writer.thinking = 'medium';
+  assert.deepEqual(readConfig(), invalidPreset, 'substitui só o slot inválido escolhido');
+  assert.match(rowOf('swarm writer'), /Astra 6.*medium/);
+  assert.match(rowOf('swarm reviewer'), /config inválida/);
+  goTo('swarm reviewer');
+  type(KEY.enter);
+  assert.match(screen(), /^→ Herdar padrão/m);
+  type(KEY.enter);
+  delete invalidPreset.swarmModels.reviewer;
+  assert.deepEqual(readConfig(), invalidPreset, 'Herdar padrão remove a entrada inválida mesmo se for null');
+  assert.match(rowOf('swarm reviewer'), /herda reviewer/);
+  assert.ok(!notices.some(n => n.level === 'error'), JSON.stringify(notices));
+  checks++; console.log('ok entradas inválidas isoladas e reparáveis: substituir ou voltar a herdar');
 
   // 6. Config quebrada: erro explícito, painel de pé, nada gravado.
   type(KEY.esc); await done.pending;
@@ -235,6 +353,10 @@ try {
   for (const label of ['Default', 'Fast', 'Standard', 'Deep', 'Visual', 'Image', 'scout', 'worker', 'planner', 'reviewer']) {
     assert.ok(new RegExp(`(^|\\s)${label}\\s`).test(legacyScreen), `legado mostra ${label}:\n${legacyScreen}`);
   }
+  for (const [slot, inherited] of swarmSlots) {
+    assert.ok(rowOf(`swarm ${slot}`).includes(`herda ${inherited}`), legacyScreen);
+  }
+  assertWidths();
   goTo('Fast');
   const concurrentTierEdit = readConfig();
   concurrentTierEdit.roleModels.scout.reverse();
@@ -245,8 +367,10 @@ try {
   assert.deepEqual(readConfig().roleModels, concurrentTierEdit.roleModels, 'editar tier preserva preferências de papéis alteradas externamente');
   assert.equal(readConfig().duringTierPanel, 'preservar', 'editar tier preserva campos concorrentes');
   goTo('reviewer');
+  const legacyRoleEdit = readConfig();
+  legacyRoleEdit.roleModels.reviewer[0].thinking = 'low';
   type(KEY.left);
-  assert.equal(readConfig().tiers.fast.thinking, 'xhigh', 'papel não altera tier por ←→');
+  assert.deepEqual(readConfig(), legacyRoleEdit, '← em papel também só edita o par ativo no modo legado');
   type(KEY.enter);
   assert.ok(screen().includes('autorizados neste papel'), 'papel abre a allowlist também no legado');
   assert.ok(!/GPT Image/.test(screen()), 'legado: modelo de imagem fora do picker de papel');
@@ -257,12 +381,117 @@ try {
   // 8. Negativo direto no helper: fora da allowlist é recusado, sem gravar.
   const req = createRequire(join(root, 'package.json'));
   const { createJiti } = req('jiti');
-  const tiers = await createJiti(import.meta.url, { fsCache: false, moduleCache: false }).import(join(repo, 'agent/extensions/brain-live/lib/tiers.ts'));
+  const jiti = createJiti(import.meta.url, { fsCache: false, moduleCache: false });
+  const tiers = await jiti.import(join(repo, 'agent/extensions/brain-live/lib/tiers.ts'));
   const snapshot = bytes();
   assert.throws(() => tiers.setRolePreference('scout', 'test/opus'), /is not allowed/);
   assert.throws(() => tiers.setRolePreference('inexistente', 'test/opus'), /has no allowed models/);
+  assert.throws(() => tiers.setSwarmModel('writer', { model: 'test/google/gemini-test', thinking: 'high' }), /not the Pi API/);
   assert.equal(bytes(), snapshot, 'recusa não grava');
   checks++; console.log('ok helper recusa modelo fora da allowlist e papel inexistente');
+  // 9. Malformed presets don't affect the same role lookup used by ordinary subagents.
+  const bad = fixture();
+  bad.swarmModels = { writer: { model: 'test/astra', thinking: 'turbo' }, board: { model: 'test/luna', thinking: 'high' } };
+  writeFixture(bad);
+  assert.deepEqual(tiers.getRoleModelChoices('worker'), bad.roleModels.worker);
+  assert.throws(() => tiers.getSwarmModel('writer'), /invalid option in swarmModels/);
+  assert.deepEqual(tiers.getSwarmModel('board'), bad.swarmModels.board);
+  assert.equal(tiers.getSwarmModel('reviewer'), undefined);
+  assert.deepEqual(tiers.loadSwarmModels(), { board: bad.swarmModels.board });
+
+  // A malformed section has no individual slots to remove; choosing inheritance repairs it all.
+  for (const section of [null, [], 'invalid']) {
+    writeFixture({ ...fixture(), swarmModels: section });
+    assert.throws(() => tiers.getSwarmModel('board'), /swarmModels.*must be an object/);
+    done = await openPanel(legacy.extensions[0]);
+    goTo('swarm writer');
+    assert.match(rowOf('swarm writer'), /config inválida/);
+    type(KEY.enter);
+    assert.match(screen(), /^→ Herdar padrão/m);
+    type(KEY.enter);
+    assert.deepEqual(readConfig(), fixture(), 'Herdar padrão removes the malformed section');
+    for (const [slot, inherited] of swarmSlots) {
+      assert.match(rowOf(`swarm ${slot}`), new RegExp(`herda ${inherited}`));
+      assert.equal(tiers.getSwarmModel(slot), undefined, 'dispatch can resolve the normal role');
+    }
+    type(KEY.esc); await done.pending;
+  }
+  checks++; console.log('ok Herdar padrão repara a seção inválida e dispatch volta a herdar');
+
+  // Simulate a stale lock whose PID now belongs to the current live process.
+  const subagentDir = join(repo, 'agent/extensions/brain-live/subagent');
+  const { readProcessIdentity } = await jiti.import(join(subagentDir, 'process-owner.ts'));
+  const { tryLock, readLock } = await jiti.import(join(subagentDir, 'lockfile.ts'));
+  const identity = readProcessIdentity(process.pid);
+
+  if (identity) {
+    const lockPath = `${file}.lock`;
+    const orphan = tryLock(lockPath, { identity: { ...identity, start: `${identity.start}-old` } }, () => false);
+    assert.ok(orphan.ok);
+    try {
+      tiers.setSwarmModel('writer', () => {
+        const generation = readdirSync(vault).filter(name => /^agent-models\.json\.lock\.\d+$/.test(name))
+          .sort((a, b) => Number(a.split('.').at(-1)) - Number(b.split('.').at(-1))).at(-1);
+        assert.deepEqual(readLock(join(vault, generation)).identity, identity, 'the new holder records its identity');
+        return { model: 'test/astra', thinking: 'high' };
+      });
+      assert.deepEqual(tiers.getSwarmModel('writer'), { model: 'test/astra', thinking: 'high' });
+    } finally {
+      orphan.release();
+    }
+    checks++; console.log('ok lock órfão recuperado mesmo com PID vivo reutilizado');
+  } else {
+    console.log('skip: process identity unavailable');
+  }
+
+  // 10. Hold the first process after it has read the config; the second tries to write
+  // before the first is released. Without a transaction lock the role update is lost.
+  writeFixture();
+  const tiersUrl = pathToFileURL(join(repo, 'agent/extensions/brain-live/lib/tiers.ts')).href;
+  const signalFile = (name) => join(dir, `writer-${name}`);
+  const worker = (source) => {
+    const child = spawn(process.execPath, ['--input-type=module', '-e', `
+      import * as tiers from ${JSON.stringify(tiersUrl)};
+      import { existsSync, writeFileSync } from 'node:fs';
+      const sleep = ms => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+      function waitFor(path, timeout) {
+        const until = Date.now() + timeout;
+        while (!existsSync(path) && Date.now() < until) sleep(10);
+        return existsSync(path);
+      }
+      ${source}
+    `], { env: { ...process.env, NODE_OPTIONS: '' }, stdio: 'inherit' });
+    return new Promise((resolve, reject) => {
+      child.once('error', reject);
+      child.once('exit', (code, signal) => code === 0 ? resolve() : reject(new Error(`config writer exited: ${code ?? signal}`)));
+    });
+  };
+  await Promise.all([
+    worker(`tiers.setSwarmModel('writer', () => {
+      writeFileSync(${JSON.stringify(signalFile('read'))}, '');
+      if (!waitFor(${JSON.stringify(signalFile('started'))}, 4000)) throw new Error('role writer did not start');
+      waitFor(${JSON.stringify(signalFile('finished'))}, 350);
+      return { model: 'test/astra', thinking: 'xhigh' };
+    });`),
+    worker(`if (!waitFor(${JSON.stringify(signalFile('read'))}, 4000)) throw new Error('swarm writer did not read');
+      writeFileSync(${JSON.stringify(signalFile('started'))}, '');
+      tiers.setRoleThinking('worker', 'low');
+      writeFileSync(${JSON.stringify(signalFile('finished'))}, '');`),
+  ]);
+  const both = fixture();
+  both.swarmModels = { writer: { model: 'test/astra', thinking: 'xhigh' } };
+  both.roleModels.worker[0].thinking = 'low';
+  assert.deepEqual(readConfig(), both, 'both concurrent process updates survive');
+  checks += 2; console.log('ok presets inválidos isolados no dispatch; escritas concorrentes preservadas');
+
+  // Leave a lock without identity behind when its owning process exits.
+  const lockfileUrl = pathToFileURL(join(subagentDir, 'lockfile.ts')).href;
+  await worker(`const { tryLock } = await import(${JSON.stringify(lockfileUrl)});
+    if (!tryLock(${JSON.stringify(`${file}.lock`)}, {}, () => false).ok) throw new Error('could not acquire fixture lock');`);
+  tiers.setRoleThinking('worker', 'medium');
+  both.roleModels.worker[0].thinking = 'medium';
+  assert.deepEqual(readConfig(), both, 'a dead PID without identity does not block writes');
+  checks++; console.log('ok lock sem identidade recuperado quando o PID não está vivo');
   console.log(`PASS /models por papel (${checks} blocos)`);
 } finally {
   for (const key of Object.keys(process.env)) if (!(key in savedEnv)) delete process.env[key];

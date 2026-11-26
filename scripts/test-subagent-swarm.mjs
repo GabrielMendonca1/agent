@@ -38,7 +38,7 @@ import { AssistantMessageEventStream } from '${join(piRoot, 'node_modules/@earen
 import { appendFileSync } from 'node:fs';
 const text = m => Array.isArray(m.content) ? m.content.map(p => p.text || '').join('') : String(m.content ?? '');
 export default function (pi) {
-  const stream = (model, context) => {
+  const stream = (model, context, options) => {
     const s = new AssistantMessageEventStream();
     queueMicrotask(async () => {
       const n = context.messages.filter(m => m.role === 'assistant').length;
@@ -48,6 +48,7 @@ export default function (pi) {
       const last = context.messages.at(-1);
       let content, stopReason = 'stop';
       const cost = Number(process.env.FG_COST || 0);
+      const dispatch = { model: model.provider + '/' + model.id, thinking: options?.reasoning };
       if (!process.env.AGENT_CHILD) {
         if (process.env.FG_DUMP) appendFileSync(process.env.FG_DUMP, JSON.stringify({ n, tools, system, messages: context.messages.map(m => [m.role, text(m)]) }) + '\\n');
         const script = JSON.parse(process.env.FG_SCRIPT || '[]');
@@ -66,7 +67,7 @@ export default function (pi) {
         const turn = context.messages.filter(m => m.role === 'user').length;
         const since = context.messages.findLastIndex(m => m.role === 'user');
         const step = context.messages.slice(since).filter(m => m.role === 'assistant').length;
-        if (process.env.FG_LOG && last.role === 'toolResult') appendFileSync(process.env.FG_LOG, JSON.stringify({ me, turn, step, result: text(last), env: [me, process.env.AGENT_BOARD_PATH] }) + '\\n');
+        if (process.env.FG_LOG && last.role === 'toolResult') appendFileSync(process.env.FG_LOG, JSON.stringify({ ...dispatch, me, turn, step, result: text(last), env: [me, process.env.AGENT_BOARD_PATH] }) + '\\n');
         const seen = Math.max(0, ...context.messages.filter(m => m.role === 'toolResult').flatMap(m => [...text(m).matchAll(/#(\\d+)/g)].map(x => Number(x[1]))));
         const plan = turn === 1
           ? [{ action: 'post', kind: 'claim', text: me + ' claims src/' + me + '.ts', refs: ['src/' + me + '.ts'] },
@@ -89,7 +90,7 @@ export default function (pi) {
         const role = tools.includes('edit') ? 'writer' : 'reviewer';
         const turn = context.messages.filter(m => m.role === 'user').length;
         const session = process.argv[process.argv.indexOf('--session') + 1];
-        if (process.env.FG_LOG && last.role === 'user') appendFileSync(process.env.FG_LOG, JSON.stringify({ role, turn, cwd: process.cwd(), session, prompt: text(last) }) + '\\n');
+        if (process.env.FG_LOG && last.role === 'user') appendFileSync(process.env.FG_LOG, JSON.stringify({ ...dispatch, role, turn, cwd: process.cwd(), session, prompt: text(last) }) + '\\n');
         if (role === 'writer') {
           const noop = (process.env.FG_NOOP || '').split(',').includes(String(turn));
           if (last.role === 'user' && !noop) {
@@ -109,7 +110,7 @@ export default function (pi) {
     });
     return s;
   };
-  pi.registerProvider('fg-fake', { api: 'fg-fake', apiKey: 'offline', baseUrl: 'http://127.0.0.1:1', models: [{ id: 'fake', name: 'fake', reasoning: false, input: ['text'], cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, contextWindow: 32000, maxTokens: 2048 }], stream, streamSimple: stream });
+  pi.registerProvider('fg-fake', { api: 'fg-fake', apiKey: 'offline', baseUrl: 'http://127.0.0.1:1', models: ['fake', 'writer-model', 'reviewer-model', 'board-model'].map(id => ({ id, name: id, reasoning: id !== 'fake', input: ['text'], cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, contextWindow: 32000, maxTokens: 2048 })), stream, streamSimple: stream });
 }
 `);
 
@@ -143,6 +144,10 @@ const readLog = (file) => existsSync(file) ? readFileSync(file, 'utf8').trim().s
 const brief = { objective: 'add a swarm file', context: `repo ${work}`, scope: 'swarm-*.txt only', done_when: 'file committed', stop_if: 'anything else is needed' };
 const search = { tool: 'tool_search', args: { query: 'swarm loop writer reviewer' } };
 const swarmCall = (args = {}) => ({ tool: 'swarm', args: { mode: 'loop', writer: { brief }, ...args } });
+const boardCall = (tasks, args = {}) => ({ tool: 'swarm', args: { mode: 'board', tasks, ...args } });
+const modelsFile = join(agent, 'agent-models.json');
+const choice = (id, thinking) => ({ model: `fg-fake/${id}`, thinking });
+const dispatchChoice = ({ model, thinking }) => ({ model, thinking });
 const worktreesDir = join(agent, 'agent/worktrees');
 const worktreeCount = () => existsSync(worktreesDir) ? readdirSync(worktreesDir).length : 0;
 
@@ -159,6 +164,19 @@ function loop(name, extra, args) {
 }
 
 try {
+  // A stale preset is refused before launch, even if Pi accepts custom IDs for its provider.
+  {
+    writeFileSync(modelsFile, JSON.stringify({ tiers: {}, swarmModels: { writer: choice('missing-model', 'high') } }));
+    const before = worktreeCount();
+    const events = runPi({ AGENT_SWARM: '1', FG_SCRIPT: JSON.stringify([search, swarmCall()]) });
+    const [refused] = toolResults(events, 'swarm');
+    assert.equal(refused.isError, true, resultText(refused));
+    assert.match(resultText(refused), /swarm preset.*fg-fake\/missing-model.*not found/i);
+    assert.equal(worktreeCount(), before, 'no worktree created for a stale preset');
+    rmSync(modelsFile);
+    console.log('ok missing preset model: refused before creating a worktree');
+  }
+
   // 1. Gate: off by default; the tool is not in the first request and tool_search finds it; the call is refused.
   {
     const dump = join(root, 'gate.dump');
@@ -272,16 +290,43 @@ try {
 
   // 6. Caps: maxRounds and maxUsd.
   {
-    const rounds = loop('max-rounds', { FG_VERDICTS: 'REQUEST_CHANGES' }, { maxRounds: 2 });
+    const rounds = loop('max-rounds', { FG_VERDICTS: 'REQUEST_CHANGES', FG_COST: '2' }, { maxRounds: 2 });
     assert.equal(rounds.record.swarm.outcome, 'max_rounds');
     assert.equal(rounds.record.swarm.rounds.length, 2);
     assert.match(rounds.message.content, /outcome: max_rounds · rounds: 2\/2/);
+    assert.match(resultText(rounds.launch), /no cost cap/);
+    assert.equal(rounds.record.swarm.maxUsd, undefined);
+    assert.ok(rounds.record.swarm.rounds[0].costUsd > 5, 'round 1 alone exceeds the old cap');
+    const followup = rounds.log.find(t => t.role === 'writer' && t.turn === 2);
+    assert.doesNotMatch(followup.prompt, /Remaining budget/);
     const usd = loop('max-usd', { FG_VERDICTS: 'REQUEST_CHANGES', FG_COST: '0.2' }, { maxUsd: 0.5 });
     assert.equal(usd.record.swarm.outcome, 'max_usd');
     assert.equal(usd.record.swarm.rounds.length, 1, 'round 2 never starts over budget');
     assert.ok(usd.record.swarm.spentUsd >= 0.5, `spent ${usd.record.swarm.spentUsd}`);
     assert.match(usd.message.content, /outcome: max_usd · rounds: 1\/3 · cost: \$0\.60/);
     console.log('ok caps: max_rounds and max_usd stop the loop');
+  }
+
+  // 6b. Loop presets supply both model and thinking, independently of role allowlists.
+  {
+    const writer = choice('writer-model', 'high');
+    const reviewer = choice('reviewer-model', 'low');
+    const roles = { worker: [choice('board-model', 'medium')], reviewer: [choice('board-model', 'medium')] };
+    writeFileSync(modelsFile, JSON.stringify({ tiers: {}, roleModels: roles, swarmModels: { writer, reviewer } }));
+    const preset = loop('loop-presets', {}, {});
+    assert.equal(preset.record.swarm.outcome, 'approved', preset.record.error);
+    assert.deepEqual(preset.log.map(dispatchChoice), [writer, reviewer]);
+    const override = loop('loop-explicit', {}, { maxUsd: 101, writer: { brief, model: 'fg-fake/board-model' }, reviewer: { model: 'fg-fake/board-model' } });
+    assert.equal(override.record.swarm.outcome, 'approved', override.record.error);
+    assert.match(resultText(override.launch), /\$101\.00/);
+    assert.deepEqual(override.log.map(dispatchChoice), [roles.worker[0], roles.reviewer[0]]);
+    // A hand-edited Google API preset is ignored: use the role's normal choice instead.
+    writeFileSync(modelsFile, JSON.stringify({ tiers: {}, roleModels: roles, swarmModels: { writer: { model: 'google/gemini-fixture', thinking: 'high' }, reviewer } }));
+    const blocked = loop('loop-google-preset', {}, {});
+    assert.equal(blocked.record.swarm.outcome, 'approved', blocked.record.error);
+    assert.deepEqual(blocked.log.map(dispatchChoice), [roles.worker[0], reviewer]);
+    rmSync(modelsFile);
+    console.log('ok loop presets: dispatch model and thinking, explicit overrides win, Google API is filtered');
   }
 
   // 7. Ambiguous verdict: no VERDICT line never approves.
@@ -334,14 +379,22 @@ try {
     const log = join(root, 'board.log');
     // Different roles: no shared cache prefix, so both start at once (no staggered fan-out) and post concurrently.
     const members = [['a', 'worker'], ['b', 'builder']].map(([x, role]) => ({ agent: role, brief: { ...brief, objective: `board part ${x}` } }));
-    const events = runPi({ AGENT_SWARM: '1', FG_LOG: log, FG_SCRIPT: JSON.stringify([search, { tool: 'swarm', args: { mode: 'board', tasks: members } }, { text: 'waiting' },
+    const boardPreset = choice('board-model', 'high');
+    const explicit = choice('writer-model', 'low');
+    members[1].model = explicit.model;
+    writeFileSync(modelsFile, JSON.stringify({ tiers: {}, roleModels: { worker: [explicit], builder: [explicit] }, swarmModels: { board: boardPreset, writer: choice('writer-model', 'turbo') } }));
+    const events = runPi({ AGENT_SWARM: '1', FG_LOG: log, FG_COST: '3', FG_SCRIPT: JSON.stringify([search, boardCall(members), { text: 'waiting' },
       { tool: 'subagent', args: { action: 'continue', handle: '$MEMBER', message: 'check the done entries' } }, { text: 'waiting again' }, { text: 'end' }]) });
+    rmSync(modelsFile);
     const [launch] = toolResults(events, 'swarm');
     assert.ok(!launch.isError, resultText(launch));
     const jobId = /Launched swarm board job (\S+),/.exec(resultText(launch))[1];
     const record = readJob(jobId);
     assert.equal(record.mode, 'parallel');
     assert.equal(record.swarm.kind, 'board');
+    assert.match(resultText(launch), /no cost cap/);
+    assert.equal(record.swarm.maxUsd, undefined);
+    assert.equal(record.swarm.spentUsd, 36, 'both members finish even though the first costs $18');
     assert.equal(record.status, 'completed', record.error);
     assert.equal(record.swarm.outcome, 'done');
     const file = record.swarm.boardPath;
@@ -357,6 +410,8 @@ try {
     const turns = readLog(log);
     for (const h of handles) {
       const mine = turns.filter(t => t.me === h && t.turn === 1);
+      const expected = h === handles[0] ? boardPreset : explicit;
+      assert.deepEqual(dispatchChoice(mine[0]), expected, `${h} dispatches with its model and thinking`);
       assert.match(mine[0].result, /^Posted #\d+ \(claim\)\.$/);
       assert.deepEqual(mine[0].env, [h, file]);
       const full = mine[2].result.split('\n');
@@ -367,7 +422,7 @@ try {
       else for (const l of incremental.split('\n')) assert.ok(Number(/^#(\d+)/.exec(l)[1]) > lastSeen, `since filters: ${incremental}`);
     }
     const delivered = events.filter(e => e.type === 'message_end' && e.message.customType === 'subagent-result').map(e => e.message);
-    assert.match(delivered[0].content, /^swarm board · outcome: done · tasks: 2 · cost: \$0\.00/m);
+    assert.match(delivered[0].content, /^swarm board · outcome: done · tasks: 2 · cost: \$36\.00/m);
     assert.match(delivered[0].content, /### board \(6 entries\)\n#1 \[/);
     assert.ok(delivered[0].content.includes(`full board: ${file}`));
     // continue: same invocation, so the board tool and env come back.
@@ -375,7 +430,7 @@ try {
     assert.equal(cont.length, 1, JSON.stringify(turns));
     assert.deepEqual(cont[0].env, [handles[0], file]);
     assert.equal(cont[0].result.split('\n').length, 2, 'read with kind=done after continue');
-    console.log('ok board: concurrent posts with monotonic seq, incremental read, result summary, board survives continue');
+    console.log('ok board: presets, explicit model, no cost cap, concurrent posts with monotonic seq, incremental read, result summary, board survives continue');
   }
 
   // 11. Board caps (400 chars, refs, 100 entries, 64 KiB; read always works) and env hygiene.
@@ -429,7 +484,7 @@ try {
   // 13. Board maxUsd: finished tasks reach the cap, the running sibling is aborted and its worktree gets a WIP commit.
   {
     const members = [{ agent: 'worker', brief: { ...brief, objective: 'board part fast' } }, { agent: 'builder', brief: { ...brief, objective: 'board part slow' } }];
-    const events = runPi({ AGENT_SWARM: '1', FG_COST: '0.2', FG_FAST_WAIT: '1500', FG_SCRIPT: JSON.stringify([search, { tool: 'swarm', args: { mode: 'board', tasks: members, maxUsd: 0.5 } }, { text: 'waiting' }]) });
+    const events = runPi({ AGENT_SWARM: '1', FG_COST: '0.2', FG_FAST_WAIT: '1500', FG_SCRIPT: JSON.stringify([search, boardCall(members, { maxUsd: 0.5 }), { text: 'waiting' }]) });
     const jobId = /Launched swarm board job (\S+),/.exec(resultText(toolResults(events, 'swarm')[0]))[1];
     const record = readJob(jobId);
     assert.equal(record.swarm.outcome, 'max_usd');
