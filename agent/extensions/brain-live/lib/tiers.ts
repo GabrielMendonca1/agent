@@ -18,6 +18,9 @@ export type TierName = (typeof TIER_NAMES)[number];
 
 /** Papéis nativos do Agent. A ordem é a exibida em /models. */
 export const ROLE_NAMES = ["scout", "worker", "planner", "reviewer", "visual"] as const;
+export const SWARM_SLOTS = ["writer", "reviewer", "board"] as const;
+export type SwarmSlot = (typeof SWARM_SLOTS)[number];
+export const THINKING_LEVELS: readonly string[] = ["off", "minimal", "low", "medium", "high", "xhigh"];
 
 export interface Tier {
 	label: string;
@@ -74,6 +77,8 @@ export interface TiersFile {
 	 * Opcional para manter compatibilidade com configs e agentes de projeto antigos.
 	 */
 	roleModels?: Record<string, RoleModelChoice[]>;
+	/** Presets do swarm; slots ausentes herdam o papel. */
+	swarmModels?: Partial<Record<SwarmSlot, RoleModelChoice>>;
 	/** Preferência de CLI, separada das allowlists de inferência do Pi. */
 	agyModels?: { gemini?: RoleModelChoice };
 }
@@ -120,7 +125,30 @@ export function loadTiers(): TiersFile {
 			}
 		}
 	}
+	if (parsed.swarmModels !== undefined) {
+		if (!parsed.swarmModels || typeof parsed.swarmModels !== "object" || Array.isArray(parsed.swarmModels)) {
+			throw new Error(`${MODELS_FILE}: field "swarmModels" must be an object`);
+		}
+		for (const [slot, choice] of Object.entries(parsed.swarmModels)) {
+			validateSwarmSlot(slot);
+			validateSwarmChoice(slot, choice);
+		}
+	}
 	return parsed as TiersFile;
+}
+
+function validateSwarmSlot(slot: string): void {
+	if (!SWARM_SLOTS.some((value) => value === slot)) throw new Error(`${MODELS_FILE}: unknown swarm slot "${slot}"`);
+}
+
+function validateThinking(thinking: string): void {
+	if (!THINKING_LEVELS.includes(thinking)) throw new Error(`thinking must be one of: ${THINKING_LEVELS.join(", ")}`);
+}
+
+function validateSwarmChoice(slot: string, choice: RoleModelChoice): void {
+	if (!choice || typeof choice.model !== "string" || !choice.model.includes("/") || !THINKING_LEVELS.includes(choice.thinking)) {
+		throw new Error(`${MODELS_FILE}: invalid option in swarmModels."${slot}" (provider/modelId and valid thinking are required)`);
+	}
 }
 
 /** Model refs from the Pi catalog, not native IDs for the agy runner. */
@@ -176,6 +204,57 @@ export function setRolePreference(role: string, model: string, addWithThinking?:
 	data.roleModels![role] = next;
 	saveTiers(data);
 	return allowedRoleChoices(next);
+}
+
+export function setRoleThinking(role: string, thinking: string): RoleModelChoice[] {
+	validateThinking(thinking);
+	const data = loadTiers();
+	const choices = data.roleModels && Object.hasOwn(data.roleModels, role) ? data.roleModels[role] : undefined;
+	const active = choices?.find((choice) => !isGoogleApiModel(choice.model));
+	if (!choices || !active) throw new Error(`role "${role}" has no allowed models in ${MODELS_FILE}`);
+	active.thinking = thinking;
+	saveTiers(data);
+	return allowedRoleChoices(choices);
+}
+
+export function loadSwarmModels(data = loadTiers()): Partial<Record<SwarmSlot, RoleModelChoice>> {
+	const allowed: Partial<Record<SwarmSlot, RoleModelChoice>> = {};
+	for (const slot of SWARM_SLOTS) {
+		const choice = data.swarmModels?.[slot];
+		if (choice && !isGoogleApiModel(choice.model)) allowed[slot] = choice;
+	}
+	return allowed;
+}
+
+export function getSwarmModel(slot: SwarmSlot): RoleModelChoice | undefined {
+	return loadSwarmModels()[slot];
+}
+
+export function setSwarmModel(slot: SwarmSlot, choice: RoleModelChoice | null): Partial<Record<SwarmSlot, RoleModelChoice>> {
+	validateSwarmSlot(slot);
+	const data = loadTiers();
+	if (choice === null) {
+		if (!data.swarmModels?.[slot]) return loadSwarmModels(data);
+		delete data.swarmModels[slot];
+		if (!Object.keys(data.swarmModels).length) delete data.swarmModels;
+	} else {
+		validateSwarmChoice(slot, choice);
+		if (isGoogleApiModel(choice.model)) throw new Error("Gemini is available through the agy role, not the Pi API.");
+		data.swarmModels = { ...data.swarmModels, [slot]: choice };
+	}
+	saveTiers(data);
+	return loadSwarmModels(data);
+}
+
+export function setSwarmThinking(slot: SwarmSlot, thinking: string): Partial<Record<SwarmSlot, RoleModelChoice>> {
+	validateSwarmSlot(slot);
+	validateThinking(thinking);
+	const data = loadTiers();
+	const choice = loadSwarmModels(data)[slot];
+	if (!choice) throw new Error(`swarm ${slot} inherits its role model; choose a preset before changing thinking`);
+	choice.thinking = thinking;
+	saveTiers(data);
+	return loadSwarmModels(data);
 }
 
 /** Resolve a preferência ou valida uma escolha explícita sem consultar quota/disponibilidade. */

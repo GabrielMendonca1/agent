@@ -9,7 +9,8 @@
  * modelo/thinking/origem efetivos. Escolher ali lista primeiro os pares autorizados em
  * `roleModels` e depois todo modelo disponível; confirmado, promove o escolhido a
  * preferência daquele papel (autorizando-o, se era novo, com o thinking da preferência
- * atual). Nunca muda a sessão nem outro papel.
+ * atual). O thinking pode ser ajustado no par ativo, sem mudar a sessão nem outro papel.
+ * Presets de swarm são independentes e, se ausentes, herdam o papel.
  *
  *   ↑↓ linha · Enter escolhe modelo (digite pra filtrar) · ←→ thinking/quality · s size · Esc fecha
  */
@@ -19,10 +20,10 @@ import { getSelectListTheme } from "@earendil-works/pi-coding-agent";
 import { Container, fuzzyFilter, Input, Key, matchesKey, type SelectItem, SelectList, Spacer, Text, truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
 import { getAgentPreferences, isChild, runtimeEnabled, setAgentPreferences } from "../../core/client.mjs";
 import { AGY_FAMILIES, AGY_THINKING, agyFamilyRef, DEFAULT_GEMINI_MODEL, getGeminiPreference, resolveAgyFamily, setGeminiPreference } from "./lib/tiers.ts";
-import { isGoogleApiModel, loadRoleModels, loadTiers, MODELS_FILE, ROLE_NAMES, type RoleModelChoice, saveTiers, setRolePreference, TIER_NAMES, type Tier, type TierName, type TiersFile } from "./lib/tiers.ts";
+import { isGoogleApiModel, loadRoleModels, loadSwarmModels, loadTiers, MODELS_FILE, ROLE_NAMES, type RoleModelChoice, saveTiers, setRolePreference, setRoleThinking, setSwarmModel, setSwarmThinking, SWARM_SLOTS, type SwarmSlot, THINKING_LEVELS as THINKING, TIER_NAMES, type Tier, type TierName, type TiersFile } from "./lib/tiers.ts";
 import { type AgentConfig, discoverAgents } from "./subagent/agents.ts";
 
-const THINKING = ["off", "minimal", "low", "medium", "high", "xhigh"];
+const SWARM_INHERIT: Record<SwarmSlot, string> = { writer: "worker", reviewer: "reviewer", board: "papel da task" };
 const QUALITY = ["auto", "low", "medium", "high"];
 const SIZE = ["auto", "1024x1024", "1024x1536", "1536x1024"];
 
@@ -72,13 +73,13 @@ function badge(theme: ThemeLike, id: string, name: string, selected: boolean): s
 	return `${theme.fg(p.color, p.glyph)} ${label}`;
 }
 
-function modelOptions(ctx: ExtensionCommandContext, pilot = false): SelectItem[] {
+function modelOptions(ctx: ExtensionCommandContext, pilot: boolean, allChat = false): SelectItem[] {
 	const available = ctx.modelRegistry.getAvailable();
-	const scoped = ctx.scopedModels.length > 0 ? ctx.scopedModels.map((s) => s.model) : available;
+	const models = !allChat && ctx.scopedModels.length > 0 ? ctx.scopedModels.map((s) => s.model) : available;
 	const seen = new Set<string>();
 	const items: SelectItem[] = [];
-	for (const m of scoped) {
-		if (pilot && m.type && m.type !== "chat") continue;
+	for (const m of models) {
+		if ((pilot || allChat) && m.type && m.type !== "chat") continue;
 		const id = `${m.provider}/${m.id}`;
 		if (isGoogleApiModel(id) || seen.has(id)) continue;
 		seen.add(id);
@@ -150,15 +151,15 @@ class ModelPicker extends Container {
 	}
 }
 
-interface Row {
-	/** `role` = allowlist do Pi; `agy` = preferência independente do registry. */
-	kind: "session" | "support" | "tier" | "role" | "agy";
-	id: string;
+type Row = (
+	| { kind: "session" | "support" | "tier" | "role" | "agy"; id: string }
+	| { kind: "swarm"; id: SwarmSlot }
+) & {
 	label: string;
 	description: string;
 	model: () => string;
 	extra: () => string[]; // colunas à direita (origem · thinking / quality · size)
-}
+};
 
 const supportWarningKey = Symbol.for("agent.models.support-warning-shown");
 const processFlags = globalThis as typeof globalThis & Record<symbol, boolean | undefined>;
@@ -175,7 +176,7 @@ export default function (pi: ExtensionAPI) {
 		} catch { /* Aviso de custo não impede a abertura da sessão. */ }
 	});
 	pi.registerCommand("models", {
-		description: "Painel de tiers de modelo (default · fast · standard · deep · visual · image)",
+		description: "Painel de modelos, papéis e presets do swarm",
 		handler: async (_args, ctx) => {
 			if (ctx.mode !== "tui") {
 				ctx.ui.notify("/models precisa da TUI", "error");
@@ -189,7 +190,8 @@ export default function (pi: ExtensionAPI) {
 			}
 			let data: TiersFile | undefined;
 			let roleChoices: Record<string, RoleModelChoice[]> = {};
-			let roleError: string | undefined;
+			let swarmChoices: Partial<Record<SwarmSlot, RoleModelChoice>> = {};
+			let configError: string | undefined;
 			let resourcePrefs: { supportModel: string | null } | undefined;
 			let resourceError: string | undefined;
 			if (pilot) {
@@ -206,12 +208,13 @@ export default function (pi: ExtensionAPI) {
 					return;
 				}
 			}
-			// Allowlist por papel: vale nos dois modos. Config quebrada é dita, não escondida —
-			// e no piloto não derruba o painel (slots seguem servindo de fallback).
+			// Papéis e swarm valem nos dois modos. Config inválida não esconde Principal/Apoio no piloto.
 			try {
-				roleChoices = loadRoleModels(data);
+				const config = data ?? loadTiers();
+				roleChoices = loadRoleModels(config);
+				swarmChoices = loadSwarmModels(config);
 			} catch (err) {
-				roleError = err instanceof Error ? err.message : String(err);
+				configError = err instanceof Error ? err.message : String(err);
 			}
 			let gemini: AgentConfig | undefined;
 			try {
@@ -252,6 +255,7 @@ export default function (pi: ExtensionAPI) {
 			const currentDefault = () => (ctx.model ? `${ctx.model.provider}/${ctx.model.id}` : "");
 			const normalModel = (model?: string | null) => isGoogleApiModel(model) ? "" : model ?? "";
 			const supportUnset = "__agent_support_inherit__";
+			const swarmUnset = "";
 
 			await ctx.ui.custom((tui, theme, _kb, done) => {
 				const setTier = (name: TierName, patch: Partial<Tier>) => {
@@ -262,6 +266,7 @@ export default function (pi: ExtensionAPI) {
 						saveTiers(latest);
 						data = latest;
 						roleChoices = loadRoleModels(latest);
+						swarmChoices = loadSwarmModels(latest);
 					} catch (err) {
 						ctx.ui.notify(`erro salvando tier: ${err instanceof Error ? err.message : String(err)}`, "error");
 					}
@@ -277,7 +282,7 @@ export default function (pi: ExtensionAPI) {
 					model: () => roleChoices[role]?.[0]?.model ?? "",
 					extra: () => {
 						const choice = roleChoices[role]?.[0];
-						if (!choice) return [roleError ? "config inválida" : pilot ? "frontmatter/slot" : "frontmatter"];
+						if (!choice) return [configError ? "config inválida" : pilot ? "frontmatter/slot" : "frontmatter"];
 						return ["models.json", choice.thinking];
 					},
 				}));
@@ -292,6 +297,14 @@ export default function (pi: ExtensionAPI) {
 						return [geminiChoice ? "models.json" : "padrão", actual === choice.thinking ? actual : `${choice.thinking} → ${actual}`];
 					},
 				});
+				const swarmRows: Row[] = SWARM_SLOTS.map((slot) => ({
+					kind: "swarm",
+					id: slot,
+					label: `swarm ${slot}`,
+					description: "preset do swarm",
+					model: () => swarmChoices[slot]?.model ?? "",
+					extra: () => [swarmChoices[slot]?.thinking ?? ""],
+				}));
 				const rows: Row[] = pilot
 					? [
 							{
@@ -313,6 +326,7 @@ export default function (pi: ExtensionAPI) {
 								extra: () => ["fallback"],
 							},
 							...roleRows,
+							...swarmRows,
 						]
 					: [
 							{
@@ -335,6 +349,7 @@ export default function (pi: ExtensionAPI) {
 								};
 							}),
 							...roleRows,
+							...swarmRows,
 						];
 
 				let cursor = 0;
@@ -352,15 +367,29 @@ export default function (pi: ExtensionAPI) {
 						writeAgyChoice({ ...choice, thinking: AGY_THINKING[(cur + dir + AGY_THINKING.length) % AGY_THINKING.length] });
 						return;
 					}
-					// Thinking de papel Pi vem do par autorizado: não se move sozinho.
-					if (row.kind === "role") return;
+					if (row.kind === "role" || row.kind === "swarm") {
+						const choice = row.kind === "role" ? roleChoices[row.id]?.[0] : swarmChoices[row.id];
+						if (!choice) {
+							ctx.ui.notify(`${row.label}: escolha um modelo com Enter antes de mudar o thinking`, "warning");
+							return;
+						}
+						const cur = THINKING.indexOf(choice.thinking);
+						const next = THINKING[(cur + dir + THINKING.length) % THINKING.length];
+						try {
+							if (row.kind === "role") roleChoices = { ...roleChoices, [row.id]: setRoleThinking(row.id, next) };
+							else swarmChoices = setSwarmThinking(row.id, next);
+						} catch (err) {
+							ctx.ui.notify(`erro salvando thinking de ${row.label}: ${err instanceof Error ? err.message : String(err)}`, "error");
+						}
+						return;
+					}
 					if (row.kind === "session") {
 						const cur = THINKING.indexOf(ctx.thinkingLevel ?? "medium");
 						const next = THINKING[(cur + dir + THINKING.length) % THINKING.length];
 						pi.setThinkingLevel(next as any);
 						return;
 					}
-					// No piloto só existem as linhas Principal/Apoio e os papéis; tiers não entram.
+					// Tiers não aparecem no piloto.
 					if (row.kind !== "tier" || !data) return;
 					const name = row.id as TierName;
 					const list = name === "image" ? QUALITY : THINKING;
@@ -383,11 +412,27 @@ export default function (pi: ExtensionAPI) {
 						}, () => { picker = null; }, theme);
 						return;
 					}
+					if ((row.kind === "role" || row.kind === "swarm") && configError) {
+						ctx.ui.notify(`erro lendo ${MODELS_FILE}: ${configError}`, "error");
+						return;
+					}
+					if (row.kind === "swarm") {
+						const choices = [
+							{ value: swarmUnset, label: "Herdar padrão", description: `herda ${SWARM_INHERIT[row.id]}` },
+							...modelOptions(ctx, pilot, true),
+						];
+						picker = new ModelPicker(row.label, row.description, choices, row.model(), (model) => {
+							try {
+								const choice = model === swarmUnset ? null : { model, thinking: swarmChoices[row.id]?.thinking ?? "medium" };
+								swarmChoices = setSwarmModel(row.id, choice);
+							} catch (err) {
+								ctx.ui.notify(`erro salvando ${row.label}: ${err instanceof Error ? err.message : String(err)}`, "error");
+							}
+							picker = null;
+						}, () => { picker = null; }, theme);
+						return;
+					}
 					if (row.kind === "role") {
-						if (roleError) {
-							ctx.ui.notify(`erro lendo ${MODELS_FILE}: ${roleError}`, "error");
-							return;
-						}
 						const choices = roleChoices[row.id] ?? [];
 						// Primeiro os pares autorizados (o thinking vem com o modelo); depois todo
 						// modelo disponível — escolher um deles o autoriza neste papel com o
@@ -418,7 +463,6 @@ export default function (pi: ExtensionAPI) {
 								// Enter aqui é a confirmação do usuário: grava só a preferência deste papel.
 								try {
 									roleChoices = { ...roleChoices, [row.id]: setRolePreference(row.id, v, allowedIds.has(v) ? undefined : newThinking) };
-									if (data) data.roleModels = { ...(data.roleModels ?? {}), [row.id]: roleChoices[row.id] };
 									const chosen = roleChoices[row.id][0];
 									ctx.ui.notify(`${row.id}: ${chosen.model} · thinking ${chosen.thinking}`, "info");
 								} catch (err) {
@@ -466,19 +510,21 @@ export default function (pi: ExtensionAPI) {
 
 				const renderRows = (width: number): string[] => {
 					const out: string[] = [];
-					const labelW = 10;
-					const descW = Math.max(18, Math.min(34, width - 62));
+					const labelW = 15;
+					const descW = Math.min(34, Math.max(0, width - 62));
 					for (let i = 0; i < rows.length; i++) {
 						const r = rows[i];
 						const sel = i === cursor;
 						const id = r.model();
 						const cur = theme.fg(sel ? "accent" : "dim", sel ? "▸ " : "  ");
 						const label = truncateToWidth((sel ? theme.bold(theme.fg("accent", r.label)) : theme.fg("text", r.label)) + " ".repeat(labelW), labelW, "", true);
-						const desc = theme.fg("dim", truncateToWidth(r.description, descW, "…", true));
+						const desc = descW ? `  ${theme.fg("dim", truncateToWidth(r.description, descW, "…", true))}` : "";
 						const model = !id
 							? r.kind === "support"
 								? theme.fg("dim", "herdar principal · não configurado")
-								: theme.fg("dim", "—")
+								: r.kind === "swarm"
+									? theme.fg("dim", configError ? "config inválida" : `herda ${SWARM_INHERIT[r.id]}`)
+									: theme.fg("dim", "—")
 							: r.kind === "tier" && r.id === "image"
 								? badge(theme, id, "GPT Image", sel) + theme.fg("dim", `  via ${prettyName(ctx, id)}`)
 								: badge(theme, id, r.kind === "agy" ? agyOptions.find((o) => o.value === id)?.label ?? id : prettyName(ctx, id), sel);
@@ -487,50 +533,39 @@ export default function (pi: ExtensionAPI) {
 							.filter(Boolean)
 							.map((e) => theme.fg((THINKING_COLOR[e] as any) ?? "muted", e))
 							.join(theme.fg("dim", " · "));
-						const left = `${cur}${label}  ${desc}  ${model}`;
-						if (!pilot) {
-							const pad = Math.max(1, width - visibleWidth(left) - visibleWidth(extra) - 2);
-							out.push(left + " ".repeat(pad) + extra);
-						} else {
-							const fittedExtra = truncateToWidth(extra, width, "");
-							if (visibleWidth(fittedExtra) >= width) {
-								out.push(fittedExtra);
-							} else {
-								const fittedLeft = truncateToWidth(left, Math.max(0, width - visibleWidth(fittedExtra) - 1), "");
-								const pad = " ".repeat(Math.max(1, width - visibleWidth(fittedLeft) - visibleWidth(fittedExtra)));
-								out.push(fittedLeft + pad + fittedExtra);
-							}
+						const left = `${cur}${label}${desc}  ${model}`;
+						const fittedExtra = truncateToWidth(extra, width, "");
+						const extraW = visibleWidth(fittedExtra);
+						const fittedLeft = truncateToWidth(left, Math.max(0, width - extraW - (extraW ? 1 : 0)), "");
+						const pad = extraW ? " ".repeat(Math.max(0, width - visibleWidth(fittedLeft) - extraW)) : "";
+						out.push(fittedLeft + pad + fittedExtra);
+
+						const nextKind = rows[i + 1]?.kind;
+						if (nextKind === "swarm" && r.kind !== "swarm") {
+							out.push(truncateToWidth(theme.fg("borderMuted", "  ── Swarm"), width, ""));
+						} else if (r.kind === "session" || (r.kind !== "role" && nextKind === "role")) {
+							out.push(theme.fg("borderMuted", truncateToWidth("  " + "─".repeat(Math.max(0, width - 4)), width, "")));
 						}
-						const divide = r.kind === "session" || (r.kind !== "role" && rows[i + 1]?.kind === "role");
-						if (divide) out.push(theme.fg("borderMuted", pilot ? truncateToWidth("  " + "─".repeat(Math.max(0, width - 4)), width, "") : "  " + "─".repeat(Math.max(10, width - 4))));
 					}
 					return out;
 				};
 
-				const header = (width: number) => pilot
-					? [
-							truncateToWidth(theme.bold(theme.fg("accent", "Modelos")) + theme.fg("dim", `   ${resourceError ? `preferências indisponíveis · ${resourceError}` : "preferências do perfil"}`), width, ""),
-							"",
-						]
-					: [
-							theme.bold(theme.fg("accent", "Modelos")) + theme.fg("dim", "   O agente conversa com você; os subagentes usam o tier de cada um"),
-							"",
-						];
+				const header = (width: number) => {
+					const description = pilot
+						? resourceError ? `preferências indisponíveis · ${resourceError}` : "preferências do perfil"
+						: "O agente conversa com você; os subagentes usam o tier de cada um";
+					return [truncateToWidth(theme.bold(theme.fg("accent", "Modelos")) + theme.fg("dim", `   ${description}`), width, ""), ""];
+				};
 				const footer = (width: number) => {
 					const row = rows[cursor];
 					const isImage = row.kind === "tier" && row.id === "image";
-					const isRole = row.kind === "role";
-					const hints = isRole
-						? ["↑↓ linha", "Enter par autorizado", "Esc fecha"]
-						: pilot
-							? ["↑↓ linha", "Enter modelo", "←→ thinking", "Esc fecha"]
-							: ["↑↓ linha", "Enter modelo", isImage ? "←→ quality" : "←→ thinking", ...(isImage ? ["s size"] : []), "Esc fecha"];
-					const note = roleError
-						? `  erro lendo ${MODELS_FILE.replace(process.env.HOME ?? "", "~")}: ${roleError}`
+					const hints = ["↑↓ linha", "Enter modelo", isImage ? "←→ quality" : "←→ thinking", ...(isImage ? ["s size"] : []), "Esc fecha"];
+					const note = configError
+						? `  erro lendo ${MODELS_FILE.replace(process.env.HOME ?? "", "~")}: ${configError}`
 						: pilot
 							? "  modelo e thinking são sua escolha e persistem; o modo (Shift+Tab) não os altera"
 							: `  ${MODELS_FILE.replace(process.env.HOME ?? "", "~")}`;
-					return ["", truncateToWidth(theme.fg("dim", "  " + hints.join("  ·  ")), width, ""), truncateToWidth(theme.fg(roleError ? "error" : "dim", note), width, "")];
+					return ["", truncateToWidth(theme.fg("dim", "  " + hints.join("  ·  ")), width, ""), truncateToWidth(theme.fg(configError ? "error" : "dim", note), width, "")];
 				};
 
 				return {
