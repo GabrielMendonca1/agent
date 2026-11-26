@@ -237,9 +237,15 @@ function isAncestor(cwd: string, ancestor: string, descendant: string): boolean 
 	throw new Error(r.stderr?.trim() || r.error?.message || "Cannot verify Git ancestry.");
 }
 
-function merge(cwd: string, sha: string, before: string, label: string, hint = ""): void {
-	try { git(cwd, ["-c", "rerere.enabled=false", "merge", "--no-ff", "--no-edit", "--no-autostash", "--no-overwrite-ignore", sha]); }
-	catch (error) {
+function merge(cwd: string, branch: string, sha: string, before: string, label: string, hint = ""): string {
+	if (currentBranch(cwd) !== branch || head(cwd) !== before || merging(cwd)) {
+		throw new Error(`${label}: checkout changed before merge; retry integrate.`);
+	}
+	const upToDate = isAncestor(cwd, sha, before);
+	try {
+		git(cwd, ["-c", "rerere.enabled=false", "merge", "--no-ff", "--commit", "--no-squash", "--no-edit", "--no-autostash", "--no-overwrite-ignore", sha]);
+		if (merging(cwd)) throw new Error("Git stopped before committing the merge.");
+	} catch (error) {
 		let conflicts: string[] = [];
 		let recovery = "";
 		try {
@@ -251,6 +257,28 @@ function merge(cwd: string, sha: string, before: string, label: string, hint = "
 		const files = conflicts.map((file) => /[\r\n\t]/.test(file) ? JSON.stringify(file) : file);
 		throw new Error(`${label}; conflicts: ${files.join(", ") || "(none)"}\n${String(error)}${recovery}${conflicts.length && hint ? `\n${hint}` : ""}`);
 	}
+	const merged = head(cwd);
+	// Only the exact expected merge is eligible for rollback. A writer can commit
+	// before Git starts the merge or after it exits, without taking our lock.
+	const expected = upToDate ? merged === before : git(cwd, ["show", "-s", "--format=%P", merged]) === `${before} ${sha}`;
+	if (!expected || currentBranch(cwd) !== branch) {
+		throw new Error(`${label}: checkout changed during merge; leaving its commits intact. Inspect ${cwd} and retry integrate.`);
+	}
+	return merged;
+}
+
+function rollbackSync(t: WorktreeBranch, checkedHead: string, preMergeSha: string): void {
+	if (currentBranch(t.worktree) !== t.branch || merging(t.worktree)) {
+		throw new Error("Worktree branch or merge state changed during checks.");
+	}
+	// Compare and swap under the ref lock. A prior HEAD check followed by reset
+	// could overwrite a commit made between the two Git commands.
+	git(t.worktree, ["update-ref", "-m", "agent: roll back integration preview", `refs/heads/${t.branch}`, preMergeSha, checkedHead]);
+	if (currentBranch(t.worktree) !== t.branch || head(t.worktree) !== preMergeSha || merging(t.worktree)) {
+		throw new Error("Worktree changed during rollback; refusing to restore checkout files.");
+	}
+	// Refresh the index and files without moving any ref again.
+	git(t.worktree, ["read-tree", "--reset", "-u", "HEAD"]);
 }
 
 export async function integrateWorktreeBranch(t: WorktreeBranch, options: WorktreeManagementOptions = {}): Promise<{ gateMessage?: string; cleanupOnly?: boolean }> {
@@ -269,11 +297,11 @@ export async function integrateWorktreeBranch(t: WorktreeBranch, options: Worktr
 		const sourceHead = head(t.sourceCwd);
 		if (currentBranch(t.worktree) !== t.branch) throw new Error(`${label} is not on ${t.branch}; refusing merge.`);
 		const synced = !isAncestor(t.worktree, sourceHead, preMergeSha);
+		let checkedHead = preMergeSha;
 		if (synced) {
 			const writer = t.handle ? `Resume the writer (${t.handle}) with subagent continue` : options.label ? "Resume the writer with subagent continue" : "Resume work in the worktree";
-			merge(t.worktree, sourceHead, preMergeSha, `Merge preview failed for ${t.branch}`, `${writer} to merge ${t.sourceBranch} in ${t.worktree}, resolve the conflicts, and retry integrate.`);
+			checkedHead = merge(t.worktree, t.branch, sourceHead, preMergeSha, `Merge preview failed for ${t.branch}`, `${writer} to merge ${t.sourceBranch} in ${t.worktree}, resolve the conflicts, and retry integrate.`);
 		}
-		const checkedHead = head(t.worktree);
 		let gateMessage: string;
 		try {
 			const manifest = findManifest(t.worktree);
@@ -296,16 +324,12 @@ export async function integrateWorktreeBranch(t: WorktreeBranch, options: Worktr
 			if (!isAncestor(t.worktree, sourceHead, checkedHead)) throw new Error("Worktree no longer includes the source HEAD; refusing merge.");
 		} catch (error) {
 			if (synced) {
-				try {
-					if (currentBranch(t.worktree) !== t.branch || head(t.worktree) !== checkedHead || merging(t.worktree)) {
-						throw new Error("Worktree branch, HEAD, or merge state changed during checks.");
-					}
-					git(t.worktree, ["reset", "--hard", preMergeSha]);
-				} catch (failure) { throw new Error(`${String(error)}\nCould not roll back sync: ${String(failure)}`); }
+				try { rollbackSync(t, checkedHead, preMergeSha); }
+				catch (failure) { throw new Error(`${String(error)}\nCould not roll back sync: ${String(failure)}`); }
 			}
 			throw error;
 		}
-		merge(t.sourceCwd, checkedHead, sourceHead, `Merge failed for ${t.branch}`);
+		merge(t.sourceCwd, t.sourceBranch!, checkedHead, sourceHead, `Merge failed for ${t.branch}`);
 		remove(t, false, false, options);
 		return { gateMessage };
 	}, { branch: t.branch });

@@ -3,7 +3,6 @@ import { createHash, randomUUID } from "node:crypto";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
-import { getAgentDir } from "@earendil-works/pi-coding-agent";
 import { waitLock, type LockBody } from "./lockfile.ts";
 import { ownerMayBeAlive, readProcessIdentity, type ProcessIdentity } from "./process-owner.ts";
 
@@ -19,13 +18,18 @@ export interface ActiveWorkspaceEntry {
 	startedAt: number;
 }
 
-export function repoKey(cwd: string): string {
+function gitCommonDir(cwd: string): string {
 	const commonDir = execFileSync("git", ["-C", cwd, "rev-parse", "--path-format=absolute", "--git-common-dir"], { encoding: "utf8" }).replace(/\r?\n$/, "");
-	return createHash("sha256").update(fs.realpathSync(commonDir)).digest("hex").slice(0, 16);
+	return fs.realpathSync(commonDir);
 }
 
-function repoDir(key: string): string {
-	const dir = path.join(getAgentDir(), "agent", "workspaces", key);
+export function repoKey(cwd: string): string {
+	return createHash("sha256").update(gitCommonDir(cwd)).digest("hex").slice(0, 16);
+}
+
+function repoDir(commonDir: string): string {
+	// Git metadata is shared by every checkout and profile, unlike PI_CODING_AGENT_DIR.
+	const dir = path.join(commonDir, "agent-workspace");
 	fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
 	return dir;
 }
@@ -37,7 +41,7 @@ function ownerLabel(owner?: LockBody): string {
 }
 
 function withState<T>(cwd: string, fn: (entries: ActiveWorkspaceEntry[]) => { value: T; changed?: boolean }): T {
-	const dir = repoDir(repoKey(cwd));
+	const dir = repoDir(gitCommonDir(cwd));
 	const lock = waitLock(path.join(dir, "state.lock"), { identity: readProcessIdentity(process.pid) }, ownerIsDead, 5_000);
 	if (!lock.ok) throw new Error(`Timed out waiting for workspace state lock (${ownerLabel(lock.owner)}).`);
 	try {
@@ -106,7 +110,7 @@ function integrateLock(key: string) {
 }
 
 export async function withRepoIntegrateLock<T>(cwd: string, fn: () => T | Promise<T>, options: { branch?: string; timeoutMs?: number } = {}): Promise<T> {
-	const key = repoKey(cwd);
+	const key = gitCommonDir(cwd);
 	if (integrating.has(key)) throw new Error("Worktree management already in progress for this repository.");
 	integrating.add(key);
 	try {
@@ -130,7 +134,7 @@ export async function withRepoIntegrateLock<T>(cwd: string, fn: () => T | Promis
 
 /** Synchronous GC is best effort; never wait for an integration. */
 export function tryRepoIntegrateLock(cwd: string, branch: string, fn: () => void): boolean {
-	const key = repoKey(cwd);
+	const key = gitCommonDir(cwd);
 	if (integrating.has(key)) return false;
 	const lock = waitLock(integrateLock(key), { branch, identity: readProcessIdentity(process.pid) }, ownerIsDead, 0);
 	if (!lock.ok) return false;
