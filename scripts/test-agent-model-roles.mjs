@@ -55,6 +55,7 @@ const catalog = [
   { provider: 'test', id: 'luna', name: 'Luna 6', contextWindow: 400_000 },
   { provider: 'test', id: 'sol', name: 'Sol 6.1', contextWindow: 400_000 },
   { provider: 'test', id: 'flash', name: 'Flash 3.8', contextWindow: 1_000_000 },
+  { provider: 'test', id: 'google/gemini-test', name: 'Blocked Google Chat' },
   { provider: 'test', id: 'img', name: 'GPT Image', type: 'image' },
 ];
 
@@ -93,6 +94,12 @@ const goTo = name => {
   throw new Error(`linha "${name}" não encontrada:\n${screen()}`);
 };
 
+const assertWidths = () => {
+  for (const width of [40, 60, 80, 120]) {
+    for (const line of view.render(width)) assert.ok(plain(line).length <= width, `overflow em ${width}: ${plain(line)}`);
+  }
+};
+
 async function openPanel(extension) {
   notices.length = 0;
   const pending = extension.commands.get('models').handler('', ctx);
@@ -129,16 +136,11 @@ try {
   assert.ok(!/scout · worker|orquestrador · reviewer/.test(screen()), 'slots não se vendem como papéis');
   assert.ok(rowOf('Apoio').includes('fallback'), 'Apoio é fallback explícito');
   assert.equal(bytes(), before, 'abrir /models não grava');
-  for (const width of [40, 60, 80, 120]) {
-    for (const line of view.render(width)) assert.ok(plain(line).length <= width, `overflow em ${width}: ${plain(line)}`);
-  }
+  assertWidths();
   checks++; console.log('ok piloto mostra os cinco papéis com modelo/thinking/origem; slots sem rótulo enganoso');
 
   // 2. Papel: autorizados primeiro, depois os demais disponíveis; Esc não grava.
   goTo('scout');
-  type(KEY.left); type(KEY.right);
-  assert.equal(bytes(), before, '←→ em papel não grava (thinking vem do par)');
-  assert.equal(thinkingWrites, 0, '←→ em papel não mexe no thinking da sessão');
   type(KEY.enter);
   const picker = screen();
   assert.ok(picker.includes('Haiku 4.5') && picker.includes('Luna 6'), `picker lista os autorizados:\n${picker}`);
@@ -179,6 +181,25 @@ try {
   assert.deepEqual(merged.roleModels.planner[0], { model: 'test/astra', thinking: 'medium' }, 'escolha nova aplicada sobre o arquivo atual');
   checks++; console.log('ok gravação relê o arquivo: não clobbera edição concorrente');
 
+  // 4b. As setas editam somente o par ativo, pulando Google API e relendo o arquivo.
+  goTo('scout');
+  const edited = readConfig();
+  edited.roleModels.scout.unshift({ model: 'test/google/gemini-test', thinking: 'xhigh' });
+  edited.tiers.standard.thinking = 'low';
+  edited.roleModels.reviewer[0].thinking = 'off';
+  writeFixture(edited);
+  type(KEY.right);
+  const expected = structuredClone(edited);
+  expected.roleModels.scout[1].thinking = 'high';
+  assert.deepEqual(readConfig(), expected, '→ só muda o thinking do primeiro modelo permitido no arquivo atual');
+  assert.ok(rowOf('scout').includes('high'), screen());
+  type(KEY.left);
+  assert.deepEqual(readConfig(), edited, '← volta a medium sem tocar nas edições externas');
+  assert.equal(modelWrites, 0);
+  assert.equal(thinkingWrites, 0);
+  assert.equal(sessionThinking, 'medium');
+  checks++; console.log('ok setas editam só o thinking do papel ativo, preservando a sessão e edições concorrentes');
+
   // 5. Papel sem allowlist: picker com todos; escolher cria a allowlist do papel.
   const withoutScout = readConfig();
   delete withoutScout.roleModels.scout;
@@ -189,6 +210,10 @@ try {
   const noAllowlist = rowOf('scout');
   assert.ok(noAllowlist.includes('—') && noAllowlist.includes('frontmatter'), `papel sem allowlist aparece com a origem real: ${noAllowlist}`);
   goTo('scout');
+  type(KEY.left);
+  assert.equal(notices.at(-1).level, 'warning');
+  assert.match(notices.at(-1).text, /scout: escolha um modelo com Enter/);
+  assert.equal(bytes(), stable, '← sem allowlist não grava');
   type(KEY.enter);
   assert.ok(/Haiku 4\.5[\s\S]*Opus 5/.test(screen()) || /Opus 5[\s\S]*Haiku 4\.5/.test(screen()), `sem allowlist abre picker com todos:\n${screen()}`);
   type(KEY.esc);
@@ -210,6 +235,46 @@ try {
   assert.deepEqual(readConfig().roleModels.worker[0], { model: 'test/astra', thinking: withoutScout.roleModels.worker[0].thinking }, 'novo modelo autorizado na frente');
   assert.equal(readConfig().roleModels.worker.length, withoutScout.roleModels.worker.length + 1, 'nenhuma opção perdida');
   checks++; console.log('ok modelo novo no papel: autorizado com o thinking da preferência');
+
+  // 5c. Presets independentes: escolher, ajustar thinking e voltar à herança.
+  const swarmSlots = [['writer', 'worker'], ['reviewer', 'reviewer'], ['board', 'papel']];
+  for (const [slot, inherited] of swarmSlots) {
+    const label = `swarm ${slot}`;
+    const saved = bytes();
+    assert.ok(rowOf(label).includes(`herda ${inherited}`), screen());
+    goTo(label);
+    type(KEY.right);
+    assert.equal(notices.at(-1).level, 'warning');
+    assert.ok(notices.at(-1).text.includes(`${label}: escolha um modelo com Enter`));
+    assert.equal(bytes(), saved, '←/→ sem preset não grava');
+    type(KEY.enter);
+    assert.ok(screen().indexOf('Herdar padrão') < screen().indexOf('Haiku 4.5') && screen().includes('Herdar padrão'), screen());
+    assert.doesNotMatch(screen(), /Blocked Google Chat|GPT Image/);
+    for (const ch of 'astra') type(ch);
+    type(KEY.enter);
+    assert.deepEqual(readConfig().swarmModels?.[slot], { model: 'test/astra', thinking: 'medium' });
+    assert.ok(rowOf(label).includes('Astra 6'), screen());
+    const externalEdit = readConfig();
+    externalEdit.extraDoUsuario.latestSlot = slot;
+    writeFixture(externalEdit);
+    type(KEY.right);
+    const changed = structuredClone(externalEdit);
+    changed.swarmModels[slot].thinking = 'high';
+    assert.deepEqual(readConfig(), changed, 'thinking do preset não sobrescreve a edição concorrente');
+    assert.ok(rowOf(label).includes('high'), screen());
+    assertWidths();
+    type(KEY.left);
+    assert.deepEqual(readConfig(), externalEdit, '← volta a medium');
+    type(KEY.enter);
+    for (const ch of 'herdar') type(ch);
+    type(KEY.enter);
+    delete externalEdit.swarmModels;
+    assert.deepEqual(readConfig(), externalEdit, 'Herdar padrão só remove o preset');
+    assert.ok(rowOf(label).includes(`herda ${inherited}`), screen());
+  }
+  assert.equal(modelWrites, 0);
+  assert.equal(thinkingWrites, 0);
+  checks++; console.log('ok presets do swarm: herança, picker, thinking, remoção e larguras 40/60/80/120');
 
   // 6. Config quebrada: erro explícito, painel de pé, nada gravado.
   type(KEY.esc); await done.pending;
@@ -235,6 +300,10 @@ try {
   for (const label of ['Default', 'Fast', 'Standard', 'Deep', 'Visual', 'Image', 'scout', 'worker', 'planner', 'reviewer']) {
     assert.ok(new RegExp(`(^|\\s)${label}\\s`).test(legacyScreen), `legado mostra ${label}:\n${legacyScreen}`);
   }
+  for (const [slot, inherited] of swarmSlots) {
+    assert.ok(rowOf(`swarm ${slot}`).includes(`herda ${inherited}`), legacyScreen);
+  }
+  assertWidths();
   goTo('Fast');
   const concurrentTierEdit = readConfig();
   concurrentTierEdit.roleModels.scout.reverse();
@@ -245,8 +314,10 @@ try {
   assert.deepEqual(readConfig().roleModels, concurrentTierEdit.roleModels, 'editar tier preserva preferências de papéis alteradas externamente');
   assert.equal(readConfig().duringTierPanel, 'preservar', 'editar tier preserva campos concorrentes');
   goTo('reviewer');
+  const legacyRoleEdit = readConfig();
+  legacyRoleEdit.roleModels.reviewer[0].thinking = 'low';
   type(KEY.left);
-  assert.equal(readConfig().tiers.fast.thinking, 'xhigh', 'papel não altera tier por ←→');
+  assert.deepEqual(readConfig(), legacyRoleEdit, '← em papel também só edita o par ativo no modo legado');
   type(KEY.enter);
   assert.ok(screen().includes('autorizados neste papel'), 'papel abre a allowlist também no legado');
   assert.ok(!/GPT Image/.test(screen()), 'legado: modelo de imagem fora do picker de papel');
@@ -261,6 +332,7 @@ try {
   const snapshot = bytes();
   assert.throws(() => tiers.setRolePreference('scout', 'test/opus'), /is not allowed/);
   assert.throws(() => tiers.setRolePreference('inexistente', 'test/opus'), /has no allowed models/);
+  assert.throws(() => tiers.setSwarmModel('writer', { model: 'test/google/gemini-test', thinking: 'high' }), /not the Pi API/);
   assert.equal(bytes(), snapshot, 'recusa não grava');
   checks++; console.log('ok helper recusa modelo fora da allowlist e papel inexistente');
   console.log(`PASS /models por papel (${checks} blocos)`);

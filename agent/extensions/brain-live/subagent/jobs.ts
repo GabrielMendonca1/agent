@@ -270,6 +270,10 @@ export function resolveJobTaskModels(
 		const preset = task.model === undefined ? swarmPresets?.[i] : undefined;
 		if (!preset) return undefined;
 		checkPiModel(preset.model);
+		// Presets are catalog IDs saved by /models, not fuzzy or custom CLI refs.
+		if (!registry?.getAll().some((model) => `${model.provider}/${model.id}` === preset.model)) {
+			throw new Error(`Agent: swarm preset model "${preset.model}" not found in the model registry. Update it in /models or choose to inherit.`);
+		}
 		return { ...task, model: preset.model, thinking: preset.thinking };
 	};
 	const checkInheritedModel = (file?: RoleFileConfig) => {
