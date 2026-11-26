@@ -6,7 +6,7 @@ import { homedir, tmpdir } from 'node:os';
 import { basename, dirname, join, posix, resolve } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { Readable, Transform } from 'node:stream';
+import { Readable, Transform, Writable } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
 import { gzipSync, gunzipSync } from 'node:zlib';
 export const schema = 1;
@@ -171,41 +171,70 @@ export function normalizeReleaseBaseUrl(value) {
      (url.protocol !== 'https:' && !(url.protocol === 'http:' && loopback(url)))) fail('invalid release base URL (HTTPS required except on loopback)');
  return url.href.replace(/\/+$/, '');
 }
-async function downloadFile(url, path, limit, token) {
+// Limit time to headers and gaps between chunks, not the total transfer time.
+const downloadIdleMs = 60_000;
+async function fetchReleaseFile(url, name, limit, { token, accept, output }) {
  const initial = new URL(url);
- const signal = AbortSignal.timeout(5 * 60_000);
  for (let redirects = 0; ; redirects++) {
-  const name = basename(path);
-  let response;
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), downloadIdleMs).unref();
   try {
-   response = await fetch(url, { redirect: 'manual', signal, headers: token ? { Authorization: `Bearer ${token}` } : {} });
-  } catch { fail(`cannot download ${name}`); }
-  if ([301, 302, 303, 307, 308].includes(response.status)) {
-   await response.body?.cancel();
-   const location = response.headers.get('location');
-   let next;
-   try { if (location) next = new URL(location, url); } catch {}
-   if (redirects >= 5 || !next || next.username || next.password ||
-       (next.protocol !== 'https:' && !(initial.protocol === 'http:' && next.origin === initial.origin && new URL(url).protocol === 'http:'))) fail(`unsafe download redirect for ${name}`);
-   if (next.origin !== new URL(url).origin) token = undefined;
-   url = next.href;
-   continue;
-  }
-  if (response.status !== 200 || !response.body || Number(response.headers.get('content-length')) > limit) {
-   await response.body?.cancel();
-   fail(`download rejected for ${name} (HTTP ${response.status} or size limit)`);
-  }
-  let size = 0;
-  const cap = new Transform({ transform(chunk, encoding, callback) {
-   size += chunk.length;
-   if (size > limit) callback(new Error('response exceeds size limit'));
-   else callback(null, chunk);
-  } });
-  try {
-   await pipeline(Readable.fromWeb(response.body), cap, createWriteStream(path, { flags: 'wx', mode: 0o600 }), { signal });
-  } catch { fail(`cannot write ${name} (download interrupted or size limit exceeded)`); }
-  return;
+   const headers = { 'User-Agent': 'agent-distribution' };
+   if (accept) headers.Accept = accept;
+   if (token) headers.Authorization = `Bearer ${token}`;
+   let response;
+   try { response = await fetch(url, { redirect: 'manual', signal: controller.signal, headers }); }
+   catch { fail(`cannot download ${name}`); }
+   timer.refresh();
+   if ([301, 302, 303, 307, 308].includes(response.status)) {
+    await response.body?.cancel();
+    const location = response.headers.get('location');
+    let next;
+    try { if (location) next = new URL(location, url); } catch {}
+    if (redirects >= 5 || !next || next.username || next.password ||
+        (next.protocol !== 'https:' && !(initial.protocol === 'http:' && next.origin === initial.origin && new URL(url).protocol === 'http:'))) fail(`unsafe download redirect for ${name}`);
+    if (next.origin !== new URL(url).origin) token = undefined;
+    url = next.href;
+    continue;
+   }
+   if (response.status !== 200 || !response.body || Number(response.headers.get('content-length')) > limit) {
+    await response.body?.cancel();
+    fail(`download rejected for ${name} (HTTP ${response.status} or size limit)`);
+   }
+   let size = 0;
+   const cap = new Transform({ transform(chunk, encoding, callback) {
+    timer.refresh();
+    size += chunk.length;
+    if (size > limit) callback(new Error('response exceeds size limit'));
+    else callback(null, chunk);
+   } });
+   const chunks = [];
+   const sink = output ? createWriteStream(output, { flags: 'wx', mode: 0o600 }) : new Writable({
+    write(chunk, encoding, callback) { chunks.push(chunk); callback(); },
+   });
+   try { await pipeline(Readable.fromWeb(response.body), cap, sink, { signal: controller.signal }); }
+   catch { fail(`cannot download ${name} (interrupted or size limit exceeded)`); }
+   return output ? undefined : Buffer.concat(chunks);
+  } finally { clearTimeout(timer); }
  }
+}
+async function githubRelease(repo, tag, token) {
+ const api = `https://api.github.com/repos/${repo}/releases`;
+ const metadataUrl = tag ? `${api}/tags/${encodeURIComponent(tag)}` : `${api}/latest`;
+ const body = await fetchReleaseFile(metadataUrl, 'GitHub release metadata', 4 * 1024 ** 2, { token, accept: 'application/vnd.github+json' });
+ let release;
+ try { release = JSON.parse(body); } catch { fail('invalid GitHub release metadata'); }
+ if (!validReleaseTag(release?.tag_name) || (tag && tag !== release.tag_name) || !Array.isArray(release.assets)) fail('invalid GitHub release metadata');
+ return {
+  tag: release.tag_name,
+  async download(name, limit, output) {
+   const matches = release.assets.filter(asset => asset?.name === name);
+   const id = matches[0]?.id;
+   if (matches.length !== 1 || !Number.isSafeInteger(id) || id < 1) fail(`missing or invalid GitHub asset: ${name}`);
+   // Build the URL from the configured repo and numeric ID, never from metadata URLs.
+   await fetchReleaseFile(`${api}/assets/${id}`, name, limit, { token, accept: 'application/octet-stream', output });
+  },
+ };
 }
 function readLatest(path, repo, tag) {
  let manifest;
@@ -221,30 +250,40 @@ export async function downloadArtifact(destination, tag = '') {
  const baseUrl = process.env.AGENT_RELEASE_BASE_URL === undefined ? undefined : normalizeReleaseBaseUrl(process.env.AGENT_RELEASE_BASE_URL);
  const publicKey = process.env.AGENT_RELEASE_PUBLIC_KEY ?? RELEASE_PUBLIC_KEY_PEM;
  ed25519Key(publicKey); // Do not start network I/O without a configured trust root.
- const token = process.env.AGENT_RELEASE_TOKEN || process.env.GITHUB_TOKEN;
- const github = `https://github.com/${repo}/releases`;
- // Phase 2 URL contract: custom base/latest.json, custom base/<tag>/<file>;
- // GitHub releases/latest/download/latest.json, releases/download/<tag>/<file>.
- // Publish byte-identical latest.json at discovery and at the tag. Its hash is in the signed sums.
- const releaseUrl = value => baseUrl ? `${baseUrl}/${encodeURIComponent(value)}` : `${github}/download/${encodeURIComponent(value)}`;
- const fetchFile = (root, name, limit) => downloadFile(`${root}/${name}`, join(destination, name), limit, token);
+ // Ambient GitHub credentials are only for the fixed GitHub API origin.
+ const token = process.env.AGENT_RELEASE_TOKEN || (!baseUrl ? process.env.GITHUB_TOKEN : undefined);
  const latest = join(destination, 'latest.json');
- if (!tag) {
-  await fetchFile(baseUrl ?? `${github}/latest/download`, 'latest.json', 64 * 1024);
-  tag = readLatest(latest, repo).tag;
+ const github = `https://github.com/${repo}/releases`;
+ // Custom: <base>/latest.json and <base>/<tag>/<file>. GitHub without a token:
+ // /releases/latest/download/latest.json and /releases/download/<tag>/<file>.
+ // Publish byte-identical latest.json at discovery and at the tag. Its hash is in the signed sums.
+ let fetchFile;
+ if (!baseUrl && token) {
+  const release = await githubRelease(repo, tag, token);
+  tag = release.tag;
+  fetchFile = (name, limit) => release.download(name, limit, join(destination, name));
+  await fetchFile('latest.json', 64 * 1024);
  } else {
-  await fetchFile(releaseUrl(tag), 'latest.json', 64 * 1024);
+  const fileAt = (root, name, limit) => fetchReleaseFile(`${root}/${name}`, name, limit, { token, output: join(destination, name) });
+  const releaseUrl = value => baseUrl ? `${baseUrl}/${encodeURIComponent(value)}` : `${github}/download/${encodeURIComponent(value)}`;
+  if (!tag) {
+   await fileAt(baseUrl ?? `${github}/latest/download`, 'latest.json', 64 * 1024);
+   tag = readLatest(latest, repo).tag;
+  } else {
+   await fileAt(releaseUrl(tag), 'latest.json', 64 * 1024);
+  }
+  const root = releaseUrl(tag);
+  fetchFile = (name, limit) => fileAt(root, name, limit);
  }
- const root = releaseUrl(tag);
- await fetchFile(root, 'SHA256SUMS', 1024 * 1024);
- await fetchFile(root, 'SHA256SUMS.sig', 1024);
+ await fetchFile('SHA256SUMS', 1024 * 1024);
+ await fetchFile('SHA256SUMS.sig', 1024);
  verifyManifestSignature(join(destination, 'SHA256SUMS'), join(destination, 'SHA256SUMS.sig'), publicKey);
- // Authenticate the manifest itself before using its asset mapping or claiming its release identity.
+ // The signature authenticates identity and bytes, not freshness. Use an explicit tag to pin a release.
  verifyFileHash(latest);
  const platform = `${process.platform}-${process.arch}`;
  const asset = readLatest(latest, repo, tag).assets?.[platform];
  if (!validAssetId(asset?.assetId) || asset.file !== `agent-${asset.assetId}-${platform}.tar.gz`) fail('invalid or missing platform artifact in latest.json');
- await fetchFile(root, asset.file, 512 * 1024 ** 2);
+ await fetchFile(asset.file, 512 * 1024 ** 2);
  const archive = join(destination, asset.file);
  verifyArchiveHash(archive);
  return { archive, tag, repo, assetId: asset.assetId, ...(baseUrl ? { baseUrl } : {}) };
