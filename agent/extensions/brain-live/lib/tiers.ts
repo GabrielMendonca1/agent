@@ -12,7 +12,8 @@ import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "
 import { dirname, join } from "node:path";
 import { homedir } from "node:os";
 import { randomUUID } from "node:crypto";
-import { pidAlive, waitLock } from "../subagent/lockfile.ts";
+import { waitLock } from "../subagent/lockfile.ts";
+import { ownerMayBeAlive, readProcessIdentity, type ProcessIdentity } from "../subagent/process-owner.ts";
 
 export const TIER_NAMES = ["fast", "standard", "deep", "visual", "image"] as const;
 export type TierName = (typeof TIER_NAMES)[number];
@@ -262,9 +263,14 @@ export function setSwarmModel(slot: SwarmSlot, choice: RoleModelChoice | null | 
 		const next = typeof choice === "function" ? choice(current[slot]) : choice;
 		const section = data.swarmModels;
 		if (next === null) {
-			if (!isSwarmSection(section) || !Object.hasOwn(section, slot)) return current;
-			delete section[slot];
-			if (!Object.keys(section).length) delete data.swarmModels;
+			if (section === undefined) return current;
+			if (!isSwarmSection(section)) {
+				delete data.swarmModels;
+			} else {
+				if (!Object.hasOwn(section, slot)) return current;
+				delete section[slot];
+				if (!Object.keys(section).length) delete data.swarmModels;
+			}
 		} else {
 			validateSwarmChoice(slot, next);
 			if (isGoogleApiModel(next.model)) throw new Error("Gemini is available through the agy role, not the Pi API.");
@@ -321,7 +327,8 @@ export function formatRoleModelChoices(role: string): string | undefined {
 // Every writer must hold this lock from loadTiers() through the atomic rename.
 function withTiersLock<T>(edit: () => T): T {
 	mkdirSync(dirname(MODELS_FILE), { recursive: true, mode: 0o700 });
-	const lock = waitLock(`${MODELS_FILE}.lock`, {}, (held) => !pidAlive(held.pid), 2_000);
+	const lock = waitLock(`${MODELS_FILE}.lock`, { identity: readProcessIdentity(process.pid) },
+		(held) => !ownerMayBeAlive(held.pid, held.identity as ProcessIdentity | undefined), 2_000);
 	if (!lock.ok) throw new Error(`${MODELS_FILE} is being edited by another process; try again`);
 	try {
 		return edit();

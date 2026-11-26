@@ -6,7 +6,7 @@
 // Loader real do Pi, registro de modelos falso, nenhuma chamada de modelo.
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { homedir, tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
@@ -381,7 +381,8 @@ try {
   // 8. Negativo direto no helper: fora da allowlist é recusado, sem gravar.
   const req = createRequire(join(root, 'package.json'));
   const { createJiti } = req('jiti');
-  const tiers = await createJiti(import.meta.url, { fsCache: false, moduleCache: false }).import(join(repo, 'agent/extensions/brain-live/lib/tiers.ts'));
+  const jiti = createJiti(import.meta.url, { fsCache: false, moduleCache: false });
+  const tiers = await jiti.import(join(repo, 'agent/extensions/brain-live/lib/tiers.ts'));
   const snapshot = bytes();
   assert.throws(() => tiers.setRolePreference('scout', 'test/opus'), /is not allowed/);
   assert.throws(() => tiers.setRolePreference('inexistente', 'test/opus'), /has no allowed models/);
@@ -397,6 +398,49 @@ try {
   assert.deepEqual(tiers.getSwarmModel('board'), bad.swarmModels.board);
   assert.equal(tiers.getSwarmModel('reviewer'), undefined);
   assert.deepEqual(tiers.loadSwarmModels(), { board: bad.swarmModels.board });
+
+  // A malformed section has no individual slots to remove; choosing inheritance repairs it all.
+  for (const section of [null, [], 'invalid']) {
+    writeFixture({ ...fixture(), swarmModels: section });
+    assert.throws(() => tiers.getSwarmModel('board'), /swarmModels.*must be an object/);
+    done = await openPanel(legacy.extensions[0]);
+    goTo('swarm writer');
+    assert.match(rowOf('swarm writer'), /config inválida/);
+    type(KEY.enter);
+    assert.match(screen(), /^→ Herdar padrão/m);
+    type(KEY.enter);
+    assert.deepEqual(readConfig(), fixture(), 'Herdar padrão removes the malformed section');
+    for (const [slot, inherited] of swarmSlots) {
+      assert.match(rowOf(`swarm ${slot}`), new RegExp(`herda ${inherited}`));
+      assert.equal(tiers.getSwarmModel(slot), undefined, 'dispatch can resolve the normal role');
+    }
+    type(KEY.esc); await done.pending;
+  }
+  checks++; console.log('ok Herdar padrão repara a seção inválida e dispatch volta a herdar');
+
+  // Simulate a stale lock whose PID now belongs to the current live process.
+  const subagentDir = join(repo, 'agent/extensions/brain-live/subagent');
+  const { readProcessIdentity } = await jiti.import(join(subagentDir, 'process-owner.ts'));
+  const { tryLock, readLock } = await jiti.import(join(subagentDir, 'lockfile.ts'));
+  const identity = readProcessIdentity(process.pid);
+  if (process.platform === 'darwin' || process.platform === 'linux') assert.ok(identity);
+  if (identity) {
+    const lockPath = `${file}.lock`;
+    const orphan = tryLock(lockPath, { identity: { ...identity, start: `${identity.start}-old` } }, () => false);
+    assert.ok(orphan.ok);
+    try {
+      tiers.setSwarmModel('writer', () => {
+        const generation = readdirSync(vault).filter(name => /^agent-models\.json\.lock\.\d+$/.test(name))
+          .sort((a, b) => Number(a.split('.').at(-1)) - Number(b.split('.').at(-1))).at(-1);
+        assert.deepEqual(readLock(join(vault, generation)).identity, identity, 'the new holder records its identity');
+        return { model: 'test/astra', thinking: 'high' };
+      });
+      assert.deepEqual(tiers.getSwarmModel('writer'), { model: 'test/astra', thinking: 'high' });
+    } finally {
+      orphan.release();
+    }
+    checks++; console.log('ok lock órfão recuperado mesmo com PID vivo reutilizado');
+  }
 
   // 10. Hold the first process after it has read the config; the second tries to write
   // before the first is released. Without a transaction lock the role update is lost.
