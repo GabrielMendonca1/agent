@@ -88,7 +88,12 @@ function publish(file: string, body: Record<string, unknown>): boolean {
 	const fd = fs.openSync(tmp, "wx", 0o600);
 	try {
 		try {
-			fs.writeSync(fd, JSON.stringify(body));
+			const data = Buffer.from(JSON.stringify(body));
+			for (let off = 0; off < data.length; ) {
+				const n = fs.writeSync(fd, data, off, data.length - off);
+				if (n <= 0) throw new Error(`Short write publishing lock record ${file}`);
+				off += n;
+			}
 			fs.fsyncSync(fd);
 		} finally {
 			fs.closeSync(fd);
