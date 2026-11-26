@@ -2809,8 +2809,12 @@ async function main() {
 			const remote = options.installArtifact === "latest" || !existsSync(resolve(options.installArtifact));
 			if (remote && process.env.AGENT_RELEASE_BASE_URL === undefined) {
 				const savedBaseUrl = activeRecord(options.store)?.release?.baseUrl;
-				// Use the existing download path so a saved mirror also suppresses ambient GITHUB_TOKEN.
-				if (savedBaseUrl !== undefined) process.env.AGENT_RELEASE_BASE_URL = normalizeReleaseBaseUrl(savedBaseUrl);
+				if (savedBaseUrl !== undefined) {
+					process.env.AGENT_RELEASE_BASE_URL = normalizeReleaseBaseUrl(savedBaseUrl);
+					// A saved mirror is not explicit authorization to send credentials.
+					delete process.env.AGENT_RELEASE_TOKEN;
+					delete process.env.GITHUB_TOKEN;
+				}
 			}
 			const downloaded = remote ? await downloadArtifact(temporary, options.installArtifact === "latest" ? process.env.AGENT_VERSION || "" : options.installArtifact) : undefined;
 			const tag = downloaded?.tag ?? options.releaseTag;

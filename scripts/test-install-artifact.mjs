@@ -341,7 +341,7 @@ try {
     await rollback(idB);await rollback(idA);
     await call(remoteLauncher,['overlay-update','--install-artifact',tagB]);await assertActive(idB);
    });
-   await testAsync('installer and updater reuse immutable releases without sending ambient GitHub credentials to mirrors',async ()=>{
+   await testAsync('installer and updater reuse immutable releases; inherited mirrors receive no tokens',async ()=>{
     const ambient={GITHUB_TOKEN:githubToken};
     const assertAnonymous=assetPath=>{
      assert.ok(paths().includes(assetPath),'expected a release tarball request to the mirror');
@@ -351,7 +351,7 @@ try {
     const modesAndContentsA=snapshotTree(installed(idA)),modesAndContentsB=snapshotTree(installed(idB));
     assert.equal(lstatSync(installed(idA)).mode & 0o777,0o700);
     assert.equal(lstatSync(installed(idB)).mode & 0o777,0o755);
-    const noBase={...ambient,AGENT_RELEASE_BASE_URL:undefined};
+    const noBase={...ambient,AGENT_RELEASE_TOKEN:token,AGENT_RELEASE_BASE_URL:undefined};
     await call(remoteLauncher,['update'],undefined,{...noBase,AGENT_VERSION:tagA});
     assertAnonymous(`/release/${tagA}/${basename(archive(outA))}`);
     await assertActive(idA);
@@ -366,9 +366,10 @@ try {
     } finally {json(activePath,saved);}
 
     const alternate=`${origin}/alternate`;
-    await call(remoteLauncher,['update'],undefined,{...ambient,AGENT_RELEASE_BASE_URL:alternate});
-    assertAnonymous(`/alternate/${tagB}/${basename(archive(outB))}`);
+    await call(remoteLauncher,['update'],undefined,{...ambient,AGENT_RELEASE_BASE_URL:alternate,AGENT_RELEASE_TOKEN:token});
+    assert.ok(paths().includes(`/alternate/${tagB}/${basename(archive(outB))}`));
     assert.ok(paths().every(path=>path.startsWith('/alternate/')));
+    assert.ok(requests.every(r=>r.authorization===`Bearer ${token}`),'explicit mirror should receive only the release token');
     await assertActive({...idB,baseUrl:alternate});
     await call('bash',[installer,'--tag',tagB],undefined,ambient);
     assertAnonymous(`/release/${tagB}/${basename(archive(outB))}`);
