@@ -2,7 +2,7 @@
 
 ## Instalação por artefato
 
-Estado integrado das Fases 1 e 2 (`2dca1db`). Leia esta tabela antes de seguir os comandos:
+Estado da distribuição antes da primeira publicação assinada:
 
 | Parte | Estado |
 |---|---|
@@ -10,7 +10,7 @@ Estado integrado das Fases 1 e 2 (`2dca1db`). Leia esta tabela antes de seguir o
 | Chave pública oficial | **Não provisionada**: `RELEASE_PUBLIC_KEY_PEM` está vazio em `scripts/lib/agent-distribution.mjs`, `scripts/install.sh` e `scripts/install.ps1`. Instalação remota falha fechado. Procedimento: [Provisionar a chave](#provisionar-a-chave-de-assinatura-mantenedor). |
 | `install.sh` / `install.ps1` sem `gh`, Node 24 portátil em `<store>/node`, wrappers (Fase 2A) | Integrado (`42d4263`). Windows nativo não foi executado nesta integração. |
 | CI de 5 plataformas, smoke Linux e Windows, publicação com assinatura (Fase 2B, `9a501b9`) | Integrado no workflow. Não executado no GitHub. Nenhuma release publicada. |
-| Testes `scripts/test-install-artifact.mjs` e `scripts/test-agent-runtime.mjs` | **Falham no estado integrado**: fixtures e asserções antigas (instalação remota sem chave; ordem do launcher) que a Fase 2A não atualizou. Corrigir antes de considerar a Fase 3 concluída; esta mudança de docs não os altera. |
+| Verificação local | `agent-distribution` exercita instalação assinada, Node portátil, falhas antes da ativação e rollback com servidor de loopback. |
 | Instalação offline (`AGENT_RELEASE_DIR`, `--install-artifact <arquivo>`) | Implementado. Confere só SHA-256 contra `SHA256SUMS`, sem Ed25519. |
 
 A v0.1.0 contém somente darwin-arm64. Releases publicadas antes da Fase 1 não trazem `latest.json` nem `SHA256SUMS.sig`, então não são instaláveis pelo canal HTTPS assinado. Esta mudança não publica release nem gera chave.
@@ -99,7 +99,7 @@ Sem `gh`, o instalador, `agent update` e `--install-artifact latest|<tag>` leem 
 ### Node portátil
 
 - Versão fixa: Node v24.22.3 (`scripts/lib/portable-node.mjs`; hashes oficiais também fixados em `install.sh` e `install.ps1`). Layout: `<store>/node/v24.22.3/bin/node` (Windows: `v24.22.3/node.exe`) e `<store>/node/current` (link; junction no Windows).
-- Instalação remota: usa o Node portátil, salvo `AGENT_USE_SYSTEM_NODE=1` com `node` >=22.19 no PATH. Se `<store>/node/v24.22.3/bin/node` não existir, baixa o arquivo oficial (`node-v24.22.3-<alvo>`) de `AGENT_NODE_BASE_URL` (padrão `https://nodejs.org/dist`; base HTTPS, ou loopback em teste), com limite de 128 MiB, e confere o SHA-256 fixo no script antes de extrair. Alvos: darwin-arm64 e darwin-x64 (`.tar.gz`), linux-x64 e linux-arm64 (`.tar.xz`), win32-x64 (`.zip`). `AGENT_NODE_SHA256` substitui o hash apenas com base em loopback. Se já existir, reaproveita: `agent update` não baixa Node de novo.
+- Instalação remota: usa o Node portátil, salvo `AGENT_USE_SYSTEM_NODE=1` com `node` >=22.19 no PATH. Se `<store>/node/v24.22.3/bin/node` não existir, baixa o arquivo oficial (`node-v24.22.3-<alvo>`) de `AGENT_NODE_BASE_URL` (padrão `https://nodejs.org/dist`; base HTTPS, ou loopback em teste), com limite de 128 MiB no instalador Bash, e confere o SHA-256 fixo no script antes de extrair. Alvos: darwin-arm64 e darwin-x64 (`.tar.gz`), linux-x64 e linux-arm64 (`.tar.xz`), win32-x64 (`.zip`). `AGENT_NODE_SHA256` substitui o hash apenas com base em loopback. Se já existir, reaproveita: `agent update` não baixa Node de novo.
 - Offline (`AGENT_RELEASE_DIR`): usa o `node` do sistema se for >=22.19. Sem ele, falha, salvo se o Node portátil já existir ou `AGENT_PORTABLE_NODE=1` (que permite baixar). `AGENT_PORTABLE_NODE=1` força o portátil em qualquer modo.
 - Os wrappers `agent` e `agent.cmd` usam `<store>/node/current` quando existe e caem para `node` do PATH.
 - `overlay-gc` nunca remove `<store>/node`. `agent overlay-status` imprime `Portable Node: present`, `no active binary` ou `not installed`.
