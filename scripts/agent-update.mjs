@@ -902,6 +902,7 @@ function installOverlayBundle(store) {
 		"scripts/lib/extensions.mjs",
 		"scripts/lib/agent-setup.mjs",
 		"scripts/lib/overlay-stale.mjs",
+		"scripts/lib/session-worktree.mjs",
 		// `agent deps` e o passo de dependências externas do install/update.
 		"scripts/lib/agent-deps.mjs",
 		// Skills padrão do Agent: o bundle instalado precisa delas para reinstalar sem checkout.

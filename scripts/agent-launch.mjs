@@ -19,7 +19,7 @@ import { spawn } from "node:child_process";
 import { buildAgentLaunch, defaultStore, DISABLE_ENV, MANAGED_ENV_KEYS } from "./lib/agent-runtime.mjs";
 
 const FORWARDED_SIGNALS = ["SIGINT", "SIGTERM", "SIGHUP", "SIGQUIT", "SIGUSR1", "SIGUSR2"];
-const USAGE = `usage: agent-launch [--store <abs>] [--print-spec] [--] [pi args...]\n  ${DISABLE_ENV}=1 lança o Pi legado, sem Agent.`;
+const USAGE = `usage: agent-launch [--store <abs>] [--print-spec] [--worktree [slug] | --worktree=<slug>] [--] [pi args...]\n  ${DISABLE_ENV}=1 lança o Pi legado, sem Agent.`;
 
 function parseArgs(argv) {
 	const parsed = { store: undefined, printSpec: false, args: [] };
@@ -27,7 +27,8 @@ function parseArgs(argv) {
 	for (; index < argv.length; index++) {
 		const arg = argv[index];
 		if (arg === "--") {
-			index++;
+			// The wrapper inserts a separator after --store, before the user's arguments.
+			if (parsed.store !== undefined) index++;
 			break;
 		}
 		if (arg === "--store") {
@@ -57,20 +58,38 @@ function parseArgs(argv) {
 let spec;
 let launchStore;
 let launchArgs = [];
+let launchCwd;
 try {
 	const parsed = parseArgs(process.argv.slice(2));
 	launchStore = parsed.store ?? defaultStore();
+	// Keep the ordinary launch path independent of worktree setup.
+	const argEnd = parsed.args.indexOf("--");
+	const options = argEnd < 0 ? parsed.args : parsed.args.slice(0, argEnd);
+	let workspace;
+	if (options.some((arg) => arg === "--worktree" || arg.startsWith("--worktree="))) {
+		workspace = await import("./lib/session-worktree.mjs");
+		const { slug, args } = workspace.extractWorktreeOption(parsed.args);
+		parsed.slug = slug;
+		parsed.args = args;
+	}
 	launchArgs = parsed.args;
 	spec = buildAgentLaunch({
 		store: launchStore,
 		env: process.env,
 		args: parsed.args,
 	});
+	let sessionEnv = {};
+	if (workspace) {
+		const session = workspace.prepareSessionWorktree(parsed.slug, { env: spec.env, dryRun: parsed.printSpec });
+		launchCwd = session.cwd;
+		sessionEnv = session.env;
+		Object.assign(spec.env, sessionEnv);
+	}
 	if (parsed.printSpec) {
 		// Diagnóstico não pode despejar tokens/credenciais herdados no ambiente.
 		const visible = new Set([...MANAGED_ENV_KEYS, "AGENT_ARTIFACT", "HOME", "USERPROFILE", "PI_CODING_AGENT_DIR", "PI_SYSTEM_DIR", "XDG_CONFIG_HOME", "XDG_DATA_HOME", "XDG_CACHE_HOME", "PATH", "TMPDIR", "PI_ACCOUNTS_MIRROR", "PI_OFFLINE", "ORCA_BACKGROUND_LAUNCH", "AGENT_LEARN", "AGENT_DISPATCHER"]);
 		const env = Object.fromEntries(Object.entries(spec.env).filter(([key]) => visible.has(key)));
-		process.stdout.write(`${JSON.stringify({ ...spec, env }, null, 2)}\n`);
+		process.stdout.write(`${JSON.stringify({ ...spec, ...(launchCwd ? { cwd: launchCwd } : {}), env: { ...env, ...sessionEnv } }, null, 2)}\n`);
 		process.exit(0);
 	}
 } catch (error) {
@@ -92,7 +111,7 @@ try {
 	/* o aviso nunca impede o Pi de abrir */
 }
 
-const child = spawn(spec.command, spec.args, { stdio: "inherit", env: spec.env });
+const child = spawn(spec.command, spec.args, { stdio: "inherit", env: spec.env, cwd: launchCwd });
 const forward = (signal) => () => {
 	// O terminal já manda o sinal para o grupo inteiro; reenviar é idempotente e cobre o caso de
 	// um `kill` dirigido só a este processo.
