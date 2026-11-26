@@ -5,4 +5,5 @@ dist/
 
 # Estado local de sessão: handoff e goals não vão para o git.
 .agent/handoff.md
+.agent/handoff.consumed.md
 .pi/goals/
