@@ -20,6 +20,11 @@ setlocal EnableExtensions DisableDelayedExpansion
 
 if defined AGENT_REPO (set "OVERLAY_REPO=%AGENT_REPO%") else (set "OVERLAY_REPO=__OVERLAY_REPO__")
 if defined AGENT_STORE (set "STORE=%AGENT_STORE%") else (set "STORE=%USERPROFILE%\.local\share\agent")
+set "NODE_BIN=node"
+if exist "%STORE%\node\current\node.exe" (
+	set "NODE_BIN=%STORE%\node\current\node.exe"
+	set "PATH=%STORE%\node\current;%PATH%"
+)
 set "UPDATER=%OVERLAY_REPO%\scripts\agent-update.mjs"
 set "AGENT_CONFIG=%STORE%\runtime\config.json"
 set "AGENT_LAUNCHER=%OVERLAY_REPO%\scripts\agent-launch.mjs"
@@ -47,7 +52,7 @@ if exist "%AGENT_LAUNCHER%" goto :agent_launch
 if exist "%AGENT_CONFIG%" goto :agent_missing
 goto :delegate
 :agent_launch
-node "%AGENT_LAUNCHER%" --store "%STORE%" -- %*
+"%NODE_BIN%" "%AGENT_LAUNCHER%" --store "%STORE%" -- %*
 exit /b
 
 :agent_missing
@@ -56,27 +61,27 @@ echo Reinstale o bundle com o launcher correspondente. 1>&2
 exit /b 1
 
 :migrate_from_mark
-node "%OVERLAY_REPO%\scripts\migrate-from-mark.mjs" %REST%
+"%NODE_BIN%" "%OVERLAY_REPO%\scripts\migrate-from-mark.mjs" %REST%
 exit /b
 
 :deps
-node "%OVERLAY_REPO%\scripts\lib\agent-deps.mjs" %REST%
+"%NODE_BIN%" "%OVERLAY_REPO%\scripts\lib\agent-deps.mjs" %REST%
 exit /b
 
 :overlay_update
-node "%UPDATER%" %REST%
+"%NODE_BIN%" "%UPDATER%" %REST%
 exit /b
 
 :overlay_rollback
-node "%UPDATER%" --rollback %REST%
+"%NODE_BIN%" "%UPDATER%" --rollback %REST%
 exit /b
 
 :overlay_status
-node "%UPDATER%" --status %REST%
+"%NODE_BIN%" "%UPDATER%" --status %REST%
 exit /b
 
 :overlay_gc
-node "%UPDATER%" --gc %REST%
+"%NODE_BIN%" "%UPDATER%" --gc %REST%
 exit /b
 
 :delegate
@@ -85,7 +90,7 @@ call "%ACTIVE_PI%" %*
 exit /b
 
 :missing
-echo Pi overlay is not installed; run: node "%UPDATER%" 1>&2
+echo Pi overlay is not installed; run: "%NODE_BIN%" "%UPDATER%" 1>&2
 exit /b 1
 
 :update
@@ -122,11 +127,11 @@ goto :update_scan
 :update_done
 if /i "%MODE%"=="delegate" goto :delegate
 if /i "%MODE%"=="all" goto :update_all
-node "%UPDATER%" --install-artifact latest
+"%NODE_BIN%" "%UPDATER%" --install-artifact latest
 exit /b
 
 :update_all
-node "%UPDATER%" --install-artifact latest
+"%NODE_BIN%" "%UPDATER%" --install-artifact latest
 if errorlevel 1 exit /b
 if not exist "%ACTIVE_PI%" goto :missing
 call "%ACTIVE_PI%" update %EXTRA%

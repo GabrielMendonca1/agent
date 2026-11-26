@@ -23,8 +23,14 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - os: macos-latest
+          - os: macos-14
             platform: darwin-arm64
+          - os: macos-15-intel
+            platform: darwin-x64
+          - os: ubuntu-24.04
+            platform: linux-x64
+          - os: ubuntu-24.04-arm
+            platform: linux-arm64
           - os: windows-2022
             platform: win32-x64
     runs-on: ${{ matrix.os }}
@@ -48,6 +54,39 @@ jobs:
           name: agent-${{ matrix.platform }}
           path: dist/
           if-no-files-found: error
+
+  smoke-linux:
+    needs: build
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - uses: actions/download-artifact@v4
+        with:
+          name: agent-linux-x64
+          path: dist
+      - name: Native bootstrap and fake Mark profile
+        shell: bash
+        run: |
+          set -euo pipefail
+          home=$(mktemp -d)
+          trap 'rm -rf "$home"' EXIT
+          export HOME="$home"
+          export PI_CODING_AGENT_DIR="$home/.agent"
+          export AGENT_STORE="$home/s"
+          export AGENT_WARM_START=0
+          export AGENT_RELEASE_DIR="$GITHUB_WORKSPACE/dist"
+          bash dist/install.sh --adopt-launcher
+          agent="$home/.local/bin/agent"
+          "$agent" --version
+          "$agent" overlay-status
+          mark="$home/.pi/agent"
+          mkdir -p "$mark"
+          printf '%s\n' '{"defaultModel":"fixture-mark"}' > "$mark/settings.json"
+          json=$("$agent" migrate-from-mark --dry-run --json)
+          node -e 'const r = JSON.parse(process.argv[1]); if (!r.dryRun) throw new Error("Missing dry-run report")' "$json"
+          if [ -e "$PI_CODING_AGENT_DIR/auth.json" ]; then echo 'Unexpected credentials' >&2; exit 1; fi
 
   smoke-windows:
     needs: build
@@ -94,13 +133,14 @@ jobs:
 
   publish:
     if: github.event_name == 'workflow_dispatch' && inputs.publish
-    needs: [build, smoke-windows]
+    needs: [build, smoke-linux, smoke-windows]
     runs-on: ubuntu-latest
     permissions:
       contents: write
     env:
       GH_TOKEN: ${{ github.token }}
       RELEASE_TAG: ${{ inputs.tag }}
+      AGENT_RELEASE_REPO: ${{ github.repository }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -110,14 +150,45 @@ jobs:
         with:
           pattern: agent-*
           path: hosts
-      - name: Merge and publish only on explicit request
+      - name: Require exactly one archive per platform
         shell: bash
         run: |
           set -euo pipefail
           [[ "$RELEASE_TAG" =~ ^[a-zA-Z0-9_.+-]+$ ]] || { echo 'A valid tag is required for publication' >&2; exit 1; }
-          node scripts/agent-dist.mjs --merge hosts/agent-darwin-arm64 hosts/agent-win32-x64 --out dist
+          for p in darwin-arm64 darwin-x64 linux-x64 linux-arm64 win32-x64; do
+            n=$(find "hosts/agent-$p" -maxdepth 1 -name "agent-*-$p.tar.gz" | wc -l)
+            [ "$n" -eq 1 ] || { echo "Expected exactly one $p archive, found $n" >&2; exit 1; }
+          done
+      - name: Merge and sign (fail-closed without signing key)
+        shell: bash
+        env:
+          AGENT_SIGNING_PRIVATE_KEY: ${{ secrets.AGENT_RELEASE_SIGNING_KEY }}
+        run: |
+          set -euo pipefail
+          if [ -z "${AGENT_SIGNING_PRIVATE_KEY:-}" ]; then
+            echo 'AGENT_RELEASE_SIGNING_KEY secret is required to publish signed assets' >&2
+            exit 1
+          fi
+          node scripts/agent-dist.mjs --merge hosts/agent-darwin-arm64 hosts/agent-darwin-x64 hosts/agent-linux-x64 hosts/agent-linux-arm64 hosts/agent-win32-x64 --out dist --tag "$RELEASE_TAG"
+          test -s dist/SHA256SUMS.sig
+          test -s dist/latest.json
+          node --input-type=module - <<'JS'
+          import { createPublicKey } from 'node:crypto';
+          import { pathToFileURL } from 'node:url';
+          import { resolve } from 'node:path';
+          const { verifyManifestSignature } = await import(pathToFileURL(resolve('scripts/lib/agent-distribution.mjs')).href);
+          const raw = process.env.AGENT_SIGNING_PRIVATE_KEY;
+          const pem = raw.includes('-----BEGIN ') ? raw : Buffer.from(raw, 'base64').toString('utf8');
+          const publicKeyPem = createPublicKey({ key: pem, format: 'pem' }).export({ type: 'spki', format: 'pem' });
+          verifyManifestSignature('dist/SHA256SUMS', 'dist/SHA256SUMS.sig', publicKeyPem);
+          JS
+          test "$(find dist -maxdepth 1 -name 'agent-*.tar.gz' | wc -l)" -eq 5
+      - name: Publish only on explicit request
+        shell: bash
+        run: |
+          set -euo pipefail
           if gh release view "$RELEASE_TAG" -R "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
             gh release upload "$RELEASE_TAG" dist/* -R "$GITHUB_REPOSITORY"
           else
-            gh release create "$RELEASE_TAG" dist/* --target "$GITHUB_SHA" --title "$RELEASE_TAG" --notes 'Native Agent distributions; external Node >=22.19 required.' -R "$GITHUB_REPOSITORY"
+            gh release create "$RELEASE_TAG" dist/* --target "$GITHUB_SHA" --title "$RELEASE_TAG" --notes 'Native Agent distributions; SHA256SUMS signed with Ed25519 (SHA256SUMS.sig).' -R "$GITHUB_REPOSITORY"
           fi
