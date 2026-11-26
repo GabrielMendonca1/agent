@@ -674,21 +674,25 @@ test("enabled:false é desligamento explícito, sem contabilização e sem erro"
 test("o wrapper despacha manutenção antes do runtime e só chama o launcher no caminho normal", () => {
 	const wrapper = readFileSync(join(repo, "scripts", "agent-wrapper.sh"), "utf8");
 	const dispatch = wrapper.indexOf("overlay-update)");
-	const esac = wrapper.indexOf("esac");
-	const agent = wrapper.indexOf('exec node "$AGENT_LAUNCHER"');
+	const esac = wrapper.indexOf("\nesac", dispatch);
+	const agent = wrapper.indexOf('exec "$NODE_BIN" "$AGENT_LAUNCHER"');
 	assert.ok(dispatch > 0 && esac > dispatch && agent > esac, "o bloco Agent tem de vir depois do dispatch de manutenção");
 	assert.match(wrapper, /\[ -f "\$AGENT_LAUNCHER" \]/);
-	assert.match(wrapper, /exec node "\$AGENT_LAUNCHER" --store "\$STORE" -- "\$@"/);
+	assert.match(wrapper, /exec "\$NODE_BIN" "\$AGENT_LAUNCHER" --store "\$STORE" -- "\$@"/);
 	// Launcher ausente com opt-in ligado: erro, não "pi sem Agent" silencioso.
-	assert.match(wrapper, /exit 1/);
+	assert.match(wrapper, /if \[ -f "\$AGENT_CONFIG" \]; then\n[^\n]*\n  exit 1\nfi/);
 	const cmd = readFileSync(join(repo, "scripts", "agent-wrapper.cmd"), "utf8");
 	assert.match(cmd, /^:normal$/m);
-	assert.ok(cmd.indexOf(":normal") < cmd.indexOf('node "%AGENT_LAUNCHER%"'));
+	const normal = cmd.indexOf("\n:normal");
+	const launch = cmd.indexOf('"%NODE_BIN%" "%AGENT_LAUNCHER%"');
+	assert.ok(normal > 0 && launch > normal);
 	assert.ok(cmd.indexOf("goto :normal") > cmd.indexOf('if /i "%~1"=="update" goto :update'));
 	assert.match(cmd, /if exist "%AGENT_LAUNCHER%" goto :agent_launch/);
 	assert.match(cmd, /if exist "%AGENT_CONFIG%" goto :agent_missing/);
-	assert.match(cmd, /node "%AGENT_LAUNCHER%" --store "%STORE%" -- %\*/);
-	assert.ok(cmd.includes(":agent_missing"));
+	assert.match(cmd, /"%NODE_BIN%" "%AGENT_LAUNCHER%" --store "%STORE%" -- %\*/);
+	const missing = cmd.split(/^:/m).find(block => /^agent_missing\r?\n/.test(block));
+	assert.ok(missing, "o wrapper precisa do bloco :agent_missing");
+	assert.equal(missing.trimEnd().split(/\r?\n/).at(-1).trim(), "exit /b 1");
 	// O despacho de manutenção continua intacto nos dois.
 	for (const text of [wrapper, cmd]) {
 		for (const route of ["overlay-update", "overlay-rollback", "update"]) assert.ok(text.includes(route));

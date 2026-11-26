@@ -20,19 +20,19 @@ A coluna "Hoje" descreve o que o Superagent lê agora, numa instalação feita c
 
 ## Bootstrap Windows x64 nativo
 
-Requisitos: Node >=22.19 (recomendado 24), GitHub CLI autenticado com acesso ao repo e Git for Windows disponível para o shell do Pi. Não usar o pacote Linux via WSL. Releases novas incluem `agent-<releaseId>-win32-x64.tar.gz`, o tarball darwin-arm64, `SHA256SUMS`, `agent-distribution.mjs`, `install.sh` e `install.ps1`. A v0.1.0 tem apenas darwin-arm64; formato do tarball e campos existentes não mudaram.
+Estado integrado das Fases 1 e 2 (`2dca1db`): `install.ps1` não usa `gh`. A chave pública oficial ainda não está provisionada, então a instalação remota falha fechado até a provisão; nenhuma release foi publicada. Requisitos: Git for Windows disponível para o shell do Pi. Node não é exigido: o instalador usa o Node 24 portátil em `<store>\node\current` (`AGENT_USE_SYSTEM_NODE=1` usa Node >=22.19 do sistema). Repositório público não precisa de token; repositório privado exige `AGENT_RELEASE_TOKEN` (ou `GITHUB_TOKEN`). `gh` não é usado. Não usar o pacote Linux via WSL. Releases novas incluem `agent-<releaseId>-win32-x64.tar.gz`, o tarball darwin-arm64, `SHA256SUMS`, `SHA256SUMS.sig`, `latest.json`, `agent-distribution.mjs`, `install.sh` e `install.ps1`. A v0.1.0 tem apenas darwin-arm64; formato do tarball e campos existentes não mudaram.
 
-Comandos que um app pode executar, sem modificar política de execução nem PATH:
+Comandos que um app pode executar, sem modificar política de execução nem PATH (forma com arquivo; `irm | iex` não recebe `--adopt-launcher` nem `--store`):
 
 ```powershell
-gh release download -R GabrielMendonca1/agent -p install.ps1 -O ./install.ps1
+Invoke-WebRequest -Uri https://github.com/GabrielMendonca1/agent/releases/latest/download/install.ps1 -OutFile ./install.ps1
 pwsh -NoProfile -File ./install.ps1 --adopt-launcher
 & "$env:USERPROFILE/.local/bin/agent.cmd" --version
 & "$env:USERPROFILE/.local/bin/agent.cmd" overlay-status
 & "$env:USERPROFILE/.local/bin/agent.cmd" migrate-from-mark --dry-run --json
 ```
 
-Para fixar uma release, baixar `install.ps1` com `gh release download <tag> ...` e definir `AGENT_VERSION=<tag>` no ambiente do processo. Pode-se usar `powershell` no lugar de `pwsh`. Se a política bloquear o script, pedir ação humana; não contorná-la. O bootstrap baixa e confere `agent-distribution.mjs`, que executa `install [--tag X]`, detecta SO/arquitetura, baixa o tarball e confere SHA256SUMS. `AGENT_RELEASE_DIR` seleciona uma distribuição local (sem autenticação nem identidade GitHub inferida).
+Para fixar uma release, baixar `install.ps1` de `https://github.com/GabrielMendonca1/agent/releases/download/<tag>/install.ps1` e definir `AGENT_VERSION=<tag>` no ambiente do processo. Pode-se usar `powershell` no lugar de `pwsh`. Se a política bloquear o script, pedir ação humana; não contorná-la. O bootstrap baixa e confere `agent-distribution.mjs`, que executa `install [--tag X]`, detecta SO/arquitetura, baixa o tarball por HTTPS, verifica a assinatura Ed25519 de `SHA256SUMS` (fail-closed) e confere o SHA-256 do tarball contra ele. `AGENT_RELEASE_DIR` seleciona uma distribuição local (sem autenticação, sem identidade GitHub inferida e sem verificação Ed25519; confere só SHA-256).
 
 Sucesso do instalador: código 0 e launchers em `%USERPROFILE%\.local\bin\agent.cmd` / `agent.ps1`. Erros de requisitos, autenticação, download, checksum ou validação: código 1 e diagnóstico em stderr; falha de ativação propaga o código não zero do updater. Stdout do install é progresso textual, não API JSON. `--version` retorna a versão do Pi, `overlay-status` retorna texto incluindo a identidade da release, e `migrate-from-mark --dry-run --json` retorna o relatório JSON (`dryRun`, `copied`, `alreadyExisted`, `skipped`, `manual`). O app Megamind executa a migração efetiva e o `agent update` automaticamente, sem pedir consentimento (decisão do usuário): avisa antes, mostra sucesso/falha e preserva a instalação anterior em erro. Só migra onde existe instalação Mark. Nenhum comando de bootstrap autentica providers.
 
@@ -41,6 +41,10 @@ O store padrão fica em `%USERPROFILE%\.local\share\agent`, o perfil em `%USERPR
 ## Dependências externas no install
 
 Depois de ativar a release, o install e o `agent update` conferem `agent-browser`, `cua-driver` e `agy`. Sem TTY nada é instalado e nada é perguntado, exceto com `AGENT_INSTALL_DEPS=1`, que o app Megamind usa para instalar as dependências junto com a migração/atualização. Se faltar alguma, o stdout ganha uma linha de log, `Agent: dependências externas ausentes (...); veja/instale com: agent deps --install`, sem formato estável. O código de saída continua sendo o da ativação: falha ou ausência de dependência nunca muda esse código. `AGENT_INSTALL_DEPS=0` suprime a verificação. `agent deps` é textual e de diagnóstico, não API.
+
+## Node portátil no store
+
+`<store>/node/` guarda o Node 24 portátil (`v<VER>/` e `current`, link ou junction). O Agent não exige que o consumidor o use; wrappers do Agent preferem `<store>/node/current/bin/node` (Windows: `node.exe`) e caem para `node` do PATH. `overlay-gc` nunca remove `<store>/node/`; o consumidor também não deve apagá-lo.
 
 ## Identidade da release instalada (Megamind)
 
@@ -56,11 +60,11 @@ O app Megamind lê `<store>/active.json`, sem importar código do updater. O cam
 }
 ```
 
-- `release.tag`: tag retornada por `gh release view`; não é a versão do Pi (`officialVersion`). O instalador resolve a tag antes de baixar e fixa o download nela, inclusive para `latest`.
+- `release.tag`: tag resolvida pelo instalador antes do download (origem HTTPS ou API do GitHub); não é a versão do Pi (`officialVersion`). O instalador resolve a tag antes de baixar e fixa o download nela, inclusive para `latest`.
 - `release.assetId`: string `releaseId` do `artifact.json`, exatamente o `<id>` em `agent-<id>-<platform>-<arch>.tar.gz`. Não é o ID numérico do asset no GitHub nem o `artifactId` do runtime em `runtime/config.json`. Inclui o digest portátil que distingue mudanças só do Agent.
 - `release.repo`: canal `owner/repo` usado no download, respeitando `AGENT_RELEASE_REPO`.
 
-O consumidor compara esses valores com `gh release view -R <repo> --json tagName,assets`: `tagName` e o nome do tarball da plataforma/arquitetura esperada. Igualdade de tag e assetId identifica a mesma distribuição; diferença indica outra distribuição disponível, não uma ordenação cronológica. Não compare `installedAt`/`activatedAt`, versão do Pi ou ordem lexical das tags. Ausência de `release` significa identidade desconhecida (instalação antiga, checkout ou archive local), não “atualizado”.
+O consumidor compara esses valores com `latest.json` da mesma origem: `tag` e `assets.<os>-<arch>.file` / `assetId`. No GitHub público, a origem é `https://github.com/<repo>/releases/latest/download/latest.json` (ou `/releases/download/<tag>/latest.json`). Antes de confiar nele, verificar `SHA256SUMS.sig` contra a chave pública do Agent. Com `AGENT_RELEASE_BASE_URL`, a origem é `<base>/latest.json`. A comparação por `gh release view` é o método anterior; este repositório não confirma se o Megamind externo já migrou. Igualdade de tag e assetId identifica a mesma distribuição; diferença indica outra distribuição disponível, não uma ordenação cronológica. Não compare `installedAt`/`activatedAt`, versão do Pi ou ordem lexical das tags. Ausência de `release` significa identidade desconhecida (instalação antiga, checkout ou archive local), não “atualizado”.
 
 `install.sh`/`install.ps1` remotos e a CLI `agent-distribution.mjs install`, `agent update` e `--install-artifact latest|<tag>` preenchem o objeto. Instalação por archive local ou `AGENT_RELEASE_DIR` não infere uma tag. Rollback recupera a identidade do par anterior, inclusive ausência; falhas de ativação restauram o registro anterior. O índice `<store>/release-identities.json` é estado interno do updater, fora da árvore verificada, e não é contrato de leitura para consumidores.
 

@@ -3,16 +3,24 @@ import './lib/hermetic-test-env.mjs';
 import assert from 'node:assert/strict';
 import { chmodSync, cpSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, readlinkSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { dirname, join, resolve } from 'node:path';
-import { spawnSync } from 'node:child_process';
-import { pathToFileURL } from 'node:url';
+import { basename, dirname, join, resolve } from 'node:path';
+import { spawn, spawnSync } from 'node:child_process';
+import { fileURLToPath, pathToFileURL } from 'node:url';
+import { generateKeyPairSync, sign } from 'node:crypto';
+import { createServer } from 'node:http';
 import { gunzipSync, gzipSync } from 'node:zlib';
 import { createArtifactLink, hash, packArchive, extractArchive, inventory, validateDirectory } from './lib/agent-distribution.mjs';
-const root=realpathSync(mkdtempSync(join(tmpdir(),'agent-dist-test-'))), repo=resolve(new URL('..',import.meta.url).pathname);
+import { PORTABLE_NODE_TARGETS, PORTABLE_NODE_VERSION } from './lib/portable-node.mjs';
+const root=realpathSync(mkdtempSync(join(tmpdir(),'agent-dist-test-'))), repo=resolve(fileURLToPath(new URL('..',import.meta.url)));
 const json=(p,v)=>{mkdirSync(dirname(p),{recursive:true});writeFileSync(p,`${JSON.stringify(v,null,2)}\n`);};
 const load=p=>JSON.parse(readFileSync(p,'utf8'));
 let checks=0;
-const test=(name,fn)=>{fn();checks++;console.log(`ok ${name}`);};
+const passed=name=>{checks++;console.log(`ok ${name}`);};
+const test=(name,fn)=>{fn();passed(name);};
+const testAsync=async (name,fn)=>{await fn();passed(name);};
+// Reproduce a normal updater's modes even on hosts running the gate with umask 002 or 077.
+// The installer still sets its own umask 077, so reusing a release crosses both modes.
+const originalUmask=process.umask(0o022);
 try {
  const source=join(root,'source');mkdirSync(source);
  cpSync(join(repo,'scripts'),join(source,'scripts'),{recursive:true});
@@ -27,7 +35,11 @@ try {
  mkdirSync(join(source,'agent/extensions/agent/demo'),{recursive:true});writeFileSync(join(source,'agent/extensions/agent/demo/index.ts'),'// fixture extension\n');
  mkdirSync(join(source,'extensions/megamind'),{recursive:true});writeFileSync(join(source,'extensions/megamind/index.ts'),'// fixture Megamind\n');
  mkdirSync(join(source,'skills/megamind'),{recursive:true});writeFileSync(join(source,'skills/megamind/SKILL.md'),'---\nname: megamind\ndescription: fixture\n---\nfixture');
- const env={...process.env,HOME:join(root,'home'),USERPROFILE:join(root,'home'),PI_CODING_AGENT_DIR:join(root,'home/.agent'),AGENT_STORE:join(root,'store'),AGENT_WARM_START:'0'};mkdirSync(env.HOME);
+ const env={PATH:process.env.PATH,HOME:join(root,'home'),USERPROFILE:join(root,'home'),
+  PI_CODING_AGENT_DIR:join(root,'home/.agent'),AGENT_STORE:join(root,'store'),TMPDIR:join(root,'tmp'),
+  AGENT_WARM_START:'0',AGENT_RUST_AUTO_INSTALL:'0',GIT_CONFIG_NOSYSTEM:'1',
+  HTTP_PROXY:'http://127.0.0.1:0',HTTPS_PROXY:'http://127.0.0.1:0',NO_PROXY:'127.0.0.1',NODE_USE_ENV_PROXY:'1'};
+ mkdirSync(env.HOME);mkdirSync(env.TMPDIR);
  const run=(command,args,ok=true,extra={})=>{
   const r=spawnSync(command,args,{env:{...env,...extra},encoding:'utf8',cwd:source});
   assert.equal(r.status===0,ok,r.stdout+r.stderr);return r;
@@ -46,7 +58,14 @@ try {
  }
  const dist=join(source,'scripts/agent-dist.mjs'), updater=join(source,'scripts/agent-update.mjs');
  const a=release('release-a'),b=release('release-b'),outA=join(root,'dist-a'),outB=join(root,'dist-b');
- run(process.execPath,[dist,'--release',a,'--out',outA]);run(process.execPath,[dist,'--release',b,'--out',outB]);
+ const { publicKey, privateKey }=generateKeyPairSync('ed25519');
+ const keyPath=join(root,'fixture-signing.pem'),tagA='v-agent-a',tagB='v-agent-b';
+ writeFileSync(keyPath,privateKey.export({type:'pkcs8',format:'pem'}),{mode:0o600,flag:'wx'});
+ for (const [release,out,tag] of [[a,outA,tagA],[b,outB,tagB]]) {
+  run(process.execPath,[dist,'--release',release,'--out',out,'--sign-key',keyPath,'--tag',tag]);
+ }
+ rmSync(keyPath);
+ const unsignedA=join(root,'again');
  const archive=dir=>join(dir,readdirSync(dir).find(n=>n.endsWith('.tar.gz')));
  test('Windows directory links use absolute junction targets; file contract stays unchanged',()=>{
   const calls=[];
@@ -66,8 +85,8 @@ try {
   run(process.execPath,[dist,'--merge',merged,'--out',join(root,'bad-merge')],false);
  });
  test('pack is deterministic and metadata portable',()=>{
-  const again=join(root,'again');run(process.execPath,[dist,'--release',a,'--out',again]);
-  assert.equal(hash(readFileSync(archive(outA))),hash(readFileSync(archive(again))));
+  run(process.execPath,[dist,'--release',a,'--out',unsignedA]);
+  assert.equal(hash(readFileSync(archive(outA))),hash(readFileSync(archive(unsignedA))));
   // Agent-only updates must reserve another physical pair, even when Pi bytes are unchanged.
   const changed=join(root,'core-only');writeFileSync(join(source,'extensions/megamind/index.ts'),'// changed standard integration');
   run(process.execPath,[dist,'--release',a,'--out',changed]);
@@ -83,7 +102,7 @@ try {
  test('bootstrap install A, first CLI, own profile, registered Megamind and core skills',()=>{
   const personal=join(env.PI_CODING_AGENT_DIR,'extensions/arca-megamind/index.ts');mkdirSync(dirname(personal),{recursive:true});writeFileSync(personal,'// personal alias sentinel');
   json(join(env.PI_CODING_AGENT_DIR,'settings.json'),{extensions:[dirname(personal)],defaultModel:'personal-model'});
-  run('bash',[join(repo,'scripts/install.sh'),'--adopt-launcher'],true,{AGENT_RELEASE_DIR:outA});
+  run('bash',[join(repo,'scripts/install.sh'),'--adopt-launcher'],true,{AGENT_RELEASE_DIR:unsignedA});
   assert.match(current(),/release-a-[0-9a-f]{10}$/);assert.ok(existsSync(launcher));
   assert.equal(load(join(store,'active.json')).release,undefined);
   assert.match(run(launcher,['overlay-status']).stdout,/Release: unknown/);
@@ -161,34 +180,189 @@ try {
    assert.deepEqual(snapshot(),before);
   } finally {rmSync(launcher,{force:true});symlinkSync(link,launcher);}
  });
- test('release install, update, rollback and explicit tag retain stable identity',()=>{
-  const bin=join(root,'fake-bin');mkdirSync(bin);
-  writeFileSync(join(bin,'gh'),`#!/usr/bin/env node
-const fs=require('node:fs'),path=require('node:path'),args=process.argv.slice(2);
-if(args[0]==='auth'&&args[1]==='status')process.exit(0);
-if(args[0]!=='release'||!args.includes('GabrielMendonca1/agent'))process.exit(8);
-if(args[1]==='view'){console.log(process.env.FIXTURE_TAG);process.exit(0);}
-if(args[1]!=='download'||!args.includes(process.env.FIXTURE_TAG))process.exit(9);
-const dest=args[args.indexOf('-D')+1];for(const name of fs.readdirSync(process.env.FIXTURE_DIST))fs.copyFileSync(path.join(process.env.FIXTURE_DIST,name),path.join(dest,name));
-`,{mode:0o755});
-  const remote=(dir,tag)=>({PATH:`${bin}:${env.PATH}`,FIXTURE_DIST:dir,FIXTURE_TAG:tag,AGENT_RELEASE_DIR:'',AGENT_VERSION:''});
-  const idA={tag:'v-agent-a',assetId:load(join(root,'original-payload/artifact.json')).releaseId,repo:'GabrielMendonca1/agent'};
-  const payloadB=join(root,'identity-b');extractArchive(archive(outB),payloadB);
-  const idB={tag:'v-agent-b',assetId:load(join(payloadB,'artifact.json')).releaseId,repo:'GabrielMendonca1/agent'};
-  const active=()=>load(join(store,'active.json')).release;
-  const status=id=>assert.ok(run(launcher,['overlay-status']).stdout.includes(`Release: ${id.tag} (assetId ${id.assetId}, repo ${id.repo})`));
-  run('bash',[join(repo,'scripts/install.sh')],true,remote(outA,idA.tag));assert.deepEqual(active(),idA);status(idA);
-  run(launcher,['update'],true,remote(outB,idB.tag));assert.ok(current().includes('/release-b-'));assert.deepEqual(active(),idB);status(idB);
-  run(launcher,['overlay-rollback']);assert.deepEqual(active(),idA);status(idA);
-  run(launcher,['overlay-rollback']);assert.deepEqual(active(),idB);
-  run(launcher,['overlay-rollback']);assert.deepEqual(active(),idA);
-  const before=snapshot(),identities=readFileSync(join(store,'release-identities.json'),'utf8');
-  run(launcher,['update'],false,{...remote(outB,'v-failed'),FIXTURE_FAIL_CONFIG:'1'});
-  assert.deepEqual(snapshot(),before);assert.equal(readFileSync(join(store,'release-identities.json'),'utf8'),identities);
-  run(process.execPath,[updater,'--install-artifact',idB.tag],true,remote(outB,idB.tag));assert.deepEqual(active(),idB);
-  run(process.execPath,[updater,'--install-artifact','latest'],true,{...remote(outA,idA.tag),AGENT_VERSION:idA.tag});assert.deepEqual(active(),idA);
-  run('bash',[join(repo,'scripts/install.sh')],true,{...remote(outB,idB.tag),AGENT_VERSION:idB.tag});assert.deepEqual(active(),idB);
- });
+ async function checkRemote() {
+  const contents=dir=>new Map(readdirSync(dir).map(name=>[name,readFileSync(join(dir,name))]));
+  const assetsA=contents(outA),assetsB=contents(outB);
+  let latest=assetsA, overrides=new Map();
+  const requests=[];
+  const server=createServer((req,res)=>{
+   requests.push({path:req.url,authorization:req.headers.authorization});
+   const [prefix,name,asset,...rest]=req.url.slice(1).split('/');
+   let body;
+   if (req.method==='GET' && !rest.length) {
+    if (prefix==='node' && name===PORTABLE_NODE_VERSION && asset===target.file) body=nodeBytes;
+    if (prefix==='release' && name==='latest.json' && !asset) body=latest.get(name);
+    if (prefix==='release' && asset) {
+     const files=name===tagA?assetsA:name===tagB?assetsB:undefined;
+     body=overrides.has(asset)?overrides.get(asset):files?.get(asset);
+    }
+   }
+   if (body===undefined) res.writeHead(404).end();
+   else res.writeHead(200,{'Content-Length':Buffer.byteLength(body)}).end(body);
+  });
+
+  // Allowlist system tools rather than assuming /usr/bin lacks node or gh (not true on Linux).
+  const bin=join(root,'tools');mkdirSync(bin);
+  const optional=['sha256sum','shasum','xz'];
+  for (const tool of ['bash','curl','uname','mktemp','mkdir','rm','cat','tar','gzip','git','ps',...optional]) {
+   const lookup=spawnSync('/bin/sh',['-c','command -v "$1"','sh',tool],{encoding:'utf8',env:{...env,PATH:'/usr/bin:/bin:/usr/sbin:/sbin'}});
+   if (lookup.status===0) symlinkSync(lookup.stdout.trim(),join(bin,tool));
+   else assert.ok(optional.includes(tool),`missing system tool ${tool}: ${lookup.stderr}`);
+  }
+  const platform=`${process.platform}-${process.arch}`,target=PORTABLE_NODE_TARGETS[platform];
+  assert.ok(target?.file.endsWith('.tar.gz') || target?.file.endsWith('.tar.xz'),`unsupported shell fixture target: ${platform}`);
+  const nodeTree=join(root,'node-fixture/bin');mkdirSync(nodeTree,{recursive:true});
+  const quote=s=>`'${s.replaceAll("'", "'\\''")}'`;
+  const nodeTrace=join(root,'portable.trace');
+  writeFileSync(join(nodeTree,'node'),`#!/bin/sh\nprintf '%s\\t%s\\n' "$0" "\${1:-}" >> ${quote(nodeTrace)}\nexec ${quote(process.execPath)} "$@"\n`,{mode:0o755});
+  const nodeArchive=join(root,target.file);
+  run(join(bin,'tar'),[target.file.endsWith('.xz')?'-cJf':'-czf',nodeArchive,'-C',root,'node-fixture'],true,{PATH:bin});
+  const nodeBytes=readFileSync(nodeArchive);
+  const home=join(root,'remote-home'),remoteStore=join(root,'remote-store'),profile=join(home,'.agent');mkdirSync(home);
+  const remoteLauncher=join(home,'.local/bin/agent'),installer=join(repo,'scripts/install.sh');
+  const portable=join(remoteStore,'node/current/bin/node');
+  const activePath=join(remoteStore,'active.json'),identitiesPath=join(remoteStore,'release-identities.json');
+  const token='synthetic-release-token',githubToken='synthetic-github-token';
+  const snapshotTree=path=>{
+   const st=lstatSync(path,{throwIfNoEntry:false});
+   if (!st) return null;
+   if (st.isSymbolicLink()) return readlinkSync(path);
+   if (st.isDirectory()) return [st.mode,readdirSync(path).sort().map(name=>[name,snapshotTree(join(path,name))])];
+   return [st.mode,hash(readFileSync(path))];
+  };
+  const snapshotPair=()=>['current','previous','active.json','release-identities.json','runtime/config.json'].map(name=>snapshotTree(join(remoteStore,name)))
+   .concat(snapshotTree(profile),snapshotTree(load(join(remoteStore,'runtime/config.json')).resourceReceipt));
+
+  await new Promise((resolve,reject)=>{
+   server.once('error',reject);
+   server.listen(0,'127.0.0.1',resolve);
+  });
+  try {
+   const origin=`http://127.0.0.1:${server.address().port}`,baseUrl=`${origin}/release`;
+   const remote={...env,PATH:bin,HOME:home,USERPROFILE:home,PI_CODING_AGENT_DIR:profile,AGENT_STORE:remoteStore,
+    AGENT_RELEASE_BASE_URL:baseUrl,AGENT_RELEASE_PUBLIC_KEY:publicKey.export({type:'spki',format:'pem'}),
+    AGENT_NODE_BASE_URL:`${origin}/node`,AGENT_NODE_SHA256:hash(nodeBytes)};
+   const call=async (command,args,failure,extra={})=>{
+    requests.length=0;
+    // spawnSync would block the event loop serving the fixture's own HTTP requests.
+    const child=spawn(command,args,{env:{...remote,...extra},cwd:source,stdio:['ignore','pipe','pipe'],timeout:30_000,killSignal:'SIGKILL'});
+    let stdout='',stderr='';
+    child.stdout.setEncoding('utf8').on('data',chunk=>stdout+=chunk);
+    child.stderr.setEncoding('utf8').on('data',chunk=>stderr+=chunk);
+    const [code,signal]=await new Promise((resolve,reject)=>{
+     child.once('error',reject);child.once('close',(...result)=>resolve(result));
+    });
+    assert.equal(signal,null,`${command} ${args.join(' ')}: ${stderr}`);
+    if (failure) {
+     assert.notEqual(code,0,stdout);assert.match(stderr,failure);
+    } else assert.equal(code,0,stdout+stderr);
+    for (const secret of [token,githubToken]) assert.ok(!(stdout+stderr).includes(secret),'token leaked in command output');
+    return stdout;
+   };
+   const paths=()=>requests.map(r=>r.path);
+   const identity=(tag,dir)=>({tag,assetId:load(join(dir,'latest.json')).assets[platform].assetId,repo:'GabrielMendonca1/agent',baseUrl});
+   const idA=identity(tagA,outA),idB=identity(tagB,outB);
+   const assertActive=async id=>{
+    assert.deepEqual(load(activePath).release,id);
+    const current=realpathSync(join(remoteStore,'current'));
+    assert.equal(basename(current),id.assetId);
+    assert.deepEqual(load(identitiesPath)[current],id);
+    assert.ok(load(join(remoteStore,'runtime/config.json')).piRoot.startsWith(`${current}/`));
+    assert.ok((await call(remoteLauncher,['overlay-status'])).includes(`Release: ${id.tag} (assetId ${id.assetId}, repo ${id.repo})`));
+    for (const file of [activePath,identitiesPath]) {
+     const contents=readFileSync(file,'utf8');
+     for (const secret of [token,githubToken]) assert.ok(!contents.includes(secret),`token leaked to ${file}`);
+    }
+   };
+   await testAsync('installer checks portable Node SHA-256 before executing or activating',async ()=>{
+    await call('bash',[installer],/Portable Node SHA-256 mismatch/,{AGENT_NODE_SHA256:'0'.repeat(64)});
+    assert.deepEqual(paths(),[`/node/${PORTABLE_NODE_VERSION}/${target.file}`]);
+    for (const path of [nodeTrace,portable,activePath,remoteLauncher,profile,join(remoteStore,'current')]) assert.ok(!existsSync(path),path);
+   });
+   await testAsync('signed remote install without gh or PATH node; wrapper uses node/current',async ()=>{
+    await call('/bin/sh',['-c','! command -v gh && ! command -v node']);
+    await call('bash',[installer,'--adopt-launcher'],undefined,{AGENT_RELEASE_TOKEN:token});
+    const releaseRequests=requests.filter(r=>r.path.startsWith('/release/'));
+    assert.ok(releaseRequests.some(r=>r.path===`/release/${tagA}/${basename(archive(outA))}`));
+    assert.ok(releaseRequests.every(r=>r.authorization===`Bearer ${token}`));
+    const nodeRequests=requests.filter(r=>r.path.startsWith('/node/'));
+    assert.deepEqual(nodeRequests,[{path:`/node/${PORTABLE_NODE_VERSION}/${target.file}`,authorization:undefined}]);
+    assert.equal(readlinkSync(join(remoteStore,'node/current')),PORTABLE_NODE_VERSION);
+    assert.equal(realpathSync(portable),join(remoteStore,'node',PORTABLE_NODE_VERSION,'bin/node'));
+    await assertActive(idA);
+    writeFileSync(nodeTrace,'');
+    const result=JSON.parse(await call(remoteLauncher,['-p','portable']));
+    assert.deepEqual(result.args,['-p','portable']);assert.equal(result.runtime,'1');
+    assert.ok(readFileSync(nodeTrace,'utf8').split('\n').some(line=>line.startsWith(`${portable}\t`) && line.endsWith('/scripts/agent-launch.mjs')));
+   });
+   const otherKey=generateKeyPairSync('ed25519').privateKey;
+   const sum='SHA256SUMS',sig=`${sum}.sig`,module='agent-distribution.mjs';
+   const marker=join(root,'unverified-bootstrap-ran');
+   const cases=[
+    ['missing signature',sig,undefined,/Cannot download SHA256SUMS\.sig/],
+    ['corrupt signature',sig,'not-base64\n',/Invalid manifest signature/],
+    ['wrong signer',sig,sign(null,assetsB.get(sum),otherKey).toString('base64'),/Invalid manifest signature/],
+    ['tampered sums',sum,Buffer.concat([assetsB.get(sum),Buffer.from('\n')]),/Invalid manifest signature/],
+    ['tampered bootstrap',module,`import {writeFileSync} from 'node:fs';writeFileSync(${JSON.stringify(marker)},'ran');`,/agent-distribution\.mjs SHA256SUMS mismatch/],
+   ];
+   for (const [name,file,body,error] of cases) {
+    await testAsync(`installer rejects ${name} without executing or activating`,async ()=>{
+     const before=[snapshotTree(remoteStore),snapshotTree(home)];
+     overrides=new Map([[file,body]]);
+     try {
+      await call('bash',[installer,'--tag',tagB,'--adopt-launcher'],error);
+      assert.deepEqual(paths(),['latest.json',sum,sig,...(file===module?[module]:[])].map(name=>`/release/${tagB}/${name}`));
+      assert.ok(!existsSync(marker));
+      assert.deepEqual([snapshotTree(remoteStore),snapshotTree(home)],before);
+     } finally {overrides.clear();}
+    });
+   }
+   await testAsync('agent update, rollback in both directions, and failed updates preserve signed identity',async ()=>{
+    latest=assetsB;
+    await call(remoteLauncher,['update'],undefined,{AGENT_RELEASE_TOKEN:token});
+    assert.ok(paths().includes('/release/latest.json'));
+    assert.ok(requests.every(r=>r.authorization===`Bearer ${token}`));
+    await assertActive(idB);
+    const rollback=async id=>{await call(remoteLauncher,['overlay-rollback']);await assertActive(id);};
+    await rollback(idA);await rollback(idB);await rollback(idA);
+    const before=snapshotPair(),beforeStore=snapshotTree(remoteStore);
+    overrides.set(sig,'corrupt');
+    try {
+     await call(remoteLauncher,['update'],/invalid manifest signature/i);
+     assert.deepEqual(paths(),['/release/latest.json',`/release/${tagB}/${sum}`,`/release/${tagB}/${sig}`]);
+     assert.deepEqual(snapshotTree(remoteStore),beforeStore);
+     assert.deepEqual(snapshotPair(),before);
+    } finally {overrides.clear();}
+    await call(remoteLauncher,['update'],/fixture config failure/,{FIXTURE_FAIL_CONFIG:'1'});
+    assert.ok(paths().includes(`/release/${tagB}/${basename(archive(outB))}`));
+    assert.deepEqual(snapshotPair(),before);
+    await rollback(idB);await rollback(idA);
+    await call(remoteLauncher,['overlay-update','--install-artifact',tagB]);await assertActive(idB);
+   });
+   await testAsync('installer and updater reuse immutable releases without sending ambient GitHub credentials to mirrors',async ()=>{
+    const ambient={GITHUB_TOKEN:githubToken};
+    const assertAnonymous=assetPath=>{
+     assert.ok(paths().includes(assetPath),'expected a release tarball request to the mirror');
+     assert.ok(requests.every(r=>r.authorization===undefined),'mirror received ambient credentials');
+    };
+    const installed=id=>join(remoteStore,'releases',id.assetId);
+    const modesAndContentsA=snapshotTree(installed(idA)),modesAndContentsB=snapshotTree(installed(idB));
+    assert.equal(lstatSync(installed(idA)).mode & 0o777,0o700);
+    assert.equal(lstatSync(installed(idB)).mode & 0o777,0o755);
+    await call(remoteLauncher,['update'],undefined,{...ambient,AGENT_VERSION:tagA});
+    assertAnonymous(`/release/${tagA}/${basename(archive(outA))}`);
+    await assertActive(idA);
+    assert.deepEqual(snapshotTree(installed(idA)),modesAndContentsA);
+    await call('bash',[installer,'--tag',tagB],undefined,ambient);
+    assertAnonymous(`/release/${tagB}/${basename(archive(outB))}`);
+    await assertActive(idB);
+    assert.deepEqual(snapshotTree(installed(idB)),modesAndContentsB);
+   });
+  } finally {
+   await new Promise((resolve,reject)=>server.close(error=>error?reject(error):resolve()));
+  }
+ }
+ await checkRemote();
  test('explicit runtime opt-out survives artifact updates without legacy profile sync',()=>{
   run(launcher,['overlay-update','--agent-disable']);
   assert.equal(load(join(env.PI_CODING_AGENT_DIR,'settings.json')).warnings,undefined);
@@ -199,4 +373,7 @@ const dest=args[args.indexOf('-D')+1];for(const name of fs.readdirSync(process.e
   assert.equal(existsSync(join(env.HOME,'.bashrc')),false);assert.equal(existsSync(join(env.HOME,'.zshrc')),false);
  });
  console.log(`install-artifact: ${checks} fixture checks OK; no provider inference or remote access`);
-} finally {rmSync(root,{recursive:true,force:true});}
+} finally {
+ process.umask(originalUmask);
+ rmSync(root,{recursive:true,force:true});
+}

@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import { createHash } from "node:crypto";
-import { validateDirectory, downloadArtifact, bootstrap } from "./lib/agent-distribution.mjs";
+import { validateDirectory, downloadArtifact, bootstrap, normalizeReleaseBaseUrl, validReleaseTag, validReleaseRepo } from "./lib/agent-distribution.mjs";
 import {
 	chmodSync,
 	copyFileSync,
@@ -192,6 +192,7 @@ function parseArgs(argv) {
 		if (arg === "--install-artifact") parsed.installArtifact = args[++index] ?? fail("--install-artifact requires a path, latest or release tag");
 		else if (arg === "--release-tag") parsed.releaseTag = args[++index] ?? fail("--release-tag requires a tag");
 		else if (arg === "--release-repo") parsed.releaseRepo = args[++index] ?? fail("--release-repo requires a repo");
+		else if (arg === "--release-base-url") parsed.releaseBaseUrl = args[++index] ?? fail("--release-base-url requires a URL");
 		else if (arg === "--prepare") parsed.prepare = true;
 		else if (arg === "--promote") parsed.promote = args[++index] ?? fail("--promote requires a release ID");
 		else if (arg === "--check") parsed.check = true;
@@ -635,7 +636,7 @@ function digestFileContents(relative, full) {
 	return readFileSync(full);
 }
 
-function digestTree(root, algorithm = digestAlgorithm) {
+function digestTree(root, algorithm = digestAlgorithm, modeIgnore = 0) {
 	const hash = createHash("sha256");
 	const walk = (directory, prefix) => {
 		const entries = readdirSync(directory, { withFileTypes: true }).sort((a, b) => (a.name < b.name ? -1 : 1));
@@ -644,7 +645,7 @@ function digestTree(root, algorithm = digestAlgorithm) {
 			if ((algorithm >= 3 || algorithm === receiptDigestAlgorithm) && ignoredTreeEntries.has(entry.name)) continue;
 			const relative = prefix === "" ? entry.name : `${prefix}/${entry.name}`;
 			const full = join(directory, entry.name);
-			if (algorithm === receiptDigestAlgorithm) hash.update(`M ${lstatSync(full).mode}\0`);
+			if (algorithm === receiptDigestAlgorithm) hash.update(`M ${lstatSync(full).mode & ~modeIgnore}\0`);
 			if (entry.isSymbolicLink()) {
 				hash.update(`L ${relative}\0${readlinkSync(full)}\0`);
 			} else if (entry.isDirectory()) {
@@ -2338,7 +2339,10 @@ async function installArtifact(options) {
 	if (lstatSync(releases).isSymbolicLink() || realpathSync(releases) !== releases) fail("Unsafe releases directory");
 	const release = join(releases, artifact.releaseId);
 	if (linkExists(release)) {
-		if (lstatSync(release).isSymbolicLink() || sha256(join(release, releaseMetadataFile)) !== sha256(join(source, releaseMetadataFile)) || digestTree(release, 0) !== digestTree(source, 0)) fail("Existing release ID has different content");
+		// install.sh uses umask 077, unlike a normal `agent update`. Reuse the same
+		// bytes across both without changing permissions or ignoring write/owner bits.
+		const portableDigest = (dir) => digestTree(dir, receiptDigestAlgorithm, 0o055);
+		if (lstatSync(release).isSymbolicLink() || sha256(join(release, releaseMetadataFile)) !== sha256(join(source, releaseMetadataFile)) || portableDigest(release) !== portableDigest(source)) fail("Existing release ID has different content");
 	} else {
 		const stage = join(releases, `.artifact-${process.pid}`);
 		try { cpSync(source, stage, { recursive: true, verbatimSymlinks: true }); assertContainedTree(stage); renameSync(stage, release); }
@@ -2355,7 +2359,10 @@ async function installArtifact(options) {
 		// Snapshot/restore this index with active.json so failed installs cannot relabel rollback.
 		const identitiesFile = join(options.store, "release-identities.json");
 		const identities = readJsonFile(identitiesFile) ?? {};
-		if (options.releaseTag) identities[release] = { tag: options.releaseTag, assetId: artifact.releaseId, repo: options.releaseRepo };
+		if (options.releaseTag) identities[release] = {
+			tag: options.releaseTag, assetId: artifact.releaseId, repo: options.releaseRepo,
+			...(options.releaseBaseUrl ? { baseUrl: options.releaseBaseUrl } : {}),
+		};
 		else delete identities[release];
 		const temporary = `${identitiesFile}.tmp-${process.pid}`;
 		try { writeFileSync(temporary, `${JSON.stringify(identities, null, 2)}\n`); renameSync(temporary, identitiesFile); }
@@ -2433,6 +2440,10 @@ function directoryNames(dir) {
 function overlayStatus(store) {
 	const active = activeRecord(store);
 	const lines = [`${productDisplayName} overlay status (${store})`];
+	const nodeDir = join(store, "node");
+	const portable = join(nodeDir, "current", isWindows ? "node.exe" : "bin/node");
+	const nodeStatus = lstatSync(resolvedPath(portable), { throwIfNoEntry: false })?.isFile() ? "present" : linkExists(nodeDir) ? "no active binary" : "not installed";
+	lines.push(`Portable Node: ${nodeStatus}`);
 	if (!active) {
 		lines.push("Installed: no active.json; run: node scripts/agent-update.mjs");
 		console.log(lines.join("\n"));
@@ -2547,9 +2558,23 @@ function commandUsesPath(command, path) {
  * Só "delete" é apagado; "report" é listado porque não há como provar que está sem uso (ou porque
  * é trabalho do usuário). Nada em uso por current/previous, recibo preparado ou Agent entra.
  */
+// Resolve aliases as well as the literal node directory. Never collect an ancestor of either.
+function portableNodeProtected(store, path) {
+	const node = join(resolvedPath(store), "node");
+	return [node, resolvedPath(node)].some(root => path === root || path.startsWith(`${root}${sep}`) || root.startsWith(`${path}${sep}`));
+}
+
 function planOverlayGc(store, keep = 1, { sizeReports = true, getProcesses = liveProcesses } = {}) {
 	const items = [];
-	const add = (kind, path, action, note) => items.push({ kind, path, size: action === "delete" || sizeReports ? pathSize(path) : 0, action, note });
+	const add = (kind, path, action, note) => {
+		if (action === "delete" && portableNodeProtected(store, resolvedPath(path))) {
+			action = "report";
+			note = "portable Node runtime; never deleted by gc";
+		}
+		items.push({ kind, path, size: action === "delete" || sizeReports ? pathSize(path) : 0, action, note });
+	};
+	const node = join(store, "node");
+	if (linkExists(node)) add("portable Node", node, "report", "never deleted by gc");
 	const active = activeRecord(store);
 	const config = readJsonFile(join(store, agentStoreDir, "config.json"));
 	const agentPiRoot = config?.piRoot;
@@ -2731,6 +2756,7 @@ function overlayGc(options) {
 		const isLink = lstatSync(item.path, { throwIfNoEntry: false })?.isSymbolicLink();
 		const where = isLink ? join(resolvedPath(dirname(resolve(item.path))), basename(item.path)) : resolvedPath(resolve(item.path));
 		if (!where.startsWith(root)) fail(`Refusing to delete ${item.path}: outside ${store}`);
+		if (portableNodeProtected(store, where)) fail(`Refusing to delete ${item.path}: portable Node runtime`);
 		if (isLink) removeLink(item.path);
 		else rmSync(item.path, { recursive: true, force: true });
 	}
@@ -2773,17 +2799,22 @@ async function main() {
 	// Somente leitura: não toma o lock, não exige geração do updater (só lê o que está no disco).
 	if (options.status) return overlayStatus(options.store);
 	if (options.gc && options.dryRun) return overlayGc(options);
-	if (options.releaseTag !== undefined || options.releaseRepo !== undefined) {
-		if (options.installArtifact === undefined || !/^[\w.+-]+$/.test(options.releaseTag ?? "") || !/^[\w.-]+\/[\w.-]+$/.test(options.releaseRepo ?? "")) fail("Release identity requires an artifact, valid tag and repo");
+	if (options.releaseTag !== undefined || options.releaseRepo !== undefined || options.releaseBaseUrl !== undefined) {
+		if (options.installArtifact === undefined || !validReleaseTag(options.releaseTag) || !validReleaseRepo(options.releaseRepo)) fail("Release identity requires an artifact, valid tag and repo");
+		if (options.releaseBaseUrl !== undefined) options.releaseBaseUrl = normalizeReleaseBaseUrl(options.releaseBaseUrl);
 	}
 	if (options.installArtifact !== undefined && (options.installArtifact === "latest" || !existsSync(resolve(options.installArtifact)) || !lstatSync(resolve(options.installArtifact)).isDirectory())) {
 		const temporary = mkdtempSync(join(tmpdir(), "agent-download-"));
 		try {
 			const remote = options.installArtifact === "latest" || !existsSync(resolve(options.installArtifact));
-			const downloaded = remote ? downloadArtifact(temporary, options.installArtifact === "latest" ? process.env.AGENT_VERSION || "" : options.installArtifact) : undefined;
+			const downloaded = remote ? await downloadArtifact(temporary, options.installArtifact === "latest" ? process.env.AGENT_VERSION || "" : options.installArtifact) : undefined;
 			const tag = downloaded?.tag ?? options.releaseTag;
 			const repo = downloaded?.repo ?? options.releaseRepo;
-			const status = bootstrap(downloaded?.archive ?? resolve(options.installArtifact), ["--store", options.store, ...(options.adoptLauncher ? ["--adopt-launcher"] : []), ...(tag ? ["--release-tag", tag, "--release-repo", repo] : [])]);
+			const baseUrl = downloaded ? downloaded.baseUrl : options.releaseBaseUrl;
+			const status = bootstrap(downloaded?.archive ?? resolve(options.installArtifact), ["--store", options.store,
+				...(options.adoptLauncher ? ["--adopt-launcher"] : []), ...(tag ? ["--release-tag", tag, "--release-repo", repo] : []),
+				...(baseUrl ? ["--release-base-url", baseUrl] : []),
+			], downloaded?.assetId);
 			if (status !== 0) fail(`Artifact bootstrap failed (${status})`);
 			return;
 		} finally { rmSync(temporary, { recursive: true, force: true }); }
