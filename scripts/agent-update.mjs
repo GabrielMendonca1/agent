@@ -2807,6 +2807,15 @@ async function main() {
 		const temporary = mkdtempSync(join(tmpdir(), "agent-download-"));
 		try {
 			const remote = options.installArtifact === "latest" || !existsSync(resolve(options.installArtifact));
+			if (remote && process.env.AGENT_RELEASE_BASE_URL === undefined) {
+				const savedBaseUrl = activeRecord(options.store)?.release?.baseUrl;
+				if (savedBaseUrl !== undefined) {
+					process.env.AGENT_RELEASE_BASE_URL = normalizeReleaseBaseUrl(savedBaseUrl);
+					// A saved mirror is not explicit authorization to send credentials.
+					delete process.env.AGENT_RELEASE_TOKEN;
+					delete process.env.GITHUB_TOKEN;
+				}
+			}
 			const downloaded = remote ? await downloadArtifact(temporary, options.installArtifact === "latest" ? process.env.AGENT_VERSION || "" : options.installArtifact) : undefined;
 			const tag = downloaded?.tag ?? options.releaseTag;
 			const repo = downloaded?.repo ?? options.releaseRepo;
