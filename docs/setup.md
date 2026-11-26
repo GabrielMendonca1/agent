@@ -2,35 +2,60 @@
 
 ## Instalação por artefato
 
-Estado desta base (5d4a596). Leia esta tabela antes de seguir os comandos:
+Estado integrado das Fases 1 e 2 (`2dca1db`). Leia esta tabela antes de seguir os comandos:
 
-| Parte | Estado nesta base |
+| Parte | Estado |
 |---|---|
-| Canal HTTPS, `latest.json` e verificação Ed25519 em `agent-distribution.mjs` | Implementado (Fase 1). Download remoto exige chave pública embutida ou `AGENT_RELEASE_PUBLIC_KEY`. |
-| Chave pública oficial | **Não provisionada**: `RELEASE_PUBLIC_KEY_PEM` está vazio, então download remoto falha fechado. Procedimento: [Provisionar a chave](#provisionar-a-chave-de-assinatura-mantenedor). |
-| `install.sh` / `install.ps1` sem `gh`, Node portátil em `<store>/node` | Fase 2A. Até ela ser integrada, os instaladores desta base ainda usam `gh`. |
-| CI de 5 plataformas, smoke Linux/Windows, assinatura na publicação | Fase 2B. |
+| Canal HTTPS, `latest.json` e verificação Ed25519 (Fase 1, `f0707d8`/`5d4a596`) | Integrado. Download remoto exige chave pública configurada; sem ela falha fechado. |
+| Chave pública oficial | **Não provisionada**: `RELEASE_PUBLIC_KEY_PEM` está vazio em `scripts/lib/agent-distribution.mjs`, `scripts/install.sh` e `scripts/install.ps1`. Instalação remota falha fechado. Procedimento: [Provisionar a chave](#provisionar-a-chave-de-assinatura-mantenedor). |
+| `install.sh` / `install.ps1` sem `gh`, Node 24 portátil em `<store>/node`, wrappers (Fase 2A) | Integrado (`42d4263`). Windows nativo não foi executado nesta integração. |
+| CI de 5 plataformas, smoke Linux e Windows, publicação com assinatura (Fase 2B, `9a501b9`) | Integrado no workflow. Não executado no GitHub. Nenhuma release publicada. |
+| Testes `scripts/test-install-artifact.mjs` e `scripts/test-agent-runtime.mjs` | **Falham no estado integrado**: fixtures e asserções antigas (instalação remota sem chave; ordem do launcher) que a Fase 2A não atualizou. Corrigir antes de considerar a Fase 3 concluída; esta mudança de docs não os altera. |
 | Instalação offline (`AGENT_RELEASE_DIR`, `--install-artifact <arquivo>`) | Implementado. Confere só SHA-256 contra `SHA256SUMS`, sem Ed25519. |
 
 A v0.1.0 contém somente darwin-arm64. Releases publicadas antes da Fase 1 não trazem `latest.json` nem `SHA256SUMS.sig`, então não são instaláveis pelo canal HTTPS assinado. Esta mudança não publica release nem gera chave.
 
 Pré-requisitos: Bash em macOS/Linux, ou PowerShell em Windows x64. Node não é exigido na máquina: o instalador provê o Node 24 portátil em `<store>/node` (seção Node portátil). O canal HTTPS não usa `gh`; repositório privado exige `AGENT_RELEASE_TOKEN`. Em Windows x64 nativo, também instale **Git for Windows** (Git Bash é usado pelo shell do Pi). Em macOS/Linux, não precisa de Git; nenhuma plataforma precisa de npm, clone ou build na máquina do consumidor. Não use WSL para instalar o pacote win32-x64.
 
-Com uma release publicada e assinada, baixe `install.sh` e execute (repositório público, sem token):
+Com uma release publicada e assinada e a chave oficial provisionada (ver Estado), instale em uma linha (repositório público, sem token):
 
 ```sh
-curl -fsSL -o ./install.sh https://github.com/GabrielMendonca1/agent/releases/latest/download/install.sh
-bash ./install.sh
+curl -fsSL https://github.com/GabrielMendonca1/agent/releases/latest/download/install.sh | bash
+```
+
+Versão fixa: `curl -fsSL https://github.com/GabrielMendonca1/agent/releases/download/<tag>/install.sh | AGENT_VERSION=<tag> bash`.
+
+Inspecionar antes de executar (recomendado):
+
+```sh
+curl -fsSL -o install.sh https://github.com/GabrielMendonca1/agent/releases/latest/download/install.sh
+less install.sh
+bash install.sh
+```
+
+Depois da instalação:
+
+```sh
 export PATH="$HOME/.local/bin:$PATH"
 agent
 # Na conversa: /login — sua própria conta do provider
 ```
 
+**Origem do script inicial.** `install.sh` e `install.ps1` não são verificados por assinatura antes de rodar: quem executa o one-liner confia na origem HTTPS do arquivo (o repositório `GabrielMendonca1/agent` ou o mirror que você escolheu). A chave pública fica dentro desse script, então um script adulterado poderia trocar a chave. A assinatura Ed25519 protege o que o script baixa depois, não o próprio script. Para outra origem, baixe, inspecione e confira por canal independente antes de executar.
+
 ### Windows x64 (PowerShell)
+
+Uma linha, sem token em repositório público:
+
+```powershell
+irm https://github.com/GabrielMendonca1/agent/releases/latest/download/install.ps1 | iex
+```
+
+Versão fixa: `$env:AGENT_VERSION = 'vX.Y.Z'; irm https://github.com/GabrielMendonca1/agent/releases/download/vX.Y.Z/install.ps1 | iex`. `irm | iex` não passa argumentos (`--adopt-launcher`, `--store`), e o script termina com `exit`, o que pode encerrar a sessão interativa. Para argumentos ou inspeção, use a forma com arquivo:
 
 ```powershell
 Invoke-WebRequest -Uri https://github.com/GabrielMendonca1/agent/releases/latest/download/install.ps1 -OutFile ./install.ps1
-# Fixar versão: baixe install.ps1 de releases/download/vX.Y.Z/install.ps1 e defina $env:AGENT_VERSION = 'vX.Y.Z'
+# inspecione ./install.ps1 antes de executar
 pwsh -NoProfile -File ./install.ps1 --adopt-launcher
 & "$env:USERPROFILE/.local/bin/agent.cmd" --version
 & "$env:USERPROFILE/.local/bin/agent.cmd" overlay-status
@@ -57,6 +82,10 @@ node scripts/agent-update.mjs --install-artifact /caminho/agent-<id>-<os>-<arch>
 # O arquivo SHA256SUMS deve estar no mesmo diretório do archive local.
 ```
 
+### Estado sem chave pública
+
+Com a chave ainda vazia, a instalação remota por `install.sh` ou `install.ps1` executa nesta ordem: (1) provisiona o Node portátil em `<store>/node`, se necessário, o que faz conexão com `nodejs.org` (ou `AGENT_NODE_BASE_URL`); (2) só então falha com `Release public key is not configured`. Nenhuma release é baixada e o Agent não é ativado, mas o Node fica instalado no store. Essa ordem é a atual. A instalação offline (`AGENT_RELEASE_DIR`) não usa a chave: confere só SHA-256 e funciona sem ela, com Node do sistema ou portátil já existente, sem conexão.
+
 ### Canal HTTPS, variáveis e origem
 
 Sem `gh`, o instalador, `agent update` e `--install-artifact latest|<tag>` leem a release por HTTPS:
@@ -69,9 +98,9 @@ Sem `gh`, o instalador, `agent update` e `--install-artifact latest|<tag>` leem 
 
 ### Node portátil
 
-- Versão fixa: Node v24.22.3 (`scripts/lib/portable-node.mjs`). Layout: `<store>/node/v24.22.3/bin/node` (Windows: `v24.22.3/node.exe`) e `<store>/node/current` (link; junction no Windows).
-- Instalação remota: usa o Node portátil. Se ele ainda não existir, baixa de `AGENT_NODE_BASE_URL` (padrão `https://nodejs.org/dist`) e confere o SHA-256 oficial antes de extrair. Se já existir, reaproveita: `agent update` não baixa Node de novo.
-- Offline (`AGENT_RELEASE_DIR`, `--install-artifact`) e `AGENT_USE_SYSTEM_NODE=1`: preferem o `node` do sistema se for >=22.19. `AGENT_PORTABLE_NODE=1` força o portátil.
+- Versão fixa: Node v24.22.3 (`scripts/lib/portable-node.mjs`; hashes oficiais também fixados em `install.sh` e `install.ps1`). Layout: `<store>/node/v24.22.3/bin/node` (Windows: `v24.22.3/node.exe`) e `<store>/node/current` (link; junction no Windows).
+- Instalação remota: usa o Node portátil, salvo `AGENT_USE_SYSTEM_NODE=1` com `node` >=22.19 no PATH. Se `<store>/node/v24.22.3/bin/node` não existir, baixa o arquivo oficial (`node-v24.22.3-<alvo>`) de `AGENT_NODE_BASE_URL` (padrão `https://nodejs.org/dist`; base HTTPS, ou loopback em teste), com limite de 128 MiB, e confere o SHA-256 fixo no script antes de extrair. Alvos: darwin-arm64 e darwin-x64 (`.tar.gz`), linux-x64 e linux-arm64 (`.tar.xz`), win32-x64 (`.zip`). `AGENT_NODE_SHA256` substitui o hash apenas com base em loopback. Se já existir, reaproveita: `agent update` não baixa Node de novo.
+- Offline (`AGENT_RELEASE_DIR`): usa o `node` do sistema se for >=22.19. Sem ele, falha, salvo se o Node portátil já existir ou `AGENT_PORTABLE_NODE=1` (que permite baixar). `AGENT_PORTABLE_NODE=1` força o portátil em qualquer modo.
 - Os wrappers `agent` e `agent.cmd` usam `<store>/node/current` quando existe e caem para `node` do PATH.
 - `overlay-gc` nunca remove `<store>/node`. `agent overlay-status` imprime `Portable Node: present`, `no active binary` ou `not installed`.
 
@@ -84,9 +113,9 @@ Sem `gh`, o instalador, `agent update` e `--install-artifact latest|<tag>` leem 
   2. baixa `SHA256SUMS` e `SHA256SUMS.sig` e verifica a assinatura. Sem chave configurada, nenhuma conexão de download é aberta. Assinatura ausente, inválida ou de outra chave aborta;
   3. confere o SHA-256 de `latest.json` e do tarball contra `SHA256SUMS`;
   4. só então extrai e ativa.
-- Fase 2A: `install.sh` e `install.ps1` verificam a assinatura e o SHA-256 de `agent-distribution.mjs` antes de executá-lo.
+- `install.sh` e `install.ps1` fazem a mesma cadeia antes de executar o bootstrap: assinatura de `SHA256SUMS` com a chave embutida; SHA-256 de `latest.json` e de `agent-distribution.mjs` contra `SHA256SUMS`; só então gravam o módulo e o executam. O `agent-distribution.mjs` verifica o tarball de novo antes de extrair.
 - A assinatura prova origem e bytes, não frescor. Um mirror pode servir uma release antiga assinada. Para fixar uma versão, use a tag.
-- Chave pública: `RELEASE_PUBLIC_KEY_PEM` em `scripts/lib/agent-distribution.mjs` (cópias em `install.sh` e `install.ps1` pela Fase 2A). Nesta base está vazia: download remoto falha com `no Ed25519 release public key configured`.
+- Chave pública: constante `RELEASE_PUBLIC_KEY_PEM` em três arquivos: `scripts/lib/agent-distribution.mjs`, `scripts/install.sh` e `scripts/install.ps1` (dentro do bootstrap embutido). Hoje está vazia nos três. Sem ela, `agent update` e `--install-artifact latest|<tag>` falham antes de qualquer conexão com `no Ed25519 release public key configured`, e o bootstrap com `Release public key is not configured`. `--install-artifact <arquivo>` local não usa a chave.
 - Offline não tem verificação Ed25519 (ver acima).
 
 ### Dependências externas (skills e papéis)
@@ -160,7 +189,7 @@ Artefatos históricos **v1/v2** continuam imutáveis e usam config **v1**, com `
 
 Esta seção é procedimento humano. Nenhum passo aqui é executado pelo código do repositório nem por este change.
 
-Estado nesta base: não há chave pública oficial embutida. Até a provisão, instalações remotas falham fechado. Não afirme que produção tem chave enquanto o passo 3 não estiver mergeado.
+Estado: não há chave pública oficial embutida. Até a provisão, instalações remotas falham fechado. Não afirme que produção tem chave enquanto o passo 3 não estiver mergeado.
 
 1. Gerar o par uma única vez, fora do repositório (o `.gitignore` não cobre `*.pem`). Em macOS/Linux:
 
@@ -175,7 +204,7 @@ node scripts/agent-dist.mjs --keygen \
 
 2. Guardar a privada no cofre de segredos do mantenedor, com backup. Não colar em chat, issue, log, commit ou worktree. Remover a cópia de trabalho depois de configurar o segredo de CI.
 
-3. Publicar a pública por PR: substituir `RELEASE_PUBLIC_KEY_PEM` em `scripts/lib/agent-distribution.mjs` pelo conteúdo de `release-public.pem` (SPKI PEM). Replicar o mesmo valor em `install.sh` e `install.ps1` (Fase 2A). Não há check automático que compare as três cópias: revise manualmente.
+3. Publicar a pública por PR: substituir `RELEASE_PUBLIC_KEY_PEM` em `scripts/lib/agent-distribution.mjs` pelo conteúdo de `release-public.pem` (SPKI PEM). Replicar o mesmo valor em `install.sh` e `install.ps1`. Não há check automático que compare as três cópias: revise manualmente. Nos bootstraps a constante é JS entre aspas simples; PEM multilinha precisa de crase ou escapes `\n`.
 
 4. Configurar o segredo de CI `AGENT_RELEASE_SIGNING_KEY` com o conteúdo de `release-private.pem` (PEM literal ou base64 dele; `agent-dist.mjs` aceita os dois):
 
@@ -183,7 +212,7 @@ node scripts/agent-dist.mjs --keygen \
 gh secret set AGENT_RELEASE_SIGNING_KEY < "$HOME/agent-release-keys/release-private.pem"
 ```
 
-O job de publicação (Fase 2B) lê esse segredo e o entrega a `agent-dist.mjs` por `--sign-key` ou `AGENT_SIGNING_PRIVATE_KEY`. Sem ele, o job falha; não há assinatura de fallback.
+O job `publish` do workflow (só com `workflow_dispatch` e `publish=true`) lê esse segredo em `AGENT_SIGNING_PRIVATE_KEY`, falha se estiver vazio, faz o merge com `--tag` e publica somente nesse opt-in. Não há assinatura de fallback.
 
 5. Verificar a cadeia antes de qualquer publicação. Gerar um dist assinado com tag de teste fora do repositório e conferir a assinatura com a pública:
 
@@ -201,7 +230,7 @@ node --input-type=module -e '
 
 Para testar o caminho HTTPS completo sem publicar, sirva o dist em um servidor loopback de teste e use `AGENT_RELEASE_BASE_URL=http://127.0.0.1:<porta>`, com `AGENT_RELEASE_PUBLIC_KEY="$(cat "$HOME/agent-release-keys/release-public.pem")"` (conteúdo PEM, não caminho) quando a chave embutida ainda não existir. Não use `gh release create` nem o workflow de publicação para esse teste.
 
-Rotação e perda da privada não estão definidas no código nesta base. Perda impede novas releases com a chave embutida. Comprometimento exige decisão do mantenedor e nova versão do instalador com outra chave; não publique com chave comprometida.
+Rotação e perda da privada não estão definidas no código. Perda impede novas releases com a chave embutida. Comprometimento exige decisão do mantenedor e nova versão do instalador com outra chave; não publique com chave comprometida.
 
 ## Produzir e verificar sem instalar no host
 
@@ -239,7 +268,7 @@ Para assinar (exige tag e chave juntas): acrescente `--tag <tag> --sign-key <cha
 
 Em Windows o staging usa nomes curtos (`ad-*`, `h`, `s`); `AGENT_DIST_TMP` permite escolher uma raiz curta gravável (no CI: `C:\adtmp`). Variáveis essenciais do Windows são preservadas ao filtrar credenciais do ambiente de build. Recomenda-se uma raiz curta também para checkout e instalação.
 
-O workflow `.github/workflows/agent-dist.yml` aceita `workflow_dispatch` ou push na branch `ci/agent-dist`, constrói em macos-14/arm64 e windows-2022/x64 com Node 24 e salva artifacts `agent-darwin-arm64` / `agent-win32-x64`. O smoke Windows instala o dist local em USERPROFILE/store temporários e verifica versão, status e migração dry-run de um perfil Mark falso.
+O workflow `.github/workflows/agent-dist.yml` aceita `workflow_dispatch` ou push na branch `ci/agent-dist`. Constrói em 5 plataformas (macos-14/arm64, macos-15-intel/x64, ubuntu-24.04/x64, ubuntu-24.04-arm/arm64, windows-2022/x64) com Node 24 e salva artifacts `agent-<plataforma>`. Os smokes Linux e Windows instalam o dist local (`AGENT_RELEASE_DIR`) em HOME/store temporários, com perfil Mark falso, e verificam que nenhuma credencial é criada. O job `publish` faz o merge dos 5 hosts com `--tag`, assina com `AGENT_RELEASE_SIGNING_KEY` (falha se ausente) e cria ou atualiza a release com `dist/*`, incluindo `latest.json` e `SHA256SUMS.sig`. Nenhuma execução no GitHub foi feita nesta integração.
 
 Disparo sem publicação (padrão): `gh workflow run agent-dist.yml --ref <branch>`. O workflow precisa existir no ref e estar disponível no GitHub. Para publicação explicitamente aprovada: `gh workflow run agent-dist.yml --ref <branch> -f tag=vX.Y.Z -f publish=true`. Apenas esse opt-in habilita o job final que faz merge e `gh release create` ou `upload` (sem sobrescrever assets existentes). Não publique antes de validar os artifacts e os checks; a execução desse workflow não foi feita localmente.
 

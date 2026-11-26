@@ -20,9 +20,9 @@ A coluna "Hoje" descreve o que o Superagent lê agora, numa instalação feita c
 
 ## Bootstrap Windows x64 nativo
 
-Estado desta base (5d4a596): o `install.ps1` atual ainda usa `gh` até a Fase 2A ser integrada; o texto abaixo descreve o alvo. Requisitos: Git for Windows disponível para o shell do Pi. Node não é exigido: o instalador usa o Node 24 portátil em `<store>\node\current` (`AGENT_USE_SYSTEM_NODE=1` usa Node >=22.19 do sistema). Repositório público não precisa de token; repositório privado exige `AGENT_RELEASE_TOKEN` (ou `GITHUB_TOKEN`). `gh` não é usado. Não usar o pacote Linux via WSL. Releases novas incluem `agent-<releaseId>-win32-x64.tar.gz`, o tarball darwin-arm64, `SHA256SUMS`, `SHA256SUMS.sig`, `latest.json`, `agent-distribution.mjs`, `install.sh` e `install.ps1`. A v0.1.0 tem apenas darwin-arm64; formato do tarball e campos existentes não mudaram.
+Estado integrado das Fases 1 e 2 (`2dca1db`): `install.ps1` não usa `gh`. A chave pública oficial ainda não está provisionada, então a instalação remota falha fechado até a provisão; nenhuma release foi publicada. Requisitos: Git for Windows disponível para o shell do Pi. Node não é exigido: o instalador usa o Node 24 portátil em `<store>\node\current` (`AGENT_USE_SYSTEM_NODE=1` usa Node >=22.19 do sistema). Repositório público não precisa de token; repositório privado exige `AGENT_RELEASE_TOKEN` (ou `GITHUB_TOKEN`). `gh` não é usado. Não usar o pacote Linux via WSL. Releases novas incluem `agent-<releaseId>-win32-x64.tar.gz`, o tarball darwin-arm64, `SHA256SUMS`, `SHA256SUMS.sig`, `latest.json`, `agent-distribution.mjs`, `install.sh` e `install.ps1`. A v0.1.0 tem apenas darwin-arm64; formato do tarball e campos existentes não mudaram.
 
-Comandos que um app pode executar, sem modificar política de execução nem PATH:
+Comandos que um app pode executar, sem modificar política de execução nem PATH (forma com arquivo; `irm | iex` não recebe `--adopt-launcher` nem `--store`):
 
 ```powershell
 Invoke-WebRequest -Uri https://github.com/GabrielMendonca1/agent/releases/latest/download/install.ps1 -OutFile ./install.ps1
