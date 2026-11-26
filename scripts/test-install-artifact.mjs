@@ -18,6 +18,9 @@ let checks=0;
 const passed=name=>{checks++;console.log(`ok ${name}`);};
 const test=(name,fn)=>{fn();passed(name);};
 const testAsync=async (name,fn)=>{await fn();passed(name);};
+// Reproduce a normal updater's modes even on hosts running the gate with umask 002 or 077.
+// The installer still sets its own umask 077, so reusing a release crosses both modes.
+const originalUmask=process.umask(0o022);
 try {
  const source=join(root,'source');mkdirSync(source);
  cpSync(join(repo,'scripts'),join(source,'scripts'),{recursive:true});
@@ -219,12 +222,12 @@ try {
   const remoteLauncher=join(home,'.local/bin/agent'),installer=join(repo,'scripts/install.sh');
   const portable=join(remoteStore,'node/current/bin/node');
   const activePath=join(remoteStore,'active.json'),identitiesPath=join(remoteStore,'release-identities.json');
-  const token='synthetic-release-token';
+  const token='synthetic-release-token',githubToken='synthetic-github-token';
   const snapshotTree=path=>{
    const st=lstatSync(path,{throwIfNoEntry:false});
    if (!st) return null;
    if (st.isSymbolicLink()) return readlinkSync(path);
-   if (st.isDirectory()) return readdirSync(path).sort().map(name=>[name,snapshotTree(join(path,name))]);
+   if (st.isDirectory()) return [st.mode,readdirSync(path).sort().map(name=>[name,snapshotTree(join(path,name))])];
    return [st.mode,hash(readFileSync(path))];
   };
   const snapshotPair=()=>['current','previous','active.json','release-identities.json','runtime/config.json'].map(name=>snapshotTree(join(remoteStore,name)))
@@ -253,7 +256,7 @@ try {
     if (failure) {
      assert.notEqual(code,0,stdout);assert.match(stderr,failure);
     } else assert.equal(code,0,stdout+stderr);
-    assert.ok(!(stdout+stderr).includes(token),'release token leaked in command output');
+    for (const secret of [token,githubToken]) assert.ok(!(stdout+stderr).includes(secret),'token leaked in command output');
     return stdout;
    };
    const paths=()=>requests.map(r=>r.path);
@@ -266,7 +269,10 @@ try {
     assert.deepEqual(load(identitiesPath)[current],id);
     assert.ok(load(join(remoteStore,'runtime/config.json')).piRoot.startsWith(`${current}/`));
     assert.ok((await call(remoteLauncher,['overlay-status'])).includes(`Release: ${id.tag} (assetId ${id.assetId}, repo ${id.repo})`));
-    for (const file of [activePath,identitiesPath]) assert.ok(!readFileSync(file,'utf8').includes(token),`release token leaked to ${file}`);
+    for (const file of [activePath,identitiesPath]) {
+     const contents=readFileSync(file,'utf8');
+     for (const secret of [token,githubToken]) assert.ok(!contents.includes(secret),`token leaked to ${file}`);
+    }
    };
    await testAsync('installer checks portable Node SHA-256 before executing or activating',async ()=>{
     await call('bash',[installer],/Portable Node SHA-256 mismatch/,{AGENT_NODE_SHA256:'0'.repeat(64)});
@@ -332,10 +338,25 @@ try {
     assert.deepEqual(snapshotPair(),before);
     await rollback(idB);await rollback(idA);
     await call(remoteLauncher,['overlay-update','--install-artifact',tagB]);await assertActive(idB);
-    // install.sh extracted A with umask 077; a normal update must still be able to reuse it.
-    await call('/bin/sh',['-c','umask 022; exec "$@"','sh',remoteLauncher,'update'],undefined,{AGENT_VERSION:tagA});
+   });
+   await testAsync('installer and updater reuse immutable releases without sending ambient GitHub credentials to mirrors',async ()=>{
+    const ambient={GITHUB_TOKEN:githubToken};
+    const assertAnonymous=assetPath=>{
+     assert.ok(paths().includes(assetPath),'expected a release tarball request to the mirror');
+     assert.ok(requests.every(r=>r.authorization===undefined),'mirror received ambient credentials');
+    };
+    const installed=id=>join(remoteStore,'releases',id.assetId);
+    const modesAndContentsA=snapshotTree(installed(idA)),modesAndContentsB=snapshotTree(installed(idB));
+    assert.equal(lstatSync(installed(idA)).mode & 0o777,0o700);
+    assert.equal(lstatSync(installed(idB)).mode & 0o777,0o755);
+    await call(remoteLauncher,['update'],undefined,{...ambient,AGENT_VERSION:tagA});
+    assertAnonymous(`/release/${tagA}/${basename(archive(outA))}`);
     await assertActive(idA);
-    await call('bash',[installer,'--tag',tagB]);await assertActive(idB);
+    assert.deepEqual(snapshotTree(installed(idA)),modesAndContentsA);
+    await call('bash',[installer,'--tag',tagB],undefined,ambient);
+    assertAnonymous(`/release/${tagB}/${basename(archive(outB))}`);
+    await assertActive(idB);
+    assert.deepEqual(snapshotTree(installed(idB)),modesAndContentsB);
    });
   } finally {
    await new Promise((resolve,reject)=>server.close(error=>error?reject(error):resolve()));
@@ -352,4 +373,7 @@ try {
   assert.equal(existsSync(join(env.HOME,'.bashrc')),false);assert.equal(existsSync(join(env.HOME,'.zshrc')),false);
  });
  console.log(`install-artifact: ${checks} fixture checks OK; no provider inference or remote access`);
-} finally {rmSync(root,{recursive:true,force:true});}
+} finally {
+ process.umask(originalUmask);
+ rmSync(root,{recursive:true,force:true});
+}

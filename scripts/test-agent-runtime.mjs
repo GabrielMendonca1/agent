@@ -690,7 +690,9 @@ test("o wrapper despacha manutenção antes do runtime e só chama o launcher no
 	assert.match(cmd, /if exist "%AGENT_LAUNCHER%" goto :agent_launch/);
 	assert.match(cmd, /if exist "%AGENT_CONFIG%" goto :agent_missing/);
 	assert.match(cmd, /"%NODE_BIN%" "%AGENT_LAUNCHER%" --store "%STORE%" -- %\*/);
-	assert.match(cmd, /^:agent_missing\r?\n(?:[^\r\n]*\r?\n)*?exit \/b 1\r?$/m);
+	const missing = cmd.split(/^:/m).find(block => /^agent_missing\r?\n/.test(block));
+	assert.ok(missing, "o wrapper precisa do bloco :agent_missing");
+	assert.equal(missing.trimEnd().split(/\r?\n/).at(-1).trim(), "exit /b 1");
 	// O despacho de manutenção continua intacto nos dois.
 	for (const text of [wrapper, cmd]) {
 		for (const route of ["overlay-update", "overlay-rollback", "update"]) assert.ok(text.includes(route));
