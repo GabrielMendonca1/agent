@@ -249,8 +249,12 @@ function remove(t: WorktreeBranch, force: boolean, discard: boolean, options: Wo
 const head = (cwd: string) => git(cwd, ["rev-parse", "HEAD"]);
 const merging = (cwd: string) => fs.existsSync(path.join(git(cwd, ["rev-parse", "--absolute-git-dir"]), "MERGE_HEAD"));
 
+const PENDING_OPERATIONS = ["MERGE_HEAD", "CHERRY_PICK_HEAD", "REVERT_HEAD", "rebase-merge", "rebase-apply", "BISECT_LOG"];
+
 function requireClean(cwd: string, label: string): void {
-	if (merging(cwd)) throw new Error(`${label} has a merge in progress.`);
+	const gitDir = git(cwd, ["rev-parse", "--absolute-git-dir"]);
+	const pending = PENDING_OPERATIONS.find((name) => fs.existsSync(path.join(gitDir, name)));
+	if (pending) throw new Error(`${label} has a Git operation in progress (${pending}).`);
 	const dirty = git(cwd, ["status", "--porcelain", "--untracked-files=normal"]);
 	if (dirty) throw new Error(`${label} is dirty and has uncommitted changes:\n${dirty}`);
 }
@@ -313,14 +317,17 @@ function publishCheckedTree(t: WorktreeBranch, sourceHead: string, checkedHead: 
 		throw new Error("Writer branch changed after checks; retry integrate.");
 	}
 	try {
-		git(cwd, ["-c", `branch.${t.sourceBranch}.mergeOptions=`, "merge", "--no-ff", "--no-edit", "--no-autostash", "--no-overwrite-ignore", ref]);
+		// Keep branch.<source>.mergeOptions (e.g. --verify-signatures) as repository policy.
+		git(cwd, ["merge", "--no-ff", "--no-edit", "--no-autostash", "--no-overwrite-ignore", ref]);
 		if (merging(cwd) || !isAncestor(cwd, checkedHead, head(cwd)) || git(cwd, ["rev-parse", "HEAD^{tree}"]) !== tree) {
 			throw new Error("Merge did not commit the checked tree.");
 		}
 	} catch (error) {
 		const message = `Merge failed for ${t.branch}: ${String(error)}`;
 		try {
-			git(cwd, merging(cwd) ? ["merge", "--abort"] : ["reset", "--hard", sourceHead]);
+			// Restore only what this merge changed; untouched state is left alone.
+			if (merging(cwd)) git(cwd, ["merge", "--abort"]);
+			else if (head(cwd) !== sourceHead || git(cwd, ["status", "--porcelain"])) git(cwd, ["reset", "--hard", sourceHead]);
 		} catch (failure) { throw new Error(`${message}\nCould not restore the source checkout: ${String(failure)}`); }
 		throw new Error(message);
 	}
