@@ -193,7 +193,7 @@ export default function (pi: ExtensionAPI) {
 			let roleChoices: Record<string, RoleModelChoice[]> = {};
 			let swarmChoices: Partial<Record<SwarmSlot, RoleModelChoice>> = {};
 			let configError: string | undefined;
-			let swarmError: string | undefined;
+			const invalidSwarmSlots = new Set<SwarmSlot>();
 			let resourcePrefs: { supportModel: string | null } | undefined;
 			let resourceError: string | undefined;
 			if (pilot) {
@@ -214,11 +214,7 @@ export default function (pi: ExtensionAPI) {
 			try {
 				const config = data ?? loadTiers();
 				roleChoices = loadRoleModels(config);
-				try {
-					swarmChoices = loadSwarmModels(config);
-				} catch (err) {
-					swarmError = err instanceof Error ? err.message : String(err);
-				}
+				swarmChoices = loadSwarmModels(config, invalidSwarmSlots);
 			} catch (err) {
 				configError = err instanceof Error ? err.message : String(err);
 			}
@@ -411,7 +407,7 @@ export default function (pi: ExtensionAPI) {
 						}, () => { picker = null; }, theme);
 						return;
 					}
-					const rowError = row.kind === "swarm" ? configError ?? swarmError : row.kind === "role" ? configError : undefined;
+					const rowError = row.kind === "swarm" || row.kind === "role" ? configError : undefined;
 					if (rowError) {
 						ctx.ui.notify(`erro lendo ${MODELS_FILE}: ${rowError}`, "error");
 						return;
@@ -423,7 +419,8 @@ export default function (pi: ExtensionAPI) {
 						];
 						picker = new ModelPicker(row.label, row.description, choices, row.model(), (model) => {
 							try {
-								swarmChoices = setSwarmModel(row.id, (current) => model === swarmUnset ? null : { model, thinking: current?.thinking ?? "medium" });
+								setSwarmModel(row.id, (current) => model === swarmUnset ? null : { model, thinking: current?.thinking ?? "medium" });
+								swarmChoices = loadSwarmModels(undefined, invalidSwarmSlots);
 							} catch (err) {
 								ctx.ui.notify(`erro salvando ${row.label}: ${err instanceof Error ? err.message : String(err)}`, "error");
 							}
@@ -522,7 +519,7 @@ export default function (pi: ExtensionAPI) {
 							? r.kind === "support"
 								? theme.fg("dim", "herdar principal · não configurado")
 								: r.kind === "swarm"
-									? theme.fg("dim", configError || swarmError ? "config inválida" : `herda ${SWARM_INHERIT[r.id]}`)
+									? theme.fg("dim", configError || invalidSwarmSlots.has(r.id) ? "config inválida" : `herda ${SWARM_INHERIT[r.id]}`)
 									: theme.fg("dim", "—")
 							: r.kind === "tier" && r.id === "image"
 								? badge(theme, id, "GPT Image", sel) + theme.fg("dim", `  via ${prettyName(ctx, id)}`)
@@ -559,13 +556,12 @@ export default function (pi: ExtensionAPI) {
 					const row = rows[cursor];
 					const isImage = row.kind === "tier" && row.id === "image";
 					const hints = ["↑↓ linha", "Enter modelo", isImage ? "←→ quality" : "←→ thinking", ...(isImage ? ["s size"] : []), "Esc fecha"];
-					const panelError = configError ?? swarmError;
-					const note = panelError
-						? `  erro lendo ${MODELS_FILE.replace(process.env.HOME ?? "", "~")}: ${panelError}`
+					const note = configError
+						? `  erro lendo ${MODELS_FILE.replace(process.env.HOME ?? "", "~")}: ${configError}`
 						: pilot
 							? "  modelo e thinking são sua escolha e persistem; o modo (Shift+Tab) não os altera"
 							: `  ${MODELS_FILE.replace(process.env.HOME ?? "", "~")}`;
-					return ["", truncateToWidth(theme.fg("dim", "  " + hints.join("  ·  ")), width, ""), truncateToWidth(theme.fg(panelError ? "error" : "dim", note), width, "")];
+					return ["", truncateToWidth(theme.fg("dim", "  " + hints.join("  ·  ")), width, ""), truncateToWidth(theme.fg(configError ? "error" : "dim", note), width, "")];
 				};
 
 				return {

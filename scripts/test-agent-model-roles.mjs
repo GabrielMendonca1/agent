@@ -293,19 +293,41 @@ try {
   // 5d. Erro em presets não desabilita o editor de papéis.
   type(KEY.esc); await done.pending;
   const invalidPreset = readConfig();
-  invalidPreset.swarmModels = { writer: { model: 'test/astra', thinking: 'turbo' } };
+  invalidPreset.swarmModels = {
+    writer: { model: 'test/astra', thinking: 'turbo' },
+    reviewer: null,
+    board: { model: 'test/luna', thinking: 'low' },
+  };
   writeFixture(invalidPreset);
   done = await openPanel(extension);
   assert.match(rowOf('swarm writer'), /config inválida/);
-  goTo('swarm writer');
-  type(KEY.enter);
-  assert.equal(notices.at(-1).level, 'error');
-  assert.match(notices.at(-1).text, /swarmModels/);
+  assert.match(rowOf('swarm reviewer'), /config inválida/);
+  assert.match(rowOf('swarm board'), /Luna 6.*low/);
   goTo('scout');
   type(KEY.right);
   invalidPreset.roleModels.scout[0].thinking = 'high';
   assert.deepEqual(readConfig(), invalidPreset, 'erro em presets não bloqueia nem é alterado por escrita de papel');
-  checks++; console.log('ok config inválida do swarm isolada dos papéis');
+  goTo('swarm board');
+  type(KEY.right);
+  invalidPreset.swarmModels.board.thinking = 'medium';
+  assert.deepEqual(readConfig(), invalidPreset, 'thinking em slot válido preserva entradas inválidas');
+  goTo('swarm writer');
+  type(KEY.enter);
+  for (const ch of 'astra') type(ch);
+  type(KEY.enter);
+  invalidPreset.swarmModels.writer.thinking = 'medium';
+  assert.deepEqual(readConfig(), invalidPreset, 'substitui só o slot inválido escolhido');
+  assert.match(rowOf('swarm writer'), /Astra 6.*medium/);
+  assert.match(rowOf('swarm reviewer'), /config inválida/);
+  goTo('swarm reviewer');
+  type(KEY.enter);
+  assert.match(screen(), /^→ Herdar padrão/m);
+  type(KEY.enter);
+  delete invalidPreset.swarmModels.reviewer;
+  assert.deepEqual(readConfig(), invalidPreset, 'Herdar padrão remove a entrada inválida mesmo se for null');
+  assert.match(rowOf('swarm reviewer'), /herda reviewer/);
+  assert.ok(!notices.some(n => n.level === 'error'), JSON.stringify(notices));
+  checks++; console.log('ok entradas inválidas isoladas e reparáveis: substituir ou voltar a herdar');
 
   // 6. Config quebrada: erro explícito, painel de pé, nada gravado.
   type(KEY.esc); await done.pending;
@@ -368,10 +390,13 @@ try {
   checks++; console.log('ok helper recusa modelo fora da allowlist e papel inexistente');
   // 9. Malformed presets don't affect the same role lookup used by ordinary subagents.
   const bad = fixture();
-  bad.swarmModels = { writer: { model: 'test/astra', thinking: 'turbo' } };
+  bad.swarmModels = { writer: { model: 'test/astra', thinking: 'turbo' }, board: { model: 'test/luna', thinking: 'high' } };
   writeFixture(bad);
   assert.deepEqual(tiers.getRoleModelChoices('worker'), bad.roleModels.worker);
   assert.throws(() => tiers.getSwarmModel('writer'), /invalid option in swarmModels/);
+  assert.deepEqual(tiers.getSwarmModel('board'), bad.swarmModels.board);
+  assert.equal(tiers.getSwarmModel('reviewer'), undefined);
+  assert.deepEqual(tiers.loadSwarmModels(), { board: bad.swarmModels.board });
 
   // 10. Hold the first process after it has read the config; the second tries to write
   // before the first is released. Without a transaction lock the role update is lost.

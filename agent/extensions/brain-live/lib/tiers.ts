@@ -129,16 +129,8 @@ export function loadTiers(): TiersFile {
 	return parsed as TiersFile;
 }
 
-function validateSwarmModels(data: TiersFile): void {
-	if (data.swarmModels !== undefined) {
-		if (!data.swarmModels || typeof data.swarmModels !== "object" || Array.isArray(data.swarmModels)) {
-			throw new Error(`${MODELS_FILE}: field "swarmModels" must be an object`);
-		}
-		for (const [slot, choice] of Object.entries(data.swarmModels)) {
-			validateSwarmSlot(slot);
-			validateSwarmChoice(slot, choice);
-		}
-	}
+function isSwarmSection(value: TiersFile["swarmModels"]): value is NonNullable<TiersFile["swarmModels"]> {
+	return !!value && typeof value === "object" && !Array.isArray(value);
 }
 
 function validateSwarmSlot(slot: string): void {
@@ -149,8 +141,12 @@ function validateThinking(thinking: string): void {
 	if (!THINKING_LEVELS.includes(thinking)) throw new Error(`thinking must be one of: ${THINKING_LEVELS.join(", ")}`);
 }
 
+function isSwarmChoice(choice: RoleModelChoice | undefined): choice is RoleModelChoice {
+	return !!choice && typeof choice.model === "string" && choice.model.includes("/") && THINKING_LEVELS.includes(choice.thinking);
+}
+
 function validateSwarmChoice(slot: string, choice: RoleModelChoice): void {
-	if (!choice || typeof choice.model !== "string" || !choice.model.includes("/") || !THINKING_LEVELS.includes(choice.thinking)) {
+	if (!isSwarmChoice(choice)) {
 		throw new Error(`${MODELS_FILE}: invalid option in swarmModels."${slot}" (provider/modelId and valid thinking are required)`);
 	}
 }
@@ -228,18 +224,34 @@ export function setRoleThinking(role: string, thinking: string | ((current: stri
 	});
 }
 
-export function loadSwarmModels(data = loadTiers()): Partial<Record<SwarmSlot, RoleModelChoice>> {
-	validateSwarmModels(data);
+/** Tolerant editor view; malformed entries are not used or rewritten implicitly. */
+export function loadSwarmModels(data = loadTiers(), invalid?: Set<SwarmSlot>): Partial<Record<SwarmSlot, RoleModelChoice>> {
 	const allowed: Partial<Record<SwarmSlot, RoleModelChoice>> = {};
+	invalid?.clear();
+	const section = data.swarmModels;
+	if (section === undefined) return allowed;
 	for (const slot of SWARM_SLOTS) {
-		const choice = data.swarmModels?.[slot];
-		if (choice && !isGoogleApiModel(choice.model)) allowed[slot] = choice;
+		if (!isSwarmSection(section)) {
+			invalid?.add(slot);
+			continue;
+		}
+		if (!Object.hasOwn(section, slot)) continue;
+		const choice = section[slot];
+		if (!isSwarmChoice(choice)) invalid?.add(slot);
+		else if (!isGoogleApiModel(choice.model)) allowed[slot] = choice;
 	}
 	return allowed;
 }
 
 export function getSwarmModel(slot: SwarmSlot): RoleModelChoice | undefined {
-	return loadSwarmModels()[slot];
+	validateSwarmSlot(slot);
+	const section = loadTiers().swarmModels;
+	if (section === undefined) return undefined;
+	if (!isSwarmSection(section)) throw new Error(`${MODELS_FILE}: field "swarmModels" must be an object`);
+	const choice = section[slot];
+	if (choice === undefined) return undefined;
+	validateSwarmChoice(slot, choice);
+	return isGoogleApiModel(choice.model) ? undefined : choice;
 }
 
 export function setSwarmModel(slot: SwarmSlot, choice: RoleModelChoice | null | ((current: RoleModelChoice | undefined) => RoleModelChoice | null)): Partial<Record<SwarmSlot, RoleModelChoice>> {
@@ -248,14 +260,15 @@ export function setSwarmModel(slot: SwarmSlot, choice: RoleModelChoice | null | 
 		const data = loadTiers();
 		const current = loadSwarmModels(data);
 		const next = typeof choice === "function" ? choice(current[slot]) : choice;
+		const section = data.swarmModels;
 		if (next === null) {
-			if (!data.swarmModels?.[slot]) return current;
-			delete data.swarmModels[slot];
-			if (!Object.keys(data.swarmModels).length) delete data.swarmModels;
+			if (!isSwarmSection(section) || !Object.hasOwn(section, slot)) return current;
+			delete section[slot];
+			if (!Object.keys(section).length) delete data.swarmModels;
 		} else {
 			validateSwarmChoice(slot, next);
 			if (isGoogleApiModel(next.model)) throw new Error("Gemini is available through the agy role, not the Pi API.");
-			data.swarmModels = { ...data.swarmModels, [slot]: next };
+			data.swarmModels = { ...(isSwarmSection(section) ? section : {}), [slot]: next };
 		}
 		saveTiers(data);
 		return loadSwarmModels(data);

@@ -465,10 +465,11 @@ async function runHotSwitch(host) {
     term.keys('Down', 'Down', 'Enter');
     await term.waitScreen(/autorizados neste papel/, `${host}: picker restrito de scout`);
     term.keys('Escape');
-    await term.waitScreen(/Enter par autorizado/, `${host}: cancelar volta ao papel`);
+    const modelsPanelHint = /Enter modelo.*thinking.*Esc fecha/;
+    await term.waitScreen(modelsPanelHint, `${host}: cancelar volta ao papel`);
     // `q` fecha o painel; dois Esc rápidos são o atalho global da lista de fork.
     term.keys('q');
-    await term.waitGone(/Enter par autorizado/, `${host}: fecha painel`);
+    await term.waitGone(modelsPanelHint, `${host}: fecha painel`);
     assert.equal(readFileSync(rolesFile, 'utf8'), rolesBefore, `${host}: abrir/cancelar não grava preferências`);
     assert.equal(sessionModel(), modelBeforePanel, `${host}: sessão/thinking intactos`);
     assert.equal(hotFake.messages().length, 0, `${host}: /models não consulta modelo`);

@@ -382,7 +382,7 @@ try {
     const boardPreset = choice('board-model', 'high');
     const explicit = choice('writer-model', 'low');
     members[1].model = explicit.model;
-    writeFileSync(modelsFile, JSON.stringify({ tiers: {}, roleModels: { worker: [explicit], builder: [explicit] }, swarmModels: { board: boardPreset } }));
+    writeFileSync(modelsFile, JSON.stringify({ tiers: {}, roleModels: { worker: [explicit], builder: [explicit] }, swarmModels: { board: boardPreset, writer: choice('writer-model', 'turbo') } }));
     const events = runPi({ AGENT_SWARM: '1', FG_LOG: log, FG_COST: '3', FG_SCRIPT: JSON.stringify([search, boardCall(members), { text: 'waiting' },
       { tool: 'subagent', args: { action: 'continue', handle: '$MEMBER', message: 'check the done entries' } }, { text: 'waiting again' }, { text: 'end' }]) });
     rmSync(modelsFile);
