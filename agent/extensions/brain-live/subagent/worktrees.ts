@@ -225,7 +225,18 @@ function remove(t: WorktreeBranch, force: boolean, discard: boolean, options: Wo
 			throw new Error("Writer committed after integration; resume it and integrate again.");
 		}
 		withUnsharedWorkspace(t.sourceCwd, t.worktree, options.workspaceId, () => {
-			git(t.sourceCwd, ["worktree", "remove", ...(force ? ["--force"] : []), "--", t.worktree]);
+			// Windows cannot remove the process's current directory. Leave only for
+			// the synchronous removal, after the ownership and cleanliness checks.
+			const cwd = process.cwd();
+			const relative = path.relative(realpathSync(t.worktree), realpathSync(cwd));
+			const inside = relative !== ".." && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative);
+			if (inside) process.chdir(t.sourceCwd);
+			try {
+				git(t.sourceCwd, ["worktree", "remove", ...(force ? ["--force"] : []), "--", t.worktree]);
+			} catch (error) {
+				if (inside && fs.existsSync(cwd)) process.chdir(cwd);
+				throw error;
+			}
 		});
 	} else git(t.sourceCwd, ["worktree", "prune"]);
 	t.worktreePathRemoved = true;

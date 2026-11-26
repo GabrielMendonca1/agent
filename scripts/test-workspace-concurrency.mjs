@@ -39,6 +39,7 @@ async function worker() {
     run = (target) => integrateWorktreeBranch(target);
   } else {
     assert.equal(kind, 'ui');
+    assert.equal(realpathSync(process.cwd()), realpathSync(cwd), 'Pi starts inside the session checkout');
     // The hermetic env helper clears Agent state, so pass the launched session's
     // four variables explicitly as fixture data instead of inheriting them.
     Object.assign(process.env, JSON.parse(branch), { AGENT_RUNTIME_ENABLED: '1' });
@@ -55,8 +56,18 @@ async function worker() {
     hooks.get('session_start')({}, ctx);
     assert.deepEqual(notices, [], 'session registration succeeds');
     run = async (args) => {
-      await command(args, ctx);
-      return { notices: notices.splice(0), shutdown, cwd: process.cwd() };
+      let leftBeforeRemoval = false;
+      const chdir = process.chdir;
+      process.chdir = (destination) => {
+        if (destination === process.env.AGENT_WORKTREE_SOURCE && existsSync(process.env.AGENT_WORKTREE_SESSION)) {
+          leftBeforeRemoval = true;
+        }
+        chdir(destination);
+      };
+      try {
+        await command(args, ctx);
+        return { notices: notices.splice(0), shutdown, cwd: realpathSync(process.cwd()), leftBeforeRemoval };
+      } finally { process.chdir = chdir; }
     };
   }
   process.on('message', async ({ input }) => {
@@ -86,9 +97,7 @@ async function main() {
   const workers = new Set();
   let releaseGate = () => {};
   function start(...args) {
-    // Windows prevents removal of a process's current directory. The Pi API
-    // still receives the session's real worktree as ctx.cwd.
-    const cwd = args[0] === 'ui' && process.platform !== 'win32' ? args[1] : root;
+    const cwd = args[0] === 'ui' ? args[1] : root;
     const child = fork(script, ['--worker', ...args], { env, cwd, execArgv: [], stdio: ['ignore', 'inherit', 'inherit', 'ipc'] });
     const closed = once(child, 'close');
     workers.add({ child, closed });
@@ -378,6 +387,16 @@ if (existsSync('left.txt') && existsSync('right.txt')) {
     await crashed.closed;
     assert.doesNotMatch(await command(discarder, 'status'), /dead-ui-fixture|job main/);
 
+    git(sessions, 'worktree', 'lock', drop.cwd);
+    await discarder.enter('discard');
+    const locked = await discarder.result();
+    assert.equal(locked.notices[0]?.level, 'error');
+    assert.match(locked.notices[0].text, /locked/i);
+    assert.equal(locked.shutdown, false);
+    assert.equal(locked.cwd, realpathSync(drop.cwd), 'restore the session cwd when removal fails');
+    assert.equal(locked.leftBeforeRemoval, true, 'leave the checkout before attempting removal');
+    git(sessions, 'worktree', 'unlock', drop.cwd);
+
     const lockHolder = checkout(sessions, 'ui-lock-holder');
     commit(lockHolder.worktree, 'hold.txt');
     commit(publish.cwd, 'ui.txt');
@@ -393,8 +412,8 @@ if (existsSync('left.txt') && existsSync('right.txt')) {
     const [holderResult, published, discarded] = await Promise.all([first.result(), publisher.result(), discarder.result()]);
     assert.match(holderResult.gateMessage, /checks gate passed/);
     assert.equal(holderResult.cleanupWarning, undefined);
-    assert.deepEqual(published, { notices: [{ level: 'info', text: 'Integrated agent/session-publish into main.\nchecks gate passed (1 checks).' }], shutdown: true, cwd: sessions });
-    assert.deepEqual(discarded, { notices: [{ level: 'info', text: 'Discarded agent/session-drop.' }], shutdown: true, cwd: sessions });
+    assert.deepEqual(published, { notices: [{ level: 'info', text: 'Integrated agent/session-publish into main.\nchecks gate passed (1 checks).' }], shutdown: true, cwd: sessions, leftBeforeRemoval: true });
+    assert.deepEqual(discarded, { notices: [{ level: 'info', text: 'Discarded agent/session-drop.' }], shutdown: true, cwd: sessions, leftBeforeRemoval: true });
     removed({ sourceCwd: sessions, worktree: publish.cwd, branch: publish.env.AGENT_WORKTREE_NAME });
     removed({ sourceCwd: sessions, worktree: drop.cwd, branch: drop.env.AGENT_WORKTREE_NAME });
     assert.equal(git(sessions, 'show', 'HEAD:ui.txt'), 'ui.txt');
@@ -422,6 +441,8 @@ if (existsSync('left.txt') && existsSync('right.txt')) {
     await first.result();
     const refused = await original.result();
     assert.equal(refused.shutdown, false);
+    assert.equal(refused.cwd, realpathSync(race.cwd));
+    assert.equal(refused.leftBeforeRemoval, false);
     assert.equal(refused.notices[0]?.level, 'error');
     assert.match(refused.notices[0].text, /Another active workspace owner/);
     assert.equal(readFileSync(edit, 'utf8'), 'late owner edit');
