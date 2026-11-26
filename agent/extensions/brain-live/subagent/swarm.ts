@@ -22,8 +22,6 @@ export const SWARM_OFF_ERROR = "Swarm is off in this session. Ask the user to en
 export const SWARM_MAX_ROUNDS = 5;
 export const SWARM_DEFAULT_ROUNDS = 3;
 export const SWARM_MIN_USD = 0.1;
-export const SWARM_MAX_USD = 50;
-export const SWARM_DEFAULT_USD = 5;
 
 /** Hidden session message sent by `/swarm on`: the model learns about the deferred tool here. */
 export const SWARM_ON_TEXT = [
@@ -32,7 +30,7 @@ export const SWARM_ON_TEXT = [
 	"- swarm loop: one writer implements and one reviewer reviews in rounds until approval; use it for implementation that needs an independent review.",
 	"- swarm board: 2+ coupled agents working in parallel on one shared objective, coordinating through an append-only board (claims, decisions, blockers, done).",
 	"- plain subagent: one-shot recon, reading, a single review, or independent parallel tasks.",
-	"You choose the decomposition, the roles, maxRounds and maxUsd. Log each choice in one line (mode, roles, caps, why).",
+	"You choose the decomposition, the roles and maxRounds. maxUsd is optional; omit it for no cost cap. Log each choice in one line (mode, roles, caps, why).",
 	"A swarm job is a normal subagent job: read it with subagent status/result/trace/list, stop it with cancel, and close it with integrate/discard or continue a handle.",
 	"Red lines:",
 	"- Never integrate or merge a swarm result before you review the final diff and verdict yourself.",
@@ -69,7 +67,7 @@ export interface SwarmRecord {
 	kind: "loop" | "board";
 	isolate: boolean;
 	maxRounds: number;
-	maxUsd: number;
+	maxUsd?: number;
 	spentUsd: number;
 	rounds: SwarmRound[];
 	outcome?: SwarmOutcome;
@@ -224,7 +222,7 @@ export async function runSwarmLoop(deps: LoopDeps): Promise<LoopResult> {
 	for (let k = 1; ; k++) {
 		if (k > 1) {
 			if (k > swarm.maxRounds) return finish("max_rounds", `reviewer still requests changes after ${swarm.maxRounds} round(s)`);
-			if (swarm.spentUsd >= swarm.maxUsd) return finish("max_usd", `spent ${usd(swarm.spentUsd)} of ${usd(swarm.maxUsd)}`);
+			if (swarm.maxUsd !== undefined && swarm.spentUsd >= swarm.maxUsd) return finish("max_usd", `spent ${usd(swarm.spentUsd)} of ${usd(swarm.maxUsd)}`);
 		}
 		if (deps.signal.aborted) return finish("failed", "job stopped");
 		const round: SwarmRound = { round: k, costUsd: 0 };
@@ -237,7 +235,7 @@ export async function runSwarmLoop(deps: LoopDeps): Promise<LoopResult> {
 			? `${deps.writerTask}\n\n## Swarm loop\nRound 1/${swarm.maxRounds}. A reviewer checks your work after this turn. ${deps.isolated ? "Commit your work before you finish." : "Leave your changes in the working tree or commit them."} End with a short summary of what changed.`
 			: [
 				`## Swarm loop: round ${k}/${swarm.maxRounds}`,
-				`Remaining budget: ${usd(Math.max(0, swarm.maxUsd - swarm.spentUsd))}.`,
+				...(swarm.maxUsd === undefined ? [] : [`Remaining budget: ${usd(Math.max(0, swarm.maxUsd - swarm.spentUsd))}.`]),
 				"The reviewer requested changes. Address each finding below, run the relevant checks, " + (deps.isolated ? "commit, " : "") + "and end with a short summary of what changed.",
 				"",
 				"## Reviewer findings",
@@ -316,9 +314,6 @@ export const BOARD_REF_MAX = 160;
 export const BOARD_MAX_ENTRIES = 100;
 export const BOARD_MAX_BYTES = 64 * 1024;
 export const BOARD_SUMMARY_CAP = 2 * 1024;
-export const BOARD_MIN_USD = 0.1;
-export const BOARD_MAX_USD = 100;
-export const BOARD_DEFAULT_USD = 15;
 export const BOARD_PATH_ENV = "AGENT_BOARD_PATH";
 export const BOARD_HANDLE_ENV = "AGENT_BOARD_HANDLE";
 
