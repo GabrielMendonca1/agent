@@ -99,6 +99,17 @@ export function listActiveWorkspaces(cwd: string): ActiveWorkspaceEntry[] {
 	return withState(cwd, (entries) => ({ value: entries }));
 }
 
+/** Serialize checkout removal with registerWorkspace, which resolves the path under this same lock. */
+export function withUnsharedWorkspace<T>(cwd: string, worktree: string, ownerId: string | undefined, fn: () => T): T {
+	return withState(cwd, (entries) => {
+		const checkout = fs.realpathSync(worktree);
+		if (entries.some((entry) => entry.id !== ownerId && entry.worktree === checkout)) {
+			throw new Error("Another active workspace owner is using this checkout.");
+		}
+		return { value: fn() };
+	});
+}
+
 export function hasOtherActiveWriter(cwd: string, excludeId?: string): boolean {
 	return listActiveWorkspaces(cwd).some((entry) => entry.id !== excludeId);
 }

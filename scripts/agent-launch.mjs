@@ -63,14 +63,10 @@ try {
 	const parsed = parseArgs(process.argv.slice(2));
 	launchStore = parsed.store ?? defaultStore();
 	// Keep the ordinary launch path independent of worktree setup.
-	const argEnd = parsed.args.indexOf("--");
-	const options = argEnd < 0 ? parsed.args : parsed.args.slice(0, argEnd);
-	let workspace;
-	if (options.some((arg) => arg === "--worktree" || arg.startsWith("--worktree="))) {
+	let workspace, slug;
+	if (parsed.args.some((arg) => arg === "--worktree" || arg.startsWith("--worktree="))) {
 		workspace = await import("./lib/session-worktree.mjs");
-		const { slug, args } = workspace.extractWorktreeOption(parsed.args);
-		parsed.slug = slug;
-		parsed.args = args;
+		({ slug, args: parsed.args } = workspace.extractWorktreeOption(parsed.args));
 	}
 	launchArgs = parsed.args;
 	spec = buildAgentLaunch({
@@ -79,8 +75,8 @@ try {
 		args: parsed.args,
 	});
 	let sessionEnv = {};
-	if (workspace) {
-		const session = workspace.prepareSessionWorktree(parsed.slug, { env: spec.env, dryRun: parsed.printSpec });
+	if (slug !== undefined) {
+		const session = workspace.prepareSessionWorktree(slug, { env: spec.env, dryRun: parsed.printSpec });
 		launchCwd = session.cwd;
 		sessionEnv = session.env;
 		Object.assign(spec.env, sessionEnv);
