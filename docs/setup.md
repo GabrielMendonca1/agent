@@ -289,7 +289,7 @@ Requer Git, npm e Node >=22.19. `node scripts/agent-update.mjs --prepare` constr
 
 ### Skills, papéis e mídia
 
-- As skills de integração `peers`, `megamind`, `tasks` e as de `agent/skills/system/` são automáticas. `design/` e `plan/` ficam sob demanda e geram uma linha curta por categoria no system prompt. A curadoria usa o formatter compartilhado entre os hosts.
+- As skills de integração `peers` e `megamind` são automáticas, assim como as de `agent/skills/system/`. `design/` e `dev/` (incluindo `/skill:pr`) ficam sob demanda e geram uma linha curta por categoria no system prompt. A curadoria usa o formatter compartilhado entre os hosts.
 - `/skill` ou `/skill:` abre o catálogo agrupado por categoria.
 - `/models` separa slots de execução, escolhas por papel e presets do swarm. No papel, **Enter** abre o picker com os modelos autorizados primeiro; escolher um novo o autoriza com o thinking da preferência atual. **←/→** muda o thinking só do par ativo daquele papel, sem alterar a sessão nem os tiers. Se o papel ainda não tem modelo configurado, escolha um com **Enter** antes de usar as setas. `Esc Esc` abre só a lista de fork. Falha de quota/503 não troca modelo silenciosamente: só papel somente leitura tenta, uma vez e registrando, o próximo modelo da sua lista (ver "Falha por cota").
 - `read` é o nativo do Pi clássico: imagens, texto, offset/limit e cancelamento. O loadout controla quais papéis recebem `read`. Principal, scout e visual precisam de modelo capaz de receber imagens; anexos diretos continuam suportados.

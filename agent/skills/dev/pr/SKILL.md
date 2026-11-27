@@ -1,6 +1,7 @@
 ---
 name: pr
 description: "PR — write a pull request body. Use whenever a PR description is needed."
+disable-model-invocation: true
 metadata:
   credits:
     skill: show-me

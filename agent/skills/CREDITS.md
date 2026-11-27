@@ -23,12 +23,11 @@ preservado. `agents/` (Codex), `tests/`, `evals/`, `.github/` não foram copiado
 | `pr` | mattpocock/skills | `skills/engineering/pr` (crédito próprio em `pr/CREDITS.md`) | MIT | `49dd158` |
 | `sources` | mattpocock/skills | `skills/engineering/research` | MIT | `49dd158` |
 | `handoff` | mattpocock/skills | `skills/productivity/handoff` | MIT | `49dd158` |
-| `rea` | [morluto/rea](https://github.com/morluto/rea) | `.agents/skills/reverse-engineer-anything` | MIT | `82cfcee` (2026-10-13) |
 
 ## Categorias
 
-`system/` (`html-plan`, `pr`, `handoff`, `sources`) é anunciado ao modelo.
-`design/`, `dev/` e `plan/` mantêm `disable-model-invocation: true`; cada pasta gera
+`system/` (`computer-use`, `handoff`, `html-plan`, `sources`) é anunciado ao modelo.
+`design/` e `dev/` (incluindo `pr`) mantêm `disable-model-invocation: true`; cada pasta gera
 uma linha curta no system prompt e agrupa o seletor de `/skill:`.
 As skills pessoais não são movidas nem modificadas.
 
@@ -47,8 +46,5 @@ Agora é distribuída somente pelo Agent, sob demanda, sem cópia nas skills pad
   do índice). HTML gerado de `examples/` não foi copiado (é reconstruível com
   `node examples/<nome>/build.mjs`).
 - `html-plan`: `$ARGUMENTS` (Claude Code) → texto após `/skill:html-plan`.
-- `rea`: diagnóstico de registro no perfil ativo; entradas existentes podem ser
-  ligadas pelo usuário em `/mcp`. Novo registro exige autorização; `doctor` segue
-  disponível (read-only).
 - `sources`: “background agent” → `subagent`. `handoff`: “Skill tool” →
   `/skill:<nome>`. `iso-figure`: `compatibility` sem “Written for Claude Code”.

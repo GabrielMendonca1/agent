@@ -14,7 +14,7 @@ process.env.ARCA_MEGAMIND_CONFIG = 'none';
 const policy = await import('../agent/core/skill-policy.mjs');
 const dir = mkdtempSync(join(tmpdir(), 'agent-skill-policy-'));
 const savedEnv = { ...process.env };
-const names = ['peers', 'megamind', 'tasks', 'diagram', 'arca-ops', 'omni-ops', 'goal', 'grill', 'cua', 'computer-use', 'debug', 'tdd', 'pr', 'handoff', 'sources', 'html-plan', 'ui-review', 'pessoal'];
+const names = ['peers', 'megamind', 'arca-ops', 'omni-ops', 'goal', 'grill', 'cua', 'computer-use', 'debug', 'tdd', 'pr', 'handoff', 'sources', 'html-plan', 'ui-review', 'pessoal'];
 try {
   for (const name of names) {
     mkdirSync(join(dir, name));
@@ -59,7 +59,7 @@ try {
     delete process.env.AGENT_CHILD;
   }
   console.log('ok filho com AGENT_CHILD_SKILLS anuncia só a allowlist; fora de filho, a curadoria normal');
-  assert.deepEqual(policy.automaticSkillNames(), ['peers', 'megamind', 'diagram', 'computer-use', 'handoff', 'html-plan', 'pr', 'sources']);
+  assert.deepEqual(policy.automaticSkillNames(), ['peers', 'megamind', 'computer-use', 'handoff', 'html-plan', 'sources']);
   for (const name of ['arca-ops', 'omni-ops', 'pessoal']) assert.equal(policy.isAutomaticSkill(name), false, `${name}: sem enrollment não é automática`);
   assert.equal(policy.isAutomaticSkill('debug'), false);
   assert.equal(policy.isAutomaticSkill('review'), false);
