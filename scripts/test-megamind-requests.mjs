@@ -138,7 +138,8 @@ try {
   });
   ok('request tool has only destination/title/body and no capability tool', () => {
     assert.deepEqual(Object.keys(tools.get('megamind_ask').parameters.properties), ['to', 'title', 'body']);
-    assert.equal(tools.size, 6);
+    assert.ok(tools.has('megamind_projects'));
+    assert.equal(tools.size, 7);
   });
   const result = await tools.get('megamind_ask').execute('call', { to: '@handle', title: 'work', body: 'context' });
   ok('tool creates person request and reports its id', () => assert.match(result.content[0].text, /request123/));

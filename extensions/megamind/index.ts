@@ -226,8 +226,8 @@ export default function arcaMegamindExtension(pi: ExtensionAPI, options: Extensi
   }
 
   /** Núcleo desta sessão (v6 ou adaptador v5), com o regime de ack junto. */
-  async function core(signal?: AbortSignal): Promise<MegamindCore> {
-    const resolved = await resolveCore(signal);
+  async function core(signal?: AbortSignal, requireProbe = false): Promise<MegamindCore> {
+    const resolved = await resolveCore(signal, requireProbe);
     acknowledges = resolved.acknowledges;
     coreVersion = resolved.core;
     return resolved;
@@ -293,7 +293,10 @@ export default function arcaMegamindExtension(pi: ExtensionAPI, options: Extensi
     // O núcleo lança quando o gateway recusa (503, rate limit): recusa nunca
     // pode passar por "caixa vazia", senão o prune apagaria fila, ack pendente e
     // memória do que já foi entregue, e o item voltaria duplicado.
-    fetch: async (session_id) => (await core()).read(session_id, {}),
+    fetch: async (session_id, cursor, limit) => {
+      const engine = await core(undefined, true);
+      return engine.readInbox ? engine.readInbox(session_id, cursor, limit) : engine.read(session_id, {});
+    },
     ack: async (session_id, ids) => (await core()).ack(session_id, ids),
     get acknowledges() {
       return acknowledges;
@@ -363,7 +366,7 @@ export default function arcaMegamindExtension(pi: ExtensionAPI, options: Extensi
     const current = presence;
     if (!current) return [];
     await inbox.poll(current.session_id, now());
-    return inbox.takeAll(current.session_id);
+    return presence === current ? inbox.takeAll(current.session_id) : [];
   }
 
   // Entrega só com a sessão ociosa (modelo do pi-relay); ack só depois de entregar.
@@ -483,6 +486,7 @@ export default function arcaMegamindExtension(pi: ExtensionAPI, options: Extensi
     current.label = sessionLabel(repo.root, sessionCwd ?? process.cwd());
     return {
       ...current,
+      cwd: sessionCwd ?? process.cwd(),
       note: currentNote(),
       ...(branch ? { branch } : {}),
       paths,

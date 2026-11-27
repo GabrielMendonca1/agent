@@ -268,8 +268,8 @@ export function toolResult(value: unknown): ToolOutput {
 }
 
 /** Resultado de erro já pronto para o modelo (mantém o marcador interno). */
-export function toolError(message: string): ToolOutput {
-  return toolResult({ content: [{ type: "text", text: message }], isError: true });
+export function toolError(message: string): { content: Array<{ type: "text"; text: string }>; details: JsonObject } {
+  return { content: [{ type: "text", text: message }], details: { [ERROR_DETAIL]: true } };
 }
 
 /** Evento do SSE do device: só `{kind, id}` — o conteúdo vem do `inbox`. */

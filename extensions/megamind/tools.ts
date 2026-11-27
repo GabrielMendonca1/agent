@@ -5,6 +5,7 @@ import { randomUUID } from "node:crypto";
 import { resolve } from "node:path";
 import { Type } from "typebox";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { listProjects } from "./catalog.ts";
 import { LIMITS, REPLY_STATUS, chatGroup } from "./contract.ts";
 import {
   CoreError,
@@ -286,6 +287,26 @@ export function registerMegamindTools(pi: ExtensionAPI, deps: ToolDeps): void {
           });
         }
         return toolResult({ content: [{ type: "text", text: [head, ...lines].join("\n") }], details });
+      } catch (error) {
+        return toolError(formatCoreError(error));
+      }
+    },
+  });
+
+  registerTool({
+    name: "megamind_projects",
+    label: "Megamind Projects",
+    description: "List the company project catalog (IDs, titles, status and repositories). Works without local presence.",
+    parameters: Type.Object({}),
+    ...compact("megamind_projects"),
+    async execute(_id, _params, signal) {
+      try {
+        const projects = await listProjects(signal);
+        const lines = projects.map(({ id, title, status, repos }) => [
+          safeInline(id, 64), safeInline(title, 120), safeInline(status),
+          repos.map((repo) => safeInline(repo, 250)).join(", "),
+        ].filter(Boolean).join(" · "));
+        return { content: [{ type: "text", text: lines.join("\n") || "No projects in the catalog." }], details: { projects: projects.length } };
       } catch (error) {
         return toolError(formatCoreError(error));
       }

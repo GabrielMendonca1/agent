@@ -160,7 +160,8 @@ export class CoreV5 implements MegamindCore {
   }
 
   async hello(args: HelloArgs, signal?: AbortSignal): Promise<CoreHello> {
-    const session = await checkedToolCall(TOOL.register, args, signal);
+    const { cwd: _cwd, ...payload } = args;
+    const session = await checkedToolCall(TOOL.register, payload, signal);
     const record = resultRecord(session);
     const device = record ? text(record.device_id) : undefined;
     if (device) this.device = device;

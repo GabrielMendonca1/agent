@@ -77,10 +77,11 @@ export function parseAttachments(value: unknown): { attachments?: CoreAttachment
 export type CoreTarget = { kind?: string; label?: string; handle?: string; session_id?: string };
 export type CoreSent = { id?: string; to?: CoreTarget; woke: Array<{ session_id: string; label?: string }>; held: boolean };
 
-export type HelloArgs = JsonObject & { session_id: string; project_id: string; harness: string; label: string };
+export type HelloArgs = JsonObject & { session_id: string; project_id: string; harness: string; label: string; cwd?: string };
 export type AskArgs = { title: string; ttl_hours?: number };
 export type SendArgs = { to: string; body: string; to_session?: string; ask?: AskArgs; reply_to?: string };
 export type ReadArgs = { with?: string; since?: string; limit?: number };
+export type InboxBatch = { items: CoreItem[]; cursor: string };
 export type ReplyArgs = { id: string; status: string; result?: string };
 
 /** Candidato de um endereço ambíguo (`conflict`, §endereço do contrato). */
@@ -115,6 +116,7 @@ export interface MegamindCore {
   who(project_id?: string, signal?: AbortSignal): Promise<CorePerson[]>;
   send(session_id: string, args: SendArgs, signal?: AbortSignal): Promise<CoreSent>;
   read(session_id: string, args: ReadArgs, signal?: AbortSignal): Promise<CoreItem[]>;
+  readInbox?(session_id: string, cursor: string, limit: number, signal?: AbortSignal): Promise<InboxBatch | CoreItem[]>;
   reply(session_id: string, args: ReplyArgs, signal?: AbortSignal): Promise<{ handoff?: string }>;
   bye(session_id: string, args: { summary: string; branch?: string; paths?: string[] }, signal?: AbortSignal): Promise<void>;
   ack(session_id: string, ids: string[], signal?: AbortSignal): Promise<void>;
@@ -265,9 +267,13 @@ export class CoreV6 implements MegamindCore {
   readonly lastPrompt: boolean;
   readonly group: string;
   private readonly alias: string;
+  private readonly inboxCursor: boolean;
+  private readonly agentCwd: boolean;
   whoInfo?: CoreWhoInfo;
 
-  constructor(capabilities: { lastPrompt?: boolean; directDelivery?: boolean; group?: string; alias?: string } = {}) {
+  constructor(capabilities: Omit<CoreProbe, "core"> = {}) {
+    this.inboxCursor = capabilities.inboxCursor === true;
+    this.agentCwd = capabilities.agentCwd === true;
     this.directDelivery = capabilities.directDelivery === true;
     this.lastPrompt = capabilities.lastPrompt === true;
     this.group = capabilities.group ?? CHAT_GROUP;
@@ -275,7 +281,12 @@ export class CoreV6 implements MegamindCore {
   }
 
   async hello(args: HelloArgs, signal?: AbortSignal): Promise<CoreHello> {
-    const record = resultRecord(await checkedToolCall(TOOL.hello, args, signal)) ?? {};
+    const { cwd, ...base } = args;
+    const workingDir = cwd?.trim();
+    const payload = this.agentCwd && workingDir !== undefined && !/\p{Cc}/u.test(workingDir) && [...workingDir].length <= 512
+      ? { ...base, cwd: workingDir }
+      : base;
+    const record = resultRecord(await checkedToolCall(TOOL.hello, payload, signal)) ?? {};
     const you = object(record.you) ? record.you : undefined;
     const priority = parsePriority(record.priority);
     return {
@@ -331,6 +342,19 @@ export class CoreV6 implements MegamindCore {
     return parseItems(requireOk(TOOL.read, await toolCall(TOOL.read, payload, signal)));
   }
 
+  async readInbox(session_id: string, cursor: string, limit: number, signal?: AbortSignal): Promise<InboxBatch | CoreItem[]> {
+    if (!this.inboxCursor) return this.read(session_id, {}, signal);
+    const result = requireOk(TOOL.read, await toolCall(TOOL.read, { session_id, cursor, limit }, signal));
+    const record = resultRecord(result);
+    const items = parseItems(result);
+    // Não confirme uma resposta parcial ou um item que o cliente não conseguiu ler.
+    if (!Array.isArray(record?.items) || items.length !== record.items.length || items.length > limit
+      || typeof record.cursor !== "string" || (items.length === 0) !== (record.cursor === "")) {
+      throw new CoreError("malformed Megamind inbox batch");
+    }
+    return { items, cursor: record.cursor };
+  }
+
   async reply(session_id: string, args: ReplyArgs, signal?: AbortSignal): Promise<{ handoff?: string }> {
     const payload: JsonObject = { session_id, id: args.id, status: args.status, ...(args.result ? { result: args.result } : {}) };
     const record = resultRecord(requireOk(TOOL.reply, await toolCall(TOOL.reply, payload, signal)));
@@ -348,12 +372,12 @@ export class CoreV6 implements MegamindCore {
   }
 
   async ack(): Promise<void> {
-    // `read` já confirma a entrega na v6.
+    // A v6 confirma no `read` (via recibo ou auto-ack), nunca por ID.
   }
 }
 
 /** O que o `initialize` revela: a versão do núcleo e os campos opcionais. */
-export type CoreProbe = { core?: number; lastPrompt?: boolean; directDelivery?: boolean; group?: string; alias?: string };
+export type CoreProbe = { core?: number; lastPrompt?: boolean; directDelivery?: boolean; inboxCursor?: boolean; agentCwd?: boolean; group?: string; alias?: string };
 
 /** `capabilities.<empresa>.core` e `serverInfo` do `initialize`. */
 export async function probeCore(signal?: AbortSignal): Promise<CoreProbe> {
@@ -367,8 +391,13 @@ export async function probeCore(signal?: AbortSignal): Promise<CoreProbe> {
   const { server, group, alias } = serverProfile(capabilities, megamindProfile().id);
   const info = record && object(record.serverInfo) ? record.serverInfo : undefined;
   const core = server ? integer(server.core) : undefined;
-  // Campo opcional: servidor antigo não o anuncia e recusa o argumento desconhecido.
-  const optionalCapabilities = { lastPrompt: server?.agent_last_prompt === true, directDelivery: server?.direct_delivery === true };
+  // Servidor antigo não anuncia os campos opcionais e pode recusar o argumento desconhecido.
+  const optionalCapabilities = {
+    lastPrompt: server?.agent_last_prompt === true,
+    directDelivery: server?.direct_delivery === true,
+    inboxCursor: server?.inbox_cursor === true,
+    agentCwd: server?.agent_cwd === true,
+  };
   if (core !== undefined) return { core, group, alias, ...optionalCapabilities };
   const version = info ? Number.parseInt(text(info.version) ?? "", 10) : Number.NaN;
   return { ...(Number.isFinite(version) ? { core: version } : {}), group, alias, ...optionalCapabilities };
@@ -377,27 +406,23 @@ export async function probeCore(signal?: AbortSignal): Promise<CoreProbe> {
 let cached: Promise<MegamindCore> | undefined;
 
 /** O núcleo desta sessão: v6 quando o servidor o anuncia, senão o adaptador v5. */
-export function resolveCore(signal?: AbortSignal): Promise<MegamindCore> {
-  cached ??= (async () => {
-    let probe: CoreProbe = {};
-    try {
-      probe = await probeCore(signal);
-    } catch {
-      // Sem `initialize` (rede, servidor fora): v5, que é o denominador comum.
-      cached = undefined;
-    }
-    const names = serverProfile(undefined, megamindProfile().id);
-    const capabilities = {
-      lastPrompt: probe.lastPrompt === true,
-      directDelivery: probe.directDelivery === true,
-      group: probe.group ?? names.group,
-      alias: probe.alias ?? names.alias,
-    };
-    if (probe.core !== undefined && probe.core >= CORE_V6) return new CoreV6(capabilities);
+export async function resolveCore(signal?: AbortSignal, requireProbe = false): Promise<MegamindCore> {
+  const pending = cached ??= (async () => {
+    const probe = await probeCore(signal);
+    if (probe.core !== undefined && probe.core >= CORE_V6) return new CoreV6(probe);
     const { CoreV5 } = await import("./core-v5.ts");
-    return new CoreV5(capabilities);
+    return new CoreV5(probe);
   })();
-  return cached;
+  try {
+    return await pending;
+  } catch (error) {
+    if (cached === pending) cached = undefined;
+    // Falha transitória não autoriza ler a caixa por um protocolo que confirma por ID.
+    if (requireProbe && !(error instanceof Error && error.message.endsWith("(-32601)"))) throw error;
+    const names = serverProfile(undefined, megamindProfile().id);
+    const { CoreV5 } = await import("./core-v5.ts");
+    return new CoreV5(names);
+  }
 }
 
 /** Esquece o núcleo detectado (fim de sessão e testes). */

@@ -1,7 +1,7 @@
 // O que chega de fora: formatação de cada item de `read` como bloco fechado e a
 // fila local que entrega um item por vez, quando a sessão está ociosa. Sem
 // dependência de `pi` e sem transporte: o núcleo (v6 ou v5) entra por `InboxDeps`.
-import type { CoreItem } from "./core.ts";
+import type { CoreItem, InboxBatch } from "./core.ts";
 import { redactBearer, stripControl, text } from "./gateway.ts";
 
 export const INBOX_QUEUE_MAX = 20;
@@ -184,7 +184,7 @@ export const SECRET_MSG = "looks like a secret; Megamind never carries tokens, p
 
 export type InboxDeps = {
   /** Lê a caixa desta sessão (v6 `read`, v5 `inbox`). */
-  fetch: (session_id: string) => Promise<CoreItem[]>;
+  fetch: (session_id: string, cursor: string, limit: number) => Promise<CoreItem[] | InboxBatch>;
   /** Confirma a entrega; na v6 é no-op porque `read` já confirmou. */
   ack: (session_id: string, ids: string[]) => Promise<void>;
   /** `true` só na v5: lá o item volta na próxima leitura até o ack. */
@@ -221,7 +221,9 @@ export class Inbox {
   private seen = new Set<string>();
   /** Entregues cujo `acknowledge` ainda não confirmou: o ack é reenviado. */
   private pendingAck = new Set<string>();
-  private polling = false;
+  private polling?: symbol;
+  /** Recibo opaco do lote local; só é reenviado depois de esvaziar a fila. */
+  private cursor?: string;
   private polledAt = 0;
 
   constructor(private readonly deps: InboxDeps) {}
@@ -242,7 +244,8 @@ export class Inbox {
     this.queue = [];
     this.seen = new Set();
     this.pendingAck = new Set();
-    this.polling = false;
+    this.polling = undefined;
+    this.cursor = undefined;
     this.polledAt = 0;
   }
 
@@ -256,11 +259,21 @@ export class Inbox {
 
   /** Lê a caixa; nunca lança (erro vira aviso do chamador). */
   async poll(session_id: string, at: number): Promise<void> {
-    if (this.polling || this.full) return;
-    this.polling = true;
+    if (this.polling || this.full || (this.cursor !== undefined && this.pending > 0)) return;
+    const poll = this.polling = Symbol();
     this.polledAt = at;
     try {
-      const items = await this.deps.fetch(session_id);
+      const items = await this.deps.fetch(session_id, this.cursor ?? "", INBOX_QUEUE_MAX);
+      if (this.polling !== poll) return; // reset durante a chamada
+      if (!Array.isArray(items)) {
+        // Um lote por vez. Não use `seen` por ID: um status novo do mesmo
+        // pedido é outro item para o protocolo versionado.
+        this.queue = items.items.filter((item) => !isAskUserItem(item)).map((item) => ({
+          item, id: item.id, key: keyOf(item), text: formatInboxItem(item, this.deps.self?.(), this.deps.megamind?.()),
+        }));
+        this.cursor = items.cursor;
+        return;
+      }
       const live = new Set<string>();
       for (const item of items) {
         const key = keyOf(item);
@@ -282,9 +295,9 @@ export class Inbox {
       // "sumiu da caixa" apagaria a fila inteira antes de ela ser entregue.
       if (this.deps.acknowledges) this.prune(live);
     } catch (error) {
-      this.deps.warn(error);
+      if (this.polling === poll) this.deps.warn(error);
     } finally {
-      this.polling = false;
+      if (this.polling === poll) this.polling = undefined;
     }
   }
 
@@ -303,13 +316,13 @@ export class Inbox {
     }
     this.queue.shift();
     // Entregue: o ack pode falhar, e aí a chave fica pendente para retry na próxima leitura.
-    this.pendingAck.add(entry.key);
+    if (this.cursor === undefined) this.pendingAck.add(entry.key);
     try {
       this.deps.onDelivered?.(entry.item);
     } catch (error) {
       this.deps.warn(error);
     }
-    void this.ack(session_id, entry.key, entry.id);
+    if (this.cursor === undefined) void this.ack(session_id, entry.key, entry.id);
   }
 
   /** Esvazia a fila de uma vez (tool `megamind_read` sem `with`). */
@@ -317,13 +330,13 @@ export class Inbox {
     const entries = this.queue;
     this.queue = [];
     for (const entry of entries) {
-      this.pendingAck.add(entry.key);
+      if (this.cursor === undefined) this.pendingAck.add(entry.key);
       try {
         this.deps.onDelivered?.(entry.item);
       } catch (error) {
         this.deps.warn(error);
       }
-      void this.ack(session_id, entry.key, entry.id);
+      if (this.cursor === undefined) void this.ack(session_id, entry.key, entry.id);
     }
     return entries.map((entry) => entry.item);
   }
