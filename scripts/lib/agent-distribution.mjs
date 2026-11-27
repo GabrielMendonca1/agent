@@ -12,7 +12,7 @@ import { gzipSync, gunzipSync } from 'node:zlib';
 export const schema = 1;
 export const nodeMin = '22.19.0';
 // Provision the official SPKI PEM before publication. Empty means remote access fails closed.
-export const RELEASE_PUBLIC_KEY_PEM = '';
+export const RELEASE_PUBLIC_KEY_PEM = '-----BEGIN PUBLIC KEY-----\nMCowBQYDK2VwAyEAkf7hdXHDQjp/yNrogWdAYo+4hPkV8WCXWCg4LuDl1J0=\n-----END PUBLIC KEY-----\n';
 export const defaultReleaseRepo = 'GabrielMendonca1/agent';
 export const validReleaseTag = value => typeof value === 'string' && /^[\w.+-]{1,200}$/.test(value) && value !== '.' && value !== '..';
 export const validReleaseRepo = value => typeof value === 'string' && /^[\w.-]+\/[\w.-]+$/.test(value) && value.split('/').every(part => part !== '.' && part !== '..');

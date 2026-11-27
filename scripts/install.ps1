@@ -96,7 +96,7 @@ const { createHash, createPublicKey, verify } = require('node:crypto');
 const { spawnSync } = require('node:child_process');
 
 // Provision alongside RELEASE_PUBLIC_KEY_PEM in agent-distribution.mjs.
-const RELEASE_PUBLIC_KEY_PEM = '';
+const RELEASE_PUBLIC_KEY_PEM = '-----BEGIN PUBLIC KEY-----\nMCowBQYDK2VwAyEAkf7hdXHDQjp/yNrogWdAYo+4hPkV8WCXWCg4LuDl1J0=\n-----END PUBLIC KEY-----\n';
 const env = process.env;
 const [root, ...args] = process.argv.slice(2);
 const local = env.AGENT_RELEASE_DIR;
