@@ -189,8 +189,9 @@ export type InboxDeps = {
   ack: (session_id: string, ids: string[]) => Promise<void>;
   /** `true` só na v5: lá o item volta na próxima leitura até o ack. */
   acknowledges: boolean;
-  /** Entrega o texto na conversa; pode lançar. */
-  deliver: (text: string) => void;
+  /** Entrega o texto na conversa; quando assíncrona, só resolve após a inserção. */
+  deliver: (text: string) => void | Promise<void>;
+  onDiscarded?: (count: number) => void;
   warn: (error: unknown) => void;
   /** Item entregue: o chamador atualiza o estado do pedido. */
   onDelivered?: (item: CoreItem) => void;
@@ -221,7 +222,8 @@ export class Inbox {
   private seen = new Set<string>();
   /** Entregues cujo `acknowledge` ainda não confirmou: o ack é reenviado. */
   private pendingAck = new Set<string>();
-  private polling?: symbol;
+  private polling?: { done: Promise<void> };
+  private delivering?: Entry;
   /** Recibo opaco do lote local; só é reenviado depois de esvaziar a fila. */
   private cursor?: string;
   private polledAt = 0;
@@ -245,6 +247,7 @@ export class Inbox {
     this.seen = new Set();
     this.pendingAck = new Set();
     this.polling = undefined;
+    this.delivering = undefined;
     this.cursor = undefined;
     this.polledAt = 0;
   }
@@ -258,12 +261,20 @@ export class Inbox {
   }
 
   /** Lê a caixa; nunca lança (erro vira aviso do chamador). */
-  async poll(session_id: string, at: number): Promise<void> {
-    if (this.polling || this.full || (this.cursor !== undefined && this.pending > 0)) return;
-    const poll = this.polling = Symbol();
+  poll(session_id: string, at: number): Promise<void> {
+    if (this.polling) return this.polling.done;
+    if (this.delivering || this.full || (this.cursor !== undefined && this.pending > 0)) return Promise.resolve();
     this.polledAt = at;
+    const limit = INBOX_QUEUE_MAX - this.pending;
+    const poll = { done: Promise.resolve().then(() => this.pollOnce(session_id, limit, poll)) };
+    this.polling = poll;
+    return poll.done;
+  }
+
+  private async pollOnce(session_id: string, limit: number, poll: { done: Promise<void> }): Promise<void> {
     try {
-      const items = await this.deps.fetch(session_id, this.cursor ?? "", INBOX_QUEUE_MAX);
+      if (this.polling !== poll) return;
+      const items = await this.deps.fetch(session_id, this.cursor ?? "", limit);
       if (this.polling !== poll) return; // reset durante a chamada
       if (!Array.isArray(items)) {
         // Um lote por vez. Não use `seen` por ID: um status novo do mesmo
@@ -272,6 +283,7 @@ export class Inbox {
           item, id: item.id, key: keyOf(item), text: formatInboxItem(item, this.deps.self?.(), this.deps.megamind?.()),
         }));
         this.cursor = items.cursor;
+        if (items.discarded) this.deps.onDiscarded?.(items.discarded);
         return;
       }
       const live = new Set<string>();
@@ -301,21 +313,32 @@ export class Inbox {
     }
   }
 
-  /**
-   * Entrega no máximo um item: `deliver` deixa a sessão ocupada de imediato,
-   * então o resto da fila sai nos próximos `agent_settled`.
-   */
-  drain(session_id: string, idle: boolean): void {
-    if (!idle || this.queue.length === 0) return;
-    const entry = this.queue[0]!;
-    try {
-      this.deps.deliver(entry.text);
-    } catch (error) {
+  /** Entrega um item; um follow-up pendente ainda não libera o recibo. */
+  drain(session_id: string, idle: boolean): void | Promise<void> {
+    if (!idle || this.polling || this.delivering || this.queue.length === 0) return;
+    const entry = this.delivering = this.queue[0]!;
+    const finish = () => {
+      if (this.delivering !== entry) return; // reset durante a entrega
+      this.queue.shift();
+      this.delivering = undefined;
+      this.delivered(session_id, entry);
+    };
+    const failed = (error: unknown) => {
+      if (this.delivering !== entry) return;
+      this.delivering = undefined;
       this.deps.warn(error);
+    };
+    try {
+      const delivery = this.deps.deliver(entry.text);
+      if (delivery) return delivery.then(finish, failed);
+    } catch (error) {
+      failed(error);
       return;
     }
-    this.queue.shift();
-    // Entregue: o ack pode falhar, e aí a chave fica pendente para retry na próxima leitura.
+    finish();
+  }
+
+  private delivered(session_id: string, entry: Entry): void {
     if (this.cursor === undefined) this.pendingAck.add(entry.key);
     try {
       this.deps.onDelivered?.(entry.item);
@@ -325,19 +348,10 @@ export class Inbox {
     if (this.cursor === undefined) void this.ack(session_id, entry.key, entry.id);
   }
 
-  /** Esvazia a fila de uma vez (tool `megamind_read` sem `with`). */
+  /** Esvazia os itens que ainda não foram reservados ao follow-up automático. */
   takeAll(session_id: string): CoreItem[] {
-    const entries = this.queue;
-    this.queue = [];
-    for (const entry of entries) {
-      if (this.cursor === undefined) this.pendingAck.add(entry.key);
-      try {
-        this.deps.onDelivered?.(entry.item);
-      } catch (error) {
-        this.deps.warn(error);
-      }
-      if (this.cursor === undefined) void this.ack(session_id, entry.key, entry.id);
-    }
+    const entries = this.queue.splice(this.delivering ? 1 : 0);
+    for (const entry of entries) this.delivered(session_id, entry);
     return entries.map((entry) => entry.item);
   }
 

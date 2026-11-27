@@ -92,7 +92,7 @@ try {
     for (const acknowledges of [true, false]) {
       const delivered = [], tracked = [], acked = [], warnings = [];
       const inbox = new Inbox({ fetch: async () => [...hidden, ...normal], acknowledges,
-        ack: async (_session, ids) => { acked.push(...ids); }, deliver: text => delivered.push(text),
+        ack: async (_session, ids) => { acked.push(...ids); }, deliver: text => { delivered.push(text); },
         onDelivered: item => tracked.push(item.id), warn: error => warnings.push(error) });
       await inbox.poll('sender', 1);
       ok(`inbox v${acknowledges ? 5 : 6} skips and acks only exact markers/registered updates`, () => {
@@ -249,7 +249,7 @@ try {
       await inbox.poll('sender', 2);
       inbox.takeAll('sender');
       ok('old server: inbox reads without cursor and keeps auto-ack', () => {
-        assert.deepEqual(reads, [{ session_id: 'sender' }, { session_id: 'sender' }]);
+        assert.deepEqual(reads, [{ session_id: 'sender', limit: 20 }, { session_id: 'sender', limit: 20 }]);
         assert.deepEqual(delivered, ['r1:accepted', 'r2:done']);
         assert.deepEqual(warnings, []);
         assert.equal(idAcks, 0);
@@ -275,6 +275,111 @@ try {
       });
     }
   }
+  resetCore();
+
+  // Um gateway pode incluir decisões legadas e tipos que este cliente ainda não conhece.
+  const specialReads = [];
+  globalThis.fetch = async (_url, init) => {
+    const { arguments: args } = JSON.parse(init.body).params;
+    specialReads.push(args);
+    return Response.json({ result: args.cursor === '' ? {
+      items: [
+        { ...reply('d1', 'approved'), kind: 'decision' },
+        { id: 'm1', kind: 'message', from: {}, body: 'hello' },
+        { id: 'x1', kind: 'future' },
+      ],
+      cursor: 'mixed-receipt',
+    } : { items: [], cursor: '' } });
+  };
+  const cursorCore = new CoreV6({ inboxCursor: true });
+  const deliveredIds = [], discards = [];
+  const { promise: inserted, resolve: confirmInsertion } = Promise.withResolvers();
+  const mixed = new Inbox({
+    fetch: (session, cursor, limit) => cursorCore.readInbox(session, cursor, limit),
+    ack: () => assert.fail('cursor inbox cannot ack by ID'), acknowledges: false,
+    deliver: () => inserted, onDelivered: (item) => deliveredIds.push(item.id),
+    warn: assert.fail, onDiscarded: (count) => discards.push(count),
+  });
+  await mixed.poll('sender', 1);
+  ok('decision and unknown item are logged and do not block the message in the batch', () => {
+    assert.equal(mixed.pending, 1);
+    assert.deepEqual(discards, [2]);
+  });
+  const draining = mixed.drain('sender', true);
+  await mixed.poll('sender', 2);
+  ok('automatic follow-up cannot ack before asynchronous history confirmation', () => {
+    assert.deepEqual(specialReads.map(({ cursor }) => cursor), ['']);
+    assert.deepEqual(mixed.takeAll('sender'), []); // Manual read must not steal the in-flight delivery.
+    assert.deepEqual(deliveredIds, []);
+  });
+  confirmInsertion();
+  await draining;
+  await mixed.poll('sender', 3);
+  ok('confirmed automatic follow-up releases the batch receipt', () => {
+    assert.deepEqual(specialReads.map(({ cursor }) => cursor), ['', 'mixed-receipt']);
+    assert.deepEqual(deliveredIds, ['m1']);
+  });
+
+  // v6 sem capability auto-confirma até o limit: não pode ler além da fila.
+  const backlog = Array.from({ length: 45 }, (_, n) => ({ id: `m${n}`, kind: 'message', from: {}, body: `${n}` }));
+  const expected = backlog.map(({ id }) => id);
+  const limits = [];
+  const { promise: respondToPoll, resolve: allowPollResponse } = Promise.withResolvers();
+  globalThis.fetch = async (_url, init) => {
+    const { arguments: args } = JSON.parse(init.body).params;
+    limits.push(args.limit);
+    await respondToPoll;
+    return Response.json({ result: { items: backlog.splice(0, args.limit ?? 50) } });
+  };
+  const legacyCore = new CoreV6();
+  const legacy = new Inbox({
+    fetch: (session, cursor, limit) => legacyCore.readInbox(session, cursor, limit),
+    ack: async () => {}, acknowledges: false,
+    deliver: () => {}, warn: assert.fail,
+  });
+  const background = legacy.poll('sender', 1);
+  const manualRead = legacy.poll('sender', 2).then(() => legacy.takeAll('sender'));
+  const settledEarly = await Promise.race([manualRead.then(() => true), new Promise((resolve) => setImmediate(() => resolve(false)))]);
+  allowPollResponse();
+  await background;
+  const firstPage = await manualRead;
+  ok('manual read waits for the in-flight poll and sees its results', () => {
+    assert.equal(settledEarly, false);
+    assert.deepEqual(firstPage.map(({ id }) => id), expected.slice(0, 20));
+  });
+  await legacy.poll('sender', 3);
+  legacy.drain('sender', true); // Deixa só uma vaga para o próximo poll.
+  await legacy.poll('sender', 4);
+  const secondPage = legacy.takeAll('sender');
+  await legacy.poll('sender', 5);
+  const thirdPage = legacy.takeAll('sender');
+  ok('legacy v6 limits auto-ack to available queue slots, including a partially full queue', () => {
+    assert.deepEqual(limits, [20, 20, 1, 20]);
+    assert.deepEqual([...firstPage.map(({ id }) => id), expected[20], ...secondPage.map(({ id }) => id), ...thirdPage.map(({ id }) => id)], expected);
+    assert.deepEqual(backlog, []);
+  });
+
+  const v5Calls = [];
+  globalThis.fetch = async (_url, init) => {
+    const { method, params, id } = JSON.parse(init.body);
+    if (method === 'initialize') return Response.json({ jsonrpc: '2.0', id, error: { code: -32601, message: 'Method not found' } });
+    assert.equal(method, 'tools/call');
+    v5Calls.push(params);
+    return Response.json({ result: params.name === 'inbox' ? { items: [{ id: 'm1', kind: 'message', body: 'legacy' }] } : {} });
+  };
+  const v5 = await resolveCore(undefined, true);
+  await v5.hello({ ...hello, cwd });
+  const v5Items = await v5.read('sender', {});
+  await v5.ack('sender', v5Items.map(({ id }) => id));
+  ok('missing initialize discovers v5 and uses register_agent, inbox and ID ack', () => {
+    assert.equal(v5.core, 5);
+    assert.deepEqual(v5Calls.find(({ name }) => name === 'register_agent')?.arguments, hello);
+    assert.deepEqual(v5Calls.slice(-2), [
+      { name: 'inbox', arguments: { session_id: 'sender' } },
+      { name: 'acknowledge', arguments: { session_id: 'sender', ids: ['m1'] } },
+    ]);
+    assert.equal(v5Items[0]?.body, 'legacy');
+  });
   resetCore();
 
   // Blocks are English for the model since item 3; transcripts with the older Portuguese headers

@@ -81,7 +81,7 @@ export type HelloArgs = JsonObject & { session_id: string; project_id: string; h
 export type AskArgs = { title: string; ttl_hours?: number };
 export type SendArgs = { to: string; body: string; to_session?: string; ask?: AskArgs; reply_to?: string };
 export type ReadArgs = { with?: string; since?: string; limit?: number };
-export type InboxBatch = { items: CoreItem[]; cursor: string };
+export type InboxBatch = { items: CoreItem[]; cursor: string; discarded: number };
 export type ReplyArgs = { id: string; status: string; result?: string };
 
 /** Candidato de um endereço ambíguo (`conflict`, §endereço do contrato). */
@@ -343,16 +343,16 @@ export class CoreV6 implements MegamindCore {
   }
 
   async readInbox(session_id: string, cursor: string, limit: number, signal?: AbortSignal): Promise<InboxBatch | CoreItem[]> {
-    if (!this.inboxCursor) return this.read(session_id, {}, signal);
+    if (!this.inboxCursor) return this.read(session_id, { limit }, signal);
     const result = requireOk(TOOL.read, await toolCall(TOOL.read, { session_id, cursor, limit }, signal));
     const record = resultRecord(result);
-    const items = parseItems(result);
-    // Não confirme uma resposta parcial ou um item que o cliente não conseguiu ler.
-    if (!Array.isArray(record?.items) || items.length !== record.items.length || items.length > limit
-      || typeof record.cursor !== "string" || (items.length === 0) !== (record.cursor === "")) {
+    if (!Array.isArray(record?.items) || record.items.length > limit
+      || typeof record.cursor !== "string" || (record.items.length === 0) !== (record.cursor === "")) {
       throw new CoreError("malformed Megamind inbox batch");
     }
-    return { items, cursor: record.cursor };
+    // Decisões legadas e tipos novos são descartados sem impedir a confirmação.
+    const items = parseItems(result);
+    return { items, cursor: record.cursor, discarded: record.items.length - items.length };
   }
 
   async reply(session_id: string, args: ReplyArgs, signal?: AbortSignal): Promise<{ handoff?: string }> {

@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { mkdir, stat, writeFile } from "node:fs/promises";
 import { basename, dirname, join } from "node:path";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
@@ -200,6 +201,7 @@ export default function arcaMegamindExtension(pi: ExtensionAPI, options: Extensi
   const openRequests = new Map<string, string>();
   /** Leitura de inbox adiada pelo intervalo mínimo (dica de SSE não se perde). */
   let pollTimer: ReturnType<typeof setTimeout> | undefined;
+  let pendingInsertion: { id: string; resolve: () => void; reject: (reason: Error) => void } | undefined;
   let priorityContext: ExtensionContext | undefined;
   let currentPriority: CorePriority | undefined;
   /** Estado mostrado na barra de status; só transição mexe na UI. */
@@ -251,6 +253,8 @@ export default function arcaMegamindExtension(pi: ExtensionAPI, options: Extensi
     overlapsSeen.clear();
     peerSessions = new Map();
     inbox.reset();
+    pendingInsertion?.reject(new Error("Megamind presence changed before inbox insertion"));
+    pendingInsertion = undefined;
     currentPriority = undefined;
     setPriorityStatus(undefined);
     // Sem projeto vinculado o ícone some: o Megamind não vale para este cwd.
@@ -304,12 +308,22 @@ export default function arcaMegamindExtension(pi: ExtensionAPI, options: Extensi
     deliver: (content) => {
       const active = pi.getActiveTools?.();
       if (active && !active.includes("megamind_reply")) pi.setActiveTools([...active, "megamind_reply"]);
-      pi.sendMessage(
-        { customType: MESSAGE_TYPE, content, display: true },
-        { triggerTurn: true, deliverAs: "followUp" },
-      );
+      const id = randomUUID();
+      return new Promise<void>((resolve, reject) => {
+        pendingInsertion = { id, resolve, reject };
+        try {
+          pi.sendMessage(
+            { customType: MESSAGE_TYPE, content, display: true, details: { inboxInsertion: id } },
+            { triggerTurn: true, deliverAs: "followUp" },
+          );
+        } catch (error) {
+          pendingInsertion = undefined;
+          reject(error);
+        }
+      });
     },
     warn: messagingFailed,
+    onDiscarded: (count) => pi.appendEntry("megamind-inbox-discarded", { count }),
     onDelivered: (item) => trackDelivered(item),
     self: () => selfHandle,
     megamind: () => inboxLabel(),
@@ -372,7 +386,10 @@ export default function arcaMegamindExtension(pi: ExtensionAPI, options: Extensi
   // Entrega só com a sessão ociosa (modelo do pi-relay); ack só depois de entregar.
   function deliverNext() {
     if (!active || !presence) return;
-    inbox.drain(presence.session_id, isIdle?.() === true);
+    const current = presence;
+    void inbox.drain(current.session_id, isIdle?.() === true)?.then(() => {
+      if (presence === current) pollSoon();
+    }).catch(messagingFailed);
   }
 
   /** Leitura antecipada da inbox (evento SSE ou sessão ociosa), com intervalo mínimo de 5 s. */
@@ -949,9 +966,22 @@ export default function arcaMegamindExtension(pi: ExtensionAPI, options: Extensi
     activate(ctx);
   });
 
+  function confirmInboxInsertion(ctx: ExtensionContext): void {
+    const pending = pendingInsertion;
+    // `message_end` é emitido antes do append no Pi. Só confirme pela sessão,
+    // numa fronteira de turno (também vale quando o follow-up foi enfileirado).
+    if (!pending || !ctx.sessionManager.getBranch?.().some((entry) => entry.type === "custom_message"
+      && entry.customType === MESSAGE_TYPE && object(entry.details) && entry.details.inboxInsertion === pending.id)) return;
+    pendingInsertion = undefined;
+    pending.resolve();
+  }
+
+  pi.on("turn_end", (_event, ctx) => confirmInboxInsertion(ctx));
+
   // Tick imediato ao ficar ocioso: a entrega pendente (e uma leitura nova, no
   // máximo a cada 5 s) acontece assim que dá.
-  pi.on("agent_settled", async () => {
+  pi.on("agent_settled", async (_event, ctx) => {
+    confirmInboxInsertion(ctx);
     if (!active || !presence || isIdle?.() !== true) return;
     deliverNext();
     // A leitura roda solta: aguardar aqui travaria o harness até o timeout do gateway.
