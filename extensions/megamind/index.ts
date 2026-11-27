@@ -143,7 +143,7 @@ function parseOverlaps(value: unknown): Overlap[] {
   return overlaps;
 }
 
-export type ExtensionOptions = { now?: () => number };
+export type ExtensionOptions = { now?: () => number; inboxDeliveryTimeoutMs?: number; inboxDeliveryRetryMs?: number };
 
 export default function arcaMegamindExtension(pi: ExtensionAPI, options: ExtensionOptions = {}) {
   const now = options.now ?? Date.now;
@@ -200,6 +200,7 @@ export default function arcaMegamindExtension(pi: ExtensionAPI, options: Extensi
   const openRequests = new Map<string, string>();
   /** Leitura de inbox adiada pelo intervalo mínimo (dica de SSE não se perde). */
   let pollTimer: ReturnType<typeof setTimeout> | undefined;
+  let inboxWakeTimer: ReturnType<typeof setTimeout> | undefined;
   let priorityContext: ExtensionContext | undefined;
   let currentPriority: CorePriority | undefined;
   /** Estado mostrado na barra de status; só transição mexe na UI. */
@@ -226,8 +227,8 @@ export default function arcaMegamindExtension(pi: ExtensionAPI, options: Extensi
   }
 
   /** Núcleo desta sessão (v6 ou adaptador v5), com o regime de ack junto. */
-  async function core(signal?: AbortSignal): Promise<MegamindCore> {
-    const resolved = await resolveCore(signal);
+  async function core(signal?: AbortSignal, requireProbe = false): Promise<MegamindCore> {
+    const resolved = await resolveCore(signal, requireProbe);
     acknowledges = resolved.acknowledges;
     coreVersion = resolved.core;
     return resolved;
@@ -240,7 +241,7 @@ export default function arcaMegamindExtension(pi: ExtensionAPI, options: Extensi
     notify?.(message, "warning");
   }
 
-  /** Solta a presença desta sessão: heartbeat, SSE, fila e pares anunciados. */
+  /** Solta a presença. Remapear o projeto não muda a sessão dona da inbox. */
   function dropPresence(): void {
     presence = undefined;
     if (heartbeat !== undefined) clearInterval(heartbeat);
@@ -250,7 +251,8 @@ export default function arcaMegamindExtension(pi: ExtensionAPI, options: Extensi
     announced.clear();
     overlapsSeen.clear();
     peerSessions = new Map();
-    inbox.reset();
+    clearInboxWake();
+    // Mantenha os estacionados e o estado dos envios ainda em voo até o shutdown.
     currentPriority = undefined;
     setPriorityStatus(undefined);
     // Sem projeto vinculado o ícone some: o Megamind não vale para este cwd.
@@ -261,6 +263,7 @@ export default function arcaMegamindExtension(pi: ExtensionAPI, options: Extensi
   function freshSession(): void {
     sshTask = undefined;
     dropPresence();
+    inbox.reset();
     isIdle = undefined;
     notify = undefined;
     sessionId = undefined;
@@ -290,23 +293,40 @@ export default function arcaMegamindExtension(pi: ExtensionAPI, options: Extensi
   }
 
   const inbox = new Inbox({
+    now,
+    deliveryTimeoutMs: options.inboxDeliveryTimeoutMs,
+    deliveryRetryMs: options.inboxDeliveryRetryMs,
     // O núcleo lança quando o gateway recusa (503, rate limit): recusa nunca
     // pode passar por "caixa vazia", senão o prune apagaria fila, ack pendente e
     // memória do que já foi entregue, e o item voltaria duplicado.
-    fetch: async (session_id) => (await core()).read(session_id, {}),
+    fetch: async (session_id, cursor, limit) => {
+      const engine = await core(undefined, true);
+      return engine.readInbox ? engine.readInbox(session_id, cursor, limit) : engine.read(session_id, {});
+    },
     ack: async (session_id, ids) => (await core()).ack(session_id, ids),
     get acknowledges() {
       return acknowledges;
     },
-    deliver: (content) => {
+    deliver: (content, _signal, marker) => {
       const active = pi.getActiveTools?.();
       if (active && !active.includes("megamind_reply")) pi.setActiveTools([...active, "megamind_reply"]);
       pi.sendMessage(
-        { customType: MESSAGE_TYPE, content, display: true },
+        { customType: MESSAGE_TYPE, content, display: true, details: { inboxInsertion: marker } },
         { triggerTurn: true, deliverAs: "followUp" },
       );
+      // O Pi expõe send_message assíncrono só no runner interno, sem identidade do
+      // envio. Só um throw desta chamada comprova falha e permite um novo envio.
+      return "await-insertion";
     },
-    warn: messagingFailed,
+    warn: (error, category) => {
+      if (category === "malformed") warnOnce("inbox-malformed", safeMessage(error));
+      else if (category === "parked") {
+        const message = safeMessage(error);
+        pi.appendEntry("megamind-inbox-parked", { message });
+        warnOnce(`inbox-parked:${message}`, message);
+      } else messagingFailed(error);
+    },
+    onDiscarded: (count) => pi.appendEntry("megamind-inbox-discarded", { count }),
     onDelivered: (item) => trackDelivered(item),
     self: () => selfHandle,
     megamind: () => inboxLabel(),
@@ -361,15 +381,42 @@ export default function arcaMegamindExtension(pi: ExtensionAPI, options: Extensi
   /** `megamind_read` sem `with`: lê a caixa agora e entrega tudo de uma vez. */
   async function readInbox(): Promise<CoreItem[]> {
     const current = presence;
-    if (!current) return [];
+    if (!active) return [];
+    if (!current || !cwdProjectId) return inbox.takeParked();
     await inbox.poll(current.session_id, now());
+    if (!active) return [];
+    if (presence !== current) return inbox.takeParked();
+    confirmInboxInsertion(priorityContext);
     return inbox.takeAll(current.session_id);
+  }
+
+  function clearInboxWake(): void {
+    if (inboxWakeTimer !== undefined) clearTimeout(inboxWakeTimer);
+    inboxWakeTimer = undefined;
+  }
+
+  function scheduleInboxWake(): void {
+    clearInboxWake();
+    if (!active || !presence || isIdle?.() !== true) return;
+    const at = inbox.nextRetryAt();
+    if (at === undefined) return;
+    inboxWakeTimer = setTimeout(deliverNext, Math.max(0, at - now()));
+    inboxWakeTimer.unref?.();
   }
 
   // Entrega só com a sessão ociosa (modelo do pi-relay); ack só depois de entregar.
   function deliverNext() {
-    if (!active || !presence) return;
-    inbox.drain(presence.session_id, isIdle?.() === true);
+    clearInboxWake();
+    if (!active || !presence || isIdle?.() !== true) return;
+    const current = presence;
+    if (confirmInboxInsertion(priorityContext)) pollSoon();
+    const delivery = inbox.drain(current.session_id, true);
+    if (!delivery) scheduleInboxWake();
+    else void delivery.then(() => {
+      if (!active || presence !== current) return;
+      scheduleInboxWake();
+      pollSoon();
+    }).catch(messagingFailed);
   }
 
   /** Leitura antecipada da inbox (evento SSE ou sessão ociosa), com intervalo mínimo de 5 s. */
@@ -396,6 +443,7 @@ export default function arcaMegamindExtension(pi: ExtensionAPI, options: Extensi
   }
 
   function stopTimers() {
+    clearInboxWake();
     if (heartbeat !== undefined) clearInterval(heartbeat);
     heartbeat = undefined;
     if (resolveTimer !== undefined) clearInterval(resolveTimer);
@@ -483,6 +531,7 @@ export default function arcaMegamindExtension(pi: ExtensionAPI, options: Extensi
     current.label = sessionLabel(repo.root, sessionCwd ?? process.cwd());
     return {
       ...current,
+      cwd: sessionCwd ?? process.cwd(),
       note: currentNote(),
       ...(branch ? { branch } : {}),
       paths,
@@ -607,7 +656,9 @@ export default function arcaMegamindExtension(pi: ExtensionAPI, options: Extensi
       // servidor para restaurar o acompanhamento após /reload.
       await reconcileRequests(candidate, true);
       if (!active || generation !== epoch || presence !== candidate) return;
-      void inbox.poll(candidate.session_id, now()).then(() => deliverNext()).catch(messagingFailed);
+      void inbox.poll(candidate.session_id, now()).then(() => {
+        if (active && presence === candidate) deliverNext();
+      }).catch(messagingFailed);
     } catch (error) {
       if (generation !== epoch || !active) return;
       const delay = REGISTER_RETRY_MS[Math.min(autoAttempt++, REGISTER_RETRY_MS.length - 1)]!;
@@ -945,9 +996,26 @@ export default function arcaMegamindExtension(pi: ExtensionAPI, options: Extensi
     activate(ctx);
   });
 
+  function confirmInboxInsertion(ctx: ExtensionContext | undefined): boolean {
+    if (!active || !presence || !ctx || ctx.sessionManager.getSessionId() !== presence.session_id || !inbox.pending) return false;
+    // `message_end` é emitido antes do append; consulte o histórico da sessão.
+    const markers = new Set<string>();
+    for (const entry of ctx.sessionManager.getBranch?.() ?? []) {
+      if (entry.type !== "custom_message" || entry.customType !== MESSAGE_TYPE || !object(entry.details)) continue;
+      const marker = text(entry.details.inboxInsertion);
+      if (marker) markers.add(marker);
+    }
+    return inbox.confirmInserted(presence.session_id, markers);
+  }
+
+  pi.on("turn_end", (_event, ctx) => {
+    if (confirmInboxInsertion(ctx)) pollSoon();
+  });
+
   // Tick imediato ao ficar ocioso: a entrega pendente (e uma leitura nova, no
   // máximo a cada 5 s) acontece assim que dá.
-  pi.on("agent_settled", async () => {
+  pi.on("agent_settled", async (_event, ctx) => {
+    confirmInboxInsertion(ctx);
     if (!active || !presence || isIdle?.() !== true) return;
     deliverNext();
     // A leitura roda solta: aguardar aqui travaria o harness até o timeout do gateway.
@@ -960,16 +1028,17 @@ export default function arcaMegamindExtension(pi: ExtensionAPI, options: Extensi
     // servidor se sobrou pedido de colega em atendimento.
     const reason = text(object(event) ? event.reason : undefined);
     const closing = reason === undefined || reason === "quit" || openRequests.size > 0;
-    if (active && presence && closing) {
+    const sendBye = active && presence && closing;
+    active = false;
+    epoch += 1;
+    stopTimers();
+    if (sendBye) {
       const summary = [
         currentNote() || "sessão encerrada",
         openRequests.size > 0 ? `pedidos em aberto: ${[...openRequests.keys()].join(", ")}` : "",
       ].filter(Boolean).join(" · ");
       await sayBye(summary);
     }
-    active = false;
-    epoch += 1;
-    stopTimers();
     openRequests.clear();
     freshSession();
   });

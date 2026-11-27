@@ -1,7 +1,7 @@
 // O que chega de fora: formatação de cada item de `read` como bloco fechado e a
 // fila local que entrega um item por vez, quando a sessão está ociosa. Sem
 // dependência de `pi` e sem transporte: o núcleo (v6 ou v5) entra por `InboxDeps`.
-import type { CoreItem } from "./core.ts";
+import type { CoreItem, InboxBatch } from "./core.ts";
 import { redactBearer, stripControl, text } from "./gateway.ts";
 
 export const INBOX_QUEUE_MAX = 20;
@@ -184,14 +184,18 @@ export const SECRET_MSG = "looks like a secret; Megamind never carries tokens, p
 
 export type InboxDeps = {
   /** Lê a caixa desta sessão (v6 `read`, v5 `inbox`). */
-  fetch: (session_id: string) => Promise<CoreItem[]>;
+  fetch: (session_id: string, cursor: string, limit: number) => Promise<CoreItem[] | InboxBatch>;
   /** Confirma a entrega; na v6 é no-op porque `read` já confirmou. */
   ack: (session_id: string, ids: string[]) => Promise<void>;
   /** `true` só na v5: lá o item volta na próxima leitura até o ack. */
   acknowledges: boolean;
-  /** Entrega o texto na conversa; pode lançar. */
-  deliver: (text: string) => void;
-  warn: (error: unknown) => void;
+  /** Entrega o texto; o Pi aguarda confirmação explícita pelo histórico. */
+  deliver: (text: string, signal: AbortSignal, marker: string) => void | Promise<void> | "await-insertion";
+  deliveryTimeoutMs?: number;
+  deliveryRetryMs?: number;
+  now?: () => number;
+  onDiscarded?: (count: number) => void;
+  warn: (error: unknown, category?: "malformed" | "parked") => void;
   /** Item entregue: o chamador atualiza o estado do pedido. */
   onDelivered?: (item: CoreItem) => void;
   /** Handle do dono desta sessão, quando conhecido: evita sugerir resposta a si mesmo. */
@@ -208,20 +212,37 @@ export function isAskUserItem(item: CoreItem): boolean {
   return ids instanceof Set && ids.has(item.id);
 }
 
-type Entry = { key: string; id: string; text: string; item: CoreItem };
+type Entry = { key: string; id: string; text: string; item: CoreItem; retryAt?: number; failures?: number; awaitingInsertion?: boolean };
+class InsertionTimeout extends Error {}
+
+const MAX_DELIVERY_ATTEMPTS = 5;
+const DELIVERY_TIMEOUT_MS = 45_000;
+const DELIVERY_RETRY_MS = [10_000, 20_000, 40_000, 60_000] as const;
 
 function keyOf(item: CoreItem): string {
   return `${item.kind}:${item.id}`;
 }
 
+function insertionMarker(item: CoreItem): string {
+  // Uma atualização de status é outro item, mesmo quando o id do pedido é o mesmo.
+  return `${keyOf(item)}:${item.ask?.status ?? ""}`;
+}
+
 /** Fila local da caixa: lê, entrega quando ocioso e confirma depois de entregar. */
 export class Inbox {
   private queue: Entry[] = [];
+  // Fora dos lotes/recibos. Se o Pi cair, estes itens em memória se perdem.
+  private parked: Entry[] = [];
+  /** Um envio estacionado por timeout ainda pode entrar no histórico. */
+  private parkedInFlight = new Set<string>();
   /** Chaves já enfileiradas nesta sessão: nunca entregar duas vezes. */
   private seen = new Set<string>();
   /** Entregues cujo `acknowledge` ainda não confirmou: o ack é reenviado. */
   private pendingAck = new Set<string>();
-  private polling = false;
+  private polling?: { done: Promise<void> };
+  private delivering?: { entry: Entry; controller: AbortController };
+  /** Recibo opaco do lote local; só é reenviado depois de esvaziar a fila. */
+  private cursor?: string;
   private polledAt = 0;
 
   constructor(private readonly deps: InboxDeps) {}
@@ -235,32 +256,58 @@ export class Inbox {
   }
 
   get pending(): number {
-    return this.queue.length;
+    return this.queue.length + this.parked.length;
   }
 
   reset(): void {
     this.queue = [];
+    this.parked = [];
+    this.parkedInFlight.clear();
     this.seen = new Set();
     this.pendingAck = new Set();
-    this.polling = false;
+    this.polling = undefined;
+    const delivery = this.delivering;
+    this.delivering = undefined;
+    delivery?.controller.abort();
+    this.cursor = undefined;
     this.polledAt = 0;
   }
 
   push(item: CoreItem): boolean {
     const key = keyOf(item);
-    if (this.full || this.seen.has(key) || this.pendingAck.has(key)) return false;
+    if (this.full || this.seen.has(key) || this.pendingAck.has(key) || this.parkedInFlight.has(insertionMarker(item)) || this.parked.some((entry) => entry.key === key)) return false;
     this.seen.add(key);
     this.queue.push({ key, id: item.id, text: formatInboxItem(item, this.deps.self?.(), this.deps.megamind?.()), item });
     return true;
   }
 
   /** Lê a caixa; nunca lança (erro vira aviso do chamador). */
-  async poll(session_id: string, at: number): Promise<void> {
-    if (this.polling || this.full) return;
-    this.polling = true;
+  poll(session_id: string, at: number): Promise<void> {
+    if (this.polling) return this.polling.done;
+    if (this.delivering || this.full || (this.cursor !== undefined && this.queue.length > 0)) return Promise.resolve();
     this.polledAt = at;
+    const limit = INBOX_QUEUE_MAX - this.queue.length;
+    const poll = { done: Promise.resolve().then(() => this.pollOnce(session_id, limit, poll)) };
+    this.polling = poll;
+    return poll.done;
+  }
+
+  private async pollOnce(session_id: string, limit: number, poll: { done: Promise<void> }): Promise<void> {
     try {
-      const items = await this.deps.fetch(session_id);
+      if (this.polling !== poll) return;
+      const items = await this.deps.fetch(session_id, this.cursor ?? "", limit);
+      if (this.polling !== poll) return; // reset durante a chamada
+      if (!Array.isArray(items)) {
+        // Um lote por vez. Não use `seen` por ID: um status novo do mesmo
+        // pedido é outro item para o protocolo versionado.
+        this.queue = items.items.filter((item) => !isAskUserItem(item) && !this.parkedInFlight.has(insertionMarker(item))).map((item) => ({
+          item, id: item.id, key: keyOf(item), text: formatInboxItem(item, this.deps.self?.(), this.deps.megamind?.()),
+        }));
+        this.cursor = items.cursor;
+        if (items.discarded) this.deps.onDiscarded?.(items.discarded);
+        if (items.malformed?.length) this.deps.warn(new Error(`Megamind discarded malformed inbox items: ${items.malformed.join(", ")}`), "malformed");
+        return;
+      }
       const live = new Set<string>();
       for (const item of items) {
         const key = keyOf(item);
@@ -282,50 +329,143 @@ export class Inbox {
       // "sumiu da caixa" apagaria a fila inteira antes de ela ser entregue.
       if (this.deps.acknowledges) this.prune(live);
     } catch (error) {
-      this.deps.warn(error);
+      if (this.polling === poll) this.deps.warn(error);
     } finally {
-      this.polling = false;
+      if (this.polling === poll) this.polling = undefined;
     }
   }
 
-  /**
-   * Entrega no máximo um item: `deliver` deixa a sessão ocupada de imediato,
-   * então o resto da fila sai nos próximos `agent_settled`.
-   */
-  drain(session_id: string, idle: boolean): void {
-    if (!idle || this.queue.length === 0) return;
-    const entry = this.queue[0]!;
-    try {
-      this.deps.deliver(entry.text);
-    } catch (error) {
+  /** Só agenda quando nenhum item pode sair agora. */
+  nextRetryAt(): number | undefined {
+    if (this.delivering || this.polling || !this.queue.length) return undefined;
+    const at = Math.min(...this.queue.map((entry) => entry.retryAt ?? 0));
+    return at > (this.deps.now ?? Date.now)() ? at : undefined;
+  }
+
+  /** Reconhece inserções tardias, inclusive após timeout ou estacionamento. */
+  confirmInserted(session_id: string, markers: ReadonlySet<string>): boolean {
+    let confirmed = false;
+    for (const entry of this.queue) {
+      if (!markers.has(insertionMarker(entry.item))) continue;
+      this.finishDelivery(session_id, entry);
+      confirmed = true;
+    }
+    this.parked = this.parked.filter((entry) => {
+      if (!markers.has(insertionMarker(entry.item))) return true;
+      this.trackDelivered(entry);
+      confirmed = true;
+      return false;
+    });
+    return confirmed;
+  }
+
+  private finishDelivery(session_id: string, entry: Entry): void {
+    this.queue = this.queue.filter((queued) => queued !== entry);
+    if (this.delivering?.entry === entry) {
+      const { controller } = this.delivering;
+      this.delivering = undefined;
+      controller.abort();
+    }
+    this.delivered(session_id, entry);
+  }
+
+  /** Entrega um item; um follow-up pendente ainda não libera o recibo. */
+  drain(session_id: string, idle: boolean): void | Promise<void> {
+    if (!idle || this.polling || this.delivering) return;
+    const entry = this.queue.find(({ retryAt }) => retryAt === undefined || retryAt <= (this.deps.now ?? Date.now)());
+    if (!entry) return;
+    const controller = new AbortController();
+    const attempt = this.delivering = { entry, controller };
+    const finish = () => {
+      if (this.delivering !== attempt) return; // reset durante a entrega
+      this.finishDelivery(session_id, entry);
+    };
+    const failed = (error: unknown) => {
+      if (this.delivering !== attempt) return;
+      this.delivering = undefined;
+      // Timeout não cancela o envio do Pi: os próximos ciclos só esperam pelo mesmo marcador.
+      entry.awaitingInsertion = error instanceof InsertionTimeout;
+      const failures = entry.failures = (entry.failures ?? 0) + 1;
+      this.queue = this.queue.filter((queued) => queued !== entry);
+      if (failures >= MAX_DELIVERY_ATTEMPTS) {
+        this.parked.push(entry);
+        if (entry.awaitingInsertion) this.parkedInFlight.add(insertionMarker(entry.item));
+        if (this.deps.acknowledges) {
+          this.pendingAck.add(entry.key);
+          void this.ack(session_id, entry.key, entry.id);
+        }
+        this.deps.warn(new Error(`Megamind inbox item ${entry.id} parked after ${failures} attempts; use megamind_read`), "parked");
+        return;
+      }
+      entry.retryAt = (this.deps.now ?? Date.now)() + (this.deps.deliveryRetryMs ?? DELIVERY_RETRY_MS[failures - 1]!);
+      // Recoloque no fim do lote para que as tentativas não passem à frente dos demais.
+      this.queue.push(entry);
       this.deps.warn(error);
+    };
+    try {
+      const delivery = entry.awaitingInsertion ? "await-insertion" : this.deps.deliver(entry.text, controller.signal, insertionMarker(entry.item));
+      if (delivery) return this.waitForDelivery(delivery === "await-insertion" ? undefined : delivery, controller).then(finish, failed);
+    } catch (error) {
+      failed(error);
       return;
     }
-    this.queue.shift();
-    // Entregue: o ack pode falhar, e aí a chave fica pendente para retry na próxima leitura.
-    this.pendingAck.add(entry.key);
+    finish();
+  }
+
+  private async waitForDelivery(delivery: Promise<void> | undefined, controller: AbortController): Promise<void> {
+    const { signal } = controller;
+    const timeout = setTimeout(() => controller.abort(new InsertionTimeout("Megamind inbox insertion timed out")),
+      this.deps.deliveryTimeoutMs ?? DELIVERY_TIMEOUT_MS);
+    timeout.unref?.();
+    let abort: (() => void) | undefined;
+    const cancelled = new Promise<never>((_, reject) => {
+      abort = () => reject(signal.reason);
+      if (signal.aborted) abort();
+      else signal.addEventListener("abort", abort, { once: true });
+    });
+    try {
+      await (delivery ? Promise.race([cancelled, delivery]) : cancelled);
+    } finally {
+      clearTimeout(timeout);
+      if (abort) signal.removeEventListener("abort", abort);
+    }
+  }
+
+  private delivered(session_id: string, entry: Entry): void {
+    if (this.cursor === undefined) this.pendingAck.add(entry.key);
+    this.trackDelivered(entry);
+    if (this.cursor === undefined) void this.ack(session_id, entry.key, entry.id);
+  }
+
+  private trackDelivered(entry: Entry): void {
     try {
       this.deps.onDelivered?.(entry.item);
     } catch (error) {
       this.deps.warn(error);
     }
-    void this.ack(session_id, entry.key, entry.id);
   }
 
-  /** Esvazia a fila de uma vez (tool `megamind_read` sem `with`). */
+  /** Itens locais não precisam de presença nem de um novo ack. */
+  takeParked(): CoreItem[] {
+    const readable: CoreItem[] = [];
+    this.parked = this.parked.filter((entry) => {
+      // Sem confirmação nem falha atribuível, só o reset libera este estado.
+      if (this.parkedInFlight.has(insertionMarker(entry.item))) return true;
+      this.trackDelivered(entry);
+      readable.push(entry.item);
+      return false;
+    });
+    return readable;
+  }
+
+  /** Esvazia os itens que ainda não foram reservados ao follow-up automático. */
   takeAll(session_id: string): CoreItem[] {
-    const entries = this.queue;
-    this.queue = [];
-    for (const entry of entries) {
-      this.pendingAck.add(entry.key);
-      try {
-        this.deps.onDelivered?.(entry.item);
-      } catch (error) {
-        this.deps.warn(error);
-      }
-      void this.ack(session_id, entry.key, entry.id);
-    }
-    return entries.map((entry) => entry.item);
+    const reserved = this.delivering?.entry;
+    const parked = this.takeParked();
+    const entries = this.queue.filter((entry) => entry !== reserved && !entry.awaitingInsertion);
+    this.queue = this.queue.filter((entry) => entry === reserved || entry.awaitingInsertion);
+    for (const entry of entries) this.delivered(session_id, entry);
+    return [...parked, ...entries.map((entry) => entry.item)];
   }
 
   async ack(session_id: string, key: string, recordId: string): Promise<void> {
