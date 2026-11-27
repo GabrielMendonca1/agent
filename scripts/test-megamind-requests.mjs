@@ -30,7 +30,7 @@ try {
     return new Response(JSON.stringify({ jsonrpc: '2.0', id: rpc.id, result: { id: 'request123', to: { kind: 'session', session_id: 'abcdef' }, woke: [] } }));
   };
   const { CoreV5, itemOf } = await jiti.import(join(repo, 'extensions/megamind/core-v5.ts'));
-  const { CoreV6, parseItem } = await jiti.import(join(repo, 'extensions/megamind/core.ts'));
+  const { CoreV6, parseItem, resetCore, resolveCore } = await jiti.import(join(repo, 'extensions/megamind/core.ts'));
   for (const Core of [CoreV5, CoreV6]) {
     const core = new Core();
     for (const to of ['@Handle', 'actor:pb:person123']) {
@@ -50,7 +50,7 @@ try {
     await core.send('sender', { to, body: 'context', ask: { title: 'work' } });
     ok(`v${core.core} session routing unchanged`, () => assert.equal(calls.at(-1).name, core.core === 5 ? 'request_create' : 'send'));
   }
-  const { parseEventFrame } = await jiti.import(join(repo, 'extensions/megamind/gateway.ts'));
+  const { ERROR_DETAIL, parseEventFrame } = await jiti.import(join(repo, 'extensions/megamind/gateway.ts'));
   ok('legacy decision events are ignored', () => {
     assert.equal(parseEventFrame('data: {"kind":"decision","id":"legacy123"}'), undefined);
     assert.equal(parseEventFrame('data: {"kind":"approval_decision","id":"legacy123"}'), undefined);
@@ -149,6 +149,134 @@ try {
     }
     assert.equal(existsSync(join(repo, 'extensions/megamind/gate.ts')), false);
   });
+  // Exercita o handshake, as chamadas MCP e a fila juntos, sem um servidor real.
+  const hello = { session_id: 'sender', project_id: 'project', harness: 'pi', label: 'Pi' };
+  const cwd = '/tmp/work tree';
+  const reply = (id, status) => ({ id, kind: 'reply', from: {}, ask: { title: 'Work', status } });
+  for (const modern of [true, false]) {
+    resetCore();
+    const pending = [reply('r1', 'accepted'), reply('r2', 'done')];
+    const receipts = new Map();
+    const reads = [], announcements = [], projectPages = [];
+    let drop = modern, hasProjects = true, idAcks = 0;
+    globalThis.fetch = async (_url, init) => {
+      const { method, params, id } = JSON.parse(init.body);
+      const respond = (result) => new Response(JSON.stringify({ jsonrpc: '2.0', id, result }));
+      if (method === 'initialize') {
+        return respond({ capabilities: { arca: { core: 6, ...(modern ? { inbox_cursor: true, agent_cwd: true } : {}) } } });
+      }
+      if (method === 'tools/list') return respond({ tools: hasProjects ? [{ name: 'projects_list' }] : [] });
+      assert.equal(method, 'tools/call');
+      const { name, arguments: args } = params;
+      switch (name) {
+        case 'hello':
+          announcements.push(args);
+          return respond({ session: {} });
+        case 'acknowledge':
+          idAcks++;
+          return respond({});
+        case 'read': {
+          reads.push(args);
+          if (args.with) return respond({ items: [] });
+          if (!modern) return respond({ items: pending.splice(0) }); // auto-ack legado
+          if (args.cursor) {
+            // Um recibo só confirma os itens (e as versões) desse lote.
+            for (const item of receipts.get(args.cursor)) {
+              const index = pending.indexOf(item);
+              if (index !== -1) pending.splice(index, 1);
+            }
+          }
+          const items = pending.slice(0, args.limit);
+          const cursor = items.length ? `receipt-${items.map(({ id, ask }) => `${id}-${ask.status}`).join('.')}` : '';
+          receipts.set(cursor, items);
+          if (drop) {
+            drop = false;
+            throw new Error('response lost after server processed read');
+          }
+          return respond({ items, cursor });
+        }
+        case 'projects_list':
+          projectPages.push(args.cursor);
+          return respond(args.cursor === undefined
+            ? { items: [{ id: 'alpha', title: 'Alpha', repos: ['example.org/team/alpha'] }], next_cursor: 'alpha' }
+            : { items: [{ id: 'beta', title: 'Beta', status: 'active', repos: [] }], next_cursor: null });
+        default: assert.fail(`unexpected tool: ${name}`);
+      }
+    };
+
+    const server = modern ? 'new server' : 'old server';
+    const core = await resolveCore();
+    await core.hello({ ...hello, cwd });
+    ok(`${server}: hello only sends cwd when advertised`, () => {
+      assert.deepEqual(announcements, [modern ? { ...hello, cwd } : hello]);
+    });
+
+    const delivered = [], warnings = [];
+    const inbox = new Inbox({
+      fetch: (session, cursor, limit) => core.readInbox(session, cursor, limit),
+      ack: (...args) => core.ack(...args), acknowledges: core.acknowledges,
+      deliver: () => {}, warn: (error) => warnings.push(error.message),
+      onDelivered: ({ id, ask }) => delivered.push(`${id}:${ask.status}`),
+    });
+    await inbox.poll('sender', 1);
+    if (modern) {
+      assert.equal(inbox.pending, 0); // A primeira resposta se perdeu sem confirmar nada.
+      assert.equal(pending.length, 2);
+      await inbox.poll('sender', 2);
+      inbox.drain('sender', true);
+      await inbox.poll('sender', 3);
+      assert.deepEqual(reads.map(({ cursor }) => cursor), ['', '']); // Lote parcial não confirma.
+      inbox.takeAll('sender');
+      pending[0] = reply('r1', 'done'); // Nova versão antes de confirmar o lote anterior.
+      drop = true;
+      await inbox.poll('sender', 4);
+      assert.equal(inbox.pending, 0);
+      assert.deepEqual(pending.map(({ id }) => id), ['r1']); // Ack chegou, a próxima entrega não.
+      await inbox.poll('sender', 5);
+      inbox.takeAll('sender');
+      await inbox.poll('sender', 6);
+      ok('new server: lost responses replay the same receipt without losing or duplicating deliveries', () => {
+        assert.deepEqual(reads.map(({ cursor }) => cursor), ['', '', 'receipt-r1-accepted.r2-done', 'receipt-r1-accepted.r2-done', 'receipt-r1-done']);
+        assert.deepEqual(delivered, ['r1:accepted', 'r2:done', 'r1:done']);
+        assert.deepEqual(pending, []);
+        assert.equal(inbox.pending, 0);
+        assert.equal(warnings.length, 2);
+        assert.ok(warnings.every((warning) => warning.includes('response lost')));
+        assert.equal(idAcks, 0);
+      });
+    } else {
+      inbox.takeAll('sender');
+      await inbox.poll('sender', 2);
+      inbox.takeAll('sender');
+      ok('old server: inbox reads without cursor and keeps auto-ack', () => {
+        assert.deepEqual(reads, [{ session_id: 'sender' }, { session_id: 'sender' }]);
+        assert.deepEqual(delivered, ['r1:accepted', 'r2:done']);
+        assert.deepEqual(warnings, []);
+        assert.equal(idAcks, 0);
+      });
+    }
+    await core.read('sender', { with: '#arca' });
+    ok(`${server}: conversation read never sends an inbox cursor`, () => {
+      assert.deepEqual(reads.at(-1), { session_id: 'sender', with: '#arca' });
+    });
+
+    const projects = await tools.get('megamind_projects').execute('call', {});
+    ok(`${server}: megamind_projects follows the advertised catalog pages`, () => {
+      assert.equal(projects.content[0].text, 'alpha · Alpha · example.org/team/alpha\nbeta · Beta · active');
+      assert.deepEqual(projectPages, [undefined, 'alpha']);
+    });
+    if (!modern) {
+      hasProjects = false;
+      const unavailable = await tools.get('megamind_projects').execute('call', {});
+      ok('old server without catalog: megamind_projects reports unsupported without calling projects_list', () => {
+        assert.equal(unavailable.details[ERROR_DETAIL], true);
+        assert.match(unavailable.content[0].text, /does not advertise projects_list/);
+        assert.deepEqual(projectPages, [undefined, 'alpha']);
+      });
+    }
+  }
+  resetCore();
+
   // Blocks are English for the model since item 3; transcripts with the older Portuguese headers
   // must still render with the same (Portuguese) UI header and meta.
   const { parseInboxMessage, messageHeader } = await jiti.import(join(repo, 'extensions/megamind/render.ts'));
