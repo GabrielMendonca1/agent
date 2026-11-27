@@ -58,7 +58,14 @@ export type CoreItem = {
   /** Arquivos de uma mensagem do chat; baixados com megamind_fetch. */
   attachments?: CoreAttachment[];
   body_placeholder?: boolean;
+  held?: true;
+  held_reason?: string;
 };
+
+/** O servidor só marca posts retidos e só mostra a marca à conta autora. */
+export function parseHeld(value: JsonObject): Pick<CoreItem, "held" | "held_reason"> {
+  return value.held === true ? { held: true, ...optional(value, "held_reason") } : {};
+}
 
 export type CoreAttachment = { name: string; size?: number; mime?: string };
 
@@ -205,6 +212,7 @@ export function parseItem(value: unknown): CoreItem | undefined {
     ...optional(value, "created_at"),
     ...parseAttachments(value.attachments),
     ...(value.body_placeholder === true ? { body_placeholder: true } : {}),
+    ...(kind === "message" ? parseHeld(value) : {}),
   };
 }
 

@@ -2,10 +2,11 @@
 // seis chamadas, montadas sobre as tools v5. As cinco tools do agente não mudam;
 // o que muda é o que sai daqui para o gateway.
 import { randomUUID } from "node:crypto";
-import { CHAT_GROUP, SESSION_UUID, TOOL } from "./contract.ts";
+import { CHAT_GROUP, LIMITS, SESSION_UUID, TOOL } from "./contract.ts";
 import {
   CoreError,
   parseAttachments,
+  parseHeld,
   parsePriority,
   requireOk,
   requestProject,
@@ -138,6 +139,7 @@ function chatItemOf(raw: unknown): CoreItem | undefined {
     body,
     ...optional(raw, "created_at"),
     ...parseAttachments(raw.attachments),
+    ...parseHeld(raw),
   };
 }
 

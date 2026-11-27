@@ -204,8 +204,10 @@ export function formatConversation(items: CoreItem[]): string {
       const title = safeInline(item.ask?.title);
       const status = safeInline(item.ask?.status);
       const mark = item.kind === "message" ? "" : ` [${item.kind}${title ? ` ${title}` : ""}${status ? ` · ${status}` : ""} · ${item.id}]`;
+      const heldReason = item.held ? safeInline(item.held_reason) : "";
+      const heldMark = item.held ? ` [retida${heldReason ? `: ${heldReason}` : ""}]` : "";
       const files = attachmentLine(item);
-      return `${head}${mark}: ${safeBody(item.body ?? "")}${files ? ` ${files}` : ""}`;
+      return `${head}${mark}${heldMark}: ${safeBody(item.body ?? "")}${files ? ` ${files}` : ""}`;
     })
     .join("\n");
 }

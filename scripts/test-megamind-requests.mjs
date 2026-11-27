@@ -145,6 +145,30 @@ try {
   });
   const result = await tools.get('megamind_ask').execute('call', { to: '@handle', title: 'work', body: 'context' });
   ok('tool creates person request and reports its id', () => assert.match(result.content[0].text, /request123/));
+  for (const Core of [CoreV5, CoreV6]) {
+    const core = new Core();
+    const name = core.core === 5 ? 'chat_read' : 'read';
+    const author = core.core === 5 ? { author_name: 'handle' } : { kind: 'message', from: { handle: 'handle' } };
+    globalThis.fetch = async (_url, init) => {
+      const rpc = JSON.parse(init.body);
+      assert.equal(rpc.params.name, name);
+      const created_at = '2026-01-01T10:00:00Z';
+      return new Response(JSON.stringify({ result: { items: [
+        { ...author, created_at, id: 'm1', body: 'first message', held: true, held_reason: 'no session was woken' },
+        { ...author, created_at, id: 'm2', body: 'second message' },
+      ] } }));
+    };
+    registerMegamindTools({ registerTool: tool => tools.set(tool.name, tool) }, {
+      presence: () => ({ session_id: 'sender' }), core: async () => core, now: Date.now,
+    });
+    const conversation = await tools.get('megamind_read').execute('call', { with: '#arca' });
+    ok(`${name}: megamind_read marks only the held message`, () => {
+      assert.equal(conversation.content[0].text, [
+        '@handle (humano) · — · — @ 2026-01-01T10:00:00Z [retida: no session was woken]: first message',
+        '@handle (humano) · — · — @ 2026-01-01T10:00:00Z: second message',
+      ].join('\n'));
+    });
+  }
   ok('runtime and subagent do not load removed modules', () => {
     for (const path of ['extensions/megamind/index.ts', 'agent/extensions/brain-live/subagent/runner.ts']) {
       assert.doesNotMatch(readFileSync(join(repo, path), 'utf8'), /childGate|publishGate|classifyToolCall/);
