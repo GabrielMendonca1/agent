@@ -6,7 +6,7 @@ import { resolve } from "node:path";
 import { Type } from "typebox";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { listProjects } from "./catalog.ts";
-import { LIMITS, REPLY_STATUS, chatGroup } from "./contract.ts";
+import { LIMITS, REPLY_STATUS, SESSION_UUID, chatGroup } from "./contract.ts";
 import {
   CoreError,
   type AddressCandidate,
@@ -123,11 +123,13 @@ export function formatPeople(people: CorePerson[], mine: Presence | undefined, a
         const local = localMark(session.session_id, localityOf(session), safeInline(session.harness));
         if (local) marks.push(local);
       }
+      const device = safeInline(session.device_label);
       const fields = [
         who,
         ...(session.harness && session.harness !== who ? [safeInline(session.harness)] : []),
         safeInline(session.session_id),
         safeInline(session.project_id) || "no project",
+        ...(device ? [`device: ${device}`] : []),
         safeInline(session.note) || "no note",
         ...(session.branch ? [safeInline(session.branch)] : []),
         ageOf(session.at, at),
@@ -254,7 +256,7 @@ export function registerMegamindTools(pi: ExtensionAPI, deps: ToolDeps): void {
   registerTool({
     name: "megamind_who",
     label: "Megamind Who",
-    description: `List ${owners}, their sessions and org_role when available; with project_id, org/maintainers/sync error. Works without local presence. Use id, prefix or name as the destination; on this machine, prefer peers_send.`,
+    description: `List ${owners}, their sessions, device labels and org_role when available; with project_id, org/maintainers/sync error. Works without local presence. Use id, prefix or name as the destination; on this machine, prefer peers_send.`,
     parameters: Type.Object({
       project_id: Type.Optional(Type.String({ description: "limit sessions to one project; omit to show every partner" })),
     }),
@@ -443,9 +445,10 @@ export function registerMegamindTools(pi: ExtensionAPI, deps: ToolDeps): void {
     label: "Megamind Ask",
     description: "Create a request for a session or person (@handle or actor:pb:<id>). The answer arrives on its own; every partner has the same access",
     parameters: Type.Object({
-      to: Type.String({ description: 'session id/name, "@handle" or actor:pb:<id> of the person who receives the request; see megamind_who' }),
+      to: Type.String({ description: 'full session UUID, device:<id>, "@handle" or actor:pb:<id>; session names and prefixes only without project_id; see megamind_who' }),
       title: Type.String({ description: "one line saying what you need (up to 200 chars)" }),
       body: Type.String({ description: "context, done criteria and limits; no secrets" }),
+      project_id: Type.Optional(Type.String({ description: "project for the request; defaults to the source session's project and is ignored unless the server advertises it. A session UUID still targets that session. With device:<id>, only sessions in the request's project receive it; if none match, the request may not appear." })),
     }),
     ...compact("megamind_ask"),
     async execute(_id, params, signal) {
@@ -455,16 +458,20 @@ export function registerMegamindTools(pi: ExtensionAPI, deps: ToolDeps): void {
       const to = oneLine(args.to).trim();
       const title = outgoing(redactBearer(oneLine(args.title)), LIMITS.title).trim();
       const body = outgoing(redactBearer(text(args.body) ?? ""), LIMITS.body);
+      const project_id = text(args.project_id)?.trim();
       if (!to) return toolError("megamind_ask: `to` is required (megamind_who lists the addresses)");
+      if (project_id && !SESSION_UUID.test(to) && !/^(?:@[^\s]+|(?:actor:pb:|device:)[A-Za-z0-9_-]{1,64})$/u.test(to)) {
+        return toolError("com project_id, use o UUID completo da sessão, device:<id> ou @handle");
+      }
       if (!title) return toolError("megamind_ask: `title` is required");
       if (!body.trim()) return toolError("megamind_ask: `body` is required");
-      if (looksSecret(to, title, body)) return toolError(`megamind_ask: the request ${SECRET_MSG}`);
+      if (looksSecret(to, title, body, project_id ?? "")) return toolError(`megamind_ask: the request ${SECRET_MSG}`);
       try {
         const core = await deps.core();
         const sent = await core.send(current.session_id, {
           to,
           body,
-          ask: { title },
+          ask: { title, ...(project_id ? { project_id } : {}) },
         }, signal);
         const tracked = sent.id ? `request ${sent.id}` : "request";
         return toolResult({

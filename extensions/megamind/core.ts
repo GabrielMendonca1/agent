@@ -3,7 +3,7 @@
 // as tools antigas. Quem decide qual dos dois vale é `resolveCore`, pelo
 // `capabilities.<empresa>.core` do `initialize`.
 import { randomUUID } from "node:crypto";
-import { CHAT_GROUP, CORE_V6, INBOX_KINDS, TOOL, groupAddress, serverProfile, type InboxKind } from "./contract.ts";
+import { CHAT_GROUP, CORE_V6, INBOX_KINDS, SESSION_UUID, TOOL, groupAddress, serverProfile, type InboxKind } from "./contract.ts";
 import { megamindProfile } from "./profile.ts";
 import {
   callGateway,
@@ -30,6 +30,7 @@ export type CoreSession = {
   last_seen?: string;
   /** Sessão do mesmo dispositivo que chamou: fala-se com ela por Peers. */
   same_device?: boolean;
+  device_label?: string;
   at?: number;
 };
 
@@ -78,7 +79,7 @@ export type CoreTarget = { kind?: string; label?: string; handle?: string; sessi
 export type CoreSent = { id?: string; to?: CoreTarget; woke: Array<{ session_id: string; label?: string }>; held: boolean };
 
 export type HelloArgs = JsonObject & { session_id: string; project_id: string; harness: string; label: string; cwd?: string };
-export type AskArgs = { title: string; ttl_hours?: number };
+export type AskArgs = { title: string; ttl_hours?: number; project_id?: string };
 export type SendArgs = { to: string; body: string; to_session?: string; ask?: AskArgs; reply_to?: string };
 export type ReadArgs = { with?: string; since?: string; limit?: number };
 export type InboxBatch = { items: CoreItem[]; cursor: string; discarded: number; malformed?: string[] };
@@ -143,7 +144,7 @@ export function parsePriority(value: unknown): CorePriority | undefined {
   };
 }
 
-export function parseSession(value: unknown): CoreSession | undefined {
+export function parseSession(value: unknown, sessionDevice = false): CoreSession | undefined {
   if (!object(value)) return undefined;
   const session_id = text(value.session_id);
   if (!session_id) return undefined;
@@ -152,6 +153,7 @@ export function parseSession(value: unknown): CoreSession | undefined {
   return {
     session_id,
     ...optional(value, "label"),
+    ...(sessionDevice ? optional(value, "device_label") : {}),
     ...optional(value, "project_id"),
     ...optional(value, "harness"),
     ...optional(value, "note"),
@@ -163,7 +165,7 @@ export function parseSession(value: unknown): CoreSession | undefined {
   };
 }
 
-export function parsePeople(value: unknown): CorePerson[] {
+export function parsePeople(value: unknown, sessionDevice = false): CorePerson[] {
   const record = resultRecord(value);
   const people: CorePerson[] = [];
   for (const item of Array.isArray(record?.people) ? record.people : []) {
@@ -172,7 +174,7 @@ export function parsePeople(value: unknown): CorePerson[] {
     if (!handle) continue;
     const sessions: CoreSession[] = [];
     for (const raw of Array.isArray(item.sessions) ? item.sessions : []) {
-      const session = parseSession(raw);
+      const session = parseSession(raw, sessionDevice);
       if (session) sessions.push(session);
     }
     people.push({ handle, ...optional(item, "name"), ...optional(item, "org_role"), app_online: item.app_online === true, sessions });
@@ -259,6 +261,20 @@ export function requireOk(name: string, result: unknown): unknown {
   throw new CoreError(message, failure.code, parseCandidates(failure.detail));
 }
 
+/** `project_id` é anunciado no schema de `request_create`, sem flag no initialize. */
+export async function requestProject(project_id: string | undefined, signal?: AbortSignal): Promise<string | undefined> {
+  if (!project_id) return undefined;
+  const listing = await callGateway("tools/list", {}, signal).catch((error: unknown) => {
+    if (error instanceof Error && error.message.endsWith("(-32601)")) return undefined;
+    throw error;
+  });
+  if (object(listing) && Array.isArray(listing.tools) && listing.tools.some((tool) =>
+    object(tool) && tool.name === TOOL.requestCreate && object(tool.inputSchema)
+    && object(tool.inputSchema.properties) && object(tool.inputSchema.properties.project_id)
+    && tool.inputSchema.properties.project_id.type === "string")) return project_id;
+  return undefined;
+}
+
 /** Núcleo v6: cada chamada é uma tool do servidor, sem tradução. */
 export class CoreV6 implements MegamindCore {
   readonly core = CORE_V6;
@@ -269,11 +285,13 @@ export class CoreV6 implements MegamindCore {
   private readonly alias: string;
   private readonly inboxCursor: boolean;
   private readonly agentCwd: boolean;
+  private readonly sessionDevice: boolean;
   whoInfo?: CoreWhoInfo;
 
   constructor(capabilities: Omit<CoreProbe, "core"> = {}) {
     this.inboxCursor = capabilities.inboxCursor === true;
     this.agentCwd = capabilities.agentCwd === true;
+    this.sessionDevice = capabilities.sessionDevice === true;
     this.directDelivery = capabilities.directDelivery === true;
     this.lastPrompt = capabilities.lastPrompt === true;
     this.group = capabilities.group ?? CHAT_GROUP;
@@ -304,20 +322,25 @@ export class CoreV6 implements MegamindCore {
       ...optional(record, "org_sync_error"),
       ...(Array.isArray(record.maintainers) ? { maintainers: record.maintainers.filter((v): v is string => typeof v === "string") } : {}),
     };
-    return parsePeople(result);
+    return parsePeople(result, this.sessionDevice);
   }
 
   async send(session_id: string, args: SendArgs, signal?: AbortSignal): Promise<CoreSent> {
-    if (args.ask && /^(?:@|actor:)/u.test(args.to.trim())) {
+    const project_id = await requestProject(args.ask?.project_id, signal);
+    const address = args.to.trim();
+    const person = /^(?:@|actor:)/u.test(address);
+    if (args.ask && (person || project_id)) {
+      const to = SESSION_UUID.test(address) ? address.toLowerCase() : address;
       const record = resultRecord(requireOk(TOOL.requestCreate, await toolCall(TOOL.requestCreate, {
         from_session: session_id,
-        to: args.to.trim(),
+        to,
         title: args.ask.title,
         body: args.body,
         request_id: randomUUID(),
+        ...(project_id ? { project_id } : {}),
       }, signal))) ?? {};
       const id = text(record.id) ?? text(record.message_id);
-      return { ...(id ? { id } : {}), to: { kind: "person", label: args.to.trim() }, woke: [], held: true };
+      return { ...(id ? { id } : {}), to: person ? { kind: "person", label: to } : { kind: "session", session_id: to }, woke: [], held: person };
     }
     if (args.to_session && !this.directDelivery) throw new CoreError("this Mainframe cannot deliver to a specific session yet");
     const payload: JsonObject = {
@@ -386,7 +409,7 @@ export class CoreV6 implements MegamindCore {
 }
 
 /** O que o `initialize` revela: a versão do núcleo e os campos opcionais. */
-export type CoreProbe = { core?: number; lastPrompt?: boolean; directDelivery?: boolean; inboxCursor?: boolean; agentCwd?: boolean; group?: string; alias?: string };
+export type CoreProbe = { core?: number; lastPrompt?: boolean; directDelivery?: boolean; inboxCursor?: boolean; agentCwd?: boolean; sessionDevice?: boolean; group?: string; alias?: string };
 
 /** `capabilities.<empresa>.core` e `serverInfo` do `initialize`. */
 export async function probeCore(signal?: AbortSignal): Promise<CoreProbe> {
@@ -406,6 +429,7 @@ export async function probeCore(signal?: AbortSignal): Promise<CoreProbe> {
     directDelivery: server?.direct_delivery === true,
     inboxCursor: server?.inbox_cursor === true,
     agentCwd: server?.agent_cwd === true,
+    sessionDevice: server?.session_device === true,
   };
   if (core !== undefined) return { core, group, alias, ...optionalCapabilities };
   const version = info ? Number.parseInt(text(info.version) ?? "", 10) : Number.NaN;

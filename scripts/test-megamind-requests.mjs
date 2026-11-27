@@ -137,8 +137,9 @@ try {
     presence: () => ({ session_id: 'sender', project_id: 'project' }),
     core: async () => new CoreV5(), now: Date.now,
   });
-  ok('request tool has only destination/title/body and no capability tool', () => {
-    assert.deepEqual(Object.keys(tools.get('megamind_ask').parameters.properties), ['to', 'title', 'body']);
+  ok('request tool has an optional project and no capability tool', () => {
+    assert.deepEqual(Object.keys(tools.get('megamind_ask').parameters.properties), ['to', 'title', 'body', 'project_id']);
+    assert.deepEqual(tools.get('megamind_ask').parameters.required, ['to', 'title', 'body']);
     assert.ok(tools.has('megamind_projects'));
     assert.equal(tools.size, 7);
   });
@@ -158,18 +159,37 @@ try {
     resetCore();
     const pending = [reply('r1', 'accepted'), reply('r2', 'done')];
     const receipts = new Map();
-    const reads = [], announcements = [], projectPages = [];
+    const reads = [], announcements = [], projectPages = [], requests = [];
+    const target = '019a0000-0000-7000-8000-00000000abcd';
+    const other = '019b0000-0000-7000-8000-00000000dcba';
+    const compactPrefix = '019a000000'; // Atravessa o primeiro hífen do UUID.
+    let rpcCalls = 0;
     let drop = modern, hasProjects = true, idAcks = 0;
     globalThis.fetch = async (_url, init) => {
+      rpcCalls++;
       const { method, params, id } = JSON.parse(init.body);
       const respond = (result) => new Response(JSON.stringify({ jsonrpc: '2.0', id, result }));
       if (method === 'initialize') {
-        return respond({ capabilities: { arca: { core: 6, ...(modern ? { inbox_cursor: true, agent_cwd: true } : {}) } } });
+        return respond({ capabilities: { arca: { core: 6, ...(modern ? { inbox_cursor: true, agent_cwd: true, session_device: true } : {}) } } });
       }
-      if (method === 'tools/list') return respond({ tools: hasProjects ? [{ name: 'projects_list' }] : [] });
+      if (method === 'tools/list') return respond({ tools: [
+        { name: 'request_create', inputSchema: { properties: modern ? { project_id: { type: 'string' } } : {} } },
+        ...(hasProjects ? [{ name: 'projects_list' }] : []),
+      ] });
       assert.equal(method, 'tools/call');
       const { name, arguments: args } = params;
       switch (name) {
+        case 'who':
+          assert.deepEqual(args, {}); // project_id não filtra o destino.
+          return respond({ people: [{ handle: 'handle', sessions: [
+            { session_id: target, label: 'Pi target', project_id: 'another', device_label: 'Laptop [A]' },
+            { session_id: other, label: 'Pi other', project_id: 'custom', device_label: 'Desktop B' },
+            { session_id: 'missing', label: 'Pi missing', device_label: '' },
+          ] }] });
+        case 'request_create':
+        case 'send':
+          requests.push({ name, args });
+          return respond({ id: 'request123', to: { kind: 'session', session_id: target }, woke: [] });
         case 'hello':
           announcements.push(args);
           return respond({ session: {} });
@@ -206,6 +226,53 @@ try {
     };
 
     const server = modern ? 'new server' : 'old server';
+    registerMegamindTools({ registerTool: tool => tools.set(tool.name, tool) }, {
+      presence: () => hello, selfHandle: () => undefined, core: () => resolveCore(), now: Date.now,
+    });
+    const ask = tools.get('megamind_ask');
+    for (const to of ['Pi target', compactPrefix]) {
+      const args = { to, title: 'work', body: 'context' };
+      const before = rpcCalls;
+      const result = await ask.execute('call', { ...args, project_id: 'custom' });
+      ok(`${server}: project rejects ${to} before calling the server`, () => {
+        assert.equal(result.content[0].text, 'com project_id, use o UUID completo da sessão, device:<id> ou @handle');
+        assert.equal(rpcCalls, before);
+      });
+    }
+    for (const to of ['@handle', 'actor:pb:person123', target, 'device:desktop']) {
+      const answer = await ask.execute('call', { to, title: 'work', body: 'context', project_id: ' custom ' });
+      ok(`${server}: project travels only on an advertised request_create (${to})`, () => {
+        assert.match(answer.content[0].text, /request request123/);
+        const { name, args } = requests.at(-1);
+        assert.equal(name, modern || /^(?:@|actor:)/u.test(to) ? 'request_create' : 'send');
+        assert.equal(args.to, to);
+        if (modern) assert.equal(args.project_id, 'custom');
+        else assert.equal(Object.hasOwn(args, 'project_id'), false);
+      });
+    }
+    for (const to of ['Pi target', compactPrefix]) {
+      const result = await ask.execute('call', { to, title: 'work', body: 'context' });
+      ok(`${server}: without project, send still resolves ${to}`, () => {
+        assert.match(result.content[0].text, /request request123/);
+        const { name, args } = requests.at(-1);
+        assert.equal(name, 'send');
+        assert.equal(args.to, to);
+        assert.equal(Object.hasOwn(args, 'project_id'), false);
+      });
+    }
+    await ask.execute('call', { to: '@handle', title: 'work', body: 'context' });
+    ok(`${server}: omitting project_id preserves the server default`, () => {
+      assert.equal(Object.hasOwn(requests.at(-1).args, 'project_id'), false);
+    });
+    const who = await tools.get('megamind_who').execute('call', {});
+    ok(`${server}: who shows device labels per session only with session_device`, () => {
+      const listing = who.content[0].text;
+      if (modern) {
+        assert.match(listing, /Pi target[^\n]*device: Laptop  A/);
+        assert.match(listing, /Pi other[^\n]*device: Desktop B/);
+        assert.doesNotMatch(listing, /Pi missing[^\n]*device:/);
+      } else assert.doesNotMatch(listing, /device:|Laptop|Desktop/);
+    });
     const core = await resolveCore();
     await core.hello({ ...hello, cwd });
     ok(`${server}: hello only sends cwd when advertised`, () => {
@@ -434,9 +501,13 @@ try {
   });
 
   const v5Calls = [];
+  let v5ProjectSchema = false;
   globalThis.fetch = async (_url, init) => {
     const { method, params, id } = JSON.parse(init.body);
-    if (method === 'initialize') return Response.json({ jsonrpc: '2.0', id, error: { code: -32601, message: 'Method not found' } });
+    if (method === 'tools/list' && v5ProjectSchema) return Response.json({ result: { tools: [
+      { name: 'request_create', inputSchema: { properties: { project_id: { type: 'string' } } } },
+    ] } });
+    if (method === 'initialize' || method === 'tools/list') return Response.json({ jsonrpc: '2.0', id, error: { code: -32601, message: 'Method not found' } });
     assert.equal(method, 'tools/call');
     v5Calls.push(params);
     return Response.json({ result: params.name === 'inbox' ? { items: [{ id: 'm1', kind: 'message', body: 'legacy' }] } : {} });
@@ -453,6 +524,19 @@ try {
       { name: 'acknowledge', arguments: { session_id: 'sender', ids: ['m1'] } },
     ]);
     assert.equal(v5Items[0]?.body, 'legacy');
+  });
+  await v5.send('sender', { to: '@handle', body: 'context', ask: { title: 'work', project_id: 'custom' } });
+  ok('v5 without tools/list still creates a request with the default project', () => {
+    assert.equal(v5Calls.at(-1).name, 'request_create');
+    assert.equal(Object.hasOwn(v5Calls.at(-1).arguments, 'project_id'), false);
+  });
+  v5ProjectSchema = true;
+  await v5.send('sender', { to: '@handle', body: 'context', ask: { title: 'work', project_id: 'custom' } });
+  ok('v5 forwards project_id when request_create advertises it', () => {
+    const { name, arguments: args } = v5Calls.at(-1);
+    assert.equal(name, 'request_create');
+    assert.equal(args.to, '@handle');
+    assert.equal(args.project_id, 'custom');
   });
   resetCore();
 
