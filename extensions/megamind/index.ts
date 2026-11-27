@@ -241,7 +241,7 @@ export default function arcaMegamindExtension(pi: ExtensionAPI, options: Extensi
     notify?.(message, "warning");
   }
 
-  /** Solta a presença desta sessão: heartbeat, SSE, fila e pares anunciados. */
+  /** Solta a presença. Remapear o projeto não muda a sessão dona da inbox. */
   function dropPresence(): void {
     presence = undefined;
     if (heartbeat !== undefined) clearInterval(heartbeat);
@@ -252,7 +252,7 @@ export default function arcaMegamindExtension(pi: ExtensionAPI, options: Extensi
     overlapsSeen.clear();
     peerSessions = new Map();
     clearInboxWake();
-    inbox.reset();
+    // Mantenha os estacionados e o estado dos envios ainda em voo até o shutdown.
     currentPriority = undefined;
     setPriorityStatus(undefined);
     // Sem projeto vinculado o ícone some: o Megamind não vale para este cwd.
@@ -263,6 +263,7 @@ export default function arcaMegamindExtension(pi: ExtensionAPI, options: Extensi
   function freshSession(): void {
     sshTask = undefined;
     dropPresence();
+    inbox.reset();
     isIdle = undefined;
     notify = undefined;
     sessionId = undefined;
@@ -313,6 +314,8 @@ export default function arcaMegamindExtension(pi: ExtensionAPI, options: Extensi
         { customType: MESSAGE_TYPE, content, display: true, details: { inboxInsertion: marker } },
         { triggerTurn: true, deliverAs: "followUp" },
       );
+      // O Pi expõe send_message assíncrono só no runner interno, sem identidade do
+      // envio. Só um throw desta chamada comprova falha e permite um novo envio.
       return "await-insertion";
     },
     warn: (error, category) => {
@@ -378,9 +381,9 @@ export default function arcaMegamindExtension(pi: ExtensionAPI, options: Extensi
   /** `megamind_read` sem `with`: lê a caixa agora e entrega tudo de uma vez. */
   async function readInbox(): Promise<CoreItem[]> {
     const current = presence;
-    if (!current) return [];
+    if (!active || !current) return [];
     await inbox.poll(current.session_id, now());
-    if (presence !== current) return [];
+    if (!active || presence !== current) return [];
     confirmInboxInsertion(priorityContext);
     return inbox.takeAll(current.session_id);
   }
@@ -408,7 +411,7 @@ export default function arcaMegamindExtension(pi: ExtensionAPI, options: Extensi
     const delivery = inbox.drain(current.session_id, true);
     if (!delivery) scheduleInboxWake();
     else void delivery.then(() => {
-      if (presence !== current) return;
+      if (!active || presence !== current) return;
       scheduleInboxWake();
       pollSoon();
     }).catch(messagingFailed);
@@ -651,7 +654,9 @@ export default function arcaMegamindExtension(pi: ExtensionAPI, options: Extensi
       // servidor para restaurar o acompanhamento após /reload.
       await reconcileRequests(candidate, true);
       if (!active || generation !== epoch || presence !== candidate) return;
-      void inbox.poll(candidate.session_id, now()).then(() => deliverNext()).catch(messagingFailed);
+      void inbox.poll(candidate.session_id, now()).then(() => {
+        if (active && presence === candidate) deliverNext();
+      }).catch(messagingFailed);
     } catch (error) {
       if (generation !== epoch || !active) return;
       const delay = REGISTER_RETRY_MS[Math.min(autoAttempt++, REGISTER_RETRY_MS.length - 1)]!;
@@ -990,7 +995,7 @@ export default function arcaMegamindExtension(pi: ExtensionAPI, options: Extensi
   });
 
   function confirmInboxInsertion(ctx: ExtensionContext | undefined): boolean {
-    if (!presence || !ctx || ctx.sessionManager.getSessionId() !== presence.session_id || !inbox.pending) return false;
+    if (!active || !presence || !ctx || ctx.sessionManager.getSessionId() !== presence.session_id || !inbox.pending) return false;
     // `message_end` é emitido antes do append; consulte o histórico da sessão.
     const markers = new Set<string>();
     for (const entry of ctx.sessionManager.getBranch?.() ?? []) {
@@ -1021,16 +1026,17 @@ export default function arcaMegamindExtension(pi: ExtensionAPI, options: Extensi
     // servidor se sobrou pedido de colega em atendimento.
     const reason = text(object(event) ? event.reason : undefined);
     const closing = reason === undefined || reason === "quit" || openRequests.size > 0;
-    if (active && presence && closing) {
+    const sendBye = active && presence && closing;
+    active = false;
+    epoch += 1;
+    stopTimers();
+    if (sendBye) {
       const summary = [
         currentNote() || "sessão encerrada",
         openRequests.size > 0 ? `pedidos em aberto: ${[...openRequests.keys()].join(", ")}` : "",
       ].filter(Boolean).join(" · ");
       await sayBye(summary);
     }
-    active = false;
-    epoch += 1;
-    stopTimers();
     openRequests.clear();
     freshSession();
   });

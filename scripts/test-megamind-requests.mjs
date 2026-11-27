@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 // Portão permanente: pedidos a pessoas/sessões e compatibilidade do protocolo.
 import assert from 'node:assert/strict';
+import { execFileSync } from 'node:child_process';
 import { createRequire } from 'node:module';
 import { mkdtempSync, writeFileSync, rmSync, readFileSync, existsSync, realpathSync } from 'node:fs';
 import { tmpdir, homedir } from 'node:os';
@@ -339,7 +340,6 @@ try {
       const body = content.match(/body-\d/)[0];
       attempted.push(body);
       if (attempted.length === 1) return new Promise(() => {}); // append never confirmed
-      if (attempted.length === 3) return Promise.reject(new Error('append failed'));
       assert.equal(signal.aborted, false);
     },
     warn: (error) => deliveryErrors.push(error.message), onDelivered: ({ id }) => recovered.push(id),
@@ -354,20 +354,19 @@ try {
   assert.deepEqual(attempted, ['body-1', 'body-2']);
   assert.deepEqual(recovered, ['m2']);
   clock += 60_000;
-  await stalled.drain('sender', true); // second attempt rejects
+  const hold = setTimeout(() => {}, 100);
+  try { await stalled.drain('sender', true); } finally { clearTimeout(hold); }
+  assert.deepEqual(attempted, ['body-1', 'body-2']); // Timeout must not send a second copy.
   await stalled.poll('sender', 3);
-  await stalled.drain('sender', true);
-  assert.deepEqual(attempted, ['body-1', 'body-2', 'body-1']);
+  assert.deepEqual(stalled.takeAll('sender'), []); // Ainda pode entrar no histórico.
   assert.deepEqual(retryReads, ['']);
-  clock += 60_000;
-  await stalled.drain('sender', true);
+  stalled.confirmInserted('sender', new Set(['message:m1:']));
   await stalled.poll('sender', 4);
-  ok('unconfirmed and rejected follow-ups retry with backoff without blocking later items or acking early', () => {
-    assert.deepEqual(attempted, ['body-1', 'body-2', 'body-1', 'body-1']);
+  ok('timeouts never resend a pending follow-up and still allow late confirmation', () => {
+    assert.deepEqual(attempted, ['body-1', 'body-2']);
     assert.deepEqual(recovered, ['m2', 'm1']);
     assert.deepEqual(retryReads, ['', 'retry-receipt']);
-    assert.match(deliveryErrors[0], /timed out/);
-    assert.equal(deliveryErrors[1], 'append failed');
+    assert.equal(deliveryErrors.filter((error) => error.includes('timed out')).length, 2);
   });
 
   const parkingReads = [], parkingWarnings = [];
@@ -465,18 +464,30 @@ try {
       return await Promise.race([promise, new Promise((_, reject) => { timer = setTimeout(() => reject(new Error(message)), 2000); })]);
     } finally { clearTimeout(timer); }
   };
-  for (const scenario of ['turn_end', 'late confirmation', 'history before retry', 'timer retry']) {
-    const handlers = new Map(), history = [], historyReads = [], sent = [];
+  for (const scenario of ['turn_end', 'late confirmation', 'history before retry', 'timer retry', 'bye blocks wake-up', 'parked survives remap']) {
+    const handlers = new Map(), extensionTools = new Map(), history = [], historyReads = [], sent = [];
     const followUp = Promise.withResolvers(), ackRead = Promise.withResolvers(), retry = Promise.withResolvers();
+    const byeStarted = Promise.withResolvers(), finishBye = Promise.withResolvers();
+    const remappedRead = Promise.withResolvers(), parkedWarning = Promise.withResolvers();
+    const remap = scenario === 'parked survives remap';
+    let project = 'original', refreshCatalog, remapped = false;
+    if (remap) {
+      execFileSync('git', ['init', '-q', root]);
+      execFileSync('git', ['-C', root, 'remote', 'add', 'origin', 'https://example.org/team/test.git']);
+    }
     let clockOffset = 0;
     const ctx = { cwd: root, hasUI: false, isIdle: () => true, sessionManager: {
       getSessionId: () => 'sender', getBranch: () => history,
     } };
     extension({
-      on: (event, handler) => handlers.set(event, handler), registerTool() {}, registerCommand() {}, appendEntry() {},
+      on: (event, handler) => handlers.set(event, handler), registerTool: (tool) => extensionTools.set(tool.name, tool), registerCommand() {},
+      appendEntry: (name, value) => { if (name === 'megamind-inbox-parked') parkedWarning.resolve(value.message); },
       sendMessage: (message) => {
         sent.push(message);
-        if (sent.length === 1) followUp.resolve(message);
+        if (sent.length === 1) {
+          followUp.resolve(message);
+          if (scenario === 'timer retry' || scenario === 'bye blocks wake-up') throw new Error('explicit send failure');
+        }
         else retry.resolve(message);
       },
     }, { now: () => Date.now() + clockOffset, inboxDeliveryTimeoutMs: 15, inboxDeliveryRetryMs: 100 });
@@ -484,20 +495,55 @@ try {
       if (!init.body) return new Response(null, { status: 429 }); // SSE sem reconexão.
       const { method, params } = JSON.parse(init.body);
       if (method === 'initialize') return Response.json({ result: { capabilities: { arca: { core: 6, inbox_cursor: true } } } });
+      if (params.name === 'bye') { byeStarted.resolve(); await finishBye.promise; }
+      if (params.name === 'projects_list') return Response.json({ result: { items: [{ id: project, repos: ['example.org/team/test'] }] } });
+      if (params.name === 'hello' && params.arguments.project_id === 'remapped') remapped = true;
       if (params.name !== 'read') return Response.json({ result: {} });
       const { cursor } = params.arguments;
       historyReads.push(cursor);
+      if (remapped) remappedRead.resolve();
       if (cursor) ackRead.resolve(cursor);
-      return Response.json({ result: cursor ? { items: [], cursor: '' } : {
+      return Response.json({ result: cursor || (remap && historyReads.length > 1) ? { items: [], cursor: '' } : {
         items: [{ id: 'm1', kind: 'message', from: {}, body: 'persist me' }], cursor: 'history-receipt',
       } });
     };
     try {
-      await handlers.get('session_start')({}, ctx);
+      const setInterval = globalThis.setInterval;
+      if (remap) globalThis.setInterval = (callback, delay, ...args) => {
+        if (delay === 600_000) refreshCatalog = callback;
+        return setInterval(callback, delay, ...args);
+      };
+      try { await handlers.get('session_start')({}, ctx); } finally { globalThis.setInterval = setInterval; }
       const message = await waitFor(followUp.promise, 'extension did not send the inbox follow-up');
       clockOffset += 10_000;
       if (scenario !== 'turn_end') await new Promise((resolve) => setTimeout(resolve, 35));
       assert.deepEqual(historyReads, ['']);
+      if (scenario === 'bye blocks wake-up') {
+        const shutdown = handlers.get('session_shutdown')({ reason: 'quit' }, ctx);
+        try {
+          await waitFor(byeStarted.promise, 'shutdown did not call bye');
+          await new Promise((resolve) => setTimeout(resolve, 150));
+          ok('bye disables the delivery timer before awaiting the server', () => assert.equal(sent.length, 1));
+        } finally {
+          finishBye.resolve();
+          await shutdown;
+        }
+        continue;
+      }
+      if (remap) {
+        assert.match(await waitFor(parkedWarning.promise, 'unconfirmed item was not parked'), /m1 parked after 5 attempts/);
+        await waitFor(ackRead.promise, 'parked item still held the receipt');
+        assert.equal(sent.length, 1);
+        project = 'remapped';
+        refreshCatalog();
+        await waitFor(remappedRead.promise, 'new presence did not poll');
+        const manual = await extensionTools.get('megamind_read').execute('manual', {});
+        ok('five timeouts do not resend and the parked item survives a catalog remap', () => {
+          assert.match(manual.content[0].text, /persist me/);
+          assert.equal(sent.length, 1);
+        });
+        continue;
+      }
       if (scenario === 'timer retry') {
         const resent = await waitFor(retry.promise, 'backoff timer did not retry delivery');
         assert.equal(resent.details.inboxInsertion, message.details.inboxInsertion);

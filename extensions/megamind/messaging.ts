@@ -212,7 +212,9 @@ export function isAskUserItem(item: CoreItem): boolean {
   return ids instanceof Set && ids.has(item.id);
 }
 
-type Entry = { key: string; id: string; text: string; item: CoreItem; retryAt?: number; failures?: number };
+type Entry = { key: string; id: string; text: string; item: CoreItem; retryAt?: number; failures?: number; awaitingInsertion?: boolean };
+class InsertionTimeout extends Error {}
+
 const MAX_DELIVERY_ATTEMPTS = 5;
 const DELIVERY_TIMEOUT_MS = 45_000;
 const DELIVERY_RETRY_MS = [10_000, 20_000, 40_000, 60_000] as const;
@@ -231,6 +233,8 @@ export class Inbox {
   private queue: Entry[] = [];
   // Fora dos lotes/recibos. Se o Pi cair, estes itens em memória se perdem.
   private parked: Entry[] = [];
+  /** Um envio estacionado por timeout ainda pode entrar no histórico, mesmo após leitura manual. */
+  private parkedInFlight = new Set<string>();
   /** Chaves já enfileiradas nesta sessão: nunca entregar duas vezes. */
   private seen = new Set<string>();
   /** Entregues cujo `acknowledge` ainda não confirmou: o ack é reenviado. */
@@ -258,6 +262,7 @@ export class Inbox {
   reset(): void {
     this.queue = [];
     this.parked = [];
+    this.parkedInFlight.clear();
     this.seen = new Set();
     this.pendingAck = new Set();
     this.polling = undefined;
@@ -270,7 +275,7 @@ export class Inbox {
 
   push(item: CoreItem): boolean {
     const key = keyOf(item);
-    if (this.full || this.seen.has(key) || this.pendingAck.has(key) || this.parked.some((entry) => entry.key === key)) return false;
+    if (this.full || this.seen.has(key) || this.pendingAck.has(key) || this.parkedInFlight.has(insertionMarker(item)) || this.parked.some((entry) => entry.key === key)) return false;
     this.seen.add(key);
     this.queue.push({ key, id: item.id, text: formatInboxItem(item, this.deps.self?.(), this.deps.megamind?.()), item });
     return true;
@@ -295,7 +300,7 @@ export class Inbox {
       if (!Array.isArray(items)) {
         // Um lote por vez. Não use `seen` por ID: um status novo do mesmo
         // pedido é outro item para o protocolo versionado.
-        this.queue = items.items.filter((item) => !isAskUserItem(item)).map((item) => ({
+        this.queue = items.items.filter((item) => !isAskUserItem(item) && !this.parkedInFlight.has(insertionMarker(item))).map((item) => ({
           item, id: item.id, key: keyOf(item), text: formatInboxItem(item, this.deps.self?.(), this.deps.megamind?.()),
         }));
         this.cursor = items.cursor;
@@ -378,10 +383,13 @@ export class Inbox {
     const failed = (error: unknown) => {
       if (this.delivering !== attempt) return;
       this.delivering = undefined;
+      // Timeout não cancela o envio do Pi: os próximos ciclos só esperam pelo mesmo marcador.
+      entry.awaitingInsertion = error instanceof InsertionTimeout;
       const failures = entry.failures = (entry.failures ?? 0) + 1;
       this.queue = this.queue.filter((queued) => queued !== entry);
       if (failures >= MAX_DELIVERY_ATTEMPTS) {
         this.parked.push(entry);
+        if (entry.awaitingInsertion) this.parkedInFlight.add(insertionMarker(entry.item));
         if (this.deps.acknowledges) {
           this.pendingAck.add(entry.key);
           void this.ack(session_id, entry.key, entry.id);
@@ -395,7 +403,7 @@ export class Inbox {
       this.deps.warn(error);
     };
     try {
-      const delivery = this.deps.deliver(entry.text, controller.signal, insertionMarker(entry.item));
+      const delivery = entry.awaitingInsertion ? "await-insertion" : this.deps.deliver(entry.text, controller.signal, insertionMarker(entry.item));
       if (delivery) return this.waitForDelivery(delivery === "await-insertion" ? undefined : delivery, controller).then(finish, failed);
     } catch (error) {
       failed(error);
@@ -406,7 +414,7 @@ export class Inbox {
 
   private async waitForDelivery(delivery: Promise<void> | undefined, controller: AbortController): Promise<void> {
     const { signal } = controller;
-    const timeout = setTimeout(() => controller.abort(new Error("Megamind inbox insertion timed out")),
+    const timeout = setTimeout(() => controller.abort(new InsertionTimeout("Megamind inbox insertion timed out")),
       this.deps.deliveryTimeoutMs ?? DELIVERY_TIMEOUT_MS);
     timeout.unref?.();
     let abort: (() => void) | undefined;
@@ -436,9 +444,9 @@ export class Inbox {
   /** Esvazia os itens que ainda não foram reservados ao follow-up automático. */
   takeAll(session_id: string): CoreItem[] {
     const reserved = this.delivering?.entry;
-    const entries = [...this.parked, ...this.queue.filter((entry) => entry !== reserved)];
+    const entries = [...this.parked, ...this.queue.filter((entry) => entry !== reserved && !entry.awaitingInsertion)];
     this.parked = [];
-    this.queue = reserved ? [reserved] : [];
+    this.queue = this.queue.filter((entry) => entry === reserved || entry.awaitingInsertion);
     for (const entry of entries) this.delivered(session_id, entry);
     return entries.map((entry) => entry.item);
   }
