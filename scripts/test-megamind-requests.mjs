@@ -464,16 +464,18 @@ try {
       return await Promise.race([promise, new Promise((_, reject) => { timer = setTimeout(() => reject(new Error(message)), 2000); })]);
     } finally { clearTimeout(timer); }
   };
-  for (const scenario of ['turn_end', 'late confirmation', 'history before retry', 'timer retry', 'bye blocks wake-up', 'parked survives remap']) {
+  for (const scenario of ['turn_end', 'late confirmation', 'history before retry', 'timer retry', 'bye blocks wake-up', 'parked in flight stays hidden', 'parked readable without presence']) {
     const handlers = new Map(), extensionTools = new Map(), history = [], historyReads = [], sent = [];
     const followUp = Promise.withResolvers(), ackRead = Promise.withResolvers(), retry = Promise.withResolvers();
     const byeStarted = Promise.withResolvers(), finishBye = Promise.withResolvers();
     const remappedRead = Promise.withResolvers(), parkedWarning = Promise.withResolvers();
-    const remap = scenario === 'parked survives remap';
+    const offline = scenario === 'parked readable without presence';
+    const remap = offline || scenario === 'parked in flight stays hidden';
+    const remoteCalls = [];
     let project = 'original', refreshCatalog, remapped = false;
     if (remap) {
       execFileSync('git', ['init', '-q', root]);
-      execFileSync('git', ['-C', root, 'remote', 'add', 'origin', 'https://example.org/team/test.git']);
+      execFileSync('git', ['-C', root, 'config', 'remote.origin.url', 'https://example.org/team/test.git']);
     }
     let clockOffset = 0;
     const ctx = { cwd: root, hasUI: false, isIdle: () => true, sessionManager: {
@@ -484,6 +486,10 @@ try {
       appendEntry: (name, value) => { if (name === 'megamind-inbox-parked') parkedWarning.resolve(value.message); },
       sendMessage: (message) => {
         sent.push(message);
+        if (offline) {
+          followUp.resolve(message);
+          throw new Error('explicit send failure');
+        }
         if (sent.length === 1) {
           followUp.resolve(message);
           if (scenario === 'timer retry' || scenario === 'bye blocks wake-up') throw new Error('explicit send failure');
@@ -496,8 +502,12 @@ try {
       const { method, params } = JSON.parse(init.body);
       if (method === 'initialize') return Response.json({ result: { capabilities: { arca: { core: 6, inbox_cursor: true } } } });
       if (params.name === 'bye') { byeStarted.resolve(); await finishBye.promise; }
+      remoteCalls.push(params.name);
       if (params.name === 'projects_list') return Response.json({ result: { items: [{ id: project, repos: ['example.org/team/test'] }] } });
-      if (params.name === 'hello' && params.arguments.project_id === 'remapped') remapped = true;
+      if (params.name === 'hello' && params.arguments.project_id === 'remapped') {
+        remapped = true;
+        if (offline) { remappedRead.resolve(); return new Response(null, { status: 503 }); }
+      }
       if (params.name !== 'read') return Response.json({ result: {} });
       const { cursor } = params.arguments;
       historyReads.push(cursor);
@@ -532,16 +542,31 @@ try {
       }
       if (remap) {
         assert.match(await waitFor(parkedWarning.promise, 'unconfirmed item was not parked'), /m1 parked after 5 attempts/);
+        if (offline) await handlers.get('agent_settled')({}, ctx);
         await waitFor(ackRead.promise, 'parked item still held the receipt');
-        assert.equal(sent.length, 1);
+        assert.equal(sent.length, offline ? 5 : 1);
         project = 'remapped';
         refreshCatalog();
-        await waitFor(remappedRead.promise, 'new presence did not poll');
+        await waitFor(remappedRead.promise, 'catalog remap did not reach the server');
+        const callsBeforeRead = remoteCalls.length;
         const manual = await extensionTools.get('megamind_read').execute('manual', {});
-        ok('five timeouts do not resend and the parked item survives a catalog remap', () => {
-          assert.match(manual.content[0].text, /persist me/);
-          assert.equal(sent.length, 1);
-        });
+        if (offline) {
+          const conversation = await extensionTools.get('megamind_read').execute('manual', { with: '#arca' });
+          ok('parked items remain readable with no presence and cause no gateway calls', () => {
+            assert.match(manual.content[0].text, /persist me/);
+            assert.equal(remoteCalls.length, callsBeforeRead);
+            assert.equal(conversation.details[ERROR_DETAIL], true);
+          });
+        } else {
+          ok('manual read never exposes parked items whose follow-up is still in flight', () => {
+            assert.equal(manual.details.items, 0);
+            assert.equal(sent.length, 1);
+          });
+          history.push({ ...message, type: 'custom_message' });
+          await handlers.get('turn_end')({}, ctx);
+          const after = await extensionTools.get('megamind_read').execute('manual', {});
+          assert.equal(after.details.items, 0);
+        }
         continue;
       }
       if (scenario === 'timer retry') {

@@ -233,7 +233,7 @@ export class Inbox {
   private queue: Entry[] = [];
   // Fora dos lotes/recibos. Se o Pi cair, estes itens em memória se perdem.
   private parked: Entry[] = [];
-  /** Um envio estacionado por timeout ainda pode entrar no histórico, mesmo após leitura manual. */
+  /** Um envio estacionado por timeout ainda pode entrar no histórico. */
   private parkedInFlight = new Set<string>();
   /** Chaves já enfileiradas nesta sessão: nunca entregar duas vezes. */
   private seen = new Set<string>();
@@ -352,7 +352,7 @@ export class Inbox {
     }
     this.parked = this.parked.filter((entry) => {
       if (!markers.has(insertionMarker(entry.item))) return true;
-      this.delivered(session_id, entry);
+      this.trackDelivered(entry);
       confirmed = true;
       return false;
     });
@@ -433,22 +433,39 @@ export class Inbox {
 
   private delivered(session_id: string, entry: Entry): void {
     if (this.cursor === undefined) this.pendingAck.add(entry.key);
+    this.trackDelivered(entry);
+    if (this.cursor === undefined) void this.ack(session_id, entry.key, entry.id);
+  }
+
+  private trackDelivered(entry: Entry): void {
     try {
       this.deps.onDelivered?.(entry.item);
     } catch (error) {
       this.deps.warn(error);
     }
-    if (this.cursor === undefined) void this.ack(session_id, entry.key, entry.id);
+  }
+
+  /** Itens locais não precisam de presença nem de um novo ack. */
+  takeParked(): CoreItem[] {
+    const readable: CoreItem[] = [];
+    this.parked = this.parked.filter((entry) => {
+      // Sem confirmação nem falha atribuível, só o reset libera este estado.
+      if (this.parkedInFlight.has(insertionMarker(entry.item))) return true;
+      this.trackDelivered(entry);
+      readable.push(entry.item);
+      return false;
+    });
+    return readable;
   }
 
   /** Esvazia os itens que ainda não foram reservados ao follow-up automático. */
   takeAll(session_id: string): CoreItem[] {
     const reserved = this.delivering?.entry;
-    const entries = [...this.parked, ...this.queue.filter((entry) => entry !== reserved && !entry.awaitingInsertion)];
-    this.parked = [];
+    const parked = this.takeParked();
+    const entries = this.queue.filter((entry) => entry !== reserved && !entry.awaitingInsertion);
     this.queue = this.queue.filter((entry) => entry === reserved || entry.awaitingInsertion);
     for (const entry of entries) this.delivered(session_id, entry);
-    return entries.map((entry) => entry.item);
+    return [...parked, ...entries.map((entry) => entry.item)];
   }
 
   async ack(session_id: string, key: string, recordId: string): Promise<void> {

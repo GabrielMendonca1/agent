@@ -381,9 +381,11 @@ export default function arcaMegamindExtension(pi: ExtensionAPI, options: Extensi
   /** `megamind_read` sem `with`: lê a caixa agora e entrega tudo de uma vez. */
   async function readInbox(): Promise<CoreItem[]> {
     const current = presence;
-    if (!active || !current) return [];
+    if (!active) return [];
+    if (!current || !cwdProjectId) return inbox.takeParked();
     await inbox.poll(current.session_id, now());
-    if (!active || presence !== current) return [];
+    if (!active) return [];
+    if (presence !== current) return inbox.takeParked();
     confirmInboxInsertion(priorityContext);
     return inbox.takeAll(current.session_id);
   }

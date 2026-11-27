@@ -376,8 +376,6 @@ export function registerMegamindTools(pi: ExtensionAPI, deps: ToolDeps): void {
     }),
     ...compact("megamind_read"),
     async execute(_id, params, signal) {
-      const current = deps.presence();
-      if (!current) return toolError(noPresence);
       const args: JsonObject = object(params) ? params : {};
       const withWhom = oneLine(args.with).trim();
       try {
@@ -388,6 +386,8 @@ export function registerMegamindTools(pi: ExtensionAPI, deps: ToolDeps): void {
             : items.map((item) => formatInboxItem(item, deps.selfHandle(), deps.megamindLabel?.())).join("\n\n");
           return toolResult({ content: [{ type: "text", text: text_ }], details: { items: items.length } });
         }
+        const current = deps.presence();
+        if (!current) return toolError(noPresence);
         const limit = typeof args.limit === "number" && Number.isFinite(args.limit)
           ? Math.min(Math.max(Math.trunc(args.limit), 1), LIMITS.chatRead)
           : undefined;
