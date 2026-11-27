@@ -98,7 +98,7 @@ try {
   const categoryEvent = { systemPromptOptions: { sections: {}, selectedTools: [], toolSnippets: {}, promptGuidelines: [], cwd: dir } };
   await emitResult('before_agent_start', categoryEvent);
   assert.match(categoryEvent.systemPromptOptions.sections.agent_skill_categories, /^design: a11y,/);
-  assert.match(categoryEvent.systemPromptOptions.sections.agent_skill_categories, /\ndev: debug, tdd —[^\n]*\nplan: rea —/);
+  assert.match(categoryEvent.systemPromptOptions.sections.agent_skill_categories, /\ndev: debug, pr, tdd —[^\n]*$/);
   const again = await emitResult('before_agent_start', categoryEvent);
   assert.equal(again?.message, undefined, 'runtime não injeta nota');
 

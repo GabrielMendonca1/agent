@@ -1,6 +1,6 @@
 import { loadCompanySkillCategories, loadSkillCategories } from './skill-categories.mjs';
 /** Curadoria Agent: catálogo completo para o humano, anúncio automático mínimo. */
-export const AUTOMATIC_GLOBAL_SKILLS = Object.freeze(['peers', 'megamind', 'diagram']);
+export const AUTOMATIC_GLOBAL_SKILLS = Object.freeze(['peers', 'megamind']);
 
 const SYSTEM_SKILLS = Object.freeze(loadSkillCategories().find(c => c.name === 'system')?.skills ?? []);
 /** Skills de empresa (ARCA/Omni) entram só para quem tem o enrollment, e aí são automáticas. */

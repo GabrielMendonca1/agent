@@ -162,7 +162,7 @@ const { tmux, screen, screenAnsi, waitScreen, waitGone } = terminal(session);
 // Skills do repo que SÓ o Gabriel invoca (`disable-model-invocation: true`): ficam fora do system
 // e o único caminho até elas é o comando `/skill:<nome>` do editor do Pi (enableSkillCommands).
 const SKILLS_DIR = join(repo, 'agent/skills');
-const USER_ONLY_SKILLS = ['design', 'dev', 'plan'].flatMap(category => readdirSync(join(SKILLS_DIR, category), { withFileTypes: true })
+const USER_ONLY_SKILLS = ['design', 'dev'].flatMap(category => readdirSync(join(SKILLS_DIR, category), { withFileTypes: true })
   .filter(e => e.isDirectory()).map(e => e.name));
 const PLAN_STEPS = [
   { text: 'Reproduzir o erro', status: 'done' },
@@ -413,9 +413,9 @@ async function runHotSwitch(host) {
     assert.match(picker, /^\s*▸ debug\s+ /m, `${host}: debug sob demanda`);
     assert.doesNotMatch(picker, /simple|complex|(?<!\/)subagents on/, 'Tab não ativa equipe nem modo');
     assert.equal(sessionId(), originalSession, 'Tab não troca sessão');
-    term.keys('Tab');
-    picker = await term.waitScreen(/skills · plan/, `${host}: Tab visita plan`);
-    assert.match(picker, /^\s*▸ rea\s+ /m, `${host}: rea sob demanda`);
+    term.keys('Down');
+    picker = await term.waitScreen(/^\s*▸ pr\s+\S/m, `${host}: dev inclui pr`);
+    assert.doesNotMatch(picker, /^\s*▸ pr\s+◆/m, 'pr sob demanda');
     term.keys('Tab');
     picker = await term.waitScreen(/skills · system/, `${host}: Tab visita system`);
     assert.match(picker, /^\s*▸ computer-use\s+◆/m, 'computer-use é automática em qualquer modo');

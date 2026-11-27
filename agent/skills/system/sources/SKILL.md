@@ -3,7 +3,7 @@ name: sources
 description: "Research — answer a question from primary sources and save the findings as a Markdown file in the repo. Use when a topic, docs or API facts need gathering."
 ---
 
-Hand the research to a **subagent** (complex mode only; in simple mode do it yourself), so the reading does not block the rest of the work.
+Hand the research to a **subagent**, so the reading does not block the rest of the work.
 
 Its job:
 

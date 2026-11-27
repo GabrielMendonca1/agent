@@ -30,7 +30,7 @@ import {
 } from '../agent/extensions/agent/tui/skill-picker.ts';
 
 const categories = loadSkillCategories();
-assert.ok(categories.length === 4, `categorias do repo carregadas (${categories.length})`);
+assert.deepEqual(categories.map(c => c.name), ['design', 'dev', 'system']);
 
 /** Comandos como `pi.getCommands()` entrega: só skills REALMENTE carregadas. */
 const declared = [...new Set(categories.flatMap((t) => [...(t.skills ?? [])]))];
