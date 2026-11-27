@@ -287,23 +287,26 @@ try {
         { ...reply('d1', 'approved'), kind: 'decision' },
         { id: 'm1', kind: 'message', from: {}, body: 'hello' },
         { id: 'x1', kind: 'future' },
+        { id: 'bad id', kind: 'message' },
+        { kind: 'ask' },
       ],
       cursor: 'mixed-receipt',
     } : { items: [], cursor: '' } });
   };
   const cursorCore = new CoreV6({ inboxCursor: true });
-  const deliveredIds = [], discards = [];
+  const deliveredIds = [], discards = [], malformedWarnings = [];
   const { promise: inserted, resolve: confirmInsertion } = Promise.withResolvers();
   const mixed = new Inbox({
     fetch: (session, cursor, limit) => cursorCore.readInbox(session, cursor, limit),
     ack: () => assert.fail('cursor inbox cannot ack by ID'), acknowledges: false,
     deliver: () => inserted, onDelivered: (item) => deliveredIds.push(item.id),
-    warn: assert.fail, onDiscarded: (count) => discards.push(count),
+    warn: (error) => malformedWarnings.push(error.message), onDiscarded: (count) => discards.push(count),
   });
   await mixed.poll('sender', 1);
   ok('decision and unknown item are logged and do not block the message in the batch', () => {
     assert.equal(mixed.pending, 1);
     assert.deepEqual(discards, [2]);
+    assert.deepEqual(malformedWarnings, ['Megamind discarded malformed inbox items: message (id present), ask (id missing)']);
   });
   const draining = mixed.drain('sender', true);
   await mixed.poll('sender', 2);
@@ -318,6 +321,53 @@ try {
   ok('confirmed automatic follow-up releases the batch receipt', () => {
     assert.deepEqual(specialReads.map(({ cursor }) => cursor), ['', 'mixed-receipt']);
     assert.deepEqual(deliveredIds, ['m1']);
+  });
+
+  let clock = 0;
+  const attempted = [], recovered = [], retryReads = [], deliveryErrors = [];
+  const stalled = new Inbox({
+    now: () => clock, deliveryTimeoutMs: 5,
+    fetch: async (_session, cursor) => {
+      retryReads.push(cursor);
+      return cursor ? { items: [], cursor: '', discarded: 0 } : {
+        items: [1, 2].map((n) => ({ id: `m${n}`, kind: 'message', from: {}, body: `body-${n}` })),
+        cursor: 'retry-receipt', discarded: 0,
+      };
+    },
+    ack: () => assert.fail('cursor inbox cannot ack by ID'), acknowledges: false,
+    deliver: (content, signal) => {
+      const body = content.match(/body-\d/)[0];
+      attempted.push(body);
+      if (attempted.length === 1) return new Promise(() => {}); // append never confirmed
+      if (attempted.length === 3) return Promise.reject(new Error('append failed'));
+      assert.equal(signal.aborted, false);
+    },
+    warn: (error) => deliveryErrors.push(error.message), onDelivered: ({ id }) => recovered.push(id),
+  });
+  await stalled.poll('sender', 1);
+  // Referenced watchdog makes a regression fail instead of hanging the gate.
+  const guard = setTimeout(() => assert.fail('unconfirmed delivery never released the inbox'), 500);
+  try { await stalled.drain('sender', true); } finally { clearTimeout(guard); }
+  await stalled.poll('sender', 2);
+  await stalled.drain('sender', true);
+  await stalled.drain('sender', true); // backoff prevents immediate retry
+  assert.deepEqual(attempted, ['body-1', 'body-2']);
+  assert.deepEqual(recovered, ['m2']);
+  clock += 60_000;
+  await stalled.drain('sender', true); // second attempt rejects
+  await stalled.poll('sender', 3);
+  await stalled.drain('sender', true);
+  assert.deepEqual(attempted, ['body-1', 'body-2', 'body-1']);
+  assert.deepEqual(retryReads, ['']);
+  clock += 60_000;
+  await stalled.drain('sender', true);
+  await stalled.poll('sender', 4);
+  ok('unconfirmed and rejected follow-ups retry with backoff without blocking later items or acking early', () => {
+    assert.deepEqual(attempted, ['body-1', 'body-2', 'body-1', 'body-1']);
+    assert.deepEqual(recovered, ['m2', 'm1']);
+    assert.deepEqual(retryReads, ['', 'retry-receipt']);
+    assert.match(deliveryErrors[0], /timed out/);
+    assert.equal(deliveryErrors[1], 'append failed');
   });
 
   // v6 sem capability auto-confirma até o limit: não pode ler além da fila.
@@ -381,6 +431,53 @@ try {
     assert.equal(v5Items[0]?.body, 'legacy');
   });
   resetCore();
+
+  // Handler real do Pi, com histórico em memória e gateway simulado.
+  const { default: extension } = await jiti.import(join(repo, 'extensions/megamind/index.ts'));
+  const handlers = new Map(), history = [], historyReads = [];
+  const followUp = Promise.withResolvers(), ackRead = Promise.withResolvers();
+  const waitFor = async (promise, message) => {
+    let timer;
+    try {
+      return await Promise.race([promise, new Promise((_, reject) => { timer = setTimeout(() => reject(new Error(message)), 2000); })]);
+    } finally { clearTimeout(timer); }
+  };
+  let extensionClock = 10_000;
+  const ctx = { cwd: root, hasUI: false, isIdle: () => true, sessionManager: {
+    getSessionId: () => 'sender', getBranch: () => history,
+  } };
+  extension({
+    on: (event, handler) => handlers.set(event, handler), registerTool() {}, registerCommand() {}, appendEntry() {},
+    sendMessage: (message) => followUp.resolve(message),
+  }, { now: () => extensionClock });
+  globalThis.fetch = async (_url, init) => {
+    if (!init.body) return new Response(null, { status: 429 }); // SSE sem reconexão.
+    const { method, params } = JSON.parse(init.body);
+    if (method === 'initialize') return Response.json({ result: { capabilities: { arca: { core: 6, inbox_cursor: true } } } });
+    if (params.name !== 'read') return Response.json({ result: {} });
+    const { cursor } = params.arguments;
+    historyReads.push(cursor);
+    if (cursor) ackRead.resolve(cursor);
+    return Response.json({ result: cursor ? { items: [], cursor: '' } : {
+      items: [{ id: 'm1', kind: 'message', from: {}, body: 'persist me' }], cursor: 'history-receipt',
+    } });
+  };
+  try {
+    await handlers.get('session_start')({}, ctx);
+    const message = await waitFor(followUp.promise, 'extension did not send the inbox follow-up');
+    extensionClock += 10_000;
+    await handlers.get('agent_settled')({}, ctx);
+    assert.deepEqual(historyReads, ['']);
+    history.push({ ...message, type: 'custom_message' });
+    await handlers.get('turn_end')?.({}, ctx);
+    const receipt = await waitFor(ackRead.promise, 'turn_end did not release the persisted follow-up receipt');
+    ok('extension turn_end confirms the receipt only after the follow-up enters session history', () => {
+      assert.equal(receipt, 'history-receipt');
+      assert.deepEqual(historyReads, ['', 'history-receipt']);
+    });
+  } finally {
+    await handlers.get('session_shutdown')({ reason: 'reload' }, ctx);
+  }
 
   // Blocks are English for the model since item 3; transcripts with the older Portuguese headers
   // must still render with the same (Portuguese) UI header and meta.

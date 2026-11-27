@@ -201,7 +201,7 @@ export default function arcaMegamindExtension(pi: ExtensionAPI, options: Extensi
   const openRequests = new Map<string, string>();
   /** Leitura de inbox adiada pelo intervalo mínimo (dica de SSE não se perde). */
   let pollTimer: ReturnType<typeof setTimeout> | undefined;
-  let pendingInsertion: { id: string; resolve: () => void; reject: (reason: Error) => void } | undefined;
+  let pendingInsertion: { id: string; confirm: () => void } | undefined;
   let priorityContext: ExtensionContext | undefined;
   let currentPriority: CorePriority | undefined;
   /** Estado mostrado na barra de status; só transição mexe na UI. */
@@ -253,8 +253,6 @@ export default function arcaMegamindExtension(pi: ExtensionAPI, options: Extensi
     overlapsSeen.clear();
     peerSessions = new Map();
     inbox.reset();
-    pendingInsertion?.reject(new Error("Megamind presence changed before inbox insertion"));
-    pendingInsertion = undefined;
     currentPriority = undefined;
     setPriorityStatus(undefined);
     // Sem projeto vinculado o ícone some: o Megamind não vale para este cwd.
@@ -294,6 +292,7 @@ export default function arcaMegamindExtension(pi: ExtensionAPI, options: Extensi
   }
 
   const inbox = new Inbox({
+    now,
     // O núcleo lança quando o gateway recusa (503, rate limit): recusa nunca
     // pode passar por "caixa vazia", senão o prune apagaria fila, ack pendente e
     // memória do que já foi entregue, e o item voltaria duplicado.
@@ -305,24 +304,33 @@ export default function arcaMegamindExtension(pi: ExtensionAPI, options: Extensi
     get acknowledges() {
       return acknowledges;
     },
-    deliver: (content) => {
+    deliver: (content, signal) => {
       const active = pi.getActiveTools?.();
       if (active && !active.includes("megamind_reply")) pi.setActiveTools([...active, "megamind_reply"]);
       const id = randomUUID();
       return new Promise<void>((resolve, reject) => {
-        pendingInsertion = { id, resolve, reject };
+        const clear = () => {
+          if (pendingInsertion?.id === id) pendingInsertion = undefined;
+          signal.removeEventListener("abort", abort);
+        };
+        const abort = () => { clear(); reject(signal.reason); };
+        pendingInsertion = { id, confirm: () => { clear(); resolve(); } };
+        signal.addEventListener("abort", abort, { once: true });
         try {
           pi.sendMessage(
             { customType: MESSAGE_TYPE, content, display: true, details: { inboxInsertion: id } },
             { triggerTurn: true, deliverAs: "followUp" },
           );
         } catch (error) {
-          pendingInsertion = undefined;
+          clear();
           reject(error);
         }
       });
     },
-    warn: messagingFailed,
+    warn: (error, category) => {
+      if (category === "malformed") warnOnce("inbox-malformed", safeMessage(error));
+      else messagingFailed(error);
+    },
     onDiscarded: (count) => pi.appendEntry("megamind-inbox-discarded", { count }),
     onDelivered: (item) => trackDelivered(item),
     self: () => selfHandle,
@@ -972,8 +980,7 @@ export default function arcaMegamindExtension(pi: ExtensionAPI, options: Extensi
     // numa fronteira de turno (também vale quando o follow-up foi enfileirado).
     if (!pending || !ctx.sessionManager.getBranch?.().some((entry) => entry.type === "custom_message"
       && entry.customType === MESSAGE_TYPE && object(entry.details) && entry.details.inboxInsertion === pending.id)) return;
-    pendingInsertion = undefined;
-    pending.resolve();
+    pending.confirm();
   }
 
   pi.on("turn_end", (_event, ctx) => confirmInboxInsertion(ctx));

@@ -81,7 +81,7 @@ export type HelloArgs = JsonObject & { session_id: string; project_id: string; h
 export type AskArgs = { title: string; ttl_hours?: number };
 export type SendArgs = { to: string; body: string; to_session?: string; ask?: AskArgs; reply_to?: string };
 export type ReadArgs = { with?: string; since?: string; limit?: number };
-export type InboxBatch = { items: CoreItem[]; cursor: string; discarded: number };
+export type InboxBatch = { items: CoreItem[]; cursor: string; discarded: number; malformed?: string[] };
 export type ReplyArgs = { id: string; status: string; result?: string };
 
 /** Candidato de um endereço ambíguo (`conflict`, §endereço do contrato). */
@@ -350,9 +350,18 @@ export class CoreV6 implements MegamindCore {
       || typeof record.cursor !== "string" || (record.items.length === 0) !== (record.cursor === "")) {
       throw new CoreError("malformed Megamind inbox batch");
     }
-    // Decisões legadas e tipos novos são descartados sem impedir a confirmação.
-    const items = parseItems(result);
-    return { items, cursor: record.cursor, discarded: record.items.length - items.length };
+    const items: CoreItem[] = [];
+    const malformed: string[] = [];
+    let discarded = 0;
+    for (const raw of record.items) {
+      const kind = object(raw) ? text(raw.kind) : undefined;
+      if (!kind || !ITEM_KINDS.includes(kind)) { discarded++; continue; } // inclui decision legada
+      const item = parseItem(raw);
+      // O recibo é do lote inteiro: avise e pule itens inválidos para não travar a caixa.
+      if (!item) malformed.push(`${kind} (id ${object(raw) && Object.hasOwn(raw, "id") ? "present" : "missing"})`);
+      else items.push(item);
+    }
+    return { items, cursor: record.cursor, discarded, malformed };
   }
 
   async reply(session_id: string, args: ReplyArgs, signal?: AbortSignal): Promise<{ handoff?: string }> {

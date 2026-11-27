@@ -190,9 +190,11 @@ export type InboxDeps = {
   /** `true` só na v5: lá o item volta na próxima leitura até o ack. */
   acknowledges: boolean;
   /** Entrega o texto na conversa; quando assíncrona, só resolve após a inserção. */
-  deliver: (text: string) => void | Promise<void>;
+  deliver: (text: string, signal: AbortSignal) => void | Promise<void>;
+  deliveryTimeoutMs?: number;
+  now?: () => number;
   onDiscarded?: (count: number) => void;
-  warn: (error: unknown) => void;
+  warn: (error: unknown, category?: "malformed") => void;
   /** Item entregue: o chamador atualiza o estado do pedido. */
   onDelivered?: (item: CoreItem) => void;
   /** Handle do dono desta sessão, quando conhecido: evita sugerir resposta a si mesmo. */
@@ -209,7 +211,9 @@ export function isAskUserItem(item: CoreItem): boolean {
   return ids instanceof Set && ids.has(item.id);
 }
 
-type Entry = { key: string; id: string; text: string; item: CoreItem };
+type Entry = { key: string; id: string; text: string; item: CoreItem; retryAt?: number; failures?: number };
+const DELIVERY_TIMEOUT_MS = 45_000;
+const DELIVERY_RETRY_MS = [10_000, 20_000, 40_000, 60_000] as const;
 
 function keyOf(item: CoreItem): string {
   return `${item.kind}:${item.id}`;
@@ -223,7 +227,7 @@ export class Inbox {
   /** Entregues cujo `acknowledge` ainda não confirmou: o ack é reenviado. */
   private pendingAck = new Set<string>();
   private polling?: { done: Promise<void> };
-  private delivering?: Entry;
+  private delivering?: { entry: Entry; controller: AbortController };
   /** Recibo opaco do lote local; só é reenviado depois de esvaziar a fila. */
   private cursor?: string;
   private polledAt = 0;
@@ -247,7 +251,9 @@ export class Inbox {
     this.seen = new Set();
     this.pendingAck = new Set();
     this.polling = undefined;
+    const delivery = this.delivering;
     this.delivering = undefined;
+    delivery?.controller.abort();
     this.cursor = undefined;
     this.polledAt = 0;
   }
@@ -284,6 +290,7 @@ export class Inbox {
         }));
         this.cursor = items.cursor;
         if (items.discarded) this.deps.onDiscarded?.(items.discarded);
+        if (items.malformed?.length) this.deps.warn(new Error(`Megamind discarded malformed inbox items: ${items.malformed.join(", ")}`), "malformed");
         return;
       }
       const live = new Set<string>();
@@ -315,27 +322,55 @@ export class Inbox {
 
   /** Entrega um item; um follow-up pendente ainda não libera o recibo. */
   drain(session_id: string, idle: boolean): void | Promise<void> {
-    if (!idle || this.polling || this.delivering || this.queue.length === 0) return;
-    const entry = this.delivering = this.queue[0]!;
+    if (!idle || this.polling || this.delivering) return;
+    const entry = this.queue.find(({ retryAt }) => retryAt === undefined || retryAt <= (this.deps.now ?? Date.now)());
+    if (!entry) return;
+    const controller = new AbortController();
+    const attempt = this.delivering = { entry, controller };
     const finish = () => {
-      if (this.delivering !== entry) return; // reset durante a entrega
-      this.queue.shift();
+      if (this.delivering !== attempt) return; // reset durante a entrega
+      this.queue = this.queue.filter((queued) => queued !== entry);
       this.delivering = undefined;
       this.delivered(session_id, entry);
     };
     const failed = (error: unknown) => {
-      if (this.delivering !== entry) return;
+      if (this.delivering !== attempt) return;
       this.delivering = undefined;
+      const failures = entry.failures ?? 0;
+      entry.failures = Math.min(failures + 1, DELIVERY_RETRY_MS.length - 1);
+      entry.retryAt = (this.deps.now ?? Date.now)() + DELIVERY_RETRY_MS[failures]!;
+      // Recoloque no fim do lote para que as tentativas não passem à frente dos demais.
+      this.queue = this.queue.filter((queued) => queued !== entry);
+      this.queue.push(entry);
       this.deps.warn(error);
     };
     try {
-      const delivery = this.deps.deliver(entry.text);
-      if (delivery) return delivery.then(finish, failed);
+      const delivery = this.deps.deliver(entry.text, controller.signal);
+      if (delivery) return this.waitForDelivery(delivery, controller).then(finish, failed);
     } catch (error) {
       failed(error);
       return;
     }
     finish();
+  }
+
+  private async waitForDelivery(delivery: Promise<void>, controller: AbortController): Promise<void> {
+    const { signal } = controller;
+    const timeout = setTimeout(() => controller.abort(new Error("Megamind inbox insertion timed out")),
+      this.deps.deliveryTimeoutMs ?? DELIVERY_TIMEOUT_MS);
+    timeout.unref?.();
+    let abort: (() => void) | undefined;
+    const cancelled = new Promise<never>((_, reject) => {
+      abort = () => reject(signal.reason);
+      if (signal.aborted) abort();
+      else signal.addEventListener("abort", abort, { once: true });
+    });
+    try {
+      await Promise.race([cancelled, delivery]);
+    } finally {
+      clearTimeout(timeout);
+      if (abort) signal.removeEventListener("abort", abort);
+    }
   }
 
   private delivered(session_id: string, entry: Entry): void {
@@ -350,7 +385,9 @@ export class Inbox {
 
   /** Esvazia os itens que ainda não foram reservados ao follow-up automático. */
   takeAll(session_id: string): CoreItem[] {
-    const entries = this.queue.splice(this.delivering ? 1 : 0);
+    const reserved = this.delivering?.entry;
+    const entries = this.queue.filter((entry) => entry !== reserved);
+    this.queue = reserved ? [reserved] : [];
     for (const entry of entries) this.delivered(session_id, entry);
     return entries.map((entry) => entry.item);
   }
