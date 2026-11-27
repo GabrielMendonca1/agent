@@ -163,10 +163,10 @@ try {
     const target = '019a0000-0000-7000-8000-00000000abcd';
     const other = '019b0000-0000-7000-8000-00000000dcba';
     const compactPrefix = '019a000000'; // Atravessa o primeiro hífen do UUID.
-    const hexLabel = '019a00'; // Nome de outra sessão, mas prefixo de target.
-    const unmatchedHexLabel = 'abcdef';
+    let rpcCalls = 0;
     let drop = modern, hasProjects = true, idAcks = 0;
     globalThis.fetch = async (_url, init) => {
+      rpcCalls++;
       const { method, params, id } = JSON.parse(init.body);
       const respond = (result) => new Response(JSON.stringify({ jsonrpc: '2.0', id, result }));
       if (method === 'initialize') {
@@ -185,15 +185,10 @@ try {
             { session_id: target, label: 'Pi target', project_id: 'another', device_label: 'Laptop [A]' },
             { session_id: other, label: 'Pi other', project_id: 'custom', device_label: 'Desktop B' },
             { session_id: 'missing', label: 'Pi missing', device_label: '' },
-            { session_id: '019c0000-0000-7000-8000-00000000dcba', label: hexLabel },
-            { session_id: '019d0000-0000-7000-8000-00000000dcba', label: unmatchedHexLabel },
           ] }] });
         case 'request_create':
         case 'send':
           requests.push({ name, args });
-          if (name === 'send' && args.to === unmatchedHexLabel) {
-            return respond({ isError: true, error: { code: 'not_found' } });
-          }
           return respond({ id: 'request123', to: { kind: 'session', session_id: target }, woke: [] });
         case 'hello':
           announcements.push(args);
@@ -231,43 +226,38 @@ try {
     };
 
     const server = modern ? 'new server' : 'old server';
-    const core = await resolveCore();
     registerMegamindTools({ registerTool: tool => tools.set(tool.name, tool) }, {
-      presence: () => hello, selfHandle: () => undefined, core: async () => core, now: Date.now,
+      presence: () => hello, selfHandle: () => undefined, core: () => resolveCore(), now: Date.now,
     });
     const ask = tools.get('megamind_ask');
-    for (const to of ['@handle', target, 'Pi target', target.slice(0, 8)]) {
+    for (const to of ['Pi target', compactPrefix]) {
+      const args = { to, title: 'work', body: 'context' };
+      const before = rpcCalls;
+      const result = await ask.execute('call', { ...args, project_id: 'custom' });
+      ok(`${server}: project rejects ${to} before calling the server`, () => {
+        assert.equal(result.content[0].text, 'com project_id, use o UUID completo da sessão, device:<id> ou @handle');
+        assert.equal(rpcCalls, before);
+      });
+    }
+    for (const to of ['@handle', 'actor:pb:person123', target, 'device:desktop']) {
       const answer = await ask.execute('call', { to, title: 'work', body: 'context', project_id: ' custom ' });
       ok(`${server}: project travels only on an advertised request_create (${to})`, () => {
         assert.match(answer.content[0].text, /request request123/);
         const { name, args } = requests.at(-1);
-        assert.equal(name, modern || to === '@handle' ? 'request_create' : 'send');
-        assert.equal(args.to, modern && to !== '@handle' ? target : to);
+        assert.equal(name, modern || /^(?:@|actor:)/u.test(to) ? 'request_create' : 'send');
+        assert.equal(args.to, to);
         if (modern) assert.equal(args.project_id, 'custom');
         else assert.equal(Object.hasOwn(args, 'project_id'), false);
       });
     }
-    if (modern) {
-      for (const to of [compactPrefix, hexLabel]) {
-        const args = { to, title: 'work', body: 'context' };
-        const plain = await ask.execute('call', args);
-        const withProject = await ask.execute('call', { ...args, project_id: 'custom' });
-        ok(`new server: project preserves the destination of prefix ${to}`, () => {
-          assert.match(plain.content[0].text, new RegExp(target));
-          assert.equal(withProject.content[0].text, plain.content[0].text);
-          assert.deepEqual(requests.slice(-2).map(({ name, args }) => [name, args.to, args.project_id]), [
-            ['send', to, undefined], ['request_create', target, 'custom'],
-          ]);
-        });
-      }
-      const args = { to: unmatchedHexLabel, title: 'work', body: 'context' };
-      const plain = await ask.execute('call', args);
-      const count = requests.length;
-      const withProject = await ask.execute('call', { ...args, project_id: 'custom' });
-      ok('new server: a hexadecimal address with no prefix match never falls back to the label', () => {
-        assert.match(plain.content[0].text, /^not_found/);
-        assert.match(withProject.content[0].text, /^not_found/);
-        assert.equal(requests.length, count);
+    for (const to of ['Pi target', compactPrefix]) {
+      const result = await ask.execute('call', { to, title: 'work', body: 'context' });
+      ok(`${server}: without project, send still resolves ${to}`, () => {
+        assert.match(result.content[0].text, /request request123/);
+        const { name, args } = requests.at(-1);
+        assert.equal(name, 'send');
+        assert.equal(args.to, to);
+        assert.equal(Object.hasOwn(args, 'project_id'), false);
       });
     }
     await ask.execute('call', { to: '@handle', title: 'work', body: 'context' });
@@ -283,6 +273,7 @@ try {
         assert.doesNotMatch(listing, /Pi missing[^\n]*device:/);
       } else assert.doesNotMatch(listing, /device:|Laptop|Desktop/);
     });
+    const core = await resolveCore();
     await core.hello({ ...hello, cwd });
     ok(`${server}: hello only sends cwd when advertised`, () => {
       assert.deepEqual(announcements, [modern ? { ...hello, cwd } : hello]);

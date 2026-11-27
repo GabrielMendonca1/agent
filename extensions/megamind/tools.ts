@@ -6,10 +6,9 @@ import { resolve } from "node:path";
 import { Type } from "typebox";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { listProjects } from "./catalog.ts";
-import { LIMITS, REPLY_STATUS, chatGroup } from "./contract.ts";
+import { LIMITS, REPLY_STATUS, SESSION_UUID, chatGroup } from "./contract.ts";
 import {
   CoreError,
-  sessionOwner,
   type AddressCandidate,
   type CoreItem,
   type CorePerson,
@@ -162,6 +161,21 @@ export function formatCoreError(error: unknown): string {
     "conflict: this address matches more than one session. Retry with the full id of one of them:",
     ...formatCandidates(error.candidates),
   ].join("\n");
+}
+
+/** Resolve a sessão e seu dono com o `who` já disponível, sem rota nova. */
+export function sessionOwner(people: CorePerson[], address: string): { channel: string; to_session: string } {
+  const value = address.trim().toLowerCase();
+  const all = people.flatMap((person) => person.sessions.map((session) => ({ person, session })));
+  const exact = all.filter(({ session }) => session.session_id.toLowerCase() === value);
+  const matches = exact.length ? exact : all.filter(({ session }) =>
+    (value.length >= 6 && session.session_id.toLowerCase().startsWith(value))
+    || session.label?.toLowerCase() === value);
+  if (!matches.length) throw new CoreError("not_found: session not found (see megamind_who)", "not_found");
+  if (matches.length > 1) throw new CoreError("conflict: ambiguous session", "conflict", matches.map(({ person, session }) => ({
+    session_id: session.session_id, label: session.label, owner: person.handle, status: session.status,
+  })));
+  return { channel: matches[0]!.person.handle.replace(/^@/u, ""), to_session: matches[0]!.session.session_id };
 }
 
 /** Para onde a mensagem foi, no vocabulário do `to` que o servidor resolveu. */
@@ -431,7 +445,7 @@ export function registerMegamindTools(pi: ExtensionAPI, deps: ToolDeps): void {
     label: "Megamind Ask",
     description: "Create a request for a session or person (@handle or actor:pb:<id>). The answer arrives on its own; every partner has the same access",
     parameters: Type.Object({
-      to: Type.String({ description: 'session id/name, device:<id>, "@handle" or actor:pb:<id> of the recipient; see megamind_who' }),
+      to: Type.String({ description: 'full session UUID, device:<id>, "@handle" or actor:pb:<id>; session names and prefixes only without project_id; see megamind_who' }),
       title: Type.String({ description: "one line saying what you need (up to 200 chars)" }),
       body: Type.String({ description: "context, done criteria and limits; no secrets" }),
       project_id: Type.Optional(Type.String({ description: "project for the request; defaults to the source session's project and is ignored unless the server advertises it. A session UUID still targets that session. With device:<id>, only sessions in the request's project receive it; if none match, the request may not appear." })),
@@ -446,6 +460,9 @@ export function registerMegamindTools(pi: ExtensionAPI, deps: ToolDeps): void {
       const body = outgoing(redactBearer(text(args.body) ?? ""), LIMITS.body);
       const project_id = text(args.project_id)?.trim();
       if (!to) return toolError("megamind_ask: `to` is required (megamind_who lists the addresses)");
+      if (project_id && !SESSION_UUID.test(to) && !/^(?:@[^\s]+|(?:actor:pb:|device:)[A-Za-z0-9_-]{1,64})$/u.test(to)) {
+        return toolError("com project_id, use o UUID completo da sessão, device:<id> ou @handle");
+      }
       if (!title) return toolError("megamind_ask: `title` is required");
       if (!body.trim()) return toolError("megamind_ask: `body` is required");
       if (looksSecret(to, title, body, project_id ?? "")) return toolError(`megamind_ask: the request ${SECRET_MSG}`);

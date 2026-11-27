@@ -261,27 +261,6 @@ export function requireOk(name: string, result: unknown): unknown {
   throw new CoreError(message, failure.code, parseCandidates(failure.detail));
 }
 
-/** Resolve a sessão e seu dono com o `who` já disponível, sem rota nova. */
-export function sessionOwner(people: CorePerson[], address: string): { channel: string; to_session: string } {
-  const value = address.trim();
-  const compact = value.replace(/-/gu, "").toLowerCase();
-  const uuid = SESSION_UUID.test(value);
-  const prefix = /^[0-9a-f]{6,32}$/u.test(compact);
-  const all = people.flatMap((person) => person.sessions.map((session) => ({ person, session })));
-  // Como em omniResolve: UUID completo é explícito, e prefixo hex nunca cai no rótulo.
-  const label = new RegExp(`^${value.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&")}$`, "iu");
-  const matches = all.filter(({ session }) => {
-    if (uuid) return session.session_id === value.toLowerCase();
-    if (prefix) return session.session_id.replace(/-/gu, "").startsWith(compact);
-    return session.label !== undefined && label.test(session.label.trim());
-  });
-  if (!matches.length) throw new CoreError("not_found: session not found (see megamind_who)", "not_found");
-  if (matches.length > 1) throw new CoreError("conflict: ambiguous session", "conflict", matches.map(({ person, session }) => ({
-    session_id: session.session_id, label: session.label, owner: person.handle, status: session.status,
-  })));
-  return { channel: matches[0]!.person.handle.replace(/^@/u, ""), to_session: matches[0]!.session.session_id };
-}
-
 /** `project_id` é anunciado no schema de `request_create`, sem flag no initialize. */
 export async function requestProject(project_id: string | undefined, signal?: AbortSignal): Promise<string | undefined> {
   if (!project_id) return undefined;
@@ -348,13 +327,10 @@ export class CoreV6 implements MegamindCore {
 
   async send(session_id: string, args: SendArgs, signal?: AbortSignal): Promise<CoreSent> {
     const project_id = await requestProject(args.ask?.project_id, signal);
-    let to = args.to.trim();
-    const person = /^(?:@|actor:)/u.test(to);
-    if (args.ask && (person || (project_id && !to.startsWith("#")))) {
-      // Um nome ou prefixo vira UUID sem filtrar a busca por projeto.
-      if (!person && !/^device:[A-Za-z0-9_-]{1,64}$/u.test(to)) {
-        to = SESSION_UUID.test(to) ? to.toLowerCase() : sessionOwner(await this.who(undefined, signal), to).to_session;
-      }
+    const address = args.to.trim();
+    const person = /^(?:@|actor:)/u.test(address);
+    if (args.ask && (person || project_id)) {
+      const to = SESSION_UUID.test(address) ? address.toLowerCase() : address;
       const record = resultRecord(requireOk(TOOL.requestCreate, await toolCall(TOOL.requestCreate, {
         from_session: session_id,
         to,
