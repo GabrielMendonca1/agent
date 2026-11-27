@@ -9,6 +9,7 @@ import { listProjects } from "./catalog.ts";
 import { LIMITS, REPLY_STATUS, chatGroup } from "./contract.ts";
 import {
   CoreError,
+  sessionOwner,
   type AddressCandidate,
   type CoreItem,
   type CorePerson,
@@ -123,11 +124,13 @@ export function formatPeople(people: CorePerson[], mine: Presence | undefined, a
         const local = localMark(session.session_id, localityOf(session), safeInline(session.harness));
         if (local) marks.push(local);
       }
+      const device = safeInline(session.device_label);
       const fields = [
         who,
         ...(session.harness && session.harness !== who ? [safeInline(session.harness)] : []),
         safeInline(session.session_id),
         safeInline(session.project_id) || "no project",
+        ...(device ? [`device: ${device}`] : []),
         safeInline(session.note) || "no note",
         ...(session.branch ? [safeInline(session.branch)] : []),
         ageOf(session.at, at),
@@ -159,21 +162,6 @@ export function formatCoreError(error: unknown): string {
     "conflict: this address matches more than one session. Retry with the full id of one of them:",
     ...formatCandidates(error.candidates),
   ].join("\n");
-}
-
-/** Resolve a sessão e seu dono com o `who` já disponível, sem rota nova. */
-export function sessionOwner(people: CorePerson[], address: string): { channel: string; to_session: string } {
-  const value = address.trim().toLowerCase();
-  const all = people.flatMap((person) => person.sessions.map((session) => ({ person, session })));
-  const exact = all.filter(({ session }) => session.session_id.toLowerCase() === value);
-  const matches = exact.length ? exact : all.filter(({ session }) =>
-    (value.length >= 6 && session.session_id.toLowerCase().startsWith(value))
-    || session.label?.toLowerCase() === value);
-  if (!matches.length) throw new CoreError("not_found: session not found (see megamind_who)", "not_found");
-  if (matches.length > 1) throw new CoreError("conflict: ambiguous session", "conflict", matches.map(({ person, session }) => ({
-    session_id: session.session_id, label: session.label, owner: person.handle, status: session.status,
-  })));
-  return { channel: matches[0]!.person.handle.replace(/^@/u, ""), to_session: matches[0]!.session.session_id };
 }
 
 /** Para onde a mensagem foi, no vocabulário do `to` que o servidor resolveu. */
@@ -254,7 +242,7 @@ export function registerMegamindTools(pi: ExtensionAPI, deps: ToolDeps): void {
   registerTool({
     name: "megamind_who",
     label: "Megamind Who",
-    description: `List ${owners}, their sessions and org_role when available; with project_id, org/maintainers/sync error. Works without local presence. Use id, prefix or name as the destination; on this machine, prefer peers_send.`,
+    description: `List ${owners}, their sessions, device labels and org_role when available; with project_id, org/maintainers/sync error. Works without local presence. Use id, prefix or name as the destination; on this machine, prefer peers_send.`,
     parameters: Type.Object({
       project_id: Type.Optional(Type.String({ description: "limit sessions to one project; omit to show every partner" })),
     }),
@@ -446,6 +434,7 @@ export function registerMegamindTools(pi: ExtensionAPI, deps: ToolDeps): void {
       to: Type.String({ description: 'session id/name, "@handle" or actor:pb:<id> of the person who receives the request; see megamind_who' }),
       title: Type.String({ description: "one line saying what you need (up to 200 chars)" }),
       body: Type.String({ description: "context, done criteria and limits; no secrets" }),
+      project_id: Type.Optional(Type.String({ description: "project for the request, not the destination; defaults to the current project and is ignored by servers that do not advertise it" })),
     }),
     ...compact("megamind_ask"),
     async execute(_id, params, signal) {
@@ -455,16 +444,17 @@ export function registerMegamindTools(pi: ExtensionAPI, deps: ToolDeps): void {
       const to = oneLine(args.to).trim();
       const title = outgoing(redactBearer(oneLine(args.title)), LIMITS.title).trim();
       const body = outgoing(redactBearer(text(args.body) ?? ""), LIMITS.body);
+      const project_id = text(args.project_id)?.trim();
       if (!to) return toolError("megamind_ask: `to` is required (megamind_who lists the addresses)");
       if (!title) return toolError("megamind_ask: `title` is required");
       if (!body.trim()) return toolError("megamind_ask: `body` is required");
-      if (looksSecret(to, title, body)) return toolError(`megamind_ask: the request ${SECRET_MSG}`);
+      if (looksSecret(to, title, body, project_id ?? "")) return toolError(`megamind_ask: the request ${SECRET_MSG}`);
       try {
         const core = await deps.core();
         const sent = await core.send(current.session_id, {
           to,
           body,
-          ask: { title },
+          ask: { title, ...(project_id ? { project_id } : {}) },
         }, signal);
         const tracked = sent.id ? `request ${sent.id}` : "request";
         return toolResult({

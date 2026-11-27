@@ -2,12 +2,13 @@
 // seis chamadas, montadas sobre as tools v5. As cinco tools do agente não mudam;
 // o que muda é o que sai daqui para o gateway.
 import { randomUUID } from "node:crypto";
-import { CHAT_GROUP, TOOL } from "./contract.ts";
+import { CHAT_GROUP, SESSION_UUID, TOOL } from "./contract.ts";
 import {
   CoreError,
   parseAttachments,
   parsePriority,
   requireOk,
+  requestProject,
   type CoreHello,
   type CoreItem,
   type CorePerson,
@@ -30,9 +31,6 @@ import {
   type JsonObject,
 } from "./gateway.ts";
 
-/** Endereço que a v5 entende sem ajuda: sessão, dispositivo ou pessoa. */
-const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/iu;
-
 type Kind = "channel" | "person" | "session";
 type Target = { kind: Kind; address: string };
 
@@ -50,7 +48,7 @@ export function targetOf(to: string, group = CHAT_GROUP, alias = group): Target 
   }
   if (value.startsWith("@")) return { kind: "person", address: value.slice(1).toLowerCase() };
   if (value.startsWith("actor:")) return { kind: "person", address: value };
-  if (UUID.test(value) || value.startsWith("device:")) return { kind: "session", address: value };
+  if (SESSION_UUID.test(value) || value.startsWith("device:")) return { kind: "session", address: value };
   throw new CoreError(
     `not_found: this Mainframe is still v5 and cannot resolve "${value}"; use the full session id (megamind_who), @handle or #${alias}`,
     "not_found",
@@ -263,12 +261,14 @@ export class CoreV5 implements MegamindCore {
     const request_id = randomUUID();
     if (args.ask) {
       if (target.kind === "channel") throw new CoreError("invalid_request: a channel cannot answer a request", "invalid_request");
+      const project_id = await requestProject(args.ask.project_id, signal);
       const created = requireOk(TOOL.requestCreate, await toolCall(TOOL.requestCreate, {
         from_session: session_id,
         to: target.kind === "person" ? args.to.trim() : target.address,
         title: args.ask.title,
         body: args.body,
         request_id,
+        ...(project_id ? { project_id } : {}),
       }, signal));
       return { ...this.idOf(created), to: target.kind === "person" ? { kind: "person", label: args.to.trim() } : { kind: "session", session_id: target.address }, woke: [], held: target.kind === "person" };
     }

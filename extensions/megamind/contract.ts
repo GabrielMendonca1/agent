@@ -29,6 +29,8 @@ export const TOOL = {
   chatMembers: "chat_members",
 } as const;
 
+export const SESSION_UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/iu;
+
 /** Rota SSE do device (mesmo Bearer do MCP). */
 export const EVENTS_PATH = "/api/arca/events";
 
