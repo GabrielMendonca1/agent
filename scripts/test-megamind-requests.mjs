@@ -162,6 +162,9 @@ try {
     const reads = [], announcements = [], projectPages = [], requests = [];
     const target = '019a0000-0000-7000-8000-00000000abcd';
     const other = '019b0000-0000-7000-8000-00000000dcba';
+    const compactPrefix = '019a000000'; // Atravessa o primeiro hífen do UUID.
+    const hexLabel = '019a00'; // Nome de outra sessão, mas prefixo de target.
+    const unmatchedHexLabel = 'abcdef';
     let drop = modern, hasProjects = true, idAcks = 0;
     globalThis.fetch = async (_url, init) => {
       const { method, params, id } = JSON.parse(init.body);
@@ -182,10 +185,15 @@ try {
             { session_id: target, label: 'Pi target', project_id: 'another', device_label: 'Laptop [A]' },
             { session_id: other, label: 'Pi other', project_id: 'custom', device_label: 'Desktop B' },
             { session_id: 'missing', label: 'Pi missing', device_label: '' },
+            { session_id: '019c0000-0000-7000-8000-00000000dcba', label: hexLabel },
+            { session_id: '019d0000-0000-7000-8000-00000000dcba', label: unmatchedHexLabel },
           ] }] });
         case 'request_create':
         case 'send':
           requests.push({ name, args });
+          if (name === 'send' && args.to === unmatchedHexLabel) {
+            return respond({ isError: true, error: { code: 'not_found' } });
+          }
           return respond({ id: 'request123', to: { kind: 'session', session_id: target }, woke: [] });
         case 'hello':
           announcements.push(args);
@@ -237,6 +245,29 @@ try {
         assert.equal(args.to, modern && to !== '@handle' ? target : to);
         if (modern) assert.equal(args.project_id, 'custom');
         else assert.equal(Object.hasOwn(args, 'project_id'), false);
+      });
+    }
+    if (modern) {
+      for (const to of [compactPrefix, hexLabel]) {
+        const args = { to, title: 'work', body: 'context' };
+        const plain = await ask.execute('call', args);
+        const withProject = await ask.execute('call', { ...args, project_id: 'custom' });
+        ok(`new server: project preserves the destination of prefix ${to}`, () => {
+          assert.match(plain.content[0].text, new RegExp(target));
+          assert.equal(withProject.content[0].text, plain.content[0].text);
+          assert.deepEqual(requests.slice(-2).map(({ name, args }) => [name, args.to, args.project_id]), [
+            ['send', to, undefined], ['request_create', target, 'custom'],
+          ]);
+        });
+      }
+      const args = { to: unmatchedHexLabel, title: 'work', body: 'context' };
+      const plain = await ask.execute('call', args);
+      const count = requests.length;
+      const withProject = await ask.execute('call', { ...args, project_id: 'custom' });
+      ok('new server: a hexadecimal address with no prefix match never falls back to the label', () => {
+        assert.match(plain.content[0].text, /^not_found/);
+        assert.match(withProject.content[0].text, /^not_found/);
+        assert.equal(requests.length, count);
       });
     }
     await ask.execute('call', { to: '@handle', title: 'work', body: 'context' });
@@ -479,8 +510,12 @@ try {
   });
 
   const v5Calls = [];
+  let v5ProjectSchema = false;
   globalThis.fetch = async (_url, init) => {
     const { method, params, id } = JSON.parse(init.body);
+    if (method === 'tools/list' && v5ProjectSchema) return Response.json({ result: { tools: [
+      { name: 'request_create', inputSchema: { properties: { project_id: { type: 'string' } } } },
+    ] } });
     if (method === 'initialize' || method === 'tools/list') return Response.json({ jsonrpc: '2.0', id, error: { code: -32601, message: 'Method not found' } });
     assert.equal(method, 'tools/call');
     v5Calls.push(params);
@@ -503,6 +538,14 @@ try {
   ok('v5 without tools/list still creates a request with the default project', () => {
     assert.equal(v5Calls.at(-1).name, 'request_create');
     assert.equal(Object.hasOwn(v5Calls.at(-1).arguments, 'project_id'), false);
+  });
+  v5ProjectSchema = true;
+  await v5.send('sender', { to: '@handle', body: 'context', ask: { title: 'work', project_id: 'custom' } });
+  ok('v5 forwards project_id when request_create advertises it', () => {
+    const { name, arguments: args } = v5Calls.at(-1);
+    assert.equal(name, 'request_create');
+    assert.equal(args.to, '@handle');
+    assert.equal(args.project_id, 'custom');
   });
   resetCore();
 

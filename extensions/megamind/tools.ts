@@ -431,10 +431,10 @@ export function registerMegamindTools(pi: ExtensionAPI, deps: ToolDeps): void {
     label: "Megamind Ask",
     description: "Create a request for a session or person (@handle or actor:pb:<id>). The answer arrives on its own; every partner has the same access",
     parameters: Type.Object({
-      to: Type.String({ description: 'session id/name, "@handle" or actor:pb:<id> of the person who receives the request; see megamind_who' }),
+      to: Type.String({ description: 'session id/name, device:<id>, "@handle" or actor:pb:<id> of the recipient; see megamind_who' }),
       title: Type.String({ description: "one line saying what you need (up to 200 chars)" }),
       body: Type.String({ description: "context, done criteria and limits; no secrets" }),
-      project_id: Type.Optional(Type.String({ description: "project for the request, not the destination; defaults to the current project and is ignored by servers that do not advertise it" })),
+      project_id: Type.Optional(Type.String({ description: "project for the request; defaults to the source session's project and is ignored unless the server advertises it. A session UUID still targets that session. With device:<id>, only sessions in the request's project receive it; if none match, the request may not appear." })),
     }),
     ...compact("megamind_ask"),
     async execute(_id, params, signal) {

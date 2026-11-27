@@ -263,12 +263,18 @@ export function requireOk(name: string, result: unknown): unknown {
 
 /** Resolve a sessão e seu dono com o `who` já disponível, sem rota nova. */
 export function sessionOwner(people: CorePerson[], address: string): { channel: string; to_session: string } {
-  const value = address.trim().toLowerCase();
+  const value = address.trim();
+  const compact = value.replace(/-/gu, "").toLowerCase();
+  const uuid = SESSION_UUID.test(value);
+  const prefix = /^[0-9a-f]{6,32}$/u.test(compact);
   const all = people.flatMap((person) => person.sessions.map((session) => ({ person, session })));
-  const exact = all.filter(({ session }) => session.session_id.toLowerCase() === value);
-  const matches = exact.length ? exact : all.filter(({ session }) =>
-    (value.length >= 6 && session.session_id.toLowerCase().startsWith(value))
-    || session.label?.toLowerCase() === value);
+  // Como em omniResolve: UUID completo é explícito, e prefixo hex nunca cai no rótulo.
+  const label = new RegExp(`^${value.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&")}$`, "iu");
+  const matches = all.filter(({ session }) => {
+    if (uuid) return session.session_id === value.toLowerCase();
+    if (prefix) return session.session_id.replace(/-/gu, "").startsWith(compact);
+    return session.label !== undefined && label.test(session.label.trim());
+  });
   if (!matches.length) throw new CoreError("not_found: session not found (see megamind_who)", "not_found");
   if (matches.length > 1) throw new CoreError("conflict: ambiguous session", "conflict", matches.map(({ person, session }) => ({
     session_id: session.session_id, label: session.label, owner: person.handle, status: session.status,
@@ -344,9 +350,9 @@ export class CoreV6 implements MegamindCore {
     const project_id = await requestProject(args.ask?.project_id, signal);
     let to = args.to.trim();
     const person = /^(?:@|actor:)/u.test(to);
-    if (args.ask && (person || project_id)) {
-      // O projeto marca o pedido; a sessão de destino é resolvida sem filtrar por projeto.
-      if (!person && !to.startsWith("device:")) {
+    if (args.ask && (person || (project_id && !to.startsWith("#")))) {
+      // Um nome ou prefixo vira UUID sem filtrar a busca por projeto.
+      if (!person && !/^device:[A-Za-z0-9_-]{1,64}$/u.test(to)) {
         to = SESSION_UUID.test(to) ? to.toLowerCase() : sessionOwner(await this.who(undefined, signal), to).to_session;
       }
       const record = resultRecord(requireOk(TOOL.requestCreate, await toolCall(TOOL.requestCreate, {
