@@ -370,6 +370,31 @@ try {
     assert.equal(deliveryErrors[1], 'append failed');
   });
 
+  const parkingReads = [], parkingWarnings = [];
+  let parkingAttempts = 0;
+  const localMessage = (id) => ({ id, kind: 'message', from: {}, body: id });
+  const parking = new Inbox({
+    now: () => clock, acknowledges: false, ack: () => assert.fail('unexpected ack by ID'),
+    fetch: async (_session, cursor) => {
+      parkingReads.push(cursor);
+      return { items: [localMessage(cursor ? 'next' : 'parked')], cursor: cursor ? 'second' : 'first', discarded: 0 };
+    },
+    deliver: async () => { parkingAttempts++; throw new Error('append failed'); },
+    warn: (error) => parkingWarnings.push(error.message),
+  });
+  await parking.poll('sender', clock);
+  for (let n = 0; n < 6; n++) {
+    await parking.drain('sender', true);
+    clock += 60_000;
+  }
+  await parking.poll('sender', clock);
+  ok('after five automatic failures the next batch advances and the parked item remains readable', () => {
+    assert.equal(parkingAttempts, 5);
+    assert.deepEqual(parkingReads, ['', 'first']);
+    assert.match(parkingWarnings.at(-1), /parked.*read/i);
+    assert.deepEqual(parking.takeAll('sender').map(({ id }) => id), ['parked', 'next']);
+  });
+
   // v6 sem capability auto-confirma até o limit: não pode ler além da fila.
   const backlog = Array.from({ length: 45 }, (_, n) => ({ id: `m${n}`, kind: 'message', from: {}, body: `${n}` }));
   const expected = backlog.map(({ id }) => id);
@@ -434,49 +459,65 @@ try {
 
   // Handler real do Pi, com histórico em memória e gateway simulado.
   const { default: extension } = await jiti.import(join(repo, 'extensions/megamind/index.ts'));
-  const handlers = new Map(), history = [], historyReads = [];
-  const followUp = Promise.withResolvers(), ackRead = Promise.withResolvers();
   const waitFor = async (promise, message) => {
     let timer;
     try {
       return await Promise.race([promise, new Promise((_, reject) => { timer = setTimeout(() => reject(new Error(message)), 2000); })]);
     } finally { clearTimeout(timer); }
   };
-  let extensionClock = 10_000;
-  const ctx = { cwd: root, hasUI: false, isIdle: () => true, sessionManager: {
-    getSessionId: () => 'sender', getBranch: () => history,
-  } };
-  extension({
-    on: (event, handler) => handlers.set(event, handler), registerTool() {}, registerCommand() {}, appendEntry() {},
-    sendMessage: (message) => followUp.resolve(message),
-  }, { now: () => extensionClock });
-  globalThis.fetch = async (_url, init) => {
-    if (!init.body) return new Response(null, { status: 429 }); // SSE sem reconexão.
-    const { method, params } = JSON.parse(init.body);
-    if (method === 'initialize') return Response.json({ result: { capabilities: { arca: { core: 6, inbox_cursor: true } } } });
-    if (params.name !== 'read') return Response.json({ result: {} });
-    const { cursor } = params.arguments;
-    historyReads.push(cursor);
-    if (cursor) ackRead.resolve(cursor);
-    return Response.json({ result: cursor ? { items: [], cursor: '' } : {
-      items: [{ id: 'm1', kind: 'message', from: {}, body: 'persist me' }], cursor: 'history-receipt',
-    } });
-  };
-  try {
-    await handlers.get('session_start')({}, ctx);
-    const message = await waitFor(followUp.promise, 'extension did not send the inbox follow-up');
-    extensionClock += 10_000;
-    await handlers.get('agent_settled')({}, ctx);
-    assert.deepEqual(historyReads, ['']);
-    history.push({ ...message, type: 'custom_message' });
-    await handlers.get('turn_end')?.({}, ctx);
-    const receipt = await waitFor(ackRead.promise, 'turn_end did not release the persisted follow-up receipt');
-    ok('extension turn_end confirms the receipt only after the follow-up enters session history', () => {
-      assert.equal(receipt, 'history-receipt');
-      assert.deepEqual(historyReads, ['', 'history-receipt']);
-    });
-  } finally {
-    await handlers.get('session_shutdown')({ reason: 'reload' }, ctx);
+  for (const scenario of ['turn_end', 'late confirmation', 'history before retry', 'timer retry']) {
+    const handlers = new Map(), history = [], historyReads = [], sent = [];
+    const followUp = Promise.withResolvers(), ackRead = Promise.withResolvers(), retry = Promise.withResolvers();
+    let clockOffset = 0;
+    const ctx = { cwd: root, hasUI: false, isIdle: () => true, sessionManager: {
+      getSessionId: () => 'sender', getBranch: () => history,
+    } };
+    extension({
+      on: (event, handler) => handlers.set(event, handler), registerTool() {}, registerCommand() {}, appendEntry() {},
+      sendMessage: (message) => {
+        sent.push(message);
+        if (sent.length === 1) followUp.resolve(message);
+        else retry.resolve(message);
+      },
+    }, { now: () => Date.now() + clockOffset, inboxDeliveryTimeoutMs: 15, inboxDeliveryRetryMs: 100 });
+    globalThis.fetch = async (_url, init) => {
+      if (!init.body) return new Response(null, { status: 429 }); // SSE sem reconexão.
+      const { method, params } = JSON.parse(init.body);
+      if (method === 'initialize') return Response.json({ result: { capabilities: { arca: { core: 6, inbox_cursor: true } } } });
+      if (params.name !== 'read') return Response.json({ result: {} });
+      const { cursor } = params.arguments;
+      historyReads.push(cursor);
+      if (cursor) ackRead.resolve(cursor);
+      return Response.json({ result: cursor ? { items: [], cursor: '' } : {
+        items: [{ id: 'm1', kind: 'message', from: {}, body: 'persist me' }], cursor: 'history-receipt',
+      } });
+    };
+    try {
+      await handlers.get('session_start')({}, ctx);
+      const message = await waitFor(followUp.promise, 'extension did not send the inbox follow-up');
+      clockOffset += 10_000;
+      if (scenario !== 'turn_end') await new Promise((resolve) => setTimeout(resolve, 35));
+      assert.deepEqual(historyReads, ['']);
+      if (scenario === 'timer retry') {
+        const resent = await waitFor(retry.promise, 'backoff timer did not retry delivery');
+        assert.equal(resent.details.inboxInsertion, message.details.inboxInsertion);
+        history.push({ ...resent, type: 'custom_message' });
+      } else {
+        history.push({ ...message, type: 'custom_message' });
+      }
+      // Sem evento, só o wake-up do backoff pode encontrar a inserção já persistida.
+      if (scenario !== 'history before retry') await handlers.get('turn_end')?.({}, ctx);
+      const receipt = await waitFor(ackRead.promise, `${scenario} did not release the persisted follow-up receipt`);
+      ok(`extension ${scenario}: confirms persisted delivery with no duplicate resend`, () => {
+        assert.match(message.details.inboxInsertion, /m1/);
+        assert.equal(receipt, 'history-receipt');
+        assert.deepEqual(historyReads, ['', 'history-receipt']);
+        assert.equal(sent.length, scenario === 'timer retry' ? 2 : 1);
+        assert.equal(history.length, 1);
+      });
+    } finally {
+      await handlers.get('session_shutdown')({ reason: 'reload' }, ctx);
+    }
   }
 
   // Blocks are English for the model since item 3; transcripts with the older Portuguese headers

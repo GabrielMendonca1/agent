@@ -1,4 +1,3 @@
-import { randomUUID } from "node:crypto";
 import { mkdir, stat, writeFile } from "node:fs/promises";
 import { basename, dirname, join } from "node:path";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
@@ -144,7 +143,7 @@ function parseOverlaps(value: unknown): Overlap[] {
   return overlaps;
 }
 
-export type ExtensionOptions = { now?: () => number };
+export type ExtensionOptions = { now?: () => number; inboxDeliveryTimeoutMs?: number; inboxDeliveryRetryMs?: number };
 
 export default function arcaMegamindExtension(pi: ExtensionAPI, options: ExtensionOptions = {}) {
   const now = options.now ?? Date.now;
@@ -201,7 +200,7 @@ export default function arcaMegamindExtension(pi: ExtensionAPI, options: Extensi
   const openRequests = new Map<string, string>();
   /** Leitura de inbox adiada pelo intervalo mínimo (dica de SSE não se perde). */
   let pollTimer: ReturnType<typeof setTimeout> | undefined;
-  let pendingInsertion: { id: string; confirm: () => void } | undefined;
+  let inboxWakeTimer: ReturnType<typeof setTimeout> | undefined;
   let priorityContext: ExtensionContext | undefined;
   let currentPriority: CorePriority | undefined;
   /** Estado mostrado na barra de status; só transição mexe na UI. */
@@ -252,6 +251,7 @@ export default function arcaMegamindExtension(pi: ExtensionAPI, options: Extensi
     announced.clear();
     overlapsSeen.clear();
     peerSessions = new Map();
+    clearInboxWake();
     inbox.reset();
     currentPriority = undefined;
     setPriorityStatus(undefined);
@@ -293,6 +293,8 @@ export default function arcaMegamindExtension(pi: ExtensionAPI, options: Extensi
 
   const inbox = new Inbox({
     now,
+    deliveryTimeoutMs: options.inboxDeliveryTimeoutMs,
+    deliveryRetryMs: options.inboxDeliveryRetryMs,
     // O núcleo lança quando o gateway recusa (503, rate limit): recusa nunca
     // pode passar por "caixa vazia", senão o prune apagaria fila, ack pendente e
     // memória do que já foi entregue, e o item voltaria duplicado.
@@ -304,32 +306,22 @@ export default function arcaMegamindExtension(pi: ExtensionAPI, options: Extensi
     get acknowledges() {
       return acknowledges;
     },
-    deliver: (content, signal) => {
+    deliver: (content, _signal, marker) => {
       const active = pi.getActiveTools?.();
       if (active && !active.includes("megamind_reply")) pi.setActiveTools([...active, "megamind_reply"]);
-      const id = randomUUID();
-      return new Promise<void>((resolve, reject) => {
-        const clear = () => {
-          if (pendingInsertion?.id === id) pendingInsertion = undefined;
-          signal.removeEventListener("abort", abort);
-        };
-        const abort = () => { clear(); reject(signal.reason); };
-        pendingInsertion = { id, confirm: () => { clear(); resolve(); } };
-        signal.addEventListener("abort", abort, { once: true });
-        try {
-          pi.sendMessage(
-            { customType: MESSAGE_TYPE, content, display: true, details: { inboxInsertion: id } },
-            { triggerTurn: true, deliverAs: "followUp" },
-          );
-        } catch (error) {
-          clear();
-          reject(error);
-        }
-      });
+      pi.sendMessage(
+        { customType: MESSAGE_TYPE, content, display: true, details: { inboxInsertion: marker } },
+        { triggerTurn: true, deliverAs: "followUp" },
+      );
+      return "await-insertion";
     },
     warn: (error, category) => {
       if (category === "malformed") warnOnce("inbox-malformed", safeMessage(error));
-      else messagingFailed(error);
+      else if (category === "parked") {
+        const message = safeMessage(error);
+        pi.appendEntry("megamind-inbox-parked", { message });
+        warnOnce(`inbox-parked:${message}`, message);
+      } else messagingFailed(error);
     },
     onDiscarded: (count) => pi.appendEntry("megamind-inbox-discarded", { count }),
     onDelivered: (item) => trackDelivered(item),
@@ -388,15 +380,37 @@ export default function arcaMegamindExtension(pi: ExtensionAPI, options: Extensi
     const current = presence;
     if (!current) return [];
     await inbox.poll(current.session_id, now());
-    return presence === current ? inbox.takeAll(current.session_id) : [];
+    if (presence !== current) return [];
+    confirmInboxInsertion(priorityContext);
+    return inbox.takeAll(current.session_id);
+  }
+
+  function clearInboxWake(): void {
+    if (inboxWakeTimer !== undefined) clearTimeout(inboxWakeTimer);
+    inboxWakeTimer = undefined;
+  }
+
+  function scheduleInboxWake(): void {
+    clearInboxWake();
+    if (!active || !presence || isIdle?.() !== true) return;
+    const at = inbox.nextRetryAt();
+    if (at === undefined) return;
+    inboxWakeTimer = setTimeout(deliverNext, Math.max(0, at - now()));
+    inboxWakeTimer.unref?.();
   }
 
   // Entrega só com a sessão ociosa (modelo do pi-relay); ack só depois de entregar.
   function deliverNext() {
-    if (!active || !presence) return;
+    clearInboxWake();
+    if (!active || !presence || isIdle?.() !== true) return;
     const current = presence;
-    void inbox.drain(current.session_id, isIdle?.() === true)?.then(() => {
-      if (presence === current) pollSoon();
+    if (confirmInboxInsertion(priorityContext)) pollSoon();
+    const delivery = inbox.drain(current.session_id, true);
+    if (!delivery) scheduleInboxWake();
+    else void delivery.then(() => {
+      if (presence !== current) return;
+      scheduleInboxWake();
+      pollSoon();
     }).catch(messagingFailed);
   }
 
@@ -424,6 +438,7 @@ export default function arcaMegamindExtension(pi: ExtensionAPI, options: Extensi
   }
 
   function stopTimers() {
+    clearInboxWake();
     if (heartbeat !== undefined) clearInterval(heartbeat);
     heartbeat = undefined;
     if (resolveTimer !== undefined) clearInterval(resolveTimer);
@@ -974,16 +989,21 @@ export default function arcaMegamindExtension(pi: ExtensionAPI, options: Extensi
     activate(ctx);
   });
 
-  function confirmInboxInsertion(ctx: ExtensionContext): void {
-    const pending = pendingInsertion;
-    // `message_end` é emitido antes do append no Pi. Só confirme pela sessão,
-    // numa fronteira de turno (também vale quando o follow-up foi enfileirado).
-    if (!pending || !ctx.sessionManager.getBranch?.().some((entry) => entry.type === "custom_message"
-      && entry.customType === MESSAGE_TYPE && object(entry.details) && entry.details.inboxInsertion === pending.id)) return;
-    pending.confirm();
+  function confirmInboxInsertion(ctx: ExtensionContext | undefined): boolean {
+    if (!presence || !ctx || ctx.sessionManager.getSessionId() !== presence.session_id || !inbox.pending) return false;
+    // `message_end` é emitido antes do append; consulte o histórico da sessão.
+    const markers = new Set<string>();
+    for (const entry of ctx.sessionManager.getBranch?.() ?? []) {
+      if (entry.type !== "custom_message" || entry.customType !== MESSAGE_TYPE || !object(entry.details)) continue;
+      const marker = text(entry.details.inboxInsertion);
+      if (marker) markers.add(marker);
+    }
+    return inbox.confirmInserted(presence.session_id, markers);
   }
 
-  pi.on("turn_end", (_event, ctx) => confirmInboxInsertion(ctx));
+  pi.on("turn_end", (_event, ctx) => {
+    if (confirmInboxInsertion(ctx)) pollSoon();
+  });
 
   // Tick imediato ao ficar ocioso: a entrega pendente (e uma leitura nova, no
   // máximo a cada 5 s) acontece assim que dá.

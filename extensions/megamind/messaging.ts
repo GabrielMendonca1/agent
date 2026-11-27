@@ -189,12 +189,13 @@ export type InboxDeps = {
   ack: (session_id: string, ids: string[]) => Promise<void>;
   /** `true` só na v5: lá o item volta na próxima leitura até o ack. */
   acknowledges: boolean;
-  /** Entrega o texto na conversa; quando assíncrona, só resolve após a inserção. */
-  deliver: (text: string, signal: AbortSignal) => void | Promise<void>;
+  /** Entrega o texto; o Pi aguarda confirmação explícita pelo histórico. */
+  deliver: (text: string, signal: AbortSignal, marker: string) => void | Promise<void> | "await-insertion";
   deliveryTimeoutMs?: number;
+  deliveryRetryMs?: number;
   now?: () => number;
   onDiscarded?: (count: number) => void;
-  warn: (error: unknown, category?: "malformed") => void;
+  warn: (error: unknown, category?: "malformed" | "parked") => void;
   /** Item entregue: o chamador atualiza o estado do pedido. */
   onDelivered?: (item: CoreItem) => void;
   /** Handle do dono desta sessão, quando conhecido: evita sugerir resposta a si mesmo. */
@@ -212,6 +213,7 @@ export function isAskUserItem(item: CoreItem): boolean {
 }
 
 type Entry = { key: string; id: string; text: string; item: CoreItem; retryAt?: number; failures?: number };
+const MAX_DELIVERY_ATTEMPTS = 5;
 const DELIVERY_TIMEOUT_MS = 45_000;
 const DELIVERY_RETRY_MS = [10_000, 20_000, 40_000, 60_000] as const;
 
@@ -219,9 +221,16 @@ function keyOf(item: CoreItem): string {
   return `${item.kind}:${item.id}`;
 }
 
+function insertionMarker(item: CoreItem): string {
+  // Uma atualização de status é outro item, mesmo quando o id do pedido é o mesmo.
+  return `${keyOf(item)}:${item.ask?.status ?? ""}`;
+}
+
 /** Fila local da caixa: lê, entrega quando ocioso e confirma depois de entregar. */
 export class Inbox {
   private queue: Entry[] = [];
+  // Fora dos lotes/recibos. Se o Pi cair, estes itens em memória se perdem.
+  private parked: Entry[] = [];
   /** Chaves já enfileiradas nesta sessão: nunca entregar duas vezes. */
   private seen = new Set<string>();
   /** Entregues cujo `acknowledge` ainda não confirmou: o ack é reenviado. */
@@ -243,11 +252,12 @@ export class Inbox {
   }
 
   get pending(): number {
-    return this.queue.length;
+    return this.queue.length + this.parked.length;
   }
 
   reset(): void {
     this.queue = [];
+    this.parked = [];
     this.seen = new Set();
     this.pendingAck = new Set();
     this.polling = undefined;
@@ -260,7 +270,7 @@ export class Inbox {
 
   push(item: CoreItem): boolean {
     const key = keyOf(item);
-    if (this.full || this.seen.has(key) || this.pendingAck.has(key)) return false;
+    if (this.full || this.seen.has(key) || this.pendingAck.has(key) || this.parked.some((entry) => entry.key === key)) return false;
     this.seen.add(key);
     this.queue.push({ key, id: item.id, text: formatInboxItem(item, this.deps.self?.(), this.deps.megamind?.()), item });
     return true;
@@ -269,9 +279,9 @@ export class Inbox {
   /** Lê a caixa; nunca lança (erro vira aviso do chamador). */
   poll(session_id: string, at: number): Promise<void> {
     if (this.polling) return this.polling.done;
-    if (this.delivering || this.full || (this.cursor !== undefined && this.pending > 0)) return Promise.resolve();
+    if (this.delivering || this.full || (this.cursor !== undefined && this.queue.length > 0)) return Promise.resolve();
     this.polledAt = at;
-    const limit = INBOX_QUEUE_MAX - this.pending;
+    const limit = INBOX_QUEUE_MAX - this.queue.length;
     const poll = { done: Promise.resolve().then(() => this.pollOnce(session_id, limit, poll)) };
     this.polling = poll;
     return poll.done;
@@ -320,6 +330,40 @@ export class Inbox {
     }
   }
 
+  /** Só agenda quando nenhum item pode sair agora. */
+  nextRetryAt(): number | undefined {
+    if (this.delivering || this.polling || !this.queue.length) return undefined;
+    const at = Math.min(...this.queue.map((entry) => entry.retryAt ?? 0));
+    return at > (this.deps.now ?? Date.now)() ? at : undefined;
+  }
+
+  /** Reconhece inserções tardias, inclusive após timeout ou estacionamento. */
+  confirmInserted(session_id: string, markers: ReadonlySet<string>): boolean {
+    let confirmed = false;
+    for (const entry of this.queue) {
+      if (!markers.has(insertionMarker(entry.item))) continue;
+      this.finishDelivery(session_id, entry);
+      confirmed = true;
+    }
+    this.parked = this.parked.filter((entry) => {
+      if (!markers.has(insertionMarker(entry.item))) return true;
+      this.delivered(session_id, entry);
+      confirmed = true;
+      return false;
+    });
+    return confirmed;
+  }
+
+  private finishDelivery(session_id: string, entry: Entry): void {
+    this.queue = this.queue.filter((queued) => queued !== entry);
+    if (this.delivering?.entry === entry) {
+      const { controller } = this.delivering;
+      this.delivering = undefined;
+      controller.abort();
+    }
+    this.delivered(session_id, entry);
+  }
+
   /** Entrega um item; um follow-up pendente ainda não libera o recibo. */
   drain(session_id: string, idle: boolean): void | Promise<void> {
     if (!idle || this.polling || this.delivering) return;
@@ -329,24 +373,30 @@ export class Inbox {
     const attempt = this.delivering = { entry, controller };
     const finish = () => {
       if (this.delivering !== attempt) return; // reset durante a entrega
-      this.queue = this.queue.filter((queued) => queued !== entry);
-      this.delivering = undefined;
-      this.delivered(session_id, entry);
+      this.finishDelivery(session_id, entry);
     };
     const failed = (error: unknown) => {
       if (this.delivering !== attempt) return;
       this.delivering = undefined;
-      const failures = entry.failures ?? 0;
-      entry.failures = Math.min(failures + 1, DELIVERY_RETRY_MS.length - 1);
-      entry.retryAt = (this.deps.now ?? Date.now)() + DELIVERY_RETRY_MS[failures]!;
-      // Recoloque no fim do lote para que as tentativas não passem à frente dos demais.
+      const failures = entry.failures = (entry.failures ?? 0) + 1;
       this.queue = this.queue.filter((queued) => queued !== entry);
+      if (failures >= MAX_DELIVERY_ATTEMPTS) {
+        this.parked.push(entry);
+        if (this.deps.acknowledges) {
+          this.pendingAck.add(entry.key);
+          void this.ack(session_id, entry.key, entry.id);
+        }
+        this.deps.warn(new Error(`Megamind inbox item ${entry.id} parked after ${failures} attempts; use megamind_read`), "parked");
+        return;
+      }
+      entry.retryAt = (this.deps.now ?? Date.now)() + (this.deps.deliveryRetryMs ?? DELIVERY_RETRY_MS[failures - 1]!);
+      // Recoloque no fim do lote para que as tentativas não passem à frente dos demais.
       this.queue.push(entry);
       this.deps.warn(error);
     };
     try {
-      const delivery = this.deps.deliver(entry.text, controller.signal);
-      if (delivery) return this.waitForDelivery(delivery, controller).then(finish, failed);
+      const delivery = this.deps.deliver(entry.text, controller.signal, insertionMarker(entry.item));
+      if (delivery) return this.waitForDelivery(delivery === "await-insertion" ? undefined : delivery, controller).then(finish, failed);
     } catch (error) {
       failed(error);
       return;
@@ -354,7 +404,7 @@ export class Inbox {
     finish();
   }
 
-  private async waitForDelivery(delivery: Promise<void>, controller: AbortController): Promise<void> {
+  private async waitForDelivery(delivery: Promise<void> | undefined, controller: AbortController): Promise<void> {
     const { signal } = controller;
     const timeout = setTimeout(() => controller.abort(new Error("Megamind inbox insertion timed out")),
       this.deps.deliveryTimeoutMs ?? DELIVERY_TIMEOUT_MS);
@@ -366,7 +416,7 @@ export class Inbox {
       else signal.addEventListener("abort", abort, { once: true });
     });
     try {
-      await Promise.race([cancelled, delivery]);
+      await (delivery ? Promise.race([cancelled, delivery]) : cancelled);
     } finally {
       clearTimeout(timeout);
       if (abort) signal.removeEventListener("abort", abort);
@@ -386,7 +436,8 @@ export class Inbox {
   /** Esvazia os itens que ainda não foram reservados ao follow-up automático. */
   takeAll(session_id: string): CoreItem[] {
     const reserved = this.delivering?.entry;
-    const entries = this.queue.filter((entry) => entry !== reserved);
+    const entries = [...this.parked, ...this.queue.filter((entry) => entry !== reserved)];
+    this.parked = [];
     this.queue = reserved ? [reserved] : [];
     for (const entry of entries) this.delivered(session_id, entry);
     return entries.map((entry) => entry.item);
