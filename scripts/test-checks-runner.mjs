@@ -28,6 +28,40 @@ try {
   git("-c", "user.name=fixture", "-c", "user.email=fixture@example.invalid", "commit", "-qm", "base");
   const sha = git("rev-parse", "HEAD");
   const before = worktrees();
+
+  // Model a gate started inside the Agent, with explicit installation paths.
+  const runtime = join(temp, "agent/core/runtime.mjs");
+  mkdirSync(join(temp, "agent/core"), { recursive: true });
+  writeFileSync(runtime, "");
+  const inheritedEnv = {
+    NODE_OPTIONS: `--no-warnings --import=${runtime}`,
+    AGENT_RUNTIME_ENABLED: "1",
+    AGENT_SKILLS_BEFORE: '"user-skill"',
+    PI_AUTOMATIC_SKILLS: "agent-skill",
+    AGENT_STORE: join(temp, "store"),
+    AGENT_PI_ROOT: join(temp, "pi"),
+  };
+  const savedEnv = Object.fromEntries(Object.keys(inheritedEnv).map((key) => [key, process.env[key]]));
+  try {
+    Object.assign(process.env, inheritedEnv);
+    const keys = Object.keys(inheritedEnv);
+    const [result] = await runChecks({ ...manifest, checks: [{
+      name: "child-env",
+      cmd: node(`console.log(JSON.stringify(${JSON.stringify(keys)}.map(key => process.env[key])))`),
+    }] });
+    assert.equal(result.ok, true, result.tail);
+    assert.deepEqual(JSON.parse(result.tail), [
+      "--no-warnings", null, null, "user-skill", inheritedEnv.AGENT_STORE, inheritedEnv.AGENT_PI_ROOT,
+    ]);
+    for (const key of keys) assert.equal(process.env[key], inheritedEnv[key]);
+    console.log("ok checks filter Agent runtime env and retain installation paths");
+  } finally {
+    for (const [key, value] of Object.entries(savedEnv)) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+  }
+
   let phases = 0;
   const green = await gate(manifest, { baselineOptions: { onPhase: () => phases++ } });
   assert.equal(green.ok, true);

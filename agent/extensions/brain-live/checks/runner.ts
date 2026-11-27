@@ -3,6 +3,7 @@ import { spawn, spawnSync } from "node:child_process";
 import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, linkSync, readlinkSync, realpathSync, readdirSync, renameSync, statSync, rmdirSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
 import { homedir, hostname, tmpdir } from "node:os";
 import { dirname, isAbsolute, join, resolve } from "node:path";
+import { userCommandEnv } from "../../../core/child-env.mjs";
 
 /**
  * Runner de verificação por projeto.
@@ -183,9 +184,12 @@ function tail(text: string): string {
 function runOne(check: Check, cwd: string, timeoutMs: number, signal?: AbortSignal): Promise<CheckResult> {
   signal?.throwIfAborted();
   const started = Date.now();
+  const env = userCommandEnv();
+  // Pi-backed checks need the installation path; AGENT_STORE is already preserved.
+  if (process.env.AGENT_PI_ROOT !== undefined) env.AGENT_PI_ROOT = process.env.AGENT_PI_ROOT;
   return new Promise((resolvePromise) => {
     const windows = process.platform === "win32";
-    const child = spawn(check.cmd, [], { cwd, shell: true, detached: !windows, windowsHide: true, stdio: ["ignore", "pipe", "pipe"] });
+    const child = spawn(check.cmd, [], { cwd, env, shell: true, detached: !windows, windowsHide: true, stdio: ["ignore", "pipe", "pipe"] });
     let output = "";
     let timedOut = false;
     let stopping: Promise<void> | undefined;
