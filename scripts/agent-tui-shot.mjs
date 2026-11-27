@@ -11,8 +11,9 @@
  */
 import { spawnSync } from 'node:child_process';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { homedir, tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
+import { pathToFileURL } from 'node:url';
 import { startFakeAnthropic } from './lib/fake-anthropic.mjs';
 
 const repo = new URL('..', import.meta.url).pathname.replace(/\/$/, '');
@@ -162,5 +163,6 @@ function toHtml(ansi, isLight) {
     emit(line.slice(last));
     return outLine || ' ';
   }).join('\n');
-  return `<!doctype html><meta charset="utf-8"><style>@font-face{font-family:Nerd;src:url('file:///Users/biel/Library/Fonts/SymbolsNerdFontMono-Regular.ttf')}body{margin:0;background:${bg};color:${fg}}.q{display:inline-block;position:relative;width:1ch;height:19px;vertical-align:top}.q b{position:absolute;width:50%;height:50%;background:currentColor}.q b.d{width:2.5px;height:2.5px;border-radius:50%}.g{display:inline-block;width:1ch;overflow:visible;text-align:center;white-space:nowrap}.g i{font-style:normal;font-size:12px}pre{margin:10px;font:14px/19px 'SF Mono',Menlo,Nerd,monospace;white-space:pre}</style><pre>${html}</pre>`;
+  const fontUrl = pathToFileURL(join(homedir(), 'Library', 'Fonts', 'SymbolsNerdFontMono-Regular.ttf'));
+  return `<!doctype html><meta charset="utf-8"><style>@font-face{font-family:Nerd;src:url("${fontUrl.href}")}body{margin:0;background:${bg};color:${fg}}.q{display:inline-block;position:relative;width:1ch;height:19px;vertical-align:top}.q b{position:absolute;width:50%;height:50%;background:currentColor}.q b.d{width:2.5px;height:2.5px;border-radius:50%}.g{display:inline-block;width:1ch;overflow:visible;text-align:center;white-space:nowrap}.g i{font-style:normal;font-size:12px}pre{margin:10px;font:14px/19px 'SF Mono',Menlo,Nerd,monospace;white-space:pre}</style><pre>${html}</pre>`;
 }

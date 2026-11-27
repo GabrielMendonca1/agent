@@ -667,7 +667,7 @@ Omitir `maxUsd` deixa ambos os modos sem corte por custo. Para definir um teto, 
 
 ## Dependências pessoais / degradação
 
-O código de `agent/` não depende de caminhos literais `/Users/biel` (só um exemplo em `agent/extensions/agent/web/README.md`). `lib/paths.ts` conserva a descoberta opcional de `/mnt/garime` e `~/Sistema` (ou `PI_SYSTEM_DIR`); sem o mount usa o HOME local.
+O código de `agent/` não depende de caminhos fixos no diretório pessoal. `lib/paths.ts` conserva a descoberta opcional de `/mnt/garime` e `~/Sistema` (ou `PI_SYSTEM_DIR`); sem o mount usa o HOME local.
 
 | Extensão | Sem infraestrutura pessoal |
 |---|---|

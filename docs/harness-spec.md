@@ -30,7 +30,7 @@ Ordem de execução proposta: **0 → 1 → 2 → 3 → 4**. A suíte de evals e
   - `run.mjs`: compara arms e tem `--dry` sem inferência.
   - `report.mjs`: calcula `passRate`, `totalCostUsd`, `costPerPassedTaskUsd` e `secondsPerPassedTask`.
 - O prefixo das tarefas proíbe delegar (`tasks.mjs:26`), então a suíte não mede orquestração.
-- O binário está fixo em `/Users/biel/.local/bin/agent` (`run.mjs:125`).
+- O binário está fixo em `~/.local/bin/agent` (`run.mjs:125`).
 - O custo dos filhos não entra na conta: `trace.mjs` só soma o JSON do processo pai.
 - Já existe um provedor falso reutilizável, `scripts/lib/fake-anthropic.mjs`, com SSE real em loopback.
 

@@ -28,8 +28,9 @@ through your own user). **Another machine, or a person → Megamind.**
 
 ### VM access
 
-On an enrolled PC, the connected company can provision an SSH alias (`ssh omni` /
-`ssh arca` in existing profiles). Agent generates an ed25519 key per company,
+On an enrolled PC, the connected company can provision an SSH alias. Use the
+alias shown by `/megamind` (for example, `ssh my-vm`). Agent generates an
+ed25519 key per company,
 registers the public key with Megamind and maintains only that company’s delimited
 block in `~/.ssh/config`. The server supplies the user and host according to the
 partner’s access. `/megamind` shows the destination and registered fingerprint,

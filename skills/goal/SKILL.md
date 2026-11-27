@@ -11,7 +11,7 @@ description: "Goal — run long work unattended from one approved charter: check
 
 Read-only; discovery never authorizes, connects or logs in. Record each category, or `unavailable`:
 - Git remotes and branches; project scripts, CI and deploy configs.
-- SSH hosts: `Host` entries in `~/.ssh/config` (and includes) plus Megamind company aliases (`ssh omni`, `ssh arca`); resolve with `ssh -G <host>`.
+- SSH hosts: `Host` entries in `~/.ssh/config` (and includes) plus SSH aliases provisioned by Megamind; resolve with `ssh -G <host>` (for example, `ssh -G my-vm`).
 - Megamind browser accounts, via `arca` (guide: `arca skills get orca-cli`).
 - Authenticated CLIs (`gh`, `vercel`, `fly`…): account and status only.
 

@@ -1,6 +1,6 @@
 # Contrato com consumidores externos
 
-Um consumidor externo localiza a instalação por caminho, em tempo de execução. Não importa código deste repositório, não escreve no store nem no settings do Pi. O consumidor de referência hoje é o Superagent (`/Users/biel/Projects/superagent`, `src/infra/mark-release.ts`, `scripts/lib/superagent-loader.mjs`).
+Um consumidor externo localiza a instalação por caminho, em tempo de execução. Não importa código deste repositório, não escreve no store nem no settings do Pi. O consumidor de referência hoje é o Superagent (`~/Projects/superagent`, `src/infra/mark-release.ts`, `scripts/lib/superagent-loader.mjs`).
 
 ## Hoje (instalação Mark) e Agent
 

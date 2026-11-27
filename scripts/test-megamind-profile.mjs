@@ -117,7 +117,7 @@ try {
 	});
 
 	test("a rota SSE vem do endpoint do enrollment, não de um caminho fixo", () => {
-		assert.equal(eventsUrl("https://mainframe.ogtecnologia.com.br/api/omni/mcp"), "https://mainframe.ogtecnologia.com.br/api/omni/events");
+		assert.equal(eventsUrl("https://mainframe.example.com/api/omni/mcp"), "https://mainframe.example.com/api/omni/events");
 		assert.equal(eventsUrl("https://hub.example.invalid/api/arca/mcp"), "https://hub.example.invalid/api/arca/events");
 		assert.equal(eventsUrl("https://hub.example.invalid/api/omni/mcp/"), "https://hub.example.invalid/api/omni/events");
 		assert.equal(eventsUrl("https://hub.example.invalid/gateway"), "https://hub.example.invalid/api/arca/events");

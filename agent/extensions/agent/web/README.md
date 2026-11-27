@@ -3,7 +3,7 @@
 Carregar explicitamente (funciona também com `--no-extensions`):
 
 ```sh
-pi -e /Users/biel/Projects/agent/agent/extensions/agent/web/index.ts
+pi -e ~/Projects/agent/agent/extensions/agent/web/index.ts
 ```
 
 No bundle/imagem, use `<raiz-agent>/extensions/agent/web/index.ts`.

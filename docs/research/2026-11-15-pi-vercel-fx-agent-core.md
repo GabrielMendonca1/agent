@@ -30,7 +30,7 @@ Pesquisa: 2026-11-15. Escopo documental; sem implementação ou auditoria dos pa
 
 ## Relação com o ambiente local
 
-Os quatro READMEs exigidos foram lidos: `mark-pi/README.md`, `prometheus/prometheus/README.md`, `megamind/README.md` e `lucid-dream/README.md`, sob `/Users/biel/Projects/`. Mark descreve customizações sobre Pi; Prometheus aceita outros agentes CLI e não exige Mark; Megamind mantém integração Pi própria; Lucid Dream é projeto separado. Portanto, não incorporá-los como dependências obrigatórias do núcleo Agent apenas por herança. Isso é recomendação de arquitetura, não auditoria de dependências.
+Os quatro READMEs exigidos foram lidos: `mark-pi/README.md`, `prometheus/prometheus/README.md`, `megamind/README.md` e `lucid-dream/README.md`, sob `~/Projects/`. Mark descreve customizações sobre Pi; Prometheus aceita outros agentes CLI e não exige Mark; Megamind mantém integração Pi própria; Lucid Dream é projeto separado. Portanto, não incorporá-los como dependências obrigatórias do núcleo Agent apenas por herança. Isso é recomendação de arquitetura, não auditoria de dependências.
 
 O contexto da tarefa informa Agent clássico 1.5.0 com dez patches; o README atual de Mark já menciona 1.5.1. Não confundir os checkouts. A fonte Pi abaixo foi fixada no commit que o README Mark identifica como base 1.5.0. A existência de pacotes durable no monorepo não demonstra que Agent os utiliza.
 
